@@ -20,9 +20,9 @@ class CacheEngine:
     def swap_in(self, src_to_dst: torch.Tensor) -> None:
         for i, kv_cache_group in enumerate(self.kv_cache_config.kv_cache_groups):
             for layer_name in kv_cache_group.layer_names:
-                self.attn_backends[i].swap_blocks(self.cpu_cache[layer_name], self.gpu_cache[layer_name], src_to_dst)
+                self.attn_backends[i].swap_blocks(self.cpu_cache[layer_name], self.gpu_cache[layer_name], src_to_dst[i])
 
     def swap_out(self, src_to_dst: torch.Tensor) -> None:
         for i, kv_cache_group in enumerate(self.kv_cache_config.kv_cache_groups):
             for layer_name in kv_cache_group.layer_names:
-                self.attn_backends[i].swap_blocks(self.gpu_cache[layer_name], self.cpu_cache[layer_name], src_to_dst)
+                self.attn_backends[i].swap_blocks(self.gpu_cache[layer_name], self.cpu_cache[layer_name], src_to_dst[i])
