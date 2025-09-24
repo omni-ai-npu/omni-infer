@@ -20,8 +20,7 @@ from vllm.distributed import (divide, get_ep_group, get_pp_group,
                               get_tensor_model_parallel_world_size)
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.logger import init_logger
-from vllm.model_executor.layers.fla.ops import (
-    RMSNormGated, chunk_gated_delta_rule, fused_recurrent_gated_delta_rule)
+
 from vllm.model_executor.layers.fused_moe import FusedMoE
 # yapf conflicts with isort for this block
 # yapf: disable
@@ -34,11 +33,8 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                ReplicatedLinear,
                                                RowParallelLinear)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
-from vllm.model_executor.layers.mamba.abstract import MambaBase
 from vllm.model_executor.layers.mamba.mamba_mixer2 import (
     mamba_v2_sharded_weight_loader)
-from vllm.model_executor.layers.mamba.mamba_utils import (
-    MambaStateDtypeCalculator, MambaStateShapeCalculator)
 from vllm.model_executor.layers.mamba.ops.causal_conv1d import (
     causal_conv1d_fn, causal_conv1d_update)
 from vllm.model_executor.layers.quantization import QuantizationConfig
@@ -51,22 +47,27 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader, sharded_weight_loader)
 from vllm.model_executor.models.mamba_cache import MambaCacheParams
-from vllm.model_executor.models.qwen2_moe import Qwen3MoeMLP as Qwen3NextMLP
+from vllm.model_executor.models.qwen2_moe import Qwen2MoeMLP as Qwen3NextMLP
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
 from vllm.triton_utils import tl, triton
 from vllm.utils import direct_register_custom_op
-from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
+from omni.layers.attention.backend.gdn_attn import GDNAttentionMetadata
 
-from vllm.model_executor.models.interfaces import (HasInnerState, IsHybrid, MixtureOfExperts,
+from vllm.model_executor.models.interfaces import (HasInnerState, IsHybrid,
                          SupportsLoRA, SupportsPP)
 from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
                     is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
 
+from omni.layers.attention.linear.abstract import MambaBase
+from omni.layers.attention.linear.fla import RMSNormGated
+from omni.layers.attention.linear.sigmoid_gating import fused_recurrent_gated_delta_rule
+from omni.layers.attention.linear.mamba_utils import (
+    MambaStateDtypeCalculator, MambaStateShapeCalculator)
 
 from collections.abc import Iterable
 from typing import Any, Optional, Union, List, Tuple
@@ -132,14 +133,12 @@ class Qwen3NextSparseMoeBlock(nn.Module):
                                      quant_config=None,
                                      prefix=f"{prefix}.gate")
 
-        if config.shared_expert_intermediate_size > 0:
+        if config.shared_expert_intermediate_size > 0:  # TODO?
             self.shared_expert = Qwen3NextMLP(
                 hidden_size=config.hidden_size,
                 intermediate_size=config.shared_expert_intermediate_size,
                 hidden_act=config.hidden_act,
                 quant_config=quant_config,
-                reduce_results=self.experts.must_reduce_shared_expert_outputs(
-                ),
             )
         else:
             self.shared_expert = None
@@ -170,16 +169,118 @@ class Qwen3NextSparseMoeBlock(nn.Module):
 
         # router_logits: (num_tokens, n_experts)
         router_logits, _ = self.gate(hidden_states)
-        final_hidden_states = self.experts(hidden_states=hidden_states,
-                                           router_logits=router_logits)
+
+        # TODO Fix FusedMoE
+        # final_hidden_states = self.experts(hidden_states=hidden_states,
+        #                                    router_logits=router_logits)
+        final_hidden_states = hidden_states
 
         if shared_output is not None:
             final_hidden_states = final_hidden_states + shared_output
-        if self.tp_size > 1:
-            final_hidden_states = self.experts.maybe_all_reduce_tensor_model_parallel(  # noqa E501
-                final_hidden_states)
+
+        # TODO Fix FusedMoE
+        # if self.tp_size > 1:
+        #     final_hidden_states = self.experts.maybe_all_reduce_tensor_model_parallel(  # noqa E501
+        #         final_hidden_states)
 
         return final_hidden_states.view(orig_shape)
+
+
+def torch_chunk_gated_delta_rule(
+    query,
+    key,
+    value,
+    g,
+    beta,
+    chunk_size=64,
+    initial_state=None,
+    output_final_state=False,
+    use_qk_l2norm_in_kernel=False,
+):
+    initial_dtype = query.dtype
+    if use_qk_l2norm_in_kernel:
+        query = F.normalize(query, p=2, dim=-1)
+        key = F.normalize(key, p=2, dim=-1)
+    query, key, value, beta, g = [
+        x.transpose(1, 2).contiguous().to(torch.float32)
+        for x in (query, key, value, beta, g)
+    ]
+
+    batch_size, sequence_length, num_heads, k_head_dim = key.shape
+    v_head_dim = value.shape[-1]
+    pad_size = (chunk_size - num_heads % chunk_size) % chunk_size
+    query = F.pad(query, (0, 0, 0, pad_size)).repeat_interleave(2, dim=1)
+    key = F.pad(key, (0, 0, 0, pad_size)).repeat_interleave(2, dim=1)
+    value = F.pad(value, (0, 0, 0, pad_size))
+    beta = F.pad(beta, (0, pad_size))
+    g = F.pad(g, (0, pad_size))
+    tot_heads = num_heads + pad_size
+    scale = 1 / (query.shape[-1]**0.5)
+    query = query * scale
+
+    v_beta = value * beta.unsqueeze(-1)
+    k_beta = key * beta.unsqueeze(-1)
+    # reshape to chunks
+    query, key, value, k_beta, v_beta = [
+        x.reshape(x.shape[0], x.shape[1], -1, chunk_size, x.shape[-1])
+        for x in (query, key, value, k_beta, v_beta)
+    ]
+    g = g.reshape(g.shape[0], g.shape[1], -1, chunk_size)
+    mask = torch.triu(torch.ones(chunk_size,
+                                 chunk_size,
+                                 dtype=torch.bool,
+                                 device=query.device),
+                      diagonal=0)
+
+    # chunk decay
+    g = g.cumsum(dim=-1)
+    decay_mask = ((g.unsqueeze(-1) -
+                   g.unsqueeze(-2)).tril().exp().float()).tril()
+    attn = -(
+        (k_beta @ key.transpose(-1, -2)) * decay_mask).masked_fill(mask, 0)
+    for i in range(1, chunk_size):
+        row = attn[..., i, :i].clone()
+        sub = attn[..., :i, :i].clone()
+        attn[..., i, :i] = row + (row.unsqueeze(-1) * sub).sum(-2)
+    attn = attn + torch.eye(chunk_size, dtype=attn.dtype, device=attn.device)
+    value = attn @ v_beta
+    k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1))
+
+    last_recurrent_state = (torch.zeros(batch_size, sequence_length,
+                                        k_head_dim, v_head_dim).to(value) if
+                            initial_state is None else initial_state.to(value))
+
+    core_attn_out = torch.zeros_like(value)
+    mask = torch.triu(torch.ones(chunk_size,
+                                 chunk_size,
+                                 dtype=torch.bool,
+                                 device=query.device),
+                      diagonal=1)
+
+    # for each chunk
+    for i in range(0, tot_heads // chunk_size):
+        q_i, k_i, v_i = query[:, :, i], key[:, :, i], value[:, :, i]
+        attn = (q_i @ k_i.transpose(-1, -2) *
+                decay_mask[:, :, i]).masked_fill_(mask, 0)
+        v_prime = (k_cumdecay[:, :, i]) @ last_recurrent_state
+        v_new = v_i - v_prime
+        attn_inter = (q_i * g[:, :, i, :, None].exp()) @ last_recurrent_state
+        core_attn_out[:, :, i] = attn_inter + attn @ v_new
+        last_recurrent_state = (
+            last_recurrent_state * g[:, :, i, -1, None, None].exp() +
+            (k_i *
+             (g[:, :, i, -1, None] - g[:, :, i]).exp()[..., None]).transpose(
+                 -1, -2) @ v_new)
+
+    if not output_final_state:
+        last_recurrent_state = None
+    core_attn_out = core_attn_out.reshape(core_attn_out.shape[0],
+                                          core_attn_out.shape[1], -1,
+                                          core_attn_out.shape[-1])
+    core_attn_out = core_attn_out[:, :, :num_heads]
+    core_attn_out = core_attn_out.transpose(1,
+                                            2).contiguous().to(initial_dtype)
+    return core_attn_out, last_recurrent_state
 
 
 class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
@@ -189,7 +290,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         return "linear_attention"
 
     def get_attn_backend(self) -> type["AttentionBackend"]:
-        from vllm.v1.attention.backends.gdn_attn import GDNAttentionBackend  # TODO(kai)?
+        from vllm.v1.attention.backends.gdn_attn import GDNAttentionBackend  # TODO?
         return GDNAttentionBackend
 
     def get_state_dtype(self) -> tuple[torch.dtype, torch.dtype]:
@@ -299,7 +400,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
             eps=self.layer_norm_epsilon,
             group_size=None,
             norm_before_gate=True,
-            device=torch.cuda.current_device(),
+            device=current_platform.device_type,
             dtype=config.torch_dtype,
         )
 
@@ -559,21 +660,53 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
             initial_state = ssm_state[
                 non_spec_state_indices_tensor].contiguous()
             initial_state[~has_initial_state, ...] = 0
-            (
-                core_attn_out_non_spec,
-                last_recurrent_state,
-            ) = chunk_gated_delta_rule(
-                q=query_non_spec,
-                k=key_non_spec,
-                v=value_non_spec,
-                g=g_non_spec,
-                beta=beta_non_spec,
-                initial_state=initial_state,
-                output_final_state=True,
-                cu_seqlens=non_spec_query_start_loc,
-                head_first=False,
-                use_qk_l2norm_in_kernel=True,
-            )
+            
+            
+            batch_size = initial_state.shape[0]
+            core_attn_out = []
+            last_recurrent_state = []
+
+            for b_idx in range(batch_size):
+                start, end = non_spec_query_start_loc[
+                    b_idx], non_spec_query_start_loc[b_idx + 1]
+                cur_q = query_non_spec[:, start:end, ...]
+                cur_k = key_non_spec[:, start:end, ...]
+                cur_v = value_non_spec[:, start:end, ...]
+                cur_g = g_non_spec[:, start:end, ...]
+                cur_b = beta_non_spec[:, start:end, ...]
+                cur_state = initial_state[b_idx].unsqueeze(0)
+
+                (
+                    cur_core_attn_out_non_spec,
+                    cur_last_recurrent_state,
+                ) = torch_chunk_gated_delta_rule(
+                    query=cur_q,
+                    key=cur_k,
+                    value=cur_v,
+                    g=cur_g,
+                    beta=cur_b,
+                    initial_state=cur_state,
+                    output_final_state=True,
+                    use_qk_l2norm_in_kernel=True,
+                )
+
+                core_attn_out.append(cur_core_attn_out_non_spec)
+                last_recurrent_state.append(cur_last_recurrent_state)
+
+            tar_dtype = core_attn_out[0].dtype
+            tar_device = core_attn_out[0].device
+            tar_shape = list(core_attn_out[0].shape)
+            tar_shape[1] = non_spec_query_start_loc[-1]
+            core_attn_out_non_spec = torch.empty(tar_shape,
+                                                 dtype=tar_dtype,
+                                                 device=tar_device)
+            for b_idx in range(batch_size):
+                cur_core_attn_out = core_attn_out[b_idx]
+                start, end = non_spec_query_start_loc[
+                    b_idx], non_spec_query_start_loc[b_idx + 1]
+                core_attn_out_non_spec[:, start:end, ...] = cur_core_attn_out
+            last_recurrent_state = torch.cat(last_recurrent_state, dim=0)
+
             # Init cache
             ssm_state[non_spec_state_indices_tensor] = last_recurrent_state.to(
                 ssm_state.dtype)
@@ -749,7 +882,6 @@ class Qwen3NextDecoderLayer(nn.Module):
         quant_config: Optional[QuantizationConfig] = None,
         speculative_config: Optional[SpeculativeConfig] = None,
         prefix: str = "",
-        enable_eplb: bool = False,
     ) -> None:
         super().__init__()
         self.config = config
@@ -785,7 +917,6 @@ class Qwen3NextDecoderLayer(nn.Module):
                 config=config,
                 quant_config=quant_config,
                 prefix=f"{prefix}.mlp",
-                enable_eplb=enable_eplb,
             )
         else:
             self.mlp = Qwen3NextMLP(
@@ -887,9 +1018,6 @@ class Qwen3NextModel(nn.Module):
         parallel_config = vllm_config.parallel_config
         lora_config = vllm_config.lora_config
         speculative_config = vllm_config.speculative_config
-        enable_eplb = parallel_config.enable_eplb
-        eplb_config = parallel_config.eplb_config
-        self.num_redundant_experts = eplb_config.num_redundant_experts
 
         self.config = config
         lora_vocab = ((lora_config.lora_extra_vocab_size *
@@ -911,7 +1039,6 @@ class Qwen3NextModel(nn.Module):
                 quant_config=quant_config,
                 speculative_config=speculative_config,
                 prefix=prefix,
-                enable_eplb=enable_eplb,
             )
 
         self.start_layer, self.end_layer, self.layers = make_layers(
@@ -966,8 +1093,7 @@ class Qwen3NextModel(nn.Module):
             ckpt_gate_proj_name="gate_proj",
             ckpt_down_proj_name="down_proj",
             ckpt_up_proj_name="up_proj",
-            num_experts=self.config.num_experts,
-            num_redundant_experts=self.num_redundant_experts)
+            num_experts=self.config.num_experts,)
 
     def load_weights(self, weights: Iterable[tuple[str,
                                                    torch.Tensor]]) -> set[str]:
@@ -1026,6 +1152,8 @@ class Qwen3NextModel(nn.Module):
                     if ((name.endswith(".bias") or name.endswith("_bias"))
                             and name not in params_dict):
                         continue
+                    if name not in params_dict:
+                        continue  # TODO remove this load skip
                     param = params_dict[name]
                     weight_loader = param.weight_loader
                     weight_loader(param,
@@ -1040,6 +1168,8 @@ class Qwen3NextModel(nn.Module):
                         continue
                     if is_pp_missing_parameter(name, self):
                         continue
+                    if name not in params_dict:
+                        continue  # TODO remove this load skip
                     param = params_dict[name]
                     weight_loader = getattr(param, "weight_loader",
                                             default_weight_loader)
@@ -1048,8 +1178,7 @@ class Qwen3NextModel(nn.Module):
         return loaded_params
 
 
-class Qwen3NextForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP,
-                           MixtureOfExperts, IsHybrid):
+class Qwen3NextForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP, IsHybrid):
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -1114,45 +1243,6 @@ class Qwen3NextForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP,
         self.num_moe_layers = len(self.moe_layers)
         self.num_expert_groups = 1
         self.num_shared_experts = 0
-        self.num_logical_experts = example_layer.n_logical_experts
-        self.num_physical_experts = example_layer.n_physical_experts
-        self.num_local_physical_experts = example_layer.n_local_physical_experts
-        self.num_routed_experts = example_layer.n_routed_experts
-        self.num_redundant_experts = example_layer.n_redundant_experts
-
-    def set_eplb_state(
-        self,
-        expert_load_view: torch.Tensor,
-        logical_to_physical_map: torch.Tensor,
-        logical_replica_count: torch.Tensor,
-    ) -> None:
-        for layer_idx, layer in enumerate(self.moe_layers):
-            # Register the expert weights.
-            self.expert_weights.append(layer.get_expert_weights())
-            layer.set_eplb_state(
-                moe_layer_idx=layer_idx,
-                expert_load_view=expert_load_view,
-                logical_to_physical_map=logical_to_physical_map,
-                logical_replica_count=logical_replica_count,
-            )
-
-    def update_physical_experts_metadata(
-        self,
-        num_physical_experts: int,
-        num_local_physical_experts: int,
-    ) -> None:
-        assert self.num_local_physical_experts == num_local_physical_experts
-        self.num_physical_experts = num_physical_experts
-        self.num_local_physical_experts = num_local_physical_experts
-        self.num_redundant_experts = (num_physical_experts -
-                                      self.num_logical_experts)
-        for layer in self.model.layers:
-            if isinstance(layer.mlp, Qwen3NextSparseMoeBlock):
-                moe = layer.mlp
-                moe.n_local_physical_experts = num_local_physical_experts
-                moe.n_physical_experts = num_physical_experts
-                moe.n_redundant_experts = self.num_redundant_experts
-                moe.experts.update_expert_map()
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)

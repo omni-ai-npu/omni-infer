@@ -1,0 +1,587 @@
+diff --git a/vllm/config.py b/vllm/config.py
+index 5b255e210..e033d5513 100644
+--- a/vllm/config.py
++++ b/vllm/config.py
+@@ -220,6 +220,7 @@ def is_init_field(cls: ConfigType, name: str) -> bool:
+ 
+ TokenizerMode = Literal["auto", "slow", "mistral", "custom"]
+ ModelDType = Literal["auto", "half", "float16", "bfloat16", "float", "float32"]
++MambaDType = Literal["auto", "float32"]
+ 
+ 
+ @config
+@@ -1257,6 +1258,20 @@ class ModelConfig:
+             if attn_type_list:
+                 return sum(t == 1 for t in attn_type_list[start:end])
+ 
++            # Hybrid model Qwen3Next
++            layer_types_value = getattr(self.hf_config, "layer_types", None)
++            if layer_types_value is not None:
++                if getattr(block_type, "value", block_type) == "attention":
++                    return sum(t == "full_attention"
++                               for t in layer_types_value[start:end])
++                elif getattr(block_type, "value",
++                             block_type) == "linear_attention":
++                    return sum(t == "linear_attention"
++                               for t in layer_types_value[start:end])
++                else:
++                    return sum(t == getattr(block_type, "value", block_type)
++                               for t in layer_types_value[start:end])
++                
+             if layers_block_type_value is None and attn_type_list is None:
+                 raise ValueError(
+                     "The model is an hybrid without a"
+@@ -1449,6 +1464,19 @@ class CacheConfig:
+     kv_cache_dtype is fp8. If `False`, the scales will be loaded from the model
+     checkpoint if available. Otherwise, the scales will default to 1.0."""
+ 
++    mamba_page_size_padded: Optional[int] = None
++    """ Optional override for mamba page size; used by hybrid mamba/attention
++    models to ensure exact alignment with attention page size."""
++
++    mamba_cache_dtype = "auto"
++    """The data type to use for the Mamba cache (both the conv as well as the
++    ssm state). If set to 'auto', the data type will be inferred from the model
++    config."""
++    mamba_ssm_cache_dtype = "auto"
++    """The data type to use for the Mamba cache (ssm state only, conv state will
++    still be controlled by mamba_cache_dtype). If set to 'auto', the data type
++    for the ssm state will be determined by mamba_cache_dtype."""
++
+     # Will be set after profiling.
+     num_gpu_blocks: Optional[int] = field(default=None, init=False)
+     """The number of blocks to allocate for GPU memory."""
+diff --git a/vllm/model_executor/layers/mamba/ops/ssd_bmm.py b/vllm/model_executor/layers/mamba/ops/ssd_bmm.py
+index 0fdb055aa..99532f5be 100644
+--- a/vllm/model_executor/layers/mamba/ops/ssd_bmm.py
++++ b/vllm/model_executor/layers/mamba/ops/ssd_bmm.py
+@@ -12,83 +12,6 @@ import torch
+ from vllm.triton_utils import tl, triton
+ 
+ 
+-@triton.autotune(
+-    configs=[
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 64
+-            },
+-            num_stages=3,
+-            num_warps=8),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 32,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=2),
+-    ],
+-    key=['chunk_size', 'K', 'IS_CAUSAL'],
+-)
+ @triton.jit
+ def _bmm_chunk_fwd_kernel(
+     # Pointers to matrices
+diff --git a/vllm/model_executor/layers/mamba/ops/ssd_chunk_scan.py b/vllm/model_executor/layers/mamba/ops/ssd_chunk_scan.py
+index 1652c5181..cfc5b052d 100644
+--- a/vllm/model_executor/layers/mamba/ops/ssd_chunk_scan.py
++++ b/vllm/model_executor/layers/mamba/ops/ssd_chunk_scan.py
+@@ -10,102 +10,6 @@ from packaging import version
+ 
+ from vllm.triton_utils import tl, triton
+ 
+-TRITON_22 = version.parse(triton.__version__) >= version.parse('2.2.0')
+-
+-
+-@triton.autotune(
+-    configs=[
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 64
+-            },
+-            num_stages=3,
+-            num_warps=8),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 64
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 64
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 32,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=2),
+-    ],
+-    key=['chunk_size', 'hdim', 'dstate', 'IS_CAUSAL'],
+-)
+ @triton.jit
+ def _chunk_scan_fwd_kernel(
+     # Pointers to matrices
+diff --git a/vllm/model_executor/layers/mamba/ops/ssd_chunk_state.py b/vllm/model_executor/layers/mamba/ops/ssd_chunk_state.py
+index ee6335690..ec085a98a 100644
+--- a/vllm/model_executor/layers/mamba/ops/ssd_chunk_state.py
++++ b/vllm/model_executor/layers/mamba/ops/ssd_chunk_state.py
+@@ -14,18 +14,6 @@ from vllm.triton_utils import tl, triton
+ from .mamba_ssm import softplus
+ 
+ 
+-@triton.autotune(
+-    configs=[
+-        triton.Config({'BLOCK_SIZE_H': 1}),
+-        triton.Config({'BLOCK_SIZE_H': 2}),
+-        triton.Config({'BLOCK_SIZE_H': 4}),
+-        triton.Config({'BLOCK_SIZE_H': 8}),
+-        triton.Config({'BLOCK_SIZE_H': 16}),
+-        triton.Config({'BLOCK_SIZE_H': 32}),
+-        triton.Config({'BLOCK_SIZE_H': 64}),
+-    ],
+-    key=['chunk_size', 'nheads'],
+-)
+ @triton.jit
+ def _chunk_cumsum_fwd_kernel(
+     # Pointers to matrices
+@@ -110,83 +98,6 @@ def _chunk_cumsum_fwd_kernel(
+              mask=(offs_h[:, None] < nheads) & (offs_c[None, :] < chunk_size))
+ 
+ 
+-@triton.autotune(
+-    configs=[
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 64
+-            },
+-            num_stages=3,
+-            num_warps=8),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 32,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=2),
+-    ],
+-    key=['hdim', 'dstate', 'chunk_size'],
+-)
+ @triton.jit
+ def _chunk_state_fwd_kernel(
+     # Pointers to matrices
+@@ -311,83 +222,6 @@ def _chunk_state_fwd_kernel(
+     tl.store(states_ptrs, states, mask=c_mask)
+ 
+ 
+-@triton.autotune(
+-    configs=[
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 64
+-            },
+-            num_stages=3,
+-            num_warps=8),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 32,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=2),
+-    ],
+-    key=['hdim', 'dstate', 'chunk_size'],
+-)
+ @triton.jit
+ def _chunk_state_varlen_kernel(
+     # Pointers to matrices
+diff --git a/vllm/model_executor/layers/mamba/ops/ssd_combined.py b/vllm/model_executor/layers/mamba/ops/ssd_combined.py
+index 79a1663b8..05fe621ae 100644
+--- a/vllm/model_executor/layers/mamba/ops/ssd_combined.py
++++ b/vllm/model_executor/layers/mamba/ops/ssd_combined.py
+@@ -17,8 +17,6 @@ from .ssd_chunk_state import (_chunk_cumsum_fwd, _chunk_state_fwd,
+                               chunk_state_varlen)
+ from .ssd_state_passing import _state_passing_fwd
+ 
+-TRITON_22 = version.parse(triton.__version__) >= version.parse('2.2.0')
+-
+ 
+ def _mamba_chunk_scan_combined_fwd(x,
+                                    dt,
+diff --git a/vllm/model_executor/layers/mamba/ops/ssd_state_passing.py b/vllm/model_executor/layers/mamba/ops/ssd_state_passing.py
+index 6f69ca743..2f39ab04f 100644
+--- a/vllm/model_executor/layers/mamba/ops/ssd_state_passing.py
++++ b/vllm/model_executor/layers/mamba/ops/ssd_state_passing.py
+@@ -10,17 +10,6 @@ import torch
+ from vllm.triton_utils import tl, triton
+ 
+ 
+-@triton.autotune(
+-    configs=[
+-        triton.Config({'BLOCK_SIZE': 64}),
+-        triton.Config({'BLOCK_SIZE': 128}),
+-        triton.Config({'BLOCK_SIZE': 256}),
+-        triton.Config({'BLOCK_SIZE': 512}),
+-        triton.Config({'BLOCK_SIZE': 1024}),
+-        triton.Config({'BLOCK_SIZE': 2048}),
+-    ],
+-    key=['dim'],
+-)
+ @triton.jit
+ def _state_passing_fwd_kernel(
+     # Pointers to matrices
+diff --git a/vllm/triton_utils/__init__.py b/vllm/triton_utils/__init__.py
+index 9f14a907a..390001826 100644
+--- a/vllm/triton_utils/__init__.py
++++ b/vllm/triton_utils/__init__.py
+@@ -6,8 +6,10 @@ from vllm.triton_utils.importing import (HAS_TRITON, TritonLanguagePlaceholder,
+ if HAS_TRITON:
+     import triton
+     import triton.language as tl
++    import triton.language.extra.libdevice as tldevice
+ else:
+     triton = TritonPlaceholder()
+     tl = TritonLanguagePlaceholder()
++    tldevice = TritonLanguagePlaceholder()
+ 
+ __all__ = ["HAS_TRITON", "triton", "tl"]
+diff --git a/vllm/v1/attention/backends/utils.py b/vllm/v1/attention/backends/utils.py
+index 10a771e83..f77d1c270 100644
+--- a/vllm/v1/attention/backends/utils.py
++++ b/vllm/v1/attention/backends/utils.py
+@@ -16,3 +16,45 @@ class CommonAttentionMetadata:
+     seq_lens: torch.Tensor
+     """(batch_size,), the length of each request including both computed tokens
+     and newly scheduled tokens"""
++
++
++def split_decodes_and_prefills(
++    common_attn_metadata: CommonAttentionMetadata,
++    decode_threshold: int = 1,
++) -> tuple[int, int, int, int]:
++    """
++    Assuming a reordered batch, finds the boundary between prefill and decode
++    requests.
++
++    Args:
++        common_attn_metadata: CommonAttentionMetadata object containing the
++            batch metadata.
++        decode_threshold: The maximum query length to be considered a decode.
++
++    Returns:
++        num_decodes: The number of decode requests.
++        num_prefills: The number of prefill requests.
++        num_decode_tokens: The number of tokens in the decode requests.
++        num_prefill_tokens: The number of tokens in the prefill requests.
++    """
++    max_query_len = common_attn_metadata.max_query_len
++    num_reqs = common_attn_metadata.num_reqs
++    num_tokens = common_attn_metadata.num_actual_tokens
++    query_start_loc = common_attn_metadata.query_start_loc_cpu
++
++    if max_query_len <= decode_threshold:
++        return num_reqs, 0, num_tokens, 0
++
++    query_lens = query_start_loc[1:] - query_start_loc[:-1]
++    is_prefill = query_lens > decode_threshold
++    if not torch.any(is_prefill):
++        return num_reqs, 0, num_tokens, 0
++
++    first_prefill = is_prefill.int().argmax(dim=-1).item()
++    assert torch.all(query_lens[first_prefill:] > decode_threshold)
++    assert torch.all(query_lens[:first_prefill] <= decode_threshold)
++    num_decodes = first_prefill
++    num_prefills = num_reqs - num_decodes
++    num_decode_tokens = query_start_loc[first_prefill].item()
++    num_prefill_tokens = num_tokens - num_decode_tokens
++    return (num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens)
+diff --git a/vllm/v1/kv_cache_interface.py b/vllm/v1/kv_cache_interface.py
+index 2747fc7fa..b3320040c 100644
+--- a/vllm/v1/kv_cache_interface.py
++++ b/vllm/v1/kv_cache_interface.py
+@@ -2,6 +2,7 @@
+ 
+ import copy
+ from dataclasses import dataclass
++from math import prod
+ from typing import Optional
+ 
+ import torch
+@@ -153,6 +154,35 @@ class SlidingWindowSpec(AttentionSpec):
+         return (cdiv(num_tokens, self.block_size) + 1) * self.page_size_bytes
+ 
+ 
++@dataclass
++class MambaSpec(KVCacheSpec):
++    shapes: tuple[tuple[int, ...], ...]
++    dtypes: tuple[torch.dtype]
++    page_size_padded: Optional[int] = None
++    mamba_type: str = "mamba2"
++    num_speculative_blocks: int = 0
++
++    @property
++    def type_id(self) -> str:
++        return f"mamba2_{self.page_size_padded}"  # noqa  # FIXME
++
++    @property
++    def page_size_bytes(self) -> int:
++        page_size = sum(
++            prod(shape) * get_dtype_size(dtype)
++            for (shape, dtype) in zip(self.shapes, self.dtypes))
++        if self.page_size_padded is not None:
++            assert self.page_size_padded >= page_size
++            return self.page_size_padded
++        return page_size
++
++    def max_memory_usage_bytes(self, vllm_config: VllmConfig) -> int:
++        # We allocate 1 block for each request now, so max_memory_usage_bytes is
++        # the same as page_size_bytes.
++        # Need to update this when supporting prefix caching.
++        return self.page_size_bytes
++
++
+ @dataclass
+ class KVCacheTensor:
+     """

@@ -12,7 +12,7 @@ def run_vllm_serve(tp=1, dp=1, model="/home/kc/models/DeepSeek-V2-Lite"):
         "vllm.entrypoints.openai.api_server",
         "--port", "8089",
         "--model", model,
-        # "--enable-expert-parallel",
+        "--enable-expert-parallel",
         "--max_num_seqs", "128",
         "--max_model_len", "8000",
         "--tensor_parallel_size", f"{tp}",
@@ -23,6 +23,7 @@ def run_vllm_serve(tp=1, dp=1, model="/home/kc/models/DeepSeek-V2-Lite"):
         "--dtype", "bfloat16",
         "--distributed-executor-backend", "mp",
         "--block_size", "128",
+        "--no-enable-prefix-caching",
     ]
 
     # Set sys.argv to include the script name and all parameters
@@ -43,4 +44,4 @@ if __name__ == "__main__":
 
     # os.environ["RANDOM_MODE"] = "1"
     
-    run_vllm_serve(tp=4, dp=1, model="/home/ma-user/work/models/Qwen/Qwen3-Next")
+    run_vllm_serve(tp=1, dp=1, model="/home/ma-user/work/models/Qwen/Qwen3-Next")

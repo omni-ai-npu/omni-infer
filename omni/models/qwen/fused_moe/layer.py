@@ -660,7 +660,9 @@ class FusedMoE(torch.nn.Module):
 
     def _map_global_expert_id_to_local_expert_id(self, expert_id: int):
         if self.expert_range is not None:
-            if expert_id < self.expert_range[0] or expert_id >= self.expert_range[1]:
+            if isinstance(self.expert_range, int) and expert_id < self.expert_range:
+                return None
+            elif expert_id < self.expert_range[0] or expert_id >= self.expert_range[1]:
                 return None
             else:
                 return expert_id - self.expert_range[0]
