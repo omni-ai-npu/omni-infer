@@ -488,16 +488,19 @@ index 9f14a907a..390001826 100644
  
  __all__ = ["HAS_TRITON", "triton", "tl"]
 diff --git a/vllm/v1/attention/backends/utils.py b/vllm/v1/attention/backends/utils.py
-index 10a771e83..f77d1c270 100644
+index 10a771e83..5d1f2e3d4 100644
 --- a/vllm/v1/attention/backends/utils.py
 +++ b/vllm/v1/attention/backends/utils.py
-@@ -16,3 +16,45 @@ class CommonAttentionMetadata:
+@@ -16,3 +16,48 @@ class CommonAttentionMetadata:
      seq_lens: torch.Tensor
      """(batch_size,), the length of each request including both computed tokens
      and newly scheduled tokens"""
 +
 +
 +def split_decodes_and_prefills(
++    num_reqs,
++    num_actual_tokens,
++    max_query_len,
 +    common_attn_metadata: CommonAttentionMetadata,
 +    decode_threshold: int = 1,
 +) -> tuple[int, int, int, int]:
@@ -516,10 +519,10 @@ index 10a771e83..f77d1c270 100644
 +        num_decode_tokens: The number of tokens in the decode requests.
 +        num_prefill_tokens: The number of tokens in the prefill requests.
 +    """
-+    max_query_len = common_attn_metadata.max_query_len
-+    num_reqs = common_attn_metadata.num_reqs
-+    num_tokens = common_attn_metadata.num_actual_tokens
-+    query_start_loc = common_attn_metadata.query_start_loc_cpu
++    max_query_len = max_query_len
++    num_reqs = num_reqs
++    num_tokens = num_actual_tokens
++    query_start_loc = common_attn_metadata.query_start_loc
 +
 +    if max_query_len <= decode_threshold:
 +        return num_reqs, 0, num_tokens, 0
@@ -537,6 +540,113 @@ index 10a771e83..f77d1c270 100644
 +    num_decode_tokens = query_start_loc[first_prefill].item()
 +    num_prefill_tokens = num_tokens - num_decode_tokens
 +    return (num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens)
+diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
+index 403b5401b..2a0051057 100644
+--- a/vllm/v1/core/kv_cache_utils.py
++++ b/vllm/v1/core/kv_cache_utils.py
+@@ -702,12 +702,12 @@ def get_kv_cache_config(vllm_config: VllmConfig,
+     """
+     check_enough_kv_cache_memory(vllm_config, kv_cache_spec, available_memory)
+     unify_hybrid_kv_cache_specs(kv_cache_spec)
+-    if is_kv_cache_type_uniform(kv_cache_spec):
++    # if is_kv_cache_type_uniform(kv_cache_spec):
+         # KV cache of all layers are the same, which is true for
+         # most models. Allocate the same amount of memory for
+         # each layer.
+-        return _get_kv_cache_config_uniform_type(vllm_config, kv_cache_spec,
+-                                                 available_memory)
++    return _get_kv_cache_config_uniform_type(vllm_config, kv_cache_spec,
++                                                available_memory)
+ 
+     raise NotImplementedError
+ 
+diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
+index 0223c9cee..ef17f30e8 100644
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -7,7 +7,7 @@ from vllm.utils import cdiv
+ from vllm.v1.core.block_pool import BlockPool
+ from vllm.v1.core.kv_cache_utils import BlockHashType, KVCacheBlock
+ from vllm.v1.kv_cache_interface import (FullAttentionSpec, KVCacheSpec,
+-                                        SlidingWindowSpec)
++                                        MambaSpec, SlidingWindowSpec)
+ from vllm.v1.request import Request
+ 
+ 
+@@ -345,9 +345,73 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
+         return 0
+ 
+ 
++class MambaManager(SingleTypeKVCacheManager):
++
++    @classmethod
++    def find_longest_cache_hit(self, block_hashes: list[BlockHashType],
++                               max_length: int) -> list[KVCacheBlock]:
++        # Prefix caching is not supported for mamba now. Always return empty
++        # list.
++        return []
++
++    def remove_skipped_blocks(self, request_id: str,
++                              num_computed_tokens: int) -> None:
++        # Each request will always have 1 block at this moment, so no need to
++        # remove blocks.
++        pass
++
++    def get_num_common_prefix_blocks(self, request_id: str,
++                                     num_running_requests: int) -> int:
++        return 0
++
++    def get_num_blocks_to_allocate(
++            self, request_id: str, num_tokens: int,
++            new_computed_blocks: list[KVCacheBlock]) -> int:
++        """
++        Get the number of blocks needed to be allocated for the request.
++
++        Args:
++            request_id: The request ID.
++            num_tokens: The total number of tokens that need a slot (including
++                tokens that are already allocated).
++            new_computed_blocks: The new computed blocks just hitting the
++                prefix caching.
++
++        Returns:
++            The number of blocks
++        """
++
++        assert isinstance(self.kv_cache_spec, MambaSpec)
++        if self.kv_cache_spec.num_speculative_blocks > 0:
++            num_tokens += (self.kv_cache_spec.block_size *
++                           self.kv_cache_spec.num_speculative_blocks)
++        num_required_blocks = cdiv(num_tokens, self.block_size)
++        num_new_blocks = (num_required_blocks - len(new_computed_blocks) -
++                          len(self.req_to_blocks[request_id]))
++        # If a computed block of a request is an eviction candidate (in the
++        # free queue and ref_cnt == 0), it will be changed from a free block
++        # to a computed block when the request is allocated, so we also count
++        # it as needed to be allocated.
++        num_evictable_computed_blocks = sum(
++            blk.ref_cnt == 0 and not blk.is_null
++            for blk in new_computed_blocks)
++        return num_new_blocks + num_evictable_computed_blocks
++
++    def allocate_new_blocks(self, request_id: str,
++                            num_tokens: int) -> list[KVCacheBlock]:
++        # Allocate extra `num_speculative_blocks` blocks for
++        # speculative decoding (MTP/EAGLE) with linear attention.
++        assert isinstance(self.kv_cache_spec, MambaSpec)
++        if self.kv_cache_spec.num_speculative_blocks > 0:
++            num_tokens += (self.kv_cache_spec.block_size *
++                           self.kv_cache_spec.num_speculative_blocks)
++        return super().allocate_new_blocks(request_id, num_tokens)
++
++
+ spec_manager_map: dict[type[KVCacheSpec], type[SingleTypeKVCacheManager]] = {
+     FullAttentionSpec: FullAttentionManager,
+     SlidingWindowSpec: SlidingWindowManager,
++    MambaSpec: MambaManager,
+ }
+ 
+ 
 diff --git a/vllm/v1/kv_cache_interface.py b/vllm/v1/kv_cache_interface.py
 index 2747fc7fa..b3320040c 100644
 --- a/vllm/v1/kv_cache_interface.py
@@ -585,3 +695,37 @@ index 2747fc7fa..b3320040c 100644
  @dataclass
  class KVCacheTensor:
      """
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index 9b848fac5..a29d86c17 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -1944,16 +1944,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 kv_cache_config.kv_cache_groups):
+             kv_cache_spec = kv_cache_group_spec.kv_cache_spec
+             if not isinstance(kv_cache_spec, AttentionSpec):
+-                raise NotImplementedError(
+-                    "Only AttentionSpec is supported for now.")
+-            attn_backend_i = get_attn_backend(
+-                kv_cache_spec.head_size,
+-                self.dtype,
+-                kv_cache_spec.dtype,
+-                kv_cache_spec.block_size,
+-                self.model_config.is_attention_free,
+-                use_mla=kv_cache_spec.use_mla,
+-            )
++                # raise NotImplementedError(
++                #     "Only AttentionSpec is supported for now.")
++                from omni.layers.attention.backend.gdn_attn import GDNAttentionBackend
++                attn_backend_i = GDNAttentionBackend
++            else:
++                attn_backend_i = get_attn_backend(
++                    kv_cache_spec.head_size,
++                    self.dtype,
++                    kv_cache_spec.dtype,
++                    kv_cache_spec.block_size,
++                    self.model_config.is_attention_free,
++                    use_mla=kv_cache_spec.use_mla,
++                )
+             if attn_backend_i is None:
+                 error_msg = (
+                     f"Error with get_attn_backend: {kv_cache_spec.head_size=}, "
