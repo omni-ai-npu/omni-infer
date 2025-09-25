@@ -33,7 +33,7 @@ from vllm.logger import logger
 from vllm.model_executor.model_loader import get_model
 from vllm.sequence import IntermediateTensors, VLLM_INVALID_TOKEN_ID
 from vllm.utils import (DeviceMemoryProfiler, is_pin_memory_available,
-                        LayerBlockType, LazyLoader, cdiv)
+                        LayerBlockType, LazyLoader, cdiv, get_dtype_size)
 from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
                                         KVCacheConfig, KVCacheSpec)
 from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
@@ -332,13 +332,30 @@ class NPUModelRunner(GPUModelRunner):
                     kv_cache_group_spec.kv_cache_spec,
                     self.attn_metadata_builders[kv_cache_group_id],
                 )
-            attn_metadata_i = self.attn_metadata_builders[kv_cache_group_id].build(
-                num_reqs=num_reqs,
-                num_actual_tokens=total_num_scheduled_tokens,
-                max_query_len=max_num_scheduled_tokens,
-                common_prefix_len=None,
-                **extra_builder_kwargs,
-            )
+            if not isinstance(kv_cache_group_spec.kv_cache_spec, MambaSpec):
+                attn_metadata_i = self.attn_metadata_builders[kv_cache_group_id].build(
+                    num_reqs=num_reqs,
+                    num_actual_tokens=total_num_scheduled_tokens,
+                    max_query_len=max_num_scheduled_tokens,
+                    common_prefix_len=None,
+                    **extra_builder_kwargs,
+                )  
+            else:
+                from vllm.v1.attention.backends.utils import CommonAttentionMetadata
+                query_start_loc = np.pad(cu_num_tokens, pad_width=(1, 0), mode='constant', constant_values=0)
+                common_attn_metadata = CommonAttentionMetadata(
+                    query_start_loc=torch.from_numpy(query_start_loc), seq_lens=self.seq_lens)
+
+                attn_metadata_i = (
+                    self.attn_metadata_builders[kv_cache_group_id].build(
+                        num_reqs=num_reqs,
+                        num_actual_tokens=total_num_scheduled_tokens,   
+                        max_query_len=max_num_scheduled_tokens,
+                        common_attn_metadata=common_attn_metadata,
+                        num_computed_tokens_cpu_tensor=self.input_batch.num_computed_tokens_cpu_tensor,
+                        **extra_builder_kwargs,
+                    )
+                )
             if kv_cache_group_id == 0:
                 self.full_attn_metadata = attn_metadata_i
 
@@ -990,6 +1007,7 @@ class NPUModelRunner(GPUModelRunner):
         self.input_batch.token_ids_cpu = self.input_batch.token_ids_cpu_tensor.numpy()
         self.initialize_attn_backend(kv_cache_config)
         preemption_mode = self.vllm_config.scheduler_config.preemption_mode
+        has_mamba = False
 
         for i, kv_cache_group in enumerate(kv_cache_config.kv_cache_groups):
             kv_cache_spec = kv_cache_group.kv_cache_spec
@@ -1017,7 +1035,48 @@ class NPUModelRunner(GPUModelRunner):
                                                                                            self.model_config,
                                                                                            self.enable_torchair_graph_mode)
                 else:
-                    raise ValueError("Unknown KV cache spec type.")
+                    # TODO: add new branches when introducing more types of
+                    # KV cache specs.
+                    kv_cache_raw_tensors: dict[str, torch.Tensor] = {}
+                    for layer_name, kv_cache_tensor in kv_cache_config.tensors.items():
+                        tensor = torch.zeros(kv_cache_tensor.size,
+                                            dtype=torch.int8,
+                                            device=self.device)
+                        kv_cache_raw_tensors[layer_name] = tensor
+                            
+                        # if layer_name in self.runner_only_attn_layers:
+                        #     continue
+                        
+                        has_mamba = True
+                        raw_tensor = kv_cache_raw_tensors[layer_name]
+                        state_tensors = []
+                        storage_offset_bytes = 0
+                        for (shape, dtype) in zip(kv_cache_spec.shapes,
+                                                kv_cache_spec.dtypes):
+                            dtype_size = get_dtype_size(dtype)
+                            num_element_per_page = (
+                                kv_cache_spec.page_size_bytes // dtype_size)
+                            target_shape = (num_blocks, *shape)
+                            stride = torch.empty(target_shape).stride()
+                            target_stride = (num_element_per_page, *stride[1:])
+                            assert storage_offset_bytes % dtype_size == 0
+                            tensor = torch.as_strided(
+                                raw_tensor.view(dtype),
+                                size=target_shape,
+                                stride=target_stride,
+                                storage_offset=storage_offset_bytes // dtype_size,
+                            )
+                            state_tensors.append(tensor)
+                            storage_offset_bytes += stride[0] * dtype_size
+
+                        kv_caches[layer_name] = state_tensors
+
+                        if preemption_mode and preemption_mode == "swap":
+                            pass  # TODO
+                    # raise ValueError("Unknown KV cache spec type.")
+
+        if has_mamba:
+            self._update_hybrid_attention_mamba_layout(kv_caches)
 
         if preemption_mode and preemption_mode == "swap":
             self.cache_engine = CacheEngine(self.attn_backends, self.kv_cache_config, gpu_cache=kv_caches, cpu_cache=cpu_caches)
@@ -1033,6 +1092,30 @@ class NPUModelRunner(GPUModelRunner):
 
         if EmsEnv.enable_vllm_ems:
             self.ems_adapter.bind_kvcaches(self.kv_caches)
+
+    def _update_hybrid_attention_mamba_layout(
+            self, kv_caches: dict[str, torch.Tensor]) -> None:
+        """
+        Update the layout of attention layers from (2, num_blocks, ...) to
+        (num_blocks, 2, ...).
+
+        Args:
+            kv_caches: The KV cache buffer of each layer.
+        """
+        for kv_cache_group_id, kv_cache_group_spec in enumerate(self.kv_cache_config.kv_cache_groups):
+            kv_cache_spec = kv_cache_group_spec.kv_cache_spec
+            for layer_name in kv_cache_group_spec.layer_names:
+                kv_cache = kv_caches[layer_name]
+                if (isinstance(kv_cache_spec, AttentionSpec)
+                        and kv_cache.shape[0] == 2):
+                    assert kv_cache.shape[1] != 2, \
+                        "Fail to determine whether the layout is " \
+                        "(2, num_blocks, ...) or (num_blocks, 2, ...) for " \
+                        f"a tensor of shape {kv_cache.shape}"
+                    hidden_size = kv_cache.shape[2:].numel()
+                    kv_cache.as_strided_(size=kv_cache.shape,
+                                            stride=(hidden_size, 2 * hidden_size,
+                                                    *kv_cache.stride()[2:]))
 
     def capture_model(self) -> None:
         if self.enable_torchair_graph_mode:

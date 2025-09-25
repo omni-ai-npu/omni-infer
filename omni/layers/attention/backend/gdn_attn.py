@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Backend for GatedDeltaNet attention."""
 from dataclasses import dataclass
-from typing import ClassVar, Optional
+from typing import ClassVar, Optional, List
 
 import torch
 
@@ -12,6 +12,8 @@ from vllm.config import VllmConfig
 from vllm.v1.attention.backends.utils import (CommonAttentionMetadata,
                                               split_decodes_and_prefills)
 from vllm.v1.kv_cache_interface import AttentionSpec, MambaSpec
+
+from omni.layers.attention.backend.attention import AscendAttentionMetadataBuilder, AscendAttentionState
 
 
 class GDNAttentionBackend(AttentionBackend):
@@ -23,6 +25,21 @@ class GDNAttentionBackend(AttentionBackend):
 
 @dataclass
 class GDNAttentionMetadata:
+    block_tables: torch.Tensor
+    query_lens: torch.Tensor
+    query_lens_list: List
+    seq_lens: torch.Tensor
+    seq_lens_list: List
+    max_query_len: Optional[int]
+    slot_mapping: torch.Tensor
+    slot_indices: torch.Tensor
+    is_only_prefill: bool
+    attn_state: AscendAttentionState
+    cos: Optional[torch.Tensor]
+    sin: Optional[torch.Tensor]
+    is_pd_seperate_d: bool
+    kv_index: Optional[torch.Tensor]
+
     num_prefills: int
     num_prefill_tokens: int
     num_decodes: int
@@ -55,18 +72,17 @@ class GDNAttentionMetadata:
     token_chunk_offset_ptr: Optional[torch.Tensor] = None
 
 
-class GDNAttentionMetadataBuilder:
-
-    cudagraph_support = 2
+class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
 
     reorder_batch_threshold: ClassVar[int] = 1
 
-    def __init__(self, kv_cache_spec: AttentionSpec, layer_names: list[str],
-                 vllm_config: VllmConfig, device: torch.device):
+    def __init__(self, runner, kv_cache_spec = None,
+                 block_table = None):
         assert isinstance(kv_cache_spec, MambaSpec)
-        self.vllm_config = vllm_config
-        self.compilation_config = vllm_config.compilation_config
-        self.speculative_config = vllm_config.speculative_config
+        super().__init__(runner, kv_cache_spec, block_table)
+        self.vllm_config = runner.vllm_config
+        self.compilation_config = self.vllm_config.compilation_config
+        self.speculative_config = self.vllm_config.speculative_config
         self.kv_cache_spec = kv_cache_spec
         if self.speculative_config:
             self.num_spec = self.speculative_config.num_speculative_tokens  # noqa: E501
@@ -75,8 +91,7 @@ class GDNAttentionMetadataBuilder:
         self.use_spec_decode = self.num_spec > 0
         self.reorder_batch_threshold = self.num_spec + 1  # type: ignore[misc]
 
-        self.use_full_cuda_graph = \
-            self.compilation_config.cudagraph_mode.has_full_cudagraphs()
+        self.use_full_cuda_graph = False
         self.decode_cudagraph_max_bs = min(
             self.vllm_config.scheduler_config.max_num_seqs *
             (self.num_spec + 1), self.compilation_config.max_capture_size)
@@ -84,51 +99,55 @@ class GDNAttentionMetadataBuilder:
         self.spec_state_indices_tensor = torch.empty(
             (self.decode_cudagraph_max_bs, self.num_spec + 1),
             dtype=torch.int32,
-            device=device,
+            device=runner.device,
         )
         self.non_spec_state_indices_tensor = torch.empty(
             (self.decode_cudagraph_max_bs, ),
             dtype=torch.int32,
-            device=device,
+            device=runner.device,
         )
         self.spec_sequence_masks = torch.empty(
             (self.decode_cudagraph_max_bs, ),
             dtype=torch.bool,
-            device=device,
+            device=runner.device,
         )
         self.spec_token_masks = torch.empty(
             (self.decode_cudagraph_max_bs * (self.num_spec + 1), ),
             dtype=torch.bool,
-            device=device,
+            device=runner.device,
         )
         self.spec_query_start_loc = torch.empty(
             (self.decode_cudagraph_max_bs + 1, ),
             dtype=torch.int32,
-            device=device,
+            device=runner.device,
         )
         self.non_spec_query_start_loc = torch.empty(
             (self.decode_cudagraph_max_bs + 1, ),
             dtype=torch.int32,
-            device=device,
+            device=runner.device,
         )
         self.num_accepted_tokens = torch.empty(
             (self.decode_cudagraph_max_bs, ),
             dtype=torch.int32,
-            device=device,
+            device=runner.device,
         )
 
     def build(  # type: ignore[override]
         self,
-        common_prefix_len: int,
+        num_reqs,
+        num_actual_tokens,
+        max_query_len,
         common_attn_metadata: CommonAttentionMetadata,
+        num_computed_tokens_cpu_tensor = None,
         num_accepted_tokens: Optional[torch.Tensor] = None,
         num_draft_tokens: Optional[torch.Tensor] = None,
         fast_build: bool = False,
+        **kwargs,
     ) -> GDNAttentionMetadata:
         m = common_attn_metadata
 
         query_start_loc = m.query_start_loc
-        context_lens = m.num_computed_tokens_cpu
+        context_lens = num_computed_tokens_cpu_tensor
         context_lens_tensor = context_lens.to(query_start_loc.device)
         seq_lens_tensor = m.seq_lens
 
@@ -144,12 +163,12 @@ class GDNAttentionMetadataBuilder:
 
         if spec_sequence_masks is None:
             num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
-                split_decodes_and_prefills(m, decode_threshold=1))
+                split_decodes_and_prefills(num_reqs, num_actual_tokens, max_query_len, m, decode_threshold=1))
             num_spec_decodes = 0
             num_spec_decode_tokens = 0
             spec_token_masks = None
             spec_state_indices_tensor = None
-            non_spec_state_indices_tensor = m.block_table_tensor[:, 0]
+            non_spec_state_indices_tensor = self.block_table.block_table[:, 0]
             spec_query_start_loc = None
             non_spec_query_start_loc = query_start_loc
             num_accepted_tokens = None
@@ -170,7 +189,7 @@ class GDNAttentionMetadataBuilder:
                          (self.num_spec + 1), query_start_loc[-1].item())),
                     dtype=torch.bool,
                     device=query_start_loc.device)
-                spec_state_indices_tensor = m.block_table_tensor[:, :self.
+                spec_state_indices_tensor = self.block_table.block_table[:, :self.
                                                                  num_spec + 1]
                 non_spec_state_indices_tensor = None
                 spec_query_start_loc = query_start_loc
@@ -178,10 +197,10 @@ class GDNAttentionMetadataBuilder:
             else:
                 spec_token_masks = torch.repeat_interleave(
                     spec_sequence_masks, query_lens)
-                spec_state_indices_tensor = m.block_table_tensor[
+                spec_state_indices_tensor = self.block_table.block_table[
                     spec_sequence_masks, :self.num_spec + 1]
                 non_spec_state_indices_tensor = \
-                    m.block_table_tensor[~spec_sequence_masks, 0]
+                    self.block_table.block_table[~spec_sequence_masks, 0]
 
                 spec_query_start_loc = torch.zeros(
                     num_spec_decodes + 1,
@@ -223,7 +242,7 @@ class GDNAttentionMetadataBuilder:
                 and num_spec_decodes <= self.decode_cudagraph_max_bs
                 and num_spec_decode_tokens <= self.decode_cudagraph_max_bs):
             num_actual_tokens = self.vllm_config.pad_for_cudagraph(
-                m.num_actual_tokens)
+                num_actual_tokens)
             batch_size = min(self.decode_cudagraph_max_bs, num_actual_tokens)
 
             self.spec_state_indices_tensor[:num_spec_decodes].copy_(
@@ -260,7 +279,7 @@ class GDNAttentionMetadataBuilder:
                 and num_spec_decodes == 0
                 and num_decodes <= self.decode_cudagraph_max_bs):
             num_actual_tokens = self.vllm_config.pad_for_cudagraph(
-                m.num_actual_tokens)
+                num_actual_tokens)
             batch_size = num_actual_tokens
 
             self.non_spec_state_indices_tensor[:num_decodes].copy_(
@@ -277,8 +296,31 @@ class GDNAttentionMetadataBuilder:
                 self.non_spec_query_start_loc[:batch_size + 1]
             non_spec_query_start_loc[num_decodes +
                                      1:].fill_(non_spec_num_query_tokens)
+            
+        ascend_attn_metadata = super().build(
+            num_reqs=num_reqs,
+            num_actual_tokens=num_actual_tokens,
+            max_query_len=max_query_len,
+            common_prefix_len=None,
+            **kwargs,
+        )
 
         attn_metadata = GDNAttentionMetadata(
+            block_tables=ascend_attn_metadata.block_tables,
+            query_lens=ascend_attn_metadata.query_lens,
+            query_lens_list=ascend_attn_metadata.query_lens_list,
+            seq_lens=ascend_attn_metadata.seq_lens,
+            seq_lens_list=ascend_attn_metadata.seq_lens_list,
+            max_query_len=ascend_attn_metadata.max_query_len,
+            slot_mapping=ascend_attn_metadata.slot_mapping,
+            slot_indices=ascend_attn_metadata.slot_indices,
+            is_only_prefill=ascend_attn_metadata.is_only_prefill,
+            attn_state=ascend_attn_metadata.attn_state,
+            cos=ascend_attn_metadata.cos,
+            sin=ascend_attn_metadata.sin,
+            is_pd_seperate_d=ascend_attn_metadata.is_pd_seperate_d,
+            kv_index=ascend_attn_metadata.kv_index,
+            # up to here, just copy AscendMetadata
             num_prefills=num_prefills,
             num_prefill_tokens=num_prefill_tokens,
             num_decodes=num_decodes,

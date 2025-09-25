@@ -314,8 +314,10 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                 cos, sin = None, None
             else:
                 cos, sin = self.runner.model.language_model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
-        else:
+        elif hasattr(self.runner.model.model.layers[0], "self_attn"):
             cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
+        else:
+            cos, sin = None, None
 
         is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
                            self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'

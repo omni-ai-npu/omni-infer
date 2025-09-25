@@ -35,8 +35,8 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.mamba.mamba_mixer2 import (
     mamba_v2_sharded_weight_loader)
-from vllm.model_executor.layers.mamba.ops.causal_conv1d import (
-    causal_conv1d_fn, causal_conv1d_update)
+from omni.layers.attention.linear.causal_conv import causal_conv1d_fn
+from omni.layers.attention.linear.causal_conv import causal_conv1d_update_npu as causal_conv1d_update
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.quantization.gptq import GPTQConfig
 from vllm.model_executor.layers.quantization.gptq_marlin import (
@@ -290,7 +290,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         return "linear_attention"
 
     def get_attn_backend(self) -> type["AttentionBackend"]:
-        from vllm.v1.attention.backends.gdn_attn import GDNAttentionBackend  # TODO?
+        from omni.layers.attention.backend.gdn_attn import GDNAttentionBackend
         return GDNAttentionBackend
 
     def get_state_dtype(self) -> tuple[torch.dtype, torch.dtype]:

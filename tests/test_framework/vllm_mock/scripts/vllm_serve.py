@@ -17,7 +17,7 @@ def run_vllm_serve(tp=1, dp=1, model="/home/kc/models/DeepSeek-V2-Lite"):
         "--max_model_len", "8000",
         "--tensor_parallel_size", f"{tp}",
         "--data_parallel_size", f"{dp}",
-        "--gpu_memory_utilization", "0.9",
+        "--gpu_memory_utilization", "0.4",
         "--trust_remote_code",
         "--served-model-name", "deepseek",
         "--dtype", "bfloat16",
