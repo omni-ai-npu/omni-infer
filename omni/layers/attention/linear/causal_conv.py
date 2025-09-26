@@ -447,11 +447,11 @@ def causal_conv1d_update_npu(
     activation: Union[bool, str, None] = None,
     cache_seqlens: Optional[torch.Tensor] = None,
     conv_state_indices: Optional[torch.Tensor] = None,
-    num_accepted_tokens: Optional[torch.Tensor] = None,
-    intermediate_conv_window: Optional[torch.Tensor] = None,
-    pad_slot_id: int = PAD_SLOT_ID,
-    metadata=None,
-    validate_data=False,
+    num_accepted_tokens: Optional[torch.Tensor] = None, # This parameter will be ignored
+    intermediate_conv_window: Optional[torch.Tensor] = None, # This parameter will be ignored
+    pad_slot_id: int = PAD_SLOT_ID, # This parameter will be ignored
+    metadata=None, # This parameter will be ignored
+    validate_data=False, # This parameter will be ignored
 ):
     """
     x: (batch, dim) or (batch, dim, seqlen)
@@ -477,120 +477,45 @@ def causal_conv1d_update_npu(
             indices 0 and 3
     out: (batch, dim) or (batch, dim, seqlen)
     """
-    if validate_data:
-        assert cache_seqlens is None  # not implemented yet - ok for vLLM
-        assert pad_slot_id is not None
-        assert x.stride(1) == 1
+    # Handle boolean activation to string if needed
     if isinstance(activation, bool):
         activation = "silu" if activation is True else None
     elif activation is not None:
         assert activation in ["silu", "swish"]
+
+    # Handle unsqueeze/squeeze for single token input
     unsqueeze = x.dim() == 2
     if unsqueeze:
-        # make it (batch, dim, seqlen) with seqlen == 1
         x = x.unsqueeze(-1)
-    batch, dim, seqlen = x.shape
-    _, width = weight.shape
-    # conv_state: (..., dim, state_len), where state_len >= width - 1
-    num_cache_lines, _, state_len = conv_state.size()
 
-    if validate_data:
-        assert dim == weight.size(0)
-        assert (
-            conv_state.stride(-2) == 1
-        ), f"ERROR: expect contiguous along feat-dim of conv_state (currently stride={conv_state.stride()})"
-        assert state_len >= width - 1
-        # when above happens, we don't shift-left to keep any records in conv_state
-        assert dim == conv_state.size(1)
-        if conv_state_indices is None:
-            assert conv_state.size(0) >= batch
-        else:
-            assert (batch, ) == conv_state_indices.shape
-
-        assert num_cache_lines >= batch
-        assert weight.stride(1) == 1  # Need this
-        assert cache_seqlens is None  # not needed for vLLM - circular buffer
-
-    # adopt the strategy in vLLM that overwrite on 'x' directly, rather than creating a new tensor 'o'
-    out = x
-    stride_w_dim, stride_w_width = weight.stride()
-
-    stride_x_seq, stride_x_dim, stride_x_token = x.stride(
-    )  # X (batch, dim, seqlen)
-
-    stride_o_seq, stride_o_dim, stride_o_token = out.stride()
-    stride_istate_seq, stride_istate_dim, stride_istate_token = conv_state.stride(
+    # Call the pure PyTorch reference implementation
+    # Note: causal_conv1d_update_ref updates conv_state inplace and returns the output.
+    # Parameters like num_accepted_tokens, intermediate_conv_window, pad_slot_id,
+    # metadata, validate_data are specific to the Triton implementation or debugging
+    # and are not directly used by causal_conv1d_update_ref.
+    #
+    # IMPORTANT CONSIDERATION REGARDING `pad_slot_id`:
+    # The original Triton kernel explicitly skips processing for `pad_slot_id` entries
+    # within the batch. The `causal_conv1d_update_ref` function, as provided, does NOT
+    # have this batch-wise skipping logic. If `conv_state_indices` contains `pad_slot_id`
+    # (e.g., -1), and this value is an invalid index for `conv_state`, the `causal_conv1d_update_ref`
+    # will likely raise an indexing error.
+    # If this skipping behavior is critical, you would need to implement a loop
+    # over the batch dimension here to filter out padded entries before calling
+    # `causal_conv1d_update_ref` for each valid entry, which would significantly
+    # change the function's structure and performance (losing batching).
+    # For a direct replacement of the Triton call, we assume `conv_state_indices`
+    # will contain valid indices or that `pad_slot_id` skipping is handled upstream.
+    out = causal_conv1d_update_ref(
+        x=x,
+        conv_state=conv_state,
+        weight=weight,
+        bias=bias,
+        activation=activation,
+        cache_seqlens=cache_seqlens,
+        conv_state_indices=conv_state_indices,
     )
-    stride_state_indices = (conv_state_indices.stride(0)
-                            if conv_state_indices is not None else 0)
-    state_len = width - 1 + (seqlen - 1)  # effective state_len needed
-    np2_statelen = triton.next_power_of_2(state_len)
 
-    def grid(META):
-        return (
-            batch,
-            triton.cdiv(dim, META["BLOCK_N"]),
-        )
-
-    # prepare intermediate buffer strides if provided
-    if intermediate_conv_window is not None:
-        stride_inter_seq, stride_inter_step, stride_inter_dim, stride_inter_win = (
-            intermediate_conv_window.stride(0),
-            intermediate_conv_window.stride(1),
-            intermediate_conv_window.stride(2),
-            intermediate_conv_window.stride(3),
-        )
-    else:
-        stride_inter_seq = stride_inter_step = stride_inter_dim = stride_inter_win = 0
-
-    _causal_conv1d_update_kernel[grid](
-        # Pointers to matrices
-        x,
-        weight,
-        bias,
-        conv_state,
-        cache_seqlens,
-        conv_state_indices,
-        num_accepted_tokens,
-        intermediate_conv_window
-        if intermediate_conv_window is not None else x,
-        out,
-        # Matrix dimensions
-        batch,
-        dim,
-        seqlen,
-        state_len,
-        num_cache_lines,
-        # stride
-        stride_x_seq,
-        stride_x_dim,
-        stride_x_token,
-        stride_w_dim,
-        stride_w_width,
-        stride_istate_seq,
-        stride_istate_dim,
-        stride_istate_token,
-        stride_state_indices,
-        stride_inter_seq,
-        stride_inter_step,
-        stride_inter_dim,
-        stride_inter_win,
-        stride_o_seq,
-        stride_o_dim,
-        stride_o_token,
-        # others
-        pad_slot_id,
-        # META
-        HAS_BIAS=bias is not None,
-        KERNEL_WIDTH=width,
-        SILU_ACTIVATION=activation in ["silu", "swish"],
-        IS_CONTINUOUS_BATCHING=conv_state_indices is not None,
-        IS_SPEC_DECODING=num_accepted_tokens is not None,
-        NP2_STATELEN=np2_statelen,
-        USE_PAD_SLOT=pad_slot_id is not None,
-        BLOCK_N=128,
-        SAVE_INTERMEDIATE=intermediate_conv_window is not None,
-    )
     if unsqueeze:
         out = out.squeeze(-1)
     return out

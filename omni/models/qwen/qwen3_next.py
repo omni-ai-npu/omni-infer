@@ -611,8 +611,8 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
             mixed_qkv_non_spec)
 
         beta = b.sigmoid()
-        # g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
-        g = fused_gdn_gating(self.A_log, a, self.dt_bias)
+        g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
+        # g = fused_gdn_gating(self.A_log, a, self.dt_bias)
         g, beta = map(lambda x: rearrange(x, 'l d -> 1 l d'), (g, beta))
 
         if spec_sequence_masks is not None:
@@ -661,8 +661,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                 non_spec_state_indices_tensor].contiguous()
             initial_state[~has_initial_state, ...] = 0
             
-            
-            batch_size = initial_state.shape[0]
+            batch_size = attn_metadata.num_prefills
             core_attn_out = []
             last_recurrent_state = []
 
@@ -1335,6 +1334,34 @@ direct_register_custom_op(
 )
 
 
+# g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
+@triton.jit
+def fused_gdn_gating_kernel(
+    g,
+    A_log,
+    a,
+    dt_bias,
+    seq_len,
+    NUM_HEADS: tl.constexpr,
+    beta: tl.constexpr,
+    threshold: tl.constexpr,
+    BLK_HEADS: tl.constexpr,
+):
+    i_b, i_s, i_d = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    head_off = i_d * BLK_HEADS + tl.arange(0, BLK_HEADS)
+    off = i_b * seq_len * NUM_HEADS + i_s * NUM_HEADS + head_off
+    mask = head_off < NUM_HEADS
+    blk_A_log = tl.load(A_log + head_off, mask=mask)
+    blk_a = tl.load(a + off, mask=mask)
+    blk_bias = tl.load(dt_bias + head_off, mask=mask)
+    # If the model is loaded in fp16, without the .float() here, A might be -inf
+    x = blk_a.to(tl.float32) + blk_bias.to(tl.float32)
+    softplus_x = tl.where(beta * x <= threshold,
+                          (1 / beta) * tl.log(1 + tl.exp(beta * x)), x)
+    blk_g = -tl.exp(blk_A_log.to(tl.float32)) * softplus_x
+    tl.store(g + off, blk_g.to(g.dtype.element_ty), mask=mask)
+
+
 def fused_gdn_gating(
     A_log: torch.Tensor,
     a: torch.Tensor,
@@ -1342,36 +1369,18 @@ def fused_gdn_gating(
     beta: float = 1.0,
     threshold: float = 20.0,
 ) -> torch.Tensor:
-    # Ensure inputs are float32 for computation, matching Triton's internal casts.
-    # A_log is typically (num_heads,) or (1, num_heads)
-    # a is (batch, num_heads)
-    # dt_bias is (num_heads,) or (1, num_heads)
-    A_log_f32 = A_log.to(torch.float32)
-    a_f32 = a.to(torch.float32)
-    dt_bias_f32 = dt_bias.to(torch.float32)
-
-    # Equivalent to: x = blk_a + blk_bias
-    # PyTorch handles broadcasting dt_bias_f32 across the batch dimension of a_f32
-    x = a_f32 + dt_bias_f32
-
-    # Equivalent to Triton's custom softplus-like activation:
-    # softplus_x = tl.where(beta * x <= threshold, (1 / beta) * tl.log(1 + tl.exp(beta * x)), x)
-    y = beta * x
-    condition = (y <= threshold)
-
-    # Calculate the standard softplus part: (1 / beta) * log(1 + exp(beta * x))
-    # This is equivalent to (1 / beta) * F.softplus(beta * x, beta=1)
-    # We explicitly write it out for clarity and direct match to Triton's formula.
-    val_if_true = (1 / beta) * torch.log(1 + torch.exp(y))
-
-    # If beta * x > threshold, the value is simply x
-    val_if_false = x
-
-    softplus_x = torch.where(condition, val_if_true, val_if_false)
-
-    # Equivalent to: blk_g = -tl.exp(blk_A_log) * softplus_x
-    # PyTorch handles broadcasting torch.exp(A_log_f32) across the batch dimension
-    g = -torch.exp(A_log_f32) * softplus_x
-
-    # The output tensor g should have the same shape as 'a'
+    batch, num_heads = a.shape
+    seq_len = 1
+    grid = (batch, seq_len, triton.cdiv(num_heads, 8))
+    g = torch.empty_like(a, dtype=torch.float32)
+    fused_gdn_gating_kernel[grid](g,
+                                  A_log,
+                                  a,
+                                  dt_bias,
+                                  seq_len,
+                                  num_heads,
+                                  beta,
+                                  threshold,
+                                  8,
+                                  num_warps=1)
     return g
