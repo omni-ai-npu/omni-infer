@@ -23,4 +23,5 @@ git apply --whitespace=nowarn $PATCH_ROOT/scheduler_abort_kv_loading_failure_req
 git apply --whitespace=nowarn $PATCH_ROOT/tfas_patch_request.patch
 git apply --whitespace=nowarn $PATCH_ROOT/prometheus_dp_logging.patch
 git apply --whitespace=nowarn $PATCH_ROOT/swap_kv_cache.patch
+git apply --whitespace=nowarn $PATCH_ROOT/vllm_commit_3fc9644.patch
 git apply --whitespace=nowarn $PATCH_ROOT/qwen3_next.patch
