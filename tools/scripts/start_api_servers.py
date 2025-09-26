@@ -16,7 +16,9 @@
 # limitations under the License.
 # ============================================================================
 
+import glob
 import os
+import re
 import subprocess
 import argparse
 import tempfile
@@ -164,6 +166,10 @@ def start_single_node_api_servers(
             cmd.extend(["--no-enable-chunked-prefill"])
 
         logger_path = os.path.join(log_dir, f"server_{rank}.log")
+        existed_logger_files = [f for f in glob.glob(logger_path + "*") if re.search(f"server_{rank}\.log(\.\d+)?$", f)]
+        for existed_file in existed_logger_files:
+            print(f"The historical log {existed_file} that already exists will be removed.")
+            os.remove(existed_file)
 
         if use_vllm_logging_config_path():
             with open(os.getenv("VLLM_LOGGING_CONFIG_PATH"), "r") as f:
