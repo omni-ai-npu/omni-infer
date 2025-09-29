@@ -3,7 +3,7 @@ set -e
 
 PKG_VERSION=1.0
 PKG_RELEASE=1
-NGINX_VERSION=1.24.0
+NGINX_VERSION=1.28.0
 
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
 RPMBUILD=$WORKDIR/rpmbuild
