@@ -1,0 +1,369 @@
+Subject: [PATCH] reasoning
+---
+Index: vllm/reasoning/qwen3_reasoning_parser.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/vllm/reasoning/qwen3_reasoning_parser.py b/vllm/reasoning/qwen3_reasoning_parser.py
+--- a/vllm/reasoning/qwen3_reasoning_parser.py	(revision a3f3a20a0d4ef460737e04722e8a6cb5620b6edf)
++++ b/vllm/reasoning/qwen3_reasoning_parser.py	(date 1759842701262)
+@@ -109,7 +109,11 @@
+             else:
+                 # <think> in delta, no </think> in delta,
+                 # reasoning content continues
+-                return DeltaMessage(reasoning_content=delta_text)
++                # Adapt: compatible with multi tokens in delta text
++                start_index = delta_text.find(self.start_token)
++                reasoning_content = delta_text[start_index +
++                                               len(self.start_token):]
++                return DeltaMessage(reasoning_content=reasoning_content)
+         else:
+             # thinking is disabled, just content
+             return DeltaMessage(content=delta_text)
+@@ -128,9 +132,13 @@
+             tuple[Optional[str], Optional[str]]: reasoning content and content
+         """
+ 
+-        # Check if the model output contains the <think> and </think> tokens.
+-        if (self.think_start_token not in model_output
+-                or self.think_end_token not in model_output):
++        # Adapt: check output contains neither the start token nor the end token,
++        # compatible with the ability to disable reasoning output
++        if self.start_token not in model_output and self.end_token not in model_output:
++            return None, model_output
++
++        # Check if the model output contains the <think> tokens.
++        if self.think_start_token not in model_output:
+             return None, model_output
+         # Check if the <think> is present in the model output, remove it
+         # if it is present.
+@@ -140,7 +148,7 @@
+         # Check if the model output contains the </think> tokens.
+         # If the end token is not found, return the model output as is.
+         if self.think_end_token not in model_output:
+-            return None, model_output
++            return model_output, None
+ 
+         # Extract reasoning content from the model output.
+         reasoning_content, _, content = model_output.partition(
+Index: vllm/v1/core/sched/utils.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/vllm/v1/core/sched/utils.py b/vllm/v1/core/sched/utils.py
+--- a/vllm/v1/core/sched/utils.py	(revision a3f3a20a0d4ef460737e04722e8a6cb5620b6edf)
++++ b/vllm/v1/core/sched/utils.py	(date 1759842701275)
+@@ -1,10 +1,16 @@
+ # SPDX-License-Identifier: Apache-2.0
+ from vllm.v1.request import Request, RequestStatus
+-
++from vllm import envs
+ 
+ def check_stop(request: Request, max_model_len: int) -> bool:
+-    if (request.num_tokens >= max_model_len
+-            or request.num_output_tokens >= request.max_tokens):
++    total_num_tokens = request.num_tokens
++    output_num_tokens = request.num_output_tokens
++
++    if envs.ENABLE_MAX_TOKENS_EXCLUDE_REASONING:
++        output_num_tokens = request.num_output_tokens - request.num_reasoning_tokens
++
++    if (total_num_tokens >= max_model_len
++            or output_num_tokens >= request.max_tokens):
+         request.status = RequestStatus.FINISHED_LENGTH_CAPPED
+         return True
+ 
+Index: vllm/envs.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/vllm/envs.py b/vllm/envs.py
+--- a/vllm/envs.py	(revision a3f3a20a0d4ef460737e04722e8a6cb5620b6edf)
++++ b/vllm/envs.py	(date 1759842701194)
+@@ -118,6 +118,7 @@
+     VLLM_NIXL_SIDE_CHANNEL_PORT: int = 5557
+     VLLM_ALL2ALL_BACKEND: str = "naive"
+     VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE: int = 163840
++    ENABLE_MAX_TOKENS_EXCLUDE_REASONING: int = 0
+ 
+ 
+ def get_default_cache_root():
+@@ -822,6 +823,10 @@
+     # This is used to prevent the kernel from running out of memory.
+     "VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE":
+     lambda: int(os.getenv("VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE", "163840")),
++
++    # If set, allow the reasoning content exclude the max token limit in request head
++    "ENABLE_MAX_TOKENS_EXCLUDE_REASONING":
++    lambda : int(os.getenv("ENABLE_MAX_TOKENS_EXCLUDE_REASONING", "0")),
+ }
+ 
+ # --8<-- [end:env-vars-definition]
+Index: vllm/reasoning/deepseek_r1_reasoning_parser.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/vllm/reasoning/deepseek_r1_reasoning_parser.py b/vllm/reasoning/deepseek_r1_reasoning_parser.py
+--- a/vllm/reasoning/deepseek_r1_reasoning_parser.py	(revision a3f3a20a0d4ef460737e04722e8a6cb5620b6edf)
++++ b/vllm/reasoning/deepseek_r1_reasoning_parser.py	(date 1759842701223)
+@@ -114,7 +114,11 @@
+             else:
+                 # <think> in delta, no </think> in delta,
+                 # reasoning content continues
+-                return DeltaMessage(reasoning_content=delta_text)
++                # Adapt: compatible with multi tokens in delta text
++                start_index = delta_text.find(self.start_token)
++                reasoning_content = delta_text[start_index +
++                                               len(self.start_token):]
++                return DeltaMessage(reasoning_content=reasoning_content)
+         else:
+             # No <think> in previous or delta, also need to check for </think>.
+             # Because the model may have generated </think> without <think>
+@@ -150,6 +154,11 @@
+             tuple[Optional[str], Optional[str]]: reasoning content and content
+         """
+ 
++        # Adapt: check output contains neither the start token nor the end token,
++        # compatible with the ability to disable reasoning output
++        if self.start_token not in model_output and self.end_token not in model_output:
++            return None, model_output
++
+         # Check if the start token is present in the model output, remove it
+         # if it is present.
+         model_output_parts = model_output.partition(self.start_token)
+Index: vllm/v1/request.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/vllm/v1/request.py b/vllm/v1/request.py
+--- a/vllm/v1/request.py	(revision a3f3a20a0d4ef460737e04722e8a6cb5620b6edf)
++++ b/vllm/v1/request.py	(date 1759842701163)
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ 
+ import enum
++import threading
+ from typing import TYPE_CHECKING, Any, Optional, Union
+ 
+ from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
+@@ -11,12 +12,23 @@
+ from vllm.v1.structured_output.request import StructuredOutputRequest
+ from vllm.v1.utils import ConstantList
+ 
++from infer_engines.vllm.vllm.reasoning import ReasoningParser, ReasoningParserManager, Qwen3ReasoningParser, \
++    DeepSeekR1ReasoningParser
++from vllm.transformers_utils.tokenizer import AnyTokenizer
++from vllm import envs
++from vllm.logger import init_logger
++
++logger = init_logger(__name__)
++
+ if TYPE_CHECKING:
+     from vllm.lora.request import LoRARequest
+ 
+ 
+ class Request:
+ 
++    reasoning_parser_instances: dict[str, ReasoningParser] = {}
++    reasoning_lock = threading.Lock()
++
+     def __init__(
+         self,
+         request_id: str,
+@@ -30,6 +42,7 @@
+         lora_request: Optional["LoRARequest"] = None,
+         structured_output_request: Optional["StructuredOutputRequest"] = None,
+         cache_salt: Optional[str] = None,
++        reasoning_parser: Optional[ReasoningParser] = None,
+     ) -> None:
+         self.arrival_time = arrival_time
+         self.request_id = request_id
+@@ -82,13 +95,37 @@
+         # The number of tokens with prefix cache hits.
+         self.num_cached_tokens = -1
+ 
++        # reasoning parser
++        self.reasoning_parser: Optional[ReasoningParser] = reasoning_parser
++        # reasoning flag
++        self.reasoning_start: bool = False
++        self.reasoning_end: bool = False
++        # reasoning tokens
++        self._reasoning_token_ids: list[int] = []
++        # reasoning parser flag token ids
++        self.start_token_id: Optional[int] = None
++        self.end_token_id: Optional[int] = None
++
+     @classmethod
+-    def from_engine_core_request(cls, request: EngineCoreRequest) -> "Request":
++    def from_engine_core_request(cls, request: EngineCoreRequest,
++                                 parser_name: Union[str | None],
++                                 tokenizer: Union[AnyTokenizer | None]) -> "Request":
+         if request.mm_inputs is not None:
+             assert isinstance(request.mm_inputs, list)
+             assert is_list_of(request.mm_inputs, MultiModalKwargs), (
+                 "mm_inputs was not updated in EngineCore.add_request")
+ 
++        if parser_name is not None:
++            with cls.reasoning_lock:
++                if parser_name in cls.reasoning_parser_instances:
++                    reasoning_parser = cls.reasoning_parser_instances[parser_name]
++                else:
++                    parser_cls = ReasoningParserManager.get_reasoning_parser(parser_name)
++                    reasoning_parser = parser_cls(tokenizer)
++                    cls.reasoning_parser_instances[parser_name] = reasoning_parser
++        else:
++            reasoning_parser = None
++
+         return cls(
+             request_id=request.request_id,
+             prompt_token_ids=request.prompt_token_ids,
+@@ -102,6 +139,7 @@
+             structured_output_request=StructuredOutputRequest(
+                 sampling_params=request.sampling_params),
+             cache_salt=request.cache_salt,
++            reasoning_parser=reasoning_parser,
+         )
+ 
+     def append_output_token_ids(
+@@ -115,6 +153,13 @@
+             self._output_token_ids.extend(token_ids)
+             self._all_token_ids.extend(token_ids)
+ 
++        reasoning_ids = self._extract_reasoning_ids(token_ids)
++        if reasoning_ids is not None:
++            if isinstance(reasoning_ids, int):
++                self._reasoning_token_ids.append(reasoning_ids)
++            else:
++                self._reasoning_token_ids.extend(reasoning_ids)
++
+     @property
+     def num_tokens(self) -> int:
+         return len(self._all_token_ids)
+@@ -127,6 +172,10 @@
+     def num_output_tokens(self) -> int:
+         return len(self._output_token_ids)
+ 
++    @property
++    def num_reasoning_tokens(self) -> int:
++        return len(self._reasoning_token_ids)
++
+     def is_finished(self) -> bool:
+         return RequestStatus.is_finished(self.status)
+ 
+@@ -155,6 +204,62 @@
+         events, self.events = self.events, []
+         return events
+ 
++    def _extract_reasoning_ids(self, token_ids: Union[int | list[int]], ) -> Union[int | list[int], None]:
++        if not envs.ENABLE_MAX_TOKENS_EXCLUDE_REASONING:
++            return None
++
++        if self.reasoning_parser is None:
++            return None
++
++        if not self.start_token_id or not self.end_token_id:
++            self._get_reasoning_flag_token_id()
++
++        if not self.start_token_id or not self.end_token_id:
++            return None
++
++        if isinstance(token_ids, int):
++            if not self.reasoning_end:
++                self.reasoning_start = (token_ids == self.start_token_id)
++            if self.reasoning_start:
++                if not self.reasoning_end:
++                    self.reasoning_end = (token_ids == self.end_token_id)
++                    return token_ids
++                else:
++                    return None
++            return None
++        else:
++            out_tokens = token_ids[:]
++            if not self.reasoning_end:
++                self.reasoning_start = (self.start_token_id in token_ids)
++                if self.reasoning_start:
++                    out_tokens = out_tokens[token_ids.index(self.start_token_id) + 1:]
++            if self.reasoning_start:
++                if not self.reasoning_end:
++                    self.reasoning_end = (self.end_token_id in token_ids)
++                    if self.reasoning_end:
++                        reason = out_tokens[:token_ids.index(self.end_token_id) + 1]
++                        return reason
++                    else:
++                        return token_ids
++                else:
++                    return None
++            return None
++
++
++    def _get_reasoning_flag_token_id(self) -> Optional[list[int]]:
++        if not self.reasoning_parser:
++            raise KeyError(f"request helper: No reasoning parser defined in request for {self.request_id}")
++
++        if isinstance(self.reasoning_parser, Qwen3ReasoningParser):
++            self.start_token_id = self.reasoning_parser.think_start_token_id
++            self.end_token_id = self.reasoning_parser.think_end_token_id
++        elif isinstance(self.reasoning_parser, DeepSeekR1ReasoningParser):
++            self.start_token_id = self.reasoning_parser.start_token_id
++            self.end_token_id = self.reasoning_parser.end_token_id
++        else:
++            if envs.ENABLE_MAX_TOKENS_EXCLUDE_REASONING:
++                logger.warning(f"request helper: ENABLE_MAX_TOKENS_EXCLUDE_REASONING switch only support for deepseek r1 and qwen3 parser")
++
+ 
+ class RequestStatus(enum.IntEnum):
+     """Status of a request."""
+Index: vllm/v1/engine/core.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+--- a/vllm/v1/engine/core.py	(revision a3f3a20a0d4ef460737e04722e8a6cb5620b6edf)
++++ b/vllm/v1/engine/core.py	(date 1759842859764)
+@@ -22,6 +22,8 @@
+ from vllm.lora.request import LoRARequest
+ from vllm.transformers_utils.config import (
+     maybe_register_config_serialize_by_value)
++from vllm.transformers_utils.tokenizer import AnyTokenizer
++from vllm.transformers_utils.tokenizer_group import init_tokenizer_from_configs
+ from vllm.utils import make_zmq_socket, resolve_obj_by_qualname, zmq_socket_ctx
+ from vllm.v1.core.kv_cache_utils import (get_kv_cache_config,
+                                          unify_kv_cache_configs)
+@@ -54,6 +56,9 @@
+ class EngineCore:
+     """Inner loop of vLLM's Engine."""
+ 
++    reasoning_tokenizer_instances: dict[str, AnyTokenizer] = {}
++    reasoning_lock = threading.Lock()
++
+     def __init__(self,
+                  vllm_config: VllmConfig,
+                  executor_class: type[Executor],
+@@ -227,7 +232,20 @@
+             request.mm_inputs = self.mm_input_cache_server.get_and_update_p1(
+                 request.mm_inputs, request.mm_hashes)
+ 
+-        req = Request.from_engine_core_request(request)
++        parser_name = self.vllm_config.decoding_config.reasoning_backend
++        if parser_name is not None:
++            with EngineCore.reasoning_lock:
++                if parser_name in EngineCore.reasoning_tokenizer_instances:
++                    tokenizer = EngineCore.reasoning_tokenizer_instances[parser_name]
++                else:
++                    tokenizer_group = init_tokenizer_from_configs(model_config=self.vllm_config.model_config,
++                                                                  scheduler_config=self.vllm_config.scheduler_config,
++                                                                  lora_config=self.vllm_config.lora_config)
++                    tokenizer = tokenizer_group.get_lora_tokenizer(request.lora_config)
++                    EngineCore.reasoning_tokenizer_instances[parser_name] = tokenizer
++            req = Request.from_engine_core_request(request, parser_name, tokenizer)
++        else:
++            req = Request.from_engine_core_request(request, None, None)
+         if req.use_structured_output:
+             # Start grammar compilation asynchronously
+             self.structured_output_manager.grammar_init(req)
