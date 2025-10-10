@@ -2,7 +2,7 @@ import json
 import os
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Type, Union
-from fastapi import Request
+from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from http import HTTPStatus
@@ -191,6 +191,9 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
                 code=status_code.value
             ).model_dump()
         )
+
+    def replace_with_stars(self, text):
+        return "*" * len(text)
     
     async def dispatch(self, request: Request, call_next):
         if request.method == "POST" and request.url.path in ("/v1/completions", "/v1/chat/completions"):
@@ -215,5 +218,24 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
                         return self.create_error_response(status_code, validator.error_msg)
                     elif error := validator.validate(json_load[validator.param_name]):
                         return self.create_error_response(status_code, error)
-                
+
+        if request.method == "GET" and request.url.path == "/v1/models":
+            response = await call_next(request)
+            chunk = await anext(response.body_iterator)
+            chunk_json = json.loads(chunk.decode("utf-8"))
+
+            if chunk_json is not None and len(chunk_json.get("data", [])) > 0 and chunk_json.get("data")[0].get("root"):
+                chunk_json.get("data")[0]["root"] = self.replace_with_stars(chunk_json.get("data")[0].get("root"))
+
+            new_json_str = json.dumps(chunk_json, ensure_ascii=False)
+            new_chunk = new_json_str.encode("utf-8")
+
+            return Response(
+                content=new_chunk,
+                headers={
+                    "Content-Length": str(len(new_chunk)),
+                    'content-type': 'application/json'
+                }
+            )
+
         return await call_next(request)
