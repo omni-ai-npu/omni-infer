@@ -4,7 +4,7 @@ Release:        1%{?dist}
 Summary:        Nginx custom global proxy modules
 
 License:        MIT
-Source0:        nginx-1.24.0.tar.gz
+Source0:        nginx-1.28.0.tar.gz
 Source1:        global_proxy.tar.gz
 
 BuildRequires:  gcc make zlib-devel pcre-devel openssl-devel
@@ -19,10 +19,12 @@ Custom global proxy modules for Nginx, built for PD Disaggregation.
 tar -zxf %{SOURCE1} -C .
 
 %build
-cd nginx-1.24.0
-CFLAGS="-O2" ./configure --sbin-path=/usr/sbin/nginx \
+cd nginx-1.28.0
+CFLAGS="-O2" ./configure --sbin-path=/usr/sbin \
     --add-dynamic-module=../global_proxy/modules/ngx_http_prefill_module \
+    --add-dynamic-module=../global_proxy/modules/ngx_http_prefill_refactor_module \
     --add-dynamic-module=../global_proxy/modules/ngx_http_set_request_id_module \
+    --add-dynamic-module=../global_proxy/modules/ngx_http_internal_metrics_module \
     --add-dynamic-module=../global_proxy/lb_sdk/modules/ngx_http_upstream_length_balance_module \
     --add-dynamic-module=../global_proxy/lb_sdk/modules/ngx_http_upstream_greedy_timeout_module \
     --add-dynamic-module=../global_proxy/lb_sdk/modules/ngx_http_upstream_prefill_score_balance_module \
@@ -37,15 +39,15 @@ make modules
 
 %install
 mkdir -p %{buildroot}/usr/sbin
-cp nginx-1.24.0/objs/nginx %{buildroot}/usr/sbin/nginx
+cp nginx-1.28.0/objs/nginx %{buildroot}/usr/sbin/nginx
 
 mkdir -p %{buildroot}/usr/local/nginx/
-cp -a nginx-1.24.0/conf  %{buildroot}/usr/local/nginx/
-cp -a nginx-1.24.0/html  %{buildroot}/usr/local/nginx/
-cp -a nginx-1.24.0/objs/nginx %{buildroot}/usr/local/nginx/nginx
+cp -a nginx-1.28.0/conf  %{buildroot}/usr/local/nginx/
+cp -a nginx-1.28.0/html  %{buildroot}/usr/local/nginx/
+cp -a nginx-1.28.0/objs/nginx %{buildroot}/usr/local/nginx/nginx
 mkdir -p %{buildroot}/usr/local/nginx/logs/
 mkdir -p %{buildroot}/usr/local/nginx/modules/
-cp nginx-1.24.0/objs/*.so %{buildroot}/usr/local/nginx/modules/
+cp nginx-1.28.0/objs/*.so %{buildroot}/usr/local/nginx/modules/
 
 %files
 /usr/sbin/nginx

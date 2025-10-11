@@ -4,17 +4,67 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include <ngx_cycle.h>
 
 #include "jsmn.h"
+#include "../ngx_http_metrics_common.h"
+
+typedef enum {
+    NGX_PREFILL_STREAM_OFF = 0,
+    NGX_PREFILL_STREAM_ADD,
+    NGX_PREFILL_STREAM_SET_OPT
+} ngx_prefill_stream_op_e;
 
 typedef struct {
     ngx_str_t prefill_location;
+    ngx_slab_pool_t *shpool;
+    ngx_http_metrics_data_t *metrics;
+    ngx_str_t shm_name;
+    size_t shm_size;
+    ngx_prefill_stream_op_e   stream_ops;
 } ngx_http_prefill_loc_conf_t;
+
+typedef struct {
+    ngx_uint_t done;
+    ngx_uint_t status;
+    ngx_uint_t response_complete;  // New flag to track response completion
+    u_char *origin_body_data;
+    ngx_uint_t origin_body_data_size;
+    jsmntok_t *origin_body_tokens;
+    int origin_body_tokens_size;
+    u_char *prefill_response_body;
+    ngx_uint_t prefill_response_body_size;
+    
+    // Timing information for TTFT and TPOT
+    ngx_msec_t request_start_time;    // When the request started processing
+    ngx_msec_t first_token_time;      // When the first token was received
+    ngx_msec_t ttft;                  // record for ttft
+    ngx_msec_t tpot;                  // record for tpot
+    ngx_msec_t e2e_latency;           // record for e2elatency
+    ngx_uint_t completion_tokens;     // Number of completion tokens
+    ngx_uint_t prompt_tokens;         // Number of prompt tokens
+    ngx_uint_t is_streaming;          // Whether this is a streaming response
+    ngx_uint_t ttft_recorded;         // Flag to ensure TTFT is recorded only once
+    ngx_uint_t tpot_recorded;         // Flag to ensure TPOT is recorded only once
+    ngx_str_t model_name;             // Model name parsed from response
+} ngx_http_prefill_ctx_t;
 
 static ngx_int_t ngx_http_prefill_handler(ngx_http_request_t *r);
 static void *ngx_http_prefill_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_prefill_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
 static ngx_int_t ngx_http_prefill_init(ngx_conf_t *cf);
+static char *ngx_conf_set_prefill_stream_ops(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *ngx_http_prefill_enable_internal_metrics(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static ngx_int_t ngx_http_prefill_init_zone(ngx_shm_zone_t *shm_zone, void *data);
+static ngx_int_t ngx_http_prefill_body_filter(ngx_http_request_t *r, ngx_chain_t *in);
+static ngx_int_t ngx_http_prefill_header_filter(ngx_http_request_t *r);
+static void ngx_http_prefill_parse_openai_response(ngx_http_request_t *r, ngx_http_prefill_ctx_t *ctx, 
+                                                   u_char *data, size_t len);
+static void ngx_http_prefill_parse_openai_streaming_chunk(ngx_http_request_t *r, ngx_http_prefill_ctx_t *ctx,
+                                                          u_char *data, size_t len);
+
+static const ngx_str_t stream_options_content_str = ngx_string("\"stream_options\":{\"include_usage\":true,\"continuous_usage_stats\":true}");
+static const ngx_str_t stream_all_content_str = ngx_string("\"stream\":true,\"stream_options\":{\"include_usage\":true,\"continuous_usage_stats\":true}");
 
 static ngx_command_t ngx_http_prefill_commands[] = {
 
@@ -25,7 +75,51 @@ static ngx_command_t ngx_http_prefill_commands[] = {
         offsetof(ngx_http_prefill_loc_conf_t, prefill_location),
         NULL},
 
+    { ngx_string("stream_ops"), //add or set_opt or off
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+      ngx_conf_set_prefill_stream_ops, 
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_prefill_loc_conf_t, stream_ops),
+      NULL},
+
+    {ngx_string("enable_internal_metrics"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        ngx_http_prefill_enable_internal_metrics,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        0,
+        NULL},
+
     ngx_null_command};
+
+static char *ngx_conf_set_prefill_stream_ops(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_prefill_loc_conf_t *plcf = conf;
+    ngx_str_t                   *value;
+
+    value = cf->args->elts; 
+    if (cf->args->nelts != 2) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "invalid number of arguments in \"%s\" directive",
+                           cmd->name.data);
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_strcmp(value[1].data, "off") == 0) {
+        plcf->stream_ops = NGX_PREFILL_STREAM_OFF;
+    } else if (ngx_strcmp(value[1].data, "add") == 0) {
+        plcf->stream_ops = NGX_PREFILL_STREAM_ADD;
+    } else if (ngx_strcmp(value[1].data, "set_opt") == 0) {
+        plcf->stream_ops = NGX_PREFILL_STREAM_SET_OPT;
+    } else {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "invalid value \"%V\" in \"%s\" directive, "
+                           "it must be \"add\", \"set_opt\", or \"off\"",
+                           &value[1], cmd->name.data);
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
+}
 
 static ngx_http_module_t ngx_http_prefill_module_ctx = {
     NULL,                  /* preconfiguration */
@@ -54,17 +148,8 @@ ngx_module_t ngx_http_prefill_module = {NGX_MODULE_V1,
     NULL,                         /* exit master */
     NGX_MODULE_V1_PADDING};
 
-typedef struct {
-    ngx_uint_t done;
-    ngx_uint_t status;
-    ngx_uint_t response_complete;  // New flag to track response completion
-    u_char *origin_body_data;
-    ngx_uint_t origin_body_data_size;
-    jsmntok_t *origin_body_tokens;
-    int origin_body_tokens_size;
-    u_char *prefill_response_body;
-    ngx_uint_t prefill_response_body_size;
-} ngx_http_prefill_ctx_t;
+static ngx_http_output_header_filter_pt  ngx_http_next_header_filter;
+static ngx_http_output_body_filter_pt    ngx_http_next_body_filter;
 
 ngx_str_t ngx_concat_str(ngx_pool_t *pool, ngx_str_t s1, ngx_str_t s2)
 {
@@ -103,6 +188,102 @@ static char *prefill_response_json_keys[] = {
 
 static unsigned int prefill_response_json_keys_len = sizeof(prefill_response_json_keys) / sizeof(char *);
 
+static char *ngx_http_prefill_enable_internal_metrics(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_prefill_loc_conf_t *ulcf = conf;
+    ngx_str_t *value;
+    ngx_shm_zone_t *shm_zone;
+    ssize_t size;
+
+    if (ulcf->shm_size != NGX_CONF_UNSET_SIZE) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+
+    size = ngx_parse_size(&value[1]);
+    if (size == NGX_ERROR) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "invalid size \"%V\"", &value[1]);
+        return NGX_CONF_ERROR;
+    }
+
+    if (size < (ssize_t) (8 * ngx_pagesize)) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "size \"%V\" is too small", &value[1]);
+        return NGX_CONF_ERROR;
+    }
+
+    ulcf->shm_size = size;
+    ulcf->shm_name.len = sizeof(NGX_HTTP_METRICS_SHM_NAME) - 1;
+    ulcf->shm_name.data = (u_char *) NGX_HTTP_METRICS_SHM_NAME;
+
+    shm_zone = ngx_shared_memory_add(cf, &ulcf->shm_name, ulcf->shm_size, &ngx_http_prefill_module);
+    if (shm_zone == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    shm_zone->init = ngx_http_prefill_init_zone;
+    shm_zone->data = ulcf;
+
+    return NGX_CONF_OK;
+}
+
+static ngx_int_t ngx_http_prefill_init_zone(ngx_shm_zone_t *shm_zone, void *data)
+{
+    ngx_http_prefill_loc_conf_t *ulcf = shm_zone->data;
+    ngx_http_prefill_loc_conf_t *oulcf = data;
+
+    if (oulcf) {
+        ulcf->shpool = oulcf->shpool;
+        ulcf->metrics = oulcf->metrics;
+        return NGX_OK;
+    }
+
+    ulcf->shpool = (ngx_slab_pool_t *) shm_zone->shm.addr;
+
+    if (shm_zone->shm.exists) {
+        ulcf->metrics = ulcf->shpool->data;
+        return NGX_OK;
+    }
+
+    ulcf->metrics = ngx_slab_alloc(ulcf->shpool, sizeof(ngx_http_metrics_data_t));
+    if (ulcf->metrics == NULL) {
+        return NGX_ERROR;
+    }
+
+    ulcf->shpool->data = ulcf->metrics;
+
+    ulcf->metrics->success_count = 0;
+    ulcf->metrics->failure_count = 0;
+    
+    // Initialize TTFT histogram buckets and counters
+    for (ngx_uint_t i = 0; i < NGX_HTTP_TTFT_BUCKETS_COUNT; i++) {
+        ulcf->metrics->ttft_buckets[i] = 0;
+    }
+    ulcf->metrics->ttft_sum = 0;
+    ulcf->metrics->ttft_count = 0;
+    
+    // Initialize TPOT histogram buckets and counters
+    for (ngx_uint_t i = 0; i < NGX_HTTP_TPOT_BUCKETS_COUNT; i++) {
+        ulcf->metrics->tpot_buckets[i] = 0;
+    }
+    ulcf->metrics->tpot_sum = 0;
+    ulcf->metrics->tpot_count = 0;
+
+    // Initialize E2E Latency histogram buckets and counters
+    for (ngx_uint_t i = 0; i < NGX_HTTP_E2E_LATENCY_BUCKETS_COUNT; i++) {
+        ulcf->metrics->e2e_latency_buckets[i] = 0;
+    }
+    ulcf->metrics->e2e_latency_sum = 0;
+    ulcf->metrics->e2e_latency_count = 0;
+
+    // Initialize model name
+    ngx_memzero(ulcf->metrics->model_name, sizeof(ulcf->metrics->model_name));
+    ulcf->metrics->model_name_len = 0;
+
+    return NGX_OK;
+}
+
+void json_token_tostr(const char *json, const jsmntok_t *t, char *buf, size_t buflen);
 static void ngx_http_gen_decode_request_body(ngx_http_request_t *r, ngx_http_prefill_ctx_t *ctx)
 {
     // Parse prefill_response_body
@@ -131,8 +312,8 @@ static void ngx_http_gen_decode_request_body(ngx_http_request_t *r, ngx_http_pre
         ctx->prefill_response_body);
 
     jsmn_init(&parser);
-    int prefill_tokens_size =
-        jsmn_parse(&parser, (char *)(ctx->prefill_response_body), ctx->prefill_response_body_size, tokens, tokens_size);
+    int prefill_tokens_size = jsmn_parse(&parser, (char *)(ctx->prefill_response_body), 
+                                        ctx->prefill_response_body_size, tokens, tokens_size);
     while (prefill_tokens_size == JSMN_ERROR_NOMEM) {
         ngx_pfree(r->pool, tokens);
         tokens_size *= 2;
@@ -220,8 +401,6 @@ static void ngx_http_gen_decode_request_body(ngx_http_request_t *r, ngx_http_pre
         b_new->pos[pos] = '\0';
         b_new->last = b_new->pos + pos;
         b_new->memory = 1; /* content is in read-only memory */
-        b_new->last_buf = 1;
-        b_new->last_in_chain = 1;
 
         chain_new = ngx_alloc_chain_link(r->pool);
         if (chain == NULL) {
@@ -239,6 +418,145 @@ static void ngx_http_gen_decode_request_body(ngx_http_request_t *r, ngx_http_pre
     b->last_buf = 1;
     b->last_in_chain = 1;
     chain->next = NULL;
+
+    jsmntok_t *origin_tokens = NULL;
+    origin_tokens = ngx_palloc(r->pool, tokens_size * sizeof(jsmntok_t));
+    jsmn_init(&parser);
+    int origin_token_size =
+        jsmn_parse(&parser, (char *)(ctx->origin_body_data), ctx->origin_body_data_size, origin_tokens, tokens_size);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "ctx->origin_body_data: %s", ctx->origin_body_data);
+
+    // check stream whether exists
+    int need_add_stream_option = 0;
+    char *stream_str = "stream";
+    char *stream_opt_str = "stream_option";
+    int stream_idx = find_jsmn_key(
+        r, (char *)(ctx->origin_body_data), origin_tokens, origin_token_size, stream_str);
+    int stream_is_true = 0;
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "stream_idx: %d", stream_idx);
+    if (stream_idx != -1) {
+        int stream_val_idx = stream_idx + 1;
+        if (origin_tokens[stream_val_idx].type == JSMN_PRIMITIVE &&
+            strncmp(ctx->origin_body_data + origin_tokens[stream_val_idx].start, "true", 4) == 0) {
+            stream_is_true = 1;
+        }
+    }
+ 
+    int include_usage_true = 0;
+    int continuous_usage_true = 0;
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "stream_is_true :%ui", stream_is_true);
+    if (stream_is_true) {
+        // check stream_option whether exists when stream is true
+        need_add_stream_option = 0;
+        int stream_option_idx = find_jsmn_key(
+            r, (char *)(ctx->origin_body_data), origin_tokens, origin_token_size, stream_opt_str);
+        include_usage_true = 0;
+        continuous_usage_true = 0;
+
+        if (stream_option_idx != -1) {
+            int stream_option_val_idx = stream_option_idx + 1;
+            if (origin_tokens[stream_option_val_idx].type == JSMN_OBJECT) {
+                for (int i = 0; i < origin_tokens[stream_option_val_idx].size; ++i) {
+                    int key_token_idx = stream_option_val_idx + 1 + 2 * i;
+                    char keybuf[32];
+                    json_token_tostr((char *)(ctx->origin_body_data), &origin_tokens[key_token_idx], keybuf, sizeof(keybuf));
+                    int val_token_idx = key_token_idx + 1;
+                    if (strcmp(keybuf, "include_usage") == 0) {
+                        if (origin_tokens[val_token_idx].type == JSMN_PRIMITIVE &&
+                            strncmp(ctx->origin_body_data + origin_tokens[val_token_idx].start, "true", 4) == 0) {
+                            include_usage_true = 1;
+                        }
+                    }
+                    if (strcmp(keybuf, "continuous_usage_stats") == 0) {
+                        if (origin_tokens[val_token_idx].type == JSMN_PRIMITIVE &&
+                            strncmp(ctx->origin_body_data + origin_tokens[val_token_idx].start, "true", 4) == 0) {
+                            continuous_usage_true = 1;
+                        }
+                    }
+                }
+            }
+        }
+        if (!(include_usage_true && continuous_usage_true)) {
+            need_add_stream_option = 1;
+        }
+    } else {
+        need_add_stream_option = 0;
+    }
+   
+    ngx_http_prefill_loc_conf_t  *plcf;
+    plcf = ngx_http_get_module_loc_conf(r, ngx_http_prefill_module);
+    switch (plcf->stream_ops) {
+        case NGX_PREFILL_STREAM_ADD: // enforce stream_options to turn on no matter stream is true or flase
+            need_add_stream_option = 1;
+            break;
+        case NGX_PREFILL_STREAM_SET_OPT: //enforce stream_options to turn on only when stream is true
+            break;
+        case NGX_PREFILL_STREAM_OFF:
+            need_add_stream_option = 0;
+            break;
+        default:
+            need_add_stream_option = 0;
+            break;
+    }
+
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, 
+        "include_usage_true: %ui, continuous_usage_true: %ui, need_add_stream_option: %ui",
+        include_usage_true,
+        continuous_usage_true,
+        need_add_stream_option);
+    if (need_add_stream_option) {
+        size_t               content_len;
+        u_char              *content_data_to_copy;
+
+        while (b->last > b->pos) {
+            if (b->last[-1] == '}') {
+                b->last -= 1;
+                break;
+            }
+            b->last -= 1;
+        }
+
+        if (stream_is_true) {
+            content_len = stream_options_content_str.len;
+            content_data_to_copy = stream_options_content_str.data;
+        } else {
+            content_len = stream_all_content_str.len;
+            content_data_to_copy = stream_all_content_str.data;
+        }
+
+        b_new = ngx_create_temp_buf(r->pool, content_len + 3);
+        if (b_new == NULL) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_create_temp_buf: failed! ");
+            ngx_http_finalize_request(r, NGX_ERROR);
+            return;
+        }
+
+        int pos = 0;
+        b_new->pos[pos++] = ',';
+        ngx_memcpy(b_new->pos + pos, content_data_to_copy, content_len);
+        pos += content_len;
+        b_new->pos[pos++] = '}';
+        b_new->pos[pos] = '\0';
+        b_new->last = b_new->pos + pos;
+        b_new->memory = 1;
+
+        chain_new = ngx_alloc_chain_link(r->pool);
+        if (chain_new == NULL) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_alloc_chain_link: failed! ");
+            ngx_http_finalize_request(r, NGX_ERROR);
+            return;
+        }
+
+        chain->buf->last_buf = 0;
+        chain->buf->last_in_chain = 0; 
+        b_new->last_buf = 1;
+        b_new->last_in_chain = 1;
+
+        chain_new->buf = b_new;
+        chain_new->next = NULL;
+        chain->next = chain_new;
+        chain = chain_new;
+    }
 
     // Set up the subrequest's body structure
     if (r->request_body == NULL) {
@@ -292,16 +610,26 @@ static void ngx_http_gen_decode_request_body(ngx_http_request_t *r, ngx_http_pre
 
 static ngx_int_t ngx_http_prefill_subrequest_done(ngx_http_request_t *r, void *data, ngx_int_t rc)
 {
-    ngx_http_prefill_ctx_t *ctx;
+    ngx_http_prefill_ctx_t *ctx = data;
     ngx_chain_t *cl;
-    size_t total = 0;
     u_char *p;
+    size_t total = 0;
+    ngx_http_prefill_loc_conf_t *ulcf;
 
-    ctx = (ngx_http_prefill_ctx_t *)data;
+    ulcf = ngx_http_get_module_loc_conf(r->main, ngx_http_prefill_module);
+
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "prefill done: %p status:%i", r, r->headers_out.status);
+
     if (rc != NGX_OK) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "prefill: subrequest failed with code %i", rc);
         ctx->done = 1;
         ctx->status = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        
+        // Increment failure count if metrics are enabled
+        if (ulcf->metrics) {
+            ngx_atomic_fetch_add(&ulcf->metrics->failure_count, 1);
+        }
+        
         ngx_http_finalize_request(r->main, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return rc;
     }
@@ -320,6 +648,11 @@ static ngx_int_t ngx_http_prefill_subrequest_done(ngx_http_request_t *r, void *d
     // Allocate memory for the temporary body copy + null terminator for cJSON
     ctx->prefill_response_body = ngx_palloc(r->main->pool, total + 1);
     if (ctx->prefill_response_body == NULL) {
+        // Increment failure count if metrics are enabled
+        if (ulcf->metrics) {
+            ngx_atomic_fetch_add(&ulcf->metrics->failure_count, 1);
+        }
+        
         ngx_http_finalize_request(r, NGX_ERROR);
         ngx_log_error(
             NGX_LOG_ERR, r->connection->log, 0, "done prefill subrequest, malloc prefill response body buffer failed");
@@ -340,6 +673,11 @@ static ngx_int_t ngx_http_prefill_subrequest_done(ngx_http_request_t *r, void *d
     if (ctx->status >= NGX_HTTP_OK && ctx->status < NGX_HTTP_SPECIAL_RESPONSE) {
         ngx_http_core_run_phases(r->main);  // status < 300: resume processing the main request
     } else {
+        // Increment failure count for non-2xx responses if metrics are enabled
+        if (ulcf->metrics) {
+            ngx_atomic_fetch_add(&ulcf->metrics->failure_count, 1);
+        }
+        
         // subrequest status >= 300: set client response header from subrequest
         r->main->headers_out.status = ctx->status;
         r->main->headers_out.content_length_n = ctx->prefill_response_body_size;
@@ -347,6 +685,7 @@ static ngx_int_t ngx_http_prefill_subrequest_done(ngx_http_request_t *r, void *d
         r->main->headers_out.content_type.len = r->headers_out.content_type.len;
 
         ngx_http_send_header(r->main);
+        ngx_http_core_run_phases(r->main);
     }
     return rc;
 }
@@ -398,7 +737,8 @@ void gen_prefill_json_str_jsmn(
         tokens_size *= 2;
         jsmntok_t *new_tokens = ngx_palloc(r->pool, tokens_size * sizeof(jsmntok_t));
         if (!new_tokens) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "gen prefill json: palloc new jsmntok_t %d", tokens_size);
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, 
+                         "gen prefill json: palloc new jsmntok_t %d", tokens_size);
             return;
         }
         tokens = new_tokens;
@@ -420,7 +760,8 @@ void gen_prefill_json_str_jsmn(
             if (max_tokens_val_idx == -1 && strcmp(keybuf, "max_tokens") == 0) {
                 max_tokens_val_idx = i + 1;
                 region_infos[region_infos_count++] = (region_info_t){
-                    R_MAX_TOKENS, max_tokens_val_idx, tokens[max_tokens_val_idx].start, tokens[max_tokens_val_idx].end};
+                    R_MAX_TOKENS, max_tokens_val_idx, 
+                    tokens[max_tokens_val_idx].start, tokens[max_tokens_val_idx].end};
             }
             if (max_completion_tokens_val_idx == -1 && strcmp(keybuf, "max_completion_tokens") == 0) {
                 max_completion_tokens_val_idx = i + 1;
@@ -429,8 +770,9 @@ void gen_prefill_json_str_jsmn(
             }
             if (stream_val_idx == -1 && strcmp(keybuf, "stream") == 0) {
                 stream_val_idx = i + 1;
-                region_infos[region_infos_count++] =
-                    (region_info_t){R_STREAM, stream_val_idx, tokens[stream_val_idx].start, tokens[stream_val_idx].end};
+                region_infos[region_infos_count++] = (region_info_t){
+                    R_STREAM, stream_val_idx, 
+                    tokens[stream_val_idx].start, tokens[stream_val_idx].end};
             }
             if (stream_options_key_idx == -1 && strcmp(keybuf, "stream_options") == 0) {
                 stream_options_key_idx = i;
@@ -767,6 +1109,21 @@ static ngx_int_t ngx_http_prefill_handler(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
+    // Initialize timing information
+    ctx->request_start_time = ngx_current_msec;
+    ctx->ttft = 0;
+    ctx->tpot = 0;
+    ctx->e2e_latency = 0; 
+    ctx->first_token_time = 0;
+    ctx->completion_tokens = 0;
+    ctx->prompt_tokens = 0;
+    ctx->is_streaming = 0;
+    ctx->ttft_recorded = 0;
+    ctx->tpot_recorded = 0;
+    
+    // Initialize model name
+    ngx_str_null(&ctx->model_name);
+
     ngx_http_set_ctx(r, ctx, ngx_http_prefill_module);
 
     // Read client request body
@@ -787,6 +1144,10 @@ static void *ngx_http_prefill_create_loc_conf(ngx_conf_t *cf)
         return NULL;
     }
 
+    conf->shm_size = NGX_CONF_UNSET_SIZE;
+    conf->shpool = NULL;
+    conf->metrics = NULL;
+
     return conf;
 }
 
@@ -796,6 +1157,15 @@ static char *ngx_http_prefill_merge_loc_conf(ngx_conf_t *cf, void *parent, void 
     ngx_http_prefill_loc_conf_t *conf = child;
 
     ngx_conf_merge_str_value(conf->prefill_location, prev->prefill_location, "");
+    ngx_conf_merge_size_value(conf->shm_size, prev->shm_size, NGX_CONF_UNSET_SIZE);
+    
+    if (conf->shpool == NULL) {
+        conf->shpool = prev->shpool;
+    }
+    
+    if (conf->metrics == NULL) {
+        conf->metrics = prev->metrics;
+    }
 
     return NGX_CONF_OK;
 }
@@ -804,6 +1174,10 @@ static ngx_int_t ngx_http_prefill_init(ngx_conf_t *cf)
 {
     ngx_http_handler_pt *h;
     ngx_http_core_main_conf_t *cmcf;
+    ngx_list_part_t *part;
+    ngx_shm_zone_t *shm_zone;
+    ngx_uint_t i;
+    ngx_uint_t metrics_enabled = 0;
 
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
@@ -814,5 +1188,381 @@ static ngx_int_t ngx_http_prefill_init(ngx_conf_t *cf)
 
     *h = ngx_http_prefill_handler;
 
+    // Check if internal metrics is enabled by looking for the shared memory zone
+    part = &cf->cycle->shared_memory.part;
+    shm_zone = part->elts;
+
+    for (i = 0; /* void */; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+            part = part->next;
+            shm_zone = part->elts;
+            i = 0;
+        }
+
+        if (shm_zone[i].shm.name.len == sizeof(NGX_HTTP_METRICS_SHM_NAME) - 1 &&
+            ngx_strncmp(shm_zone[i].shm.name.data, NGX_HTTP_METRICS_SHM_NAME,
+                       sizeof(NGX_HTTP_METRICS_SHM_NAME) - 1) == 0) {
+            metrics_enabled = 1;
+            break;
+        }
+    }
+
+    // Install output filters for response analysis only if metrics are enabled
+    if (metrics_enabled) {
+        ngx_log_error(NGX_LOG_INFO, cf->log, 0, 
+                     "prefill: internal metrics enabled, installing response filters");
+        
+        ngx_http_next_header_filter = ngx_http_top_header_filter;
+        ngx_http_top_header_filter = ngx_http_prefill_header_filter;
+
+        ngx_http_next_body_filter = ngx_http_top_body_filter;
+        ngx_http_top_body_filter = ngx_http_prefill_body_filter;
+    } else {
+        ngx_log_error(NGX_LOG_INFO, cf->log, 0, 
+                     "prefill: internal metrics disabled, response filters not installed");
+    }
+
     return NGX_OK;
+}
+
+static ngx_int_t ngx_http_prefill_header_filter(ngx_http_request_t *r)
+{
+    ngx_http_prefill_ctx_t *ctx;
+    
+    // Safety check: if next filter is not set, we weren't properly initialized
+    if (ngx_http_next_header_filter == NULL) {
+        return NGX_OK;
+    }
+    
+    ctx = ngx_http_get_module_ctx(r, ngx_http_prefill_module);
+    if (ctx == NULL) {
+        return ngx_http_next_header_filter(r);
+    }
+    
+    // Check if this is a streaming response
+    if (r->headers_out.content_type.len > 0 &&
+        ngx_strstrn(r->headers_out.content_type.data, "text/event-stream", 17 - 1) != NULL) {
+        ctx->is_streaming = 1;
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, 
+                      "prefill: detected streaming response");
+    }
+    
+    return ngx_http_next_header_filter(r);
+}
+
+static ngx_int_t ngx_http_prefill_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
+{
+    ngx_http_prefill_ctx_t *ctx;
+    ngx_chain_t *cl;
+    u_char *data;
+    size_t len;
+    
+    // Safety check: if next filter is not set, we weren't properly initialized
+    if (ngx_http_next_body_filter == NULL) {
+        return NGX_OK;
+    }
+    
+    ctx = ngx_http_get_module_ctx(r, ngx_http_prefill_module);
+    if (ctx == NULL) {
+        return ngx_http_next_body_filter(r, in);
+    }
+    
+    // Process response body for timing analysis
+    for (cl = in; cl; cl = cl->next) {
+        if (!ngx_buf_in_memory(cl->buf)) {
+            continue;
+        }
+        
+        data = cl->buf->pos;
+        len = cl->buf->last - cl->buf->pos;
+        
+        if (len == 0) {
+            continue;
+        }
+        
+        if (ctx->is_streaming) {
+            ngx_http_prefill_parse_openai_streaming_chunk(r, ctx, data, len);
+        } else {
+            ngx_http_prefill_parse_openai_response(r, ctx, data, len);
+        }
+        
+        // Record TTFT on first content
+        if (!ctx->ttft_recorded && len > 0) {
+            ngx_http_prefill_loc_conf_t *ulcf;
+            ngx_uint_t ttft_ms;
+            
+            ctx->first_token_time = ngx_current_msec;
+            ctx->ttft_recorded = 1;
+            
+            // Record TTFT histogram immediately when first token arrives
+            ulcf = ngx_http_get_module_loc_conf(r, ngx_http_prefill_module);
+            if (ulcf->metrics && ctx->first_token_time > 0) {
+                ttft_ms = ctx->first_token_time - ctx->request_start_time;
+                ctx->ttft = ttft_ms;
+                
+                ngx_http_metrics_record_ttft_histogram(ulcf->metrics->ttft_buckets, 
+                                                       &ulcf->metrics->ttft_sum,
+                                                       &ulcf->metrics->ttft_count, ttft_ms);
+                
+                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                              "prefill: recorded TTFT on first token: %ui ms", ttft_ms);
+            }
+        }
+    }
+    
+    return ngx_http_next_body_filter(r, in);
+}
+
+static void ngx_http_prefill_parse_openai_response(ngx_http_request_t *r, ngx_http_prefill_ctx_t *ctx, 
+                                                   u_char *data, size_t len)
+{
+    jsmn_parser parser;
+    jsmntok_t tokens[256];
+    int ret;
+    char *json_str;
+    ngx_http_prefill_loc_conf_t *ulcf;
+    ngx_uint_t ttft_ms, tpot_ms;
+    
+    // Get ulcf for shared memory access
+    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_prefill_module);
+    
+    // If model name is already in shared memory but not in context, copy it to context
+    if (ctx->model_name.len == 0 && ulcf->metrics && ulcf->metrics->model_name_len > 0) {
+        ctx->model_name.data = ngx_pnalloc(r->pool, ulcf->metrics->model_name_len + 1);
+        if (ctx->model_name.data != NULL) {
+            ngx_memcpy(ctx->model_name.data, ulcf->metrics->model_name, ulcf->metrics->model_name_len);
+            ctx->model_name.data[ulcf->metrics->model_name_len] = '\0';
+            ctx->model_name.len = ulcf->metrics->model_name_len;
+            
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                          "prefill: using existing model name from shared memory: %V (len=%ui)", 
+                          &ctx->model_name, ctx->model_name.len);
+        }
+    }
+    
+    // Null-terminate the data for JSON parsing
+    json_str = ngx_pnalloc(r->pool, len + 1);
+    if (json_str == NULL) {
+        return;
+    }
+    ngx_memcpy(json_str, data, len);
+    json_str[len] = '\0';
+    
+    jsmn_init(&parser);
+    ret = jsmn_parse(&parser, json_str, len, tokens, sizeof(tokens)/sizeof(tokens[0]));
+    
+    if (ret < 0) {
+        return; // Not valid JSON or incomplete
+    }
+    
+    // Look for model name and usage.completion_tokens
+    for (int i = 1; i < ret - 1; i++) {
+        // Parse model name only if not already available
+        if (tokens[i].type == JSMN_STRING && tokens[i].end - tokens[i].start == 5 &&
+            ngx_strncmp(json_str + tokens[i].start, "model", 5) == 0 &&
+            ctx->model_name.len == 0) {
+            
+            // Extract model name value
+            if (tokens[i + 1].type == JSMN_STRING) {
+                int model_len = tokens[i + 1].end - tokens[i + 1].start;
+                if (model_len > 0) {
+                    // Allocate memory for model name
+                    ctx->model_name.data = ngx_pnalloc(r->pool, model_len + 1);
+                    if (ctx->model_name.data != NULL) {
+                        ngx_memcpy(ctx->model_name.data, json_str + tokens[i + 1].start, model_len);
+                        ctx->model_name.data[model_len] = '\0';
+                        ctx->model_name.len = model_len;
+                        
+                        // Update shared memory model name
+                        if (ulcf->metrics) {
+                            ngx_http_metrics_update_model_name(ulcf->metrics, 
+                                                             (const char *)ctx->model_name.data, 
+                                                             ctx->model_name.len);
+                        }
+                        
+                        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                                      "prefill: found and stored model name: %V (len=%ui)", 
+                                      &ctx->model_name, ctx->model_name.len);
+                    }
+                }
+            }
+        }
+        
+        if (tokens[i].type == JSMN_STRING && tokens[i].end - tokens[i].start == 5 &&
+            ngx_strncmp(json_str + tokens[i].start, "usage", 5) == 0) {
+            
+            // Found usage object, look for completion_tokens within it
+            jsmntok_t *usage_obj = &tokens[i + 1];
+            if (usage_obj->type != JSMN_OBJECT) {
+                continue;
+            }
+            
+            for (int j = i + 2; j < i + 2 + usage_obj->size * 2; j += 2) {
+                int key_len = tokens[j].end - tokens[j].start;
+                char *key   = json_str + tokens[j].start;
+
+                if (key_len == (int)(sizeof("completion_tokens") - 1)
+                    && ngx_strncmp(key, "completion_tokens", key_len) == 0)
+                {
+                    if (tokens[j+1].type == JSMN_PRIMITIVE) {
+                        char buf[32];
+                        int len = tokens[j+1].end - tokens[j+1].start;
+                        if (len < (int) sizeof(buf)) {
+                            ngx_memcpy(buf,
+                                    json_str + tokens[j+1].start,
+                                    len);
+                            buf[len] = '\0';
+                            ctx->completion_tokens = ngx_atoi((u_char *) buf, len);
+                        }
+                    }
+                    continue;
+                }
+
+                if (key_len == (int)(sizeof("prompt_tokens") - 1)
+                    && ngx_strncmp(key, "prompt_tokens", key_len) == 0)
+                {
+                    if (tokens[j+1].type == JSMN_PRIMITIVE) {
+                        char buf2[32];
+                        int len2 = tokens[j+1].end - tokens[j+1].start;
+                        if (len2 < (int) sizeof(buf2)) {
+                            ngx_memcpy(buf2,
+                                    json_str + tokens[j+1].start,
+                                    len2);
+                            buf2[len2] = '\0';
+                            ctx->prompt_tokens = ngx_atoi((u_char *) buf2, len2);
+                        }
+                    }
+                    continue;
+                }
+
+                ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                        "[GP_LOG]: prompt_tokens:%ui completion_tokens:%ui",
+                        ctx->prompt_tokens,
+                        ctx->completion_tokens);
+            }
+        }
+    }
+}
+
+// extract request_id
+static ngx_int_t get_request_id(ngx_http_request_t *r, ngx_str_t *out)
+{
+    ngx_list_part_t  *part;
+    ngx_table_elt_t  *h;
+    ngx_uint_t        i;
+
+    part = &r->headers_in.headers.part;
+    h = part->elts;
+
+    for ( /* void */ ; /* void */ ; /* void */ ) {
+        for (i = 0; i < part->nelts; i++) {
+            if (h[i].key.len == sizeof("X-Request-Id") - 1
+                && ngx_strncasecmp(h[i].key.data,
+                                   (u_char *)"X-Request-Id",
+                                   sizeof("X-Request-Id") - 1)
+                   == 0)
+            {
+                *out = h[i].value;
+                return NGX_OK;
+            }
+        }
+
+        if (part->next == NULL) {
+            break;
+        }
+
+        part = part->next;
+        h = part->elts;
+    }
+
+    out->len = 0;
+    out->data = NULL;
+    return NGX_DECLINED;
+}
+
+static void ngx_http_prefill_parse_openai_streaming_chunk(ngx_http_request_t *r, ngx_http_prefill_ctx_t *ctx,
+                                                          u_char *data, size_t len)
+{
+    u_char *line_start, *line_end;
+    u_char *pos = data;
+    u_char *end = data + len;
+    
+    // Parse Server-Sent Events format
+    while (pos < end) {
+        line_start = pos;
+        line_end = ngx_strlchr(pos, end, '\n');
+        if (line_end == NULL) {
+            line_end = end;
+        }
+        
+        // Skip "data: " prefix
+        if (line_end - line_start > 6 && ngx_strncmp(line_start, "data: ", 6) == 0) {
+            line_start += 6;
+            
+            // Handle [DONE] messages - record TPOT when streaming ends
+            if (line_end - line_start >= 6 && ngx_strncmp(line_start, "[DONE]", 6) == 0) {
+                ngx_http_prefill_loc_conf_t *ulcf;
+                ngx_uint_t tpot_ms;
+                
+                if (!ctx->tpot_recorded && ctx->completion_tokens > 0 && ctx->first_token_time > 0) {
+                    ngx_msec_t total_time = ngx_current_msec - ctx->first_token_time;
+                    
+                    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_prefill_module);
+                    if (ulcf->metrics) {
+                        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                                      "prefill: [DONE] received - total_time: %ui ms, completion_tokens: %ui",
+                                      total_time, ctx->completion_tokens);
+                                      
+                        if (total_time > 0) {
+                            tpot_ms = total_time / ctx->completion_tokens;
+                        } else {
+                            tpot_ms = 0;
+                        }
+                        
+                        ngx_http_metrics_record_tpot_histogram(ulcf->metrics->tpot_buckets,
+                                                            &ulcf->metrics->tpot_sum,
+                                                            &ulcf->metrics->tpot_count, tpot_ms);
+                        
+                        ctx->tpot_recorded = 1;
+                        
+                        ngx_msec_t e2e_latency = ngx_current_msec - ctx->request_start_time;
+                        ngx_http_metrics_record_e2e_latency_histogram(ulcf->metrics->e2e_latency_buckets, 
+                                                                     &ulcf->metrics->e2e_latency_sum, 
+                                                                     &ulcf->metrics->e2e_latency_count, 
+                                                                     e2e_latency);
+                        
+                        ctx->tpot=tpot_ms;
+                        ctx->e2e_latency=e2e_latency;
+
+                        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                                      "prefill: recorded TPOT on [DONE]: %ui ms, e2e_latency: %ui ms", 
+                                      tpot_ms, e2e_latency);
+
+                        ngx_str_t  req_id;
+                        if (get_request_id(r, &req_id) != NGX_OK) {
+                            static u_char dash = '-';
+                            req_id.len  = 1;
+                            req_id.data = &dash;
+                        }
+
+                        ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0,
+                                "[GP_Metrics_SUMMARY] request_id:%V  num_prompt_tokens: %d, num_output_tokens: %d, ttft: %ui, tpot: %ui, latency: %ui",
+                                &req_id, ctx->prompt_tokens, ctx->completion_tokens, ctx->ttft, ctx->tpot, ctx->e2e_latency);
+                        
+                    }
+                }
+                
+                pos = line_end + 1;
+                continue;
+            }
+            
+            // Parse JSON chunk
+            ngx_http_prefill_parse_openai_response(r, ctx, line_start, line_end - line_start);
+        }
+        
+        pos = line_end + 1;
+    }
 }
