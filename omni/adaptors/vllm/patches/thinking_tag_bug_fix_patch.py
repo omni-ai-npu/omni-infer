@@ -95,6 +95,3 @@ def patch_thinking_bug_fix():
     detokenizer.BaseIncrementalDetokenizer.get_next_output_text = get_next_output_text
     detokenizer.BaseIncrementalDetokenizer.is_cot_end = is_cot_end
     detokenizer.BaseIncrementalDetokenizer.check_len = check_len
-
-
-
