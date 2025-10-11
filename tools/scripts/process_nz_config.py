@@ -27,13 +27,19 @@ if size == 26:
     config["Reshape"]["output0"]["unknownshape_format"] = "FRACTAL_NZ," + config["Reshape"]["output0"]["unknownshape_format"]
 
     format_list = config["GroupedMatmul"]["input1"]["format"].split(',')
-    format_list[-6] = "FRACTAL_NZ"
+    format_list[18] = "FRACTAL_NZ"
     new_format = ','.join(format_list)
     config["GroupedMatmul"]["input1"]["format"] = new_format
 
-    bit_cast = '{"attr":{"list":"boxes"},"attr_boxes":{"defaultValue":"3","paramType":"optional","type":"int","value":"all"},"dynamicRankSupport":{"flag":"true"},"dynamicShapeSupport":{"flag":"true"},"input0":{"dtype":"int32","format":"FRACTAL_NZ","name":"x","paramType":"required","shape":"all"},"opFile":{"value":"Null"},"output0":{"dtype":"int4","format":"FRACTAL_NZ","name":"y","paramType":"required","shape":"all"}}'
-    bit_cast = json.loads(bit_cast)
-    config["Bitcast"] = bit_cast
+    if "Bitcast" not in config:
+        bit_cast = '{"attr":{"list":"boxes"},"attr_boxes":{"defaultValue":"3","paramType":"optional","type":"int",' \
+                   '"value":"all"},"dynamicRankSupport":{"flag":"true"},"dynamicShapeSupport":{"flag":"true"},' \
+                   '"input0":{"dtype":"int32","format":"FRACTAL_NZ","name":"x","paramType":"required","shape":"all"},' \
+                   '"opFile":{"value":"Null"},"output0":{"dtype":"int4","format":"FRACTAL_NZ","name":"y",' \
+                   '"paramType":"required","shape":"all"}} '
+        bit_cast = json.loads(bit_cast)
+        config["Bitcast"] = bit_cast
+    config["Bitcast"]["heavyOp"] = {"flag": "true"}
 
     if '910b' in config_file:
         gmmfr_format_list = config["GroupedMatmulFinalizeRouting"]["input1"]["format"].split(',')
@@ -41,7 +47,6 @@ if size == 26:
         new_format = ','.join(gmmfr_format_list)
         config["GroupedMatmulFinalizeRouting"]["input1"]["format"] = new_format
         config["GroupedMatmulFinalizeRouting"]["input1"]["unknownshape_format"] = new_format
-        config["Bitcast"]["heavyOp"] = {"flag": "true"}
 
     with open(config_file, 'w') as f:
         json.dump(config, f, indent=4)
