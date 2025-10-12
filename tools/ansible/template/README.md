@@ -155,35 +155,55 @@ ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags clean_
 
 # 五、动态添加节点
 ## 特性介绍
-在已有部署推理实例的情况下，为该实例动态新增推理节点，例如在已有 1P1D 实例，新增一个 Prefill 节点使该实例升级为 2P1D，这个过程中无需实例所有节点重启，除 nginx 重新连接导致服务断开几秒之外，实例服务其他大部分时间下都是可用状态。
+在已有部署推理实例的情况下，为该实例动态新增推理节点（e.g. 已有一个2P1D实例，动态增加至3P1D或2P2D），这个过程中无需实例所有节点重启，除 nginx 重新连接导致服务断开几秒之外，实例服务其他大部分时间下都是可用状态。
 
 该特性可有效缓解在高并发场景下，由于节点性能达到瓶颈造成的推理实例请求阻塞问题。
 
 使用该特性需要注意以下几点：
 1. 新增节点和已有节点必须在同一超节点内；
-2. 该特性可以使用的前提，是**原推理实例的启动配置中，KV_CONNECTOR 必须为 "LMCacheConnectorV1"**，即使用 LMCache + Mooncake Store 的组合来管理KVCache；
+2. 该特性可以使用的前提，是**原推理实例或将要启动的配置中，KV_CONNECTOR 必须为 "LMCacheConnectorV1"**，即使用 LMCache + Mooncake Store 的组合来管理KVCache；
 
-## 操作步骤
-假设现在已有一个 1P1D 的推理实例，使用 **omni_infer_inventory_used_for_1P1D.yml** 和 **omni_infer_server_template.yml** 两个脚本来启动，且启动时已将 KV_CONNECTOR 参数指定为"LMCacheConnectorV1"。将展示如何为该实例动态添加一个 Prefill 节点，使其变为 2P1D 的形态。
+注意：本章节中使用的启动脚本，如无特殊提及，都基于 **omni_infer_inventory_used_for_2P2D.yml**（以下简称 **inventory.yml**） 和 **omni_infer_server_template_elastic.yml**（以下简称 **server_elastic.yml**） 进行修改使用。
+
+## 节点扩容操作步骤
+假设现在已有一个推理实例（启动脚本不限），且启动时已将 KV_CONNECTOR 参数指定为"LMCacheConnectorV1"，将展示如何为该实例动态添加 Prefill/Decode 节点。
 
 ### 第一步：节点准备
 1. 请参考本文中“密钥文件的准备”章节，为新节点同样配置好密钥；
 2. 在和其他节点 `MODEL_PATH` 相同路径中拷贝好模型权重；
 
 ### 第二步：添加要新增的节点信息
-**omni_infer_inventory_used_for_1P1D.yml** 脚本中当前仅存在一个 Prefill 节点 **p0** ，将新增节点信息添加为 **p1**。增加后的效果参考 **omni_infer_inventory_used_for_2P1D.yml**，可直接对比两个脚本查看差异。
+若要增加 Prefill 节点，假设 **inventory.yml** 脚本中当前仅存在一个 Prefill 节点 **p0** ，将新增节点信息添加为 **p1**。
 
-由于我们修改好的节点配置文件内容已变为 2P1D，为防止混淆，下文该文件名称直接使用 **omni_infer_inventory_used_for_2P1D.yml**。
+同理，若要增加 Decode 节点，若已有 **D0**，直接增加节点信息为 **D1**。需要注意的是，Prefill 节点和 Decode 节点在 **inventory.yml** 中所属层级并不一样，添加时请注意模板中的格式。
 
 ### 第三步：修改启动配置
-请参考原实例启动所使用的脚本 **omni_infer_server_template.yml** 所修改的参数，对应修改 **omni_infer_server_add_node_template.yml**，配置参数一致即可。
+请参考原实例启动所使用的脚本 **omni_infer_server_template.yml** 所修改的参数，对应修改 **server_elastic.yml**，配置参数一致即可。
+
+需要注意的是 **server_elastic.yml** 的使用方式与 **omni_infer_server_template.yml** 一致，都可以作为推理服务的完整启动脚本，继承 **omni_infer_server_template.yml** 脚本中的所有 tags 能力，而非仅作为弹性扩缩容脚本使用。
 
 ### 第四步：执行命令
+请保障要启动服务的新节点上没有任何其他容器运行，否则可能会导致启动失败。
 ```bash
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_add_node_template.yml
+ansible-playbook -i omni_infer_inventory_used_for_2P2D.yml omni_infer_server_template_elastic.yml --tags add_node
 ```
 执行以上命令后，可观察到实例中原有节点状态不会变化，新增节点上服务开始启动并加载权重。启动过程中，nginx会短暂断开重连，导致服务有几秒中断，正在推理的请求可能会失败。
 
-启动后，由于当前的 2P1D 实例，和直接使 **omni_infer_inventory_used_for_2P1D.yml**、**omni_infer_server_template.yml** 启动的服务并没有差异。如果需要修改代码或重启服务，可直接使用 **omni_infer_inventory_used_for_2P1D.yml**、**omni_infer_server_template.yml** 两个脚本，以及第四章提到的`--tags`方法。
+启动后，由于当前的推理实例，和直接使用当前 **inventory.yml** 配置启动的服务并没有差异。如果需要修改代码或重启服务，可直接使用第四章提到的 `--tags run_server` 方法。
 
-本章节中所使用的 **omni_infer_server_add_node_template.yml**，仅作为动态添加节点使用，不支持第四章中提到的`--tags`能力。
+## 节点缩容操作步骤
+### 第一步：重新建立proxy连接
+修改 **inventory.yml** 至目标缩容后的部署形态，运行：
+```bash
+ansible-playbook -i omni_infer_inventory_used_for_2P2D.yml omni_infer_server_template_elastic.yml --tags run_proxy
+```
+
+### 第二步：杀掉进程
+登录要被缩容的节点机器，执行：
+
+```kill -15 $(pgrep vllm)```
+
+注：一定要是 **kill -15**，不可以 **kill -9**。
+
+### 第三步：清除容器
+停止并删掉该节点机器上的container。
