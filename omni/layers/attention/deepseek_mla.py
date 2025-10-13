@@ -667,7 +667,7 @@ class DeepseekMLA(nn.Module):
             if self.fa_quant:
                 assert dequant_scale_q_nope is not None
                 dequant_scale_q_nope = dequant_scale_q_nope.squeeze(-1)
-                attn_output, _ = op_scope.npu_fused_infer_attention_v2(
+                attn_output, _ = op_scope.npu_fused_infer_attention_score_v2(
                     q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
                     num_query_heads=self.num_heads, num_key_value_heads=1,
                     input_layout=input_layout, softmax_scale=self.scale,
