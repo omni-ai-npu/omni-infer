@@ -34,11 +34,11 @@
 * `kv_rank`: 用于 prefill 实例 kv_rank 的区分，索引从0开始。如果是多台机器组 P，这些机器的 `kv_rank` 的值需保持一致。
 
 * `node_port`: 即 Prefill 和 Decode 的实际 `master-port`。
-    Prefill 实例的默认端口: `global_port_base + port_offset.P + node_rank`。
+    Prefill 实例的默认端口: `global_port_base + port_offset.P + kv_rank`。
     Decode 实例的默认端口: `global_port_base + port_offset.D`。
 
 * `api_port`: 多 API Server 的端口号。
-    Prefill 实例的 API Server 默认端口: `base_api_port + port_offset.P + node_rank`。
+    Prefill 实例的 API Server 默认端口: `base_api_port + port_offset.P + kv_rank`。
     Decode 实例的 API Server 默认端口: `base_api_port + port_offset.D + node_rank`。
 
 * `host_ip`: 组成 Prefill 和 Decode 实例的主节点 IP。对于多机组 P/D 的场景，该 IP 就是主 P 或主 D 的 IP；对于单机组 P 的场景，该 IP 和 `ansible_host` 的值保持一致。
