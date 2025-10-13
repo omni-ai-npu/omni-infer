@@ -15,7 +15,8 @@ QWEN_3_AFTER_THINK_END_TOKEN_ID2 = 9612  # \n
 
 DEEPSEEK_R1_THINK_START_TOKEN_ID = 128798 # <think>
 DEEPSEEK_R1_THINK_END_TOKEN_ID = 128799 # </think>
-DEEPSEEK_R1_AFTER_THINK_END_TOKEN_ID1 = 5809 # \n
+DEEPSEEK_R1_AFTER_THINK_END_TOKEN_ID1 = 201 # \n
+DEEPSEEK_R1_AFTER_THINK_END_TOKEN_ID2 = 271 # \n\n
 
 SLIDING_WINDOW_SIZE = -16
 
@@ -55,11 +56,11 @@ def is_cot_end(self) -> bool:
         ]:
             cot_end = True
 
-    # Deepseek output ends with "</think>\n"
+    # Deepseek output ends with "</think>\n" or "</think>\n\n"
     if DEEPSEEK_R1_THINK_END_TOKEN_ID in check_token_ids:
         check_index = check_token_ids.index(DEEPSEEK_R1_THINK_END_TOKEN_ID) + 1
         if check_index < len(check_token_ids) and check_token_ids[check_index] in [
-            DEEPSEEK_R1_AFTER_THINK_END_TOKEN_ID1
+            DEEPSEEK_R1_AFTER_THINK_END_TOKEN_ID1, DEEPSEEK_R1_AFTER_THINK_END_TOKEN_ID2
         ]:
             cot_end = True
 
