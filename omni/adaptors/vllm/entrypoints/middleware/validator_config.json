@@ -112,6 +112,9 @@
         },
         "enable_thinking": {
             "validator_type": "supported"
+        },
+        "kv_transfer_params": {
+            "validator_type": "supported"
         }
     }
 }
