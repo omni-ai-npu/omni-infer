@@ -77,7 +77,7 @@ class AscendMLABackend(AttentionBackend):
 
     @staticmethod
     def get_kv_cache_shape(num_blocks: int, block_size: int, num_kv_heads: int,
-                           head_size: int) -> tuple[int, ...]:
+                           head_size: int, cache_dtype_str: str = "auto") -> tuple[int, ...]:
         return (num_blocks, block_size, 1, 512 + 64)
 
     @staticmethod

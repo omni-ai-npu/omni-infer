@@ -22,7 +22,7 @@ def run_vllm_serve(tp=1, dp=1, model="/home/kc/models/DeepSeek-V2-Lite"):
         "--served-model-name", "deepseek",
         "--dtype", "bfloat16",
         "--distributed-executor-backend", "mp",
-        "--block_size", "128",
+        "--block_size", "640",
         "--no-enable-prefix-caching",
     ]
 

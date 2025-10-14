@@ -785,6 +785,7 @@ class AscendAttentionBackend(AttentionBackend):
             block_size: int,
             num_kv_heads: int,
             head_size: int,
+            cache_dtype_str: str = "auto"
     ) -> Tuple[int, ...]:
         if model_extra_config.operator_opt_config.use_tnd_pa:
             return (2, num_blocks, num_kv_heads * head_size // NZ_DIM, block_size, NZ_DIM)
@@ -832,3 +833,8 @@ class AscendAttentionBackend(AttentionBackend):
         if not int(os.getenv("NO_NPU_MOCK", "0")) and device != "cpu":
             torch_npu.npu_format_cast(layer_kv_caches, 2)
         return (layer_kv_caches[0], layer_kv_caches[1])
+
+    @staticmethod
+    def get_supported_kernel_block_size() -> list[int]:
+        return [128, 256, 384, 512]
+    
