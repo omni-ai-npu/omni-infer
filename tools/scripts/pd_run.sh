@@ -407,11 +407,22 @@ common_operations() {
     --extra-args "$EXTRA_ARGS"
 }
 
+start_ray_log_rotate(){
+  bash ray_log_rotate/start_ray_logrotate.sh
+  if [ $? -eq 0 ]; then
+      echo "success installed ray log rotate crontab task"
+  else
+      echo "installing ray log rotate crontab task failed, please pay attention for the ray log size"
+  fi
+}
+
 if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
   if [ "$IP" = "$HOST_IP" ]; then
     export RAY_USAGE_STATS_ENABLED=0
     ray start --head --num-gpus=$NUM_SERVERS
     sleep 10s
+    # install ray log rotate script
+    start_ray_log_rotate
     common_operations
   else
     sleep 5s
@@ -428,6 +439,8 @@ if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
       eval $command
       if [ $? -eq 0 ]; then
         echo "succeed to connect to ray head node"
+        # install ray log rotate script
+        start_ray_log_rotate
         break
       else
         echo "failed to connect to ray head node, wait 5s....."

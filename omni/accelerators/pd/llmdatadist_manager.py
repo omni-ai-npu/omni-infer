@@ -170,7 +170,7 @@ class LLMDataDistManager:
 
             cache = self.data_dist_engine.cache_manager.register_blocks_cache(cache_desc, cache_addrs, cache_key)
             self.registered_kv_caches.append(cache)
-        logger.error(f" ***** registered_kv_caches num:{len(self.registered_kv_caches)}")
+        logger.debug(f" ***** registered_kv_caches num:{len(self.registered_kv_caches)}")
 
     def _pull_blocks(self, src_cache_key, dst_cache, src_blocks, dst_blocks):
         for _ in range(KV_CACHE_RETRY_TIMES):
