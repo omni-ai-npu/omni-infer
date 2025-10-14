@@ -1252,8 +1252,8 @@ class NPUModelRunner(GPUModelRunner):
                 else:
                     raise NotImplementedError
 
-        if has_attn and has_mamba:
-            self._update_hybrid_attention_mamba_layout(kv_caches)
+        # if has_attn and has_mamba:
+        #     self._update_hybrid_attention_mamba_layout(kv_caches)
 
         return kv_caches
 

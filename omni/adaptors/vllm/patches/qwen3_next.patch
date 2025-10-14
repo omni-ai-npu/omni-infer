@@ -2230,10 +2230,18 @@ index 403b5401b..dbc6224ac 100644
 +    
 +    return create_kv_cache_group_specs(kv_cache_spec, grouped_layers)
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index e386183af..2515b99d7 100644
+index e386183af..fd778f6f7 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
-@@ -427,7 +427,9 @@ class Scheduler(SchedulerInterface):
+@@ -280,7 +280,6 @@ class Scheduler(SchedulerInterface):
+                 new_blocks = self.kv_cache_manager.allocate_slots(
+                     request,
+                     num_new_tokens,
+-                    num_draft_tokens=num_draft_tokens,
+                     num_lookahead_tokens=self.num_lookahead_tokens)
+                 if new_blocks is None:
+                     # The request cannot be scheduled.
+@@ -427,7 +426,9 @@ class Scheduler(SchedulerInterface):
                  # KVTransfer: WAITING reqs have num_computed_tokens > 0
                  # after async KV recvs are completed.
                  else:
@@ -2244,7 +2252,16 @@ index e386183af..2515b99d7 100644
                      num_new_local_computed_tokens = 0
                      num_computed_tokens = request.num_computed_tokens
  
-@@ -990,7 +992,6 @@ class Scheduler(SchedulerInterface):
+@@ -569,7 +570,7 @@ class Scheduler(SchedulerInterface):
+             any_request = self.running[0]
+             num_common_prefix_blocks = (
+                 self.kv_cache_manager.get_num_common_prefix_blocks(
+-                    any_request, len(self.running)))
++                    any_request.request_id))
+ 
+         grammar_bitmask = self.structured_output_manager.grammar_bitmask(
+             self.requests,
+@@ -990,7 +991,6 @@ class Scheduler(SchedulerInterface):
             self.cpu_npu_kv_cache_manager.free(request, Device.CPU)
  
          self.kv_cache_manager.free(request)

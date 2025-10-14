@@ -148,6 +148,23 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         x_new = torch.cat((-x2, x1), dim=-1)
         output = cos * x + sin * x_new
         return output
+    
+    # Mahammad - applies rope on 25% of x and fixes remaining 75%
+    # Note - it is assumed last_dim_size is a multiple of 4
+    def apply_partial_rotary_pos_emb(self, x, cos, sin):
+
+        # calculating slice sizes
+        last_dim_size = x.shape[-1]
+        size_25 = int(0.25 * last_dim_size)
+        size_75 = last_dim_size - size_25
+
+        # slicing
+        x_25_percent, x_75_percent = torch.split(x, [size_25, size_75], dim=-1)
+        # rotating 25% of x
+        x_25_percent = self.apply_rotary_pos_emb(x_25_percent, cos, sin)
+        
+        output = torch.cat((x_25_percent, x_75_percent), dim=-1)
+        return output
 
     # use small ops for chatglm
     def apply_rotary_pos_emb_glm(self, x: torch.Tensor, rope_cache: torch.Tensor) -> torch.Tensor:
@@ -187,6 +204,19 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         sin = sin.unsqueeze(-2)
         q_embed = self.apply_rotary_pos_emb(query, cos, sin)
         k_embed = self.apply_rotary_pos_emb(key, cos, sin)
+        return q_embed.flatten(-2), k_embed.flatten(-2)
+    
+    # Mahammad
+    # use ascend_ops to deal with torch_npu.npu_apply_partial_rotary_pos_emb last dim is not 128 bug
+    def _forward_ascend_ops_and_small_ops_partial(self, position_ids, query, key):
+        cos = torch.index_select(self.cos, dim=0, index=position_ids)
+        sin = torch.index_select(self.sin, dim=0, index=position_ids)
+        query = query.view(*query.shape[:-1], -1, self.head_size).contiguous()
+        key = key.view(*key.shape[:-1], -1, self.head_size).contiguous()
+        cos = cos.unsqueeze(-2)
+        sin = sin.unsqueeze(-2)
+        q_embed = self.apply_partial_rotary_pos_emb(query, cos, sin)
+        k_embed = self.apply_partial_rotary_pos_emb(key, cos, sin)
         return q_embed.flatten(-2), k_embed.flatten(-2)
 
     # use torch_npu fused ops
@@ -251,11 +281,13 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
 
     def forward(self, position_ids, query, key, layer_name: Optional[str] = None):
         # adapt chatglm : dim = head_size / 2
-        if self.rotary_dim < self.head_size:
-            q_embed, k_embed = self._forward_chatglm(position_ids, query, key)
-        elif self.rotary_dim != 128:
+        # if self.rotary_dim < self.head_size:
+        #     q_embed, k_embed = self._forward_chatglm(position_ids, query, key)
+        # el
+        if self.rotary_dim != 128:
             # use ascend_ops to deal with torch_npu.npu_apply_rotary_pos_emb last dim is not 128 bug
-            q_embed, k_embed = self._forward_ascend_ops_and_small_ops(position_ids, query, key)
+            # q_embed, k_embed = self._forward_ascend_ops_and_small_ops(position_ids, query, key)
+            q_embed, k_embed = self._forward_ascend_ops_and_small_ops_partial(position_ids, query, key)
         else:
             q_embed, k_embed = self._forward_fused_ops(position_ids, query, key, layer_name)
         return q_embed, k_embed
