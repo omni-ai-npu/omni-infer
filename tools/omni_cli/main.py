@@ -535,7 +535,7 @@ def omni_cli_start(
         start_server_cmd = f"""
 # Exec the command
 cd {_double_quotes(code_path)}/tools/scripts
-if [[ -e "/usr/local/Ascend/ascend-toolkit" ]]; then python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op-impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json; else python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/latest/opp/built-in/op-impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json; fi
+if [[ -e "/usr/local/Ascend/ascend-toolkit" ]]; then python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json; else python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json; fi
 echo "cd {_double_quotes(code_path)}/tools/scripts" >> {log_path}/omni_cli.log
 {python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &
 echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> {log_path}/omni_cli.log
