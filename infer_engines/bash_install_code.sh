@@ -26,4 +26,3 @@ git apply --whitespace=nowarn $PATCH_ROOT/swap_kv_cache.patch
 git apply --whitespace=nowarn $PATCH_ROOT/vllm_tool_call_adapt.patch
 git apply --whitespace=nowarn $PATCH_ROOT/params_check.patch
 git apply --whitespace=nowarn $PATCH_ROOT/parameter_check.patch
-git apply --whitespace=nowarn $PATCH_ROOT/reasoning.patch
