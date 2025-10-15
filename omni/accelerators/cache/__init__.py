@@ -23,7 +23,7 @@ from .kv_cache_manager import (
 )
 from .pd import OmniBiGroupDataDistManager
 from .utils import compute_omni_attn_metadata, to_bool_or_raise
-from .nsa_kv_manager import get_nsa_kv_cache_spec, NSAHostDeviceKVCacheManager
+from .hd_kv_manager import HostDeviceKVCacheManager
 
 
 def check_omni_attn_cmd_arg(additional_config: dict) -> bool:
@@ -63,15 +63,33 @@ def apply_omni_attn_patch(enable=False, is_kv_consumer=True, config=None):
             itfc.PATTERN = pattern
 
     if is_kv_consumer:
+        # use Omni-related classes and methods only for KV consumers
+        kv_cache_utils.get_kv_cache_config = get_kv_cache_config_omni_type
+        engine_core.get_kv_cache_config = get_kv_cache_config_omni_type
+        GPUModelRunner.get_kv_cache_spec = get_omni_hybrid_kv_cache_spec
+        block_table.MultiGroupBlockTable = OmniMultiGroupBlockTable
+        gpu_input_batch.MultiGroupBlockTable = OmniMultiGroupBlockTable
+
+        orig_manager.KVCacheBlocks = OmniKVCacheBlocks
+        orig_manager.KVCacheManager = OmniKVCacheManager
+        scheduler.KVCacheBlocks = OmniKVCacheBlocks
+        scheduler.KVCacheManager = OmniKVCacheManager
+
+
+def apply_omni_cache_patch(enable=False, is_kv_consumer=True):
+    if not enable:
+        return
+    if is_kv_consumer:
         block_table.MultiGroupBlockTable = OmniMultiGroupBlockTable
         gpu_input_batch.MultiGroupBlockTable = OmniMultiGroupBlockTable
     orig_manager.KVCacheBlocks = OmniKVCacheBlocks
     scheduler.KVCacheBlocks = OmniKVCacheBlocks
-    orig_manager.KVCacheManager = NSAHostDeviceKVCacheManager
-    scheduler.KVCacheManager = NSAHostDeviceKVCacheManager
+    orig_manager.KVCacheManager = HostDeviceKVCacheManager
+    scheduler.KVCacheManager = HostDeviceKVCacheManager
 
 
 __all__ = [
     "apply_omni_attn_patch",
+    "apply_omni_cache_patch",
     "check_omni_attn_cmd_arg",
 ]

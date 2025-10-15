@@ -242,7 +242,10 @@ class ConfigUpdater:
         cls._update_parallel_config(vllm_config)
         cls._update_cache_config(vllm_config)
         cls._enable_custom_ops(vllm_config)
-        cls._may_enable_omni_attn(vllm_config)
+        if os.getenv("ENABLE_OMNI_CACHE", "0") == "1":
+            cls._may_enable_omni_cache(vllm_config)
+        else:
+            cls._may_enable_omni_attn(vllm_config)
 
     @staticmethod
     def _handle_graph_mode(vllm_config: 'VllmConfig') -> None:
@@ -296,6 +299,22 @@ class ConfigUpdater:
         is_kv_consumer = kv_transfer_config is None or kv_transfer_config.kv_role == 'kv_consumer'
         omni_attn_config = vllm_config.additional_config.get("omni_attn_config", None)
         apply_omni_attn_patch(enable=enable_omni_attn, is_kv_consumer=is_kv_consumer, config=omni_attn_config)
+    
+    @staticmethod
+    def _may_enable_omni_cache(vllm_config: 'VllmConfig') -> None:
+        from omni.models.common.config.model_config import model_extra_config
+        enable_omni_cache = model_extra_config.operator_opt_config.use_omni_cache
+        if not enable_omni_cache:
+            return
+        
+        kv_transfer_config = vllm_config.kv_transfer_config
+        if kv_transfer_config is None:
+            logger.warning(f"Omni cache will not be enabled in PD mixed deployment.")
+            return
+        
+        from omni.accelerators.cache import apply_omni_cache_patch
+        is_kv_consumer = kv_transfer_config.kv_role == "kv_consumer"
+        apply_omni_cache_patch(enable=enable_omni_cache, is_kv_consumer=is_kv_consumer)
 
 
 class NPUPlatform(Platform):

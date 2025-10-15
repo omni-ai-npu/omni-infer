@@ -364,12 +364,10 @@ class OmniAttentionManager(SingleTypeKVCacheManager):
 
 def get_manager_for_kv_cache_spec(kv_cache_spec: KVCacheSpec,
                                   **kwargs) -> SingleTypeKVCacheManager:
-    # from .nsa_kv_manager import ConvolutionCompressSpec, ConvolutionCompressKVManager
     spec_manager_map: dict[type[KVCacheSpec], type[SingleTypeKVCacheManager]] = \
     {
         FullAttentionSpec: FullAttentionManager,
         OmniAttentionSpec: OmniAttentionManager,
-        # ConvolutionCompressSpec: ConvolutionCompressKVManager,
     }
     manager_class = spec_manager_map[type(kv_cache_spec)]
     manager = manager_class(kv_cache_spec, **kwargs)
