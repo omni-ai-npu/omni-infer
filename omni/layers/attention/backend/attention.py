@@ -43,6 +43,13 @@ from omni.layers.rotary_embedding import QwenMRotaryEmbedding
 from omni.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.common.config.model_config import model_extra_config
 
+class MultipleOf:
+    base: int
+
+    def __init__(self, base: int):
+        self.base = base
+
+
 NZ_DIM = 16
 
 class AscendAttentionState(Enum):
@@ -244,7 +251,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
               common_prefix_len,
               graph_pad_size=-1):
 
-        block_table = self.block_table.get_device_tensor()[:num_reqs]
+        block_table = self.block_table.get_device_tensor(num_reqs)
 
         seq_lens = self.runner.seq_lens_cpu[:num_reqs]
         query_lens = seq_lens - self.runner.input_batch.num_computed_tokens_cpu_tensor[:num_reqs]
@@ -835,6 +842,6 @@ class AscendAttentionBackend(AttentionBackend):
         return (layer_kv_caches[0], layer_kv_caches[1])
 
     @staticmethod
-    def get_supported_kernel_block_size() -> list[int]:
-        return [128, 256, 384, 512]
+    def get_supported_kernel_block_size() -> list[int | MultipleOf]:
+        return [MultipleOf(128)]
     
