@@ -143,6 +143,7 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         idx_theta = torch.outer(seq_idx, theta).float().npu()
         cache = torch.stack([torch.cos(idx_theta), torch.sin(idx_theta)], dim=-1).to(self.dtype)
         return cache
+
     # use small ops
     def apply_rotary_pos_emb(self, x, cos, sin):
         x1, x2 = torch.chunk(x, 2, -1)
@@ -153,7 +154,7 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
     # applies rotation along the first rotary_dim many components and fixes else degrees.
     def apply_partial_rotary_pos_emb(self, x, cos, sin):
         partial_rotary_factor = self.partial_rotary_factor
-        print(f"partial_rotary_factor = {partial_rotary_factor}")
+
         # calculating slice sizes
         last_dim_size = x.shape[-1]
         size_partial = round(partial_rotary_factor * last_dim_size)
