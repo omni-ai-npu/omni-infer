@@ -23,7 +23,7 @@ index 604e2c464..7b26e0d27 100644
              for _ in range(self._rebalance_num_iterations):
                  yield
 diff --git a/python/sglang/srt/eplb/expert_distribution.py b/python/sglang/srt/eplb/expert_distribution.py
-index 5c2964842..7a1d89c44 100644
+index 5c2964842..011918920 100644
 --- a/python/sglang/srt/eplb/expert_distribution.py
 +++ b/python/sglang/srt/eplb/expert_distribution.py
 @@ -30,6 +30,11 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -38,7 +38,40 @@ index 5c2964842..7a1d89c44 100644
  logger = logging.getLogger(__name__)
  
  # --------------------------------------- Entrypoint -----------------------------------------
-@@ -278,10 +283,7 @@ _global_expert_distribution_recorder: Optional[ExpertDistributionRecorder] = (
+@@ -79,6 +84,7 @@ class ExpertDistributionRecorder(ABC):
+ 
+     def on_deepep_dispatch_normal(
+         self,
++        layer_idx:int ,
+         local_physical_count_of_layer: List[int],
+         num_tokens_per_rank,
+         num_tokens_per_rdma_rank,
+@@ -201,6 +207,7 @@ class _ExpertDistributionRecorderReal(ExpertDistributionRecorder):
+ 
+     def on_deepep_dispatch_normal(
+         self,
++        layer_id,
+         local_physical_count_of_layer: List[int],
+         num_tokens_per_rank,
+         num_tokens_per_rdma_rank,
+@@ -208,6 +215,7 @@ class _ExpertDistributionRecorderReal(ExpertDistributionRecorder):
+     ):
+         self._on_hook(
+             "on_deepep_dispatch_normal",
++            layer_idx=layer_id,
+             local_physical_count_of_layer=local_physical_count_of_layer,
+             num_tokens_per_rank=num_tokens_per_rank,
+             num_tokens_per_rdma_rank=num_tokens_per_rdma_rank,
+@@ -232,7 +240,7 @@ class _ExpertDistributionRecorderReal(ExpertDistributionRecorder):
+                 self._current_debug_name.value
+             )
+         ]
+-        getattr(gatherer, hook_name)(layer_idx=self._current_layer_idx.value, **kwargs)
++        getattr(gatherer, hook_name)(**kwargs)
+ 
+     def _reset(self):
+         """Reset the expert distribution recorder."""
+@@ -278,10 +286,7 @@ _global_expert_distribution_recorder: Optional[ExpertDistributionRecorder] = (
  
  
  def get_global_expert_distribution_recorder(is_npu: bool = False):
@@ -50,7 +83,7 @@ index 5c2964842..7a1d89c44 100644
  
  
  def set_global_expert_distribution_recorder(value):
-@@ -299,6 +301,9 @@ class _SinglePassGatherer(ABC):
+@@ -299,6 +304,9 @@ class _SinglePassGatherer(ABC):
          expert_location_metadata: "ExpertLocationMetadata",
          rank: int,
      ) -> "_SinglePassGatherer":
@@ -60,7 +93,7 @@ index 5c2964842..7a1d89c44 100644
          if server_args.expert_distribution_recorder_mode == "per_token":
              return _DetailSinglePassGatherer(
                  server_args, expert_location_metadata, rank
-@@ -507,6 +512,22 @@ class _SelectExpertsSinglePassGatherer(_LayerBasedGpuSinglePassGatherer):
+@@ -507,6 +515,22 @@ class _SelectExpertsSinglePassGatherer(_LayerBasedGpuSinglePassGatherer):
              dim=0, index=topk_ids.masked_fill(~mask, 0).long(), src=mask.int()
          )
  
@@ -83,7 +116,7 @@ index 5c2964842..7a1d89c44 100644
  
  class _DeepepNormalSinglePassGatherer(_LayerBasedCpuSinglePassGatherer):
      def __init__(self, *args, **kwargs):
-@@ -592,6 +613,7 @@ class _Accumulator(ABC):
+@@ -592,6 +616,7 @@ class _Accumulator(ABC):
              "stat_approx": _StatAccumulator,
              "per_pass": _DetailAccumulator,
              "per_token": _DetailAccumulator,
@@ -154,77 +187,43 @@ index be0e23653..cda024018 100644
          return ExpertLocationMetadata.init_trivial(server_args, model_config)
  
 diff --git a/python/sglang/srt/eplb/expert_location_dispatch.py b/python/sglang/srt/eplb/expert_location_dispatch.py
-index 624dc3fd1..67ac43c3f 100644
+index 624dc3fd1..eb89f355c 100644
 --- a/python/sglang/srt/eplb/expert_location_dispatch.py
 +++ b/python/sglang/srt/eplb/expert_location_dispatch.py
-@@ -19,6 +19,7 @@ import torch
- 
- from sglang.srt.eplb.expert_location import get_global_expert_location_metadata
- from sglang.srt.managers.schedule_batch import global_server_args_dict
-+from types import SimpleNamespace
+@@ -74,8 +74,12 @@ def transform_select_experts_inputs(
  
  
- @dataclass
-@@ -34,6 +35,11 @@ class ExpertLocationDispatchInfo:
- 
-     @classmethod
-     def init_new(cls, layer_id: int):
-+        if global_server_args_dict["enable_omni_placement"]:
-+            layer_idx_moe = get_global_expert_location_metadata().get_moe_layer_idx(layer_id)
-+            expert_mapping = get_global_expert_location_metadata().expert_mapping_on_current_layer(layer_idx_moe)
-+            return SimpleNamespace(ep_dispatch_algorithm="omni_placement", layer_idx_moe=layer_idx_moe, expert_mapping=expert_mapping)
-+
-         ep_dispatch_algorithm = global_server_args_dict["ep_dispatch_algorithm"]
-         expert_location_metadata = get_global_expert_location_metadata()
-         assert expert_location_metadata is not None
-@@ -79,13 +85,22 @@ def topk_ids_logical_to_physical(
+ def topk_ids_logical_to_physical(
+-    topk_ids: torch.Tensor, info: Optional[ExpertLocationDispatchInfo]
++    topk_ids: torch.Tensor, info: Optional[ExpertLocationDispatchInfo] = None,
++    **kwargs,
+ ) -> torch.Tensor:
++    if global_server_args_dict["enable_omni_placement"]:
++        return _topk_ids_logical_to_physical_omni_placement(topk_ids,**kwargs)
++    
      if info is None:
          return topk_ids
  
-+    if info.ep_dispatch_algorithm == "omni_placement":
-+        return _topk_ids_logical_to_physical_omni_placement(topk_ids,info)
-     if info.ep_dispatch_algorithm == "static":
-         return _topk_ids_logical_to_physical_static(topk_ids, info)
-     if info.ep_dispatch_algorithm in ["dynamic", "fake"]:
+@@ -85,7 +89,16 @@ def topk_ids_logical_to_physical(
          return _topk_ids_logical_to_physical_dynamic(topk_ids, info)
      raise NotImplementedError(f"Unknown algorithm {info.ep_dispatch_algorithm}")
  
 -
 +def _topk_ids_logical_to_physical_omni_placement(
-+    topk_ids: torch.Tensor, info: Optional[ExpertLocationDispatchInfo]
++    topk_ids: torch.Tensor,
++    layer_idx_moe,
++    expert_mapping,
 +) -> torch.Tensor:
-+    _, topk_ids, _ = get_global_expert_location_metadata().plan(layer_idx_moe=info.layer_idx_moe,
++    _, topk_ids, _ = get_global_expert_location_metadata().plan(layer_idx_moe=layer_idx_moe,
 +                                                                token_expert_ids = topk_ids,
-+                                                                expert_mapping=info.expert_mapping)
++                                                                expert_mapping=expert_mapping)
 +    return topk_ids
 +    
  def _topk_ids_logical_to_physical_static(
      topk_ids: torch.Tensor, info: Optional[ExpertLocationDispatchInfo]
  ) -> torch.Tensor:
-diff --git a/python/sglang/srt/layers/moe/topk.py b/python/sglang/srt/layers/moe/topk.py
-index 1cfbff498..9d9876565 100644
---- a/python/sglang/srt/layers/moe/topk.py
-+++ b/python/sglang/srt/layers/moe/topk.py
-@@ -245,7 +245,7 @@ class TopK(CustomOp):
- 
-         # NOTE: now npu_moe_gating_top_k can only support `group_count=256` pattern
-         if global_num_experts == 256:
--            return torch_npu.npu_moe_gating_top_k(
-+            topk_weights, topk_ids, router_logits = torch_npu.npu_moe_gating_top_k(
-                 router_logits,
-                 k=self.top_k,
-                 bias=self.correction_bias.to(router_logits.dtype),
-@@ -257,6 +257,8 @@ class TopK(CustomOp):
-                 routed_scaling_factor=self.routed_scaling_factor,
-                 eps=float(1e-20),
-             )
-+            topk_ids = topk_ids_logical_to_physical(topk_ids, expert_location_dispatch_info)
-+            return topk_weights, topk_ids, router_logits
-         else:
-             torch_native = True
-             return select_experts(
 diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
-index b57480fa9..02e287b1c 100644
+index 213311553..05eb2f74a 100644
 --- a/python/sglang/srt/managers/schedule_batch.py
 +++ b/python/sglang/srt/managers/schedule_batch.py
 @@ -96,6 +96,7 @@ GLOBAL_SERVER_ARGS_KEYS = [
@@ -236,14 +235,14 @@ index b57480fa9..02e287b1c 100644
      "enable_nan_detection",
      "flashinfer_mla_disable_ragged",
 diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
-index 07abff11a..02656ccef 100644
+index 214646360..cec974977 100644
 --- a/python/sglang/srt/model_executor/model_runner.py
 +++ b/python/sglang/srt/model_executor/model_runner.py
-@@ -350,6 +350,12 @@ class ModelRunner:
+@@ -383,6 +383,12 @@ class ModelRunner:
          else:
              pass
  
-+        if server_args.enable_omni_placement:
++        if server_args.enable_omni_placement and (not self.is_draft_worker):
 +            param_dict = dict(self.model.named_parameters())
 +            first_k_dense_replace = get_global_expert_location_metadata().first_k_dense_replace
 +            get_global_expert_location_metadata().init_dram_weights(param_dict, first_k_dense_replace=first_k_dense_replace)
@@ -253,7 +252,7 @@ index 07abff11a..02656ccef 100644
          if self.spec_algorithm.is_eagle3() and not self.is_draft_worker:
              # load draft config
 diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
-index 65d73f539..516b69ef7 100644
+index 464e8a818..6bc85cf4b 100644
 --- a/python/sglang/srt/server_args.py
 +++ b/python/sglang/srt/server_args.py
 @@ -183,12 +183,14 @@ class ServerArgs:

@@ -82,7 +82,7 @@
       export HCCL_DETERMINISTIC=false
       export GLOO_SOCKET_IFNAME={{ansible_env.GLOO_SOCKET_IFNAME}}
       export SGLANG_ENABLE_TORCH_COMPILE=true
-
+      export MLP_TP_SIZE=4
       python3 -m sglang.launch_server \
         --model-path ${MODEL_PATH} \
         --device npu \
@@ -111,7 +111,7 @@
       export HCCL_DETERMINISTIC=false
       export GLOO_SOCKET_IFNAME={{ansible_env.GLOO_SOCKET_IFNAME}}
       export SGLANG_ENABLE_TORCH_COMPILE=true
-
+      export MLP_TP_SIZE=4
       dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
       ((dp++))
 

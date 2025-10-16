@@ -23,6 +23,7 @@ from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.layers.linear import ReplicatedLinear
 from sglang.srt.utils import add_prefix
+from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 
 from omni.adaptors.sglang.layers.moe.ep_moe.layer import FusedMoE
 from omni.adaptors.sglang.layers.activation import SiluAndMul
@@ -193,6 +194,10 @@ class DeepseekMoE(nn.Module):
         deepep_mode = global_server_args_dict["deepep_mode"]
         ep_num_redundant_experts = global_server_args_dict["ep_num_redundant_experts"]
 
+        is_nextn = kwargs.get("is_nextn",False)
+        if is_nextn:
+            ep_num_redundant_experts = 0
+
         self.experts = FusedMoE(
             num_experts=config.n_routed_experts + self.num_fused_shared_experts + ep_num_redundant_experts,
             top_k=config.num_experts_per_tok + self.num_fused_shared_experts,
@@ -286,6 +291,7 @@ class DeepseekMoE(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        residual: torch.Tensor,
         forward_batch: Optional[ForwardBatch] = None,
         prefetch_list: Optional[dict] = None,
         **kwargs,
@@ -295,11 +301,11 @@ class DeepseekMoE(nn.Module):
         self.run_graph = forward_batch.can_run_graph
 
         if forward_batch.is_extend_in_batch:
-            return self._forward_prefill_norm(hidden_states, forward_batch)
+            return self._forward_prefill_norm(hidden_states, residual, forward_batch)
         else:
-            return self._forward_decode_dispatch_combine(hidden_states, forward_batch, prefetch_list)
+            return self._forward_decode_dispatch_combine(hidden_states, residual, forward_batch, prefetch_list)
 
-    def _forward_prefill_norm(self, hidden_states, forward_batch) -> torch.Tensor:
+    def _forward_prefill_norm(self, hidden_states, residual, forward_batch) -> torch.Tensor:
 
         shared_output = None
 
@@ -360,9 +366,9 @@ class DeepseekMoE(nn.Module):
             drop_pad_mode=2,
         )
 
-        return hidden_states
+        return hidden_states, residual
 
-    def _forward_decode_dispatch_combine(self, hidden_states, forward_batch, prefetch_list) -> torch.Tensor:
+    def _forward_decode_dispatch_combine(self, hidden_states, residual, forward_batch, prefetch_list) -> torch.Tensor:
 
         # assert hidden_states.shape[0] > 0 and not forward_batch.is_prefill_idle
 
@@ -407,6 +413,7 @@ class DeepseekMoE(nn.Module):
             e_score_correction_bias=self.gate.e_score_correction_bias,
             routed_scaling_factor=self.config.routed_scaling_factor)
 
+        topk_ids = self.experts.apply_expert_load_balance(topk_ids=topk_ids)
         # ====================== dispatch ======================
 
         # TODO: apply_expert_load_balance & best_topk not aligned with vLLM's
@@ -440,6 +447,14 @@ class DeepseekMoE(nn.Module):
 
         group_list = expert_token_nums.to(torch.int64)
 
+        get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
+            self.layer_id,
+            [],
+            num_tokens_per_rank=None,
+            num_tokens_per_rdma_rank=None,
+            num_tokens_per_expert=group_list,
+        )
+
         # ====================== call experts part 1 ======================
 
         weight1_3 = self.experts.w13_weight
@@ -452,8 +467,8 @@ class DeepseekMoE(nn.Module):
             assert hasattr(self.experts, "weight_num_bits")
 
             if self.experts.weight_num_bits == 8:
-                weight_scale1_3 = self.experts.w13_weight_scale.squeeze(-1).to(torch.float32)
-                weight_scale2 = self.experts.w2_weight_scale.squeeze(-1).to(torch.bfloat16)
+                weight_scale1_3 = self.experts.w13_weight_scale.squeeze(-1) # adapt shape
+                weight_scale2 = self.experts.w2_weight_scale.squeeze(-1) # adapt shape and dtype
             elif self.experts.weight_num_bits == 4:
                 weight_scale1_3 = self.experts.w13_weight_int4_scale
                 weight_scale2 = self.experts.w2_weight_int4_scale
@@ -617,7 +632,7 @@ class DeepseekMoE(nn.Module):
             x_active_mask=None,                                 # TODO: mc2_mask, not aligned with vLLM's
         )
 
-        return hidden_states_route + shared_output
+        return hidden_states_route + shared_output, residual
 
     def get_moe_weights(self):
         return [

@@ -104,7 +104,7 @@ class ExpertMapping:
         return pattern
 
     def is_moe_layer(self, layer_idx_moe):
-        return layer_idx_moe < self.max_moe_layer_num
+        return 0 <= layer_idx_moe < self.max_moe_layer_num
 
     # @calculate_time
     def is_expert_on_current_rank(

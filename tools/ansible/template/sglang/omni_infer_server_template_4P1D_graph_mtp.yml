@@ -82,8 +82,9 @@
       export HCCL_DETERMINISTIC=false
       export HCCL_OP_EXPANSION_MODE="AIV"
       export GLOO_SOCKET_IFNAME={{ansible_env.GLOO_SOCKET_IFNAME}}
-      
+      export MLP_TP_SIZE=4
       export PYTHONPATH=${CODE_PATH}/omniinfer/infer_engines/sglang/python:${CODE_PATH}/omniinfer:$PYTHONPATH
+      export IS_PREFILL=1
 
       rm -rf .torchair_cache/
       python3 -m sglang.launch_server \
@@ -122,7 +123,7 @@
       export HCCL_BUFFSIZE=500
       export GLOO_SOCKET_IFNAME={{ansible_env.GLOO_SOCKET_IFNAME}}
       export PYTHONPATH=${CODE_PATH}/omniinfer/infer_engines/sglang/python:${CODE_PATH}/omniinfer:$PYTHONPATH
-
+      export MLP_TP_SIZE=4
       dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
       ((dp++))
 

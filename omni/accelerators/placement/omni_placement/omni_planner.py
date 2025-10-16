@@ -190,6 +190,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             device=self.device,
             dtype=torch.int64
         )
+        torch._dynamo.mark_static(self.npu_activation_count)
         self.max_activation_count = int(1e16)
 
         self.cluster_activation = create_cluster_activation(
@@ -213,7 +214,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             )
 
     def is_moe_layer(self, layer_idx_moe):
-        return layer_idx_moe < self.max_moe_layer_num
+        return 0 <= layer_idx_moe < self.max_moe_layer_num
     
     def start_dynamic_optimize_expert_load_balance(self):
         is_thread_required = self.enable_dynamic or self.enable_dump
@@ -252,7 +253,11 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         """
         is_expert_on_current_rank func adapter for SGLang FrameWork
         """
-        exists, local_position = self.is_expert_on_current_rank(layer_id - self.first_k_dense_replace, expert_id, self.rank)
+        moe_layer_idx = self.get_moe_layer_idx(layer_id)
+        if not self.is_moe_layer(moe_layer_idx):
+            return [expert_id]
+        
+        exists, local_position = self.is_expert_on_current_rank(moe_layer_idx, expert_id, self.rank)
         if not exists:
             return []
         else:

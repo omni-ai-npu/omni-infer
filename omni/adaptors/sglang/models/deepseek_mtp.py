@@ -20,19 +20,18 @@ import torch
 from torch import nn
 from transformers import PretrainedConfig
 
-from sglang.srt.distributed import get_tensor_model_parallel_world_size
+from sglang.srt.distributed import get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
-from sglang.srt.layers.layernorm import RMSNorm
+from omni.adaptors.sglang.layers.layernorm import RMSNorm
 from sglang.srt.layers.logits_processor import LogitsProcessor
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
-from sglang.srt.layers.vocab_parallel_embedding import (
-    ParallelLMHead,
-    VocabParallelEmbedding,
-)
+from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from .deepseek_v3 import DeepseekDecoderLayer, DeepseekV3ForCausalLM
 from sglang.srt.utils import BumpAllocator, add_prefix
+
+from omni.adaptors.sglang.layers.vocab_parallel_embedding import VocabParallelEmbedding
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +95,18 @@ class DeepseekModelNextN(nn.Module):
         else:
             hidden_states = input_embeds
 
+        cos, sin = self.decoder.self_attn.rotary_emb.get_cos_sin(positions)
+        forward_batch.attn_backend.forward_metadata.cos = cos
+        forward_batch.attn_backend.forward_metadata.sin = sin
+
+        tp_size = get_tensor_model_parallel_world_size()
+        rank_in_group = get_tensor_model_parallel_rank()
+        if forward_batch.is_extend_in_batch :
+            token_num = forward_batch.spec_info.hidden_states.shape[0]
+            start_range = rank_in_group * (token_num // tp_size)
+            end_range = (1 + rank_in_group) * (token_num // tp_size)
+            forward_batch.spec_info.hidden_states = forward_batch.spec_info.hidden_states[start_range: end_range, :]
+
         if hidden_states.shape[0] > 0:
             hidden_states = self.eh_proj(
                 torch.cat(
@@ -108,16 +119,16 @@ class DeepseekModelNextN(nn.Module):
             )
 
         residual = None
-        with get_global_expert_distribution_recorder().disable_this_region():
-            hidden_states, residual = self.decoder(
-                positions, hidden_states, forward_batch, residual, zero_allocator
-            )
+        # with get_global_expert_distribution_recorder().disable_this_region():
+        hidden_states, residual = self.decoder(
+            positions, hidden_states, forward_batch, residual, zero_allocator
+        )
 
-        if not forward_batch.forward_mode.is_idle():
-            if residual is not None:
-                hidden_states, _ = self.shared_head.norm(hidden_states, residual)
-            else:
-                hidden_states = self.shared_head.norm(hidden_states)
+        # if not forward_batch.forward_mode.is_idle():
+        if residual is not None:
+            hidden_states, _ = self.shared_head.norm(hidden_states, residual)
+        else:
+            hidden_states = self.shared_head.norm(hidden_states)
 
         return hidden_states
 

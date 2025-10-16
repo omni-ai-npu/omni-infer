@@ -173,7 +173,7 @@ class VocabParallelEmbedding(VocabParallelEmbeddingGPU):
         if self.tp_size > 1:
             output_parallel.masked_fill_(input_mask.unsqueeze(-1), 0)
             # Reduce across all the model parallel GPUs.
-            output = tensor_model_local_world_parallel_all_reduce(output_parallel)
+            output = get_local_world_group().reduce_scatter_(output_parallel)
         else:
             output = output_parallel
         return output

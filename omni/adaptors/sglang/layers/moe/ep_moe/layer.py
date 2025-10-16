@@ -26,6 +26,9 @@ from sglang.srt.layers.quantization.base_config import (
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.utils import dispose_tensor
+from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
+from sglang.srt.eplb.expert_location import get_global_expert_location_metadata
+from sglang.srt.eplb.expert_location_dispatch import topk_ids_logical_to_physical
 
 from torch.distributed import ProcessGroup
 
@@ -473,9 +476,13 @@ class FusedMoE(DeepEPMoE):
             routed_scaling_factor=routed_scaling_factor,
             deepep_mode=deepep_mode,
         )
-        self.planner = kwargs.get("planner", None)
-        self.moe_layer_idx = kwargs.get("moe_layer_idx", None)
-        self.expert_mapping = kwargs.get("expert_mapping", None)
+
+        self.moe_layer_idx = None
+        self.expert_mapping = None
+        if global_server_args_dict["enable_omni_placement"]:
+            self.moe_layer_idx = get_global_expert_location_metadata().get_moe_layer_idx(layer_id)
+            self.expert_mapping = get_global_expert_location_metadata().expert_mapping_on_current_layer(self.moe_layer_idx)
+
         self.quant_scale = torch.nn.Parameter(
             torch.ones(
                 size=(self.num_local_experts, self.w2_weight.size(-1)),
@@ -584,14 +591,8 @@ class FusedMoE(DeepEPMoE):
             best_topk_ids: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         # omni placement
-        if self.planner is not None:
-            _, topk_ids, _ = self.planner.plan(
-                layer_idx_moe=self.moe_layer_idx,
-                tokens=None,
-                token_expert_ids=topk_ids,
-                token_expert_scores=None,
-                expert_mapping=self.expert_mapping
-            )
+        if global_server_args_dict["enable_omni_placement"]:
+            topk_ids = topk_ids_logical_to_physical(topk_ids, layer_idx_moe=self.moe_layer_idx, expert_mapping=self.expert_mapping)
 
         # Forced load balance
         #to do: get best_ep from model_extra_config
@@ -688,6 +689,14 @@ def moe_infer_fusion(
     )
     expert_tokens = expert_tokens.to(torch.int64)
 
+    get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
+        layer.layer_id,
+        [],
+        num_tokens_per_rank=None,
+        num_tokens_per_rdma_rank=None,
+        num_tokens_per_expert=expert_tokens,
+    )
+
     hidden_size = hidden_states.size(-1)
 
     if dynamic_scale is not None and dynamic_scale.dim() > 1:
@@ -731,7 +740,7 @@ def moe_infer_fusion(
         group_list=expert_tokens,
         split_item=3,
         group_type=0,
-        scale=[layer.w2_weight_scale.squeeze(-1).to(torch.bfloat16)],
+        scale=[layer.w2_weight_scale.squeeze(-1)],
         per_token_scale=[dynamic_scale],
         output_dtype=torch.bfloat16,
         tuning_config=[0],

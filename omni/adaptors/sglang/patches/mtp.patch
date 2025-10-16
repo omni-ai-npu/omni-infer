@@ -346,10 +346,30 @@ index aa49e4fc7..972904863 100644
              retrive_cum_len=None,
              topk=topk,
 diff --git a/python/sglang/srt/speculative/eagle_worker.py b/python/sglang/srt/speculative/eagle_worker.py
-index 376cd029c..9d277def9 100644
+index 376cd029c..02f74fabd 100644
 --- a/python/sglang/srt/speculative/eagle_worker.py
 +++ b/python/sglang/srt/speculative/eagle_worker.py
-@@ -165,7 +165,10 @@ class EAGLEWorker(TpModelWorker):
+@@ -99,6 +99,8 @@ class EAGLEWorker(TpModelWorker):
+         # It will be captured later.
+         backup_disable_cuda_graph = server_args.disable_cuda_graph
+         server_args.disable_cuda_graph = True
++        backup_enable_torch_compile = server_args.enable_torch_compile
++        server_args.enable_torch_compile = False
+         # Share the allocator with a target worker.
+         # Draft and target worker own their own KV cache pools.
+         self.req_to_token_pool, self.token_to_kv_pool_allocator = (
+@@ -160,12 +162,21 @@ class EAGLEWorker(TpModelWorker):
+         self.draft_model_runner.server_args.disable_cuda_graph = (
+             backup_disable_cuda_graph
+         )
++        self.draft_model_runner.server_args.enable_torch_compile = (
++            backup_enable_torch_compile
++        )
++        self.draft_model_runner.enable_torch_compile = (
++            backup_enable_torch_compile
++        )
+         self.draft_tp_context = (
+             draft_tp_context if server_args.enable_dp_attention else empty_context
          )
          with self.draft_tp_context(self.draft_model_runner.tp_group):
              self.init_attention_backend()
@@ -361,7 +381,7 @@ index 376cd029c..9d277def9 100644
  
          # Some dummy tensors
          self.num_new_pages_per_topk = torch.empty(
-@@ -211,6 +214,12 @@ class EAGLEWorker(TpModelWorker):
+@@ -211,6 +222,12 @@ class EAGLEWorker(TpModelWorker):
                      skip_prefill=False,
                  )
              self.has_prefill_wrapper_verify = True
@@ -376,10 +396,10 @@ index 376cd029c..9d277def9 100644
                  TritonAttnBackend,
 diff --git a/python/sglang/srt/speculative/mtp_worker.py b/python/sglang/srt/speculative/mtp_worker.py
 new file mode 100644
-index 000000000..85bd91c0a
+index 000000000..1163c2801
 --- /dev/null
 +++ b/python/sglang/srt/speculative/mtp_worker.py
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,349 @@
 +import logging
 +import os
 +import time
@@ -404,12 +424,7 @@ index 000000000..85bd91c0a
 +    ForwardMode,
 +)
 +from sglang.srt.server_args import ServerArgs
-+from sglang.srt.speculative.eagle_draft_cuda_graph_runner import (
-+    EAGLEDraftCudaGraphRunner,
-+)
-+from sglang.srt.speculative.eagle_draft_extend_cuda_graph_runner import (
-+    EAGLEDraftExtendCudaGraphRunner,
-+)
++from omni.adaptors.sglang.model_executor.npu_graph_runner import NpuGraphRunner
 +from sglang.srt.speculative.eagle_utils import (
 +    EagleDraftInput,
 +    EagleVerifyInput,
@@ -448,24 +463,18 @@ index 000000000..85bd91c0a
 +    def init_npu_graphs(self):
 +        """Enable torch.compile and graph engine with Npu."""
 +
-+        # current mtp layer do not support npu graph
-+        return
-+
 +        if not self.server_args.enable_torch_compile:
 +            return
 +
-+        if not self.is_generation:
-+            # TODO: Currently, npu graph only captures decode steps, which only exists for generation models
-+            return
-+
++        self.cuda_graph_runner = None
 +
 +        tic = time.perf_counter()
 +        before_mem = get_available_gpu_memory(self.device, self.gpu_id)
 +        logger.info(
-+            f"Compile graph with npu begin. This can take up to several minutes. avail mem={before_mem:.2f} GB"
++            f"Compile draft npu graph begin. This can take up to several minutes. avail mem={before_mem:.2f} GB"
 +        )
-+        with torch.get_device_module(self.device).stream(self.forward_stream):
-+            self.device_graph_runner = NpuGraphRunner(self)
++        with torch.get_device_module(self.device).stream(self.draft_model_runner.forward_stream):
++            self.draft_model_runner.device_graph_runner = NpuGraphRunner(self.draft_model_runner)
 +        after_mem = get_available_gpu_memory(self.device, self.gpu_id)
 +        self.graph_mem_usage = before_mem - after_mem
 +        logger.info(
@@ -588,12 +597,12 @@ index 000000000..85bd91c0a
 +                                accept_length_cpu=accept_length.tolist(),
 +                                seq_lens_for_draft_extend=batch.seq_lens,
 +                                req_pool_indices_for_draft_extend=batch.req_pool_indices,
++                                capture_hidden_mode=CaptureHiddenMode.LAST
 +                                )
-+                forward_batch.token_to_kv_pool = self.draft_model_runner.token_to_kv_pool
 +
++            forward_batch.token_to_kv_pool = self.draft_model_runner.token_to_kv_pool
 +            forward_batch.spec_info = draft_input
-+            forward_batch.input_ids = next_token_ids
-+            forward_batch.can_run_dp_cuda_graph = False
++            forward_batch.input_ids = next_token_ids.to(torch.int64)
 +
 +            # Run MTP
 +            with self.draft_tp_context(self.draft_model_runner.tp_group):

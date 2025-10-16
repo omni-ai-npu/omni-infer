@@ -21,6 +21,7 @@ from sglang.srt.layers.linear import (
     MergedColumnParallelLinear as MergedColumnParallelLinearGPU,
 )
 from sglang.srt.layers.linear import RowParallelLinear as RowParallelLinearGPU
+from sglang.srt.layers.dp_attention import get_attention_tp_group
 from torch.nn.parameter import Parameter, UninitializedParameter
 
 from omni.adaptors.sglang.distributed import get_mlp_tp_group, get_o_proj_tp_group
@@ -88,6 +89,42 @@ class RowParallelLinear(RowParallelLinearGPU):
 
         if self.reduce_results and self.tp_size > 1 and not skip_all_reduce:
             output = tp_group.all_reduce(output_parallel)
+        else:
+            output = output_parallel
+
+        output_bias = self.bias if self.skip_bias_add else None
+
+        return output, output_bias
+
+class RowParallelLinearWithReduceScatter(RowParallelLinear):
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.bias is not None:
+            raise RuntimeError("self.bias is not None")
+        
+    def forward(self, input_):
+        if self.input_is_parallel:
+            input_parallel = input_
+        else:
+            splitted_input = split_tensor_along_last_dim(
+                input_, num_partitions=self.tp_size)
+            input_parallel = splitted_input[self.tp_rank].contiguous()
+
+        # Matrix multiply.
+        if self.quant_method is None:
+            raise RuntimeError("self.quant_method is None")
+        # Only fuse bias add into GEMM for rank 0 (this ensures that
+        # bias will not get added more than once in TP>1 case)
+        bias_ = None if (self.tp_rank > 0 or self.skip_bias_add) else self.bias
+
+        tp_group = get_attention_tp_group()
+        with use_symmetric_memory(tp_group) as sm:
+            output_parallel = self.quant_method.apply(self, input_parallel, bias=bias_)
+            sm.tag(output_parallel)
+
+        if self.reduce_results and self.tp_size > 1:
+            output = tp_group.reduce_scatter_(output_parallel)
         else:
             output = output_parallel
 

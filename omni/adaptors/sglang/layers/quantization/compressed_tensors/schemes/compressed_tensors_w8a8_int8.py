@@ -2,7 +2,7 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 from typing import Any, Callable, Dict, List, Optional, Union
-
+import os
 import torch
 import torch_npu
 from compressed_tensors.quantization import QuantizationStrategy
@@ -107,7 +107,12 @@ class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
         if getattr(layer, "throw_dequant", False):
             weight_scale = weight_scale.to(torch.float32)
         weight_offset = layer.weight_offset
-        layer.weight = Parameter(weight.t().contiguous(), requires_grad=False)
+        is_prefill = (os.getenv("IS_PREFILL", "0") == "1")
+        if is_prefill:
+            layer.weight = Parameter(weight.t().contiguous(), requires_grad=False)
+        else:
+            weight = torch_npu.npu_format_cast(weight.t().contiguous(), 29)
+            layer.weight = Parameter(weight, requires_grad=False)
 
         layer.weight_scale = Parameter(weight_scale.view(-1), requires_grad=False)
         layer.weight_offset = Parameter(
