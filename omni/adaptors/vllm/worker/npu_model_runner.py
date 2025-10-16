@@ -1013,6 +1013,9 @@ class NPUModelRunner(GPUModelRunner):
         # Initialize KV caches
         kv_caches = self.initialize_kv_cache_tensors(kv_cache_config)  # TODO readd preemption swap handling
 
+        # Initialize attn metadata builders
+        self.initialize_attn_metadata_builders(kv_cache_config)
+
         preemption_mode = self.vllm_config.scheduler_config.preemption_mode
         if preemption_mode and preemption_mode == "swap":
             self.cache_engine = CacheEngine(self.attn_backends, self.kv_cache_config, gpu_cache=kv_caches, cpu_cache=cpu_caches)

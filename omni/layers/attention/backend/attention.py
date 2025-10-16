@@ -150,7 +150,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         self.dtype = runner.dtype
         self.device = runner.device
         self.kv_cache_spec = kv_cache_spec
-        self.block_size = runner.block_size
+        self.block_size = block_table.block_size
         self.block_table = block_table
 
     def reorder_batch(self, input_batch: "InputBatch",

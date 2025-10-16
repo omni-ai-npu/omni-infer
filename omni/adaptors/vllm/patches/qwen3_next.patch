@@ -11,7 +11,7 @@ index f3d6ffaeb..3aebcbde5 100644
          raise NotImplementedError
  
 diff --git a/vllm/config.py b/vllm/config.py
-index 5b255e210..b5775094c 100644
+index 5b255e210..baa23b655 100644
 --- a/vllm/config.py
 +++ b/vllm/config.py
 @@ -220,6 +220,7 @@ def is_init_field(cls: ConfigType, name: str) -> bool:
@@ -3384,10 +3384,10 @@ index 0758747a8..256a4cb8e 100644
      for layer_index in sorted(index2name.keys()):
          layer_names = index2name[layer_index]
 diff --git a/vllm/v1/worker/block_table.py b/vllm/v1/worker/block_table.py
-index 576086ebe..354825f1e 100644
+index 576086ebe..d50bbab3d 100644
 --- a/vllm/v1/worker/block_table.py
 +++ b/vllm/v1/worker/block_table.py
-@@ -1,30 +1,68 @@
+@@ -1,37 +1,75 @@
  # SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
  
@@ -3456,8 +3456,17 @@ index 576086ebe..354825f1e 100644
 +        self.max_num_blocks_per_req = max_num_blocks_per_req * self.blocks_per_kv_block
 +
          self.block_table = torch.zeros(
-             (max_num_reqs, max_num_blocks_per_req),
+-            (max_num_reqs, max_num_blocks_per_req),
++            (max_num_reqs, self.max_num_blocks_per_req),
              device=self.device,
+             dtype=torch.int32,
+         )
+         self.block_table_cpu = torch.zeros(
+-            (max_num_reqs, max_num_blocks_per_req),
++            (max_num_reqs, self.max_num_blocks_per_req),
+             device="cpu",
+             dtype=torch.int32,
+             pin_memory=pin_memory,
 @@ -48,6 +86,21 @@ class BlockTable:
                                          dtype=torch.int64,
                                          device=self.device)
@@ -3733,7 +3742,7 @@ index b3e65917d..a9b9a683e 100644
  
          # Sampling-related.
 diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
-index 9b848fac5..be783c467 100644
+index 9b848fac5..ee69fb663 100644
 --- a/vllm/v1/worker/gpu_model_runner.py
 +++ b/vllm/v1/worker/gpu_model_runner.py
 @@ -26,6 +26,7 @@ from vllm.distributed.parallel_state import (
@@ -3763,6 +3772,15 @@ index 9b848fac5..be783c467 100644
          )
  
          self.use_cuda_graph = (self.vllm_config.compilation_config.level
+@@ -1935,7 +1937,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+ 
+     def initialize_attn_backend(self, kv_cache_config: KVCacheConfig) -> None:
+         """
+-        Initialize the attention backends and attention metadata builders.
++        Initialize the attention backends.
+         """
+         assert len(self.attn_backends) == 0 and len(
+             self.attn_metadata_builders
 @@ -1944,16 +1946,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  kv_cache_config.kv_cache_groups):
              kv_cache_spec = kv_cache_group_spec.kv_cache_spec
@@ -3793,7 +3811,40 @@ index 9b848fac5..be783c467 100644
              if attn_backend_i is None:
                  error_msg = (
                      f"Error with get_attn_backend: {kv_cache_spec.head_size=}, "
-@@ -2040,6 +2045,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1977,10 +1982,23 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                         f"{attn_backend_name}, FlashAttention version is "
+                         f"{flash_attn_version}.")
+ 
++            self.attn_backends.append(attn_backend_i)
++
++    def initialize_attn_metadata_builders(self, kv_cache_config: KVCacheConfig) -> None:
++        """
++        Initialize the attention metadata builders.
++        """
++        assert len(
++            self.attn_metadata_builders
++        ) == 0, "Attention metadata builders are already initialized"
++        for i, kv_cache_group_spec in enumerate(
++                kv_cache_config.kv_cache_groups):
++            kv_cache_spec = kv_cache_group_spec.kv_cache_spec
+             block_table_i = self.input_batch.block_table[i]
++            attn_backend_i = self.attn_backends[i]
++
+             attn_metadata_builder_i = attn_backend_i.get_builder_cls()(
+                 weakref.proxy(self), kv_cache_spec, block_table_i)
+-            self.attn_backends.append(attn_backend_i)
+             self.attn_metadata_builders.append(attn_metadata_builder_i)
+ 
+     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
+@@ -1996,6 +2014,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 "supported yet.")
+         self.kv_cache_config = kv_cache_config
+         self.initialize_attn_backend(kv_cache_config)
++        self.initialize_attn_metadata_builders(kv_cache_config)
+ 
+         kv_caches: dict[str, torch.Tensor] = {}
+ 
+@@ -2040,6 +2059,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          if has_kv_transfer_group():
              get_kv_transfer_group().register_kv_caches(kv_caches)
  
@@ -3801,7 +3852,7 @@ index 9b848fac5..be783c467 100644
      def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
          """
          Generates the KVCacheSpec by parsing the kv cache format from each
-@@ -2049,36 +2055,225 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -2049,36 +2069,225 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              format. Layers that do not need KV cache are not included.
          """
  
