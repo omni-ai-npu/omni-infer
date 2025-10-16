@@ -57,7 +57,7 @@ from omni.adaptors.vllm.utils import get_attr_by_names
 
 from vllm.config import VllmConfig, get_layers_from_vllm_config
 from omni.layers.attention.linear.abstract import MambaBase
-from vllm.v1.kv_cache_interface import MambaSpec
+from vllm.v1.kv_cache_interface import MambaSpec, UniformTypeKVCacheSpecs
 
 if TYPE_CHECKING:
     import xgrammar as xgr  # type: ignore[import-untyped]
@@ -231,7 +231,7 @@ class NPUModelRunner(GPUModelRunner):
 
         # OPTIMIZATION: Start copying the block table first.
         # This way, we can overlap the copy with the following CPU operations.
-        self.input_batch.block_table.commit(num_reqs)
+        self.input_batch.block_table.commit_block_table(num_reqs)
 
         # Get the number of scheduled tokens for each request.
         num_scheduled_tokens = np.array([
@@ -265,20 +265,8 @@ class NPUModelRunner(GPUModelRunner):
         self.seq_lens_np[:num_reqs] = self.input_batch.num_computed_tokens_cpu[:num_reqs] + num_scheduled_tokens
 
         # Calculate the slot mapping for each KV cache group.
-        for kv_cache_group_id, kv_cache_group_spec in enumerate(self.kv_cache_config.kv_cache_groups):
-            block_size = kv_cache_group_spec.kv_cache_spec.block_size
-            block_table: BlockTable = self.input_batch.block_table[kv_cache_group_id]
-            # NOTE(runze): since each request has at most M blocks, the offset is at most M-1
-            block_table_indices = (
-                req_indices * block_table.max_num_blocks_per_req +
-                np.minimum(positions_np // block_size, block_table.max_num_blocks_per_req - 1))
-            block_table_cpu = block_table.get_cpu_tensor()
-            block_numbers = block_table_cpu.flatten()[block_table_indices].numpy()
-            block_offsets = positions_np % block_size
-            np.add(
-                block_numbers * block_size,
-                block_offsets,
-                out=block_table.slot_mapping_np[:total_num_scheduled_tokens])
+        self.input_batch.block_table.compute_slot_mapping(req_indices, positions_np)
+        self.input_batch.block_table.commit_slot_mapping(total_num_scheduled_tokens)
 
         # check and set attention state
         can_decode = self.vllm_config.kv_transfer_config is None or self.vllm_config.kv_transfer_config.kv_role == "kv_consumer"
@@ -989,6 +977,8 @@ class NPUModelRunner(GPUModelRunner):
         kv_caches: Dict[str, torch.Tensor] = {}
         cpu_caches: Dict[str, torch.Tensor] = {}
         self.kv_cache_config = kv_cache_config
+
+        # Initialize input batch for attn backend
         self.input_batch = InputBatch(
             max_num_reqs=self.max_num_reqs,
             max_model_len=self.model_config.max_model_len,
@@ -996,7 +986,8 @@ class NPUModelRunner(GPUModelRunner):
             device=self.device,
             pin_memory=is_pin_memory_available(),
             vocab_size=self.model_config.get_vocab_size(),
-            block_sizes=[kv_cache_group.kv_cache_spec.block_size for kv_cache_group in kv_cache_config.kv_cache_groups]
+            block_sizes=[kv_cache_group.kv_cache_spec.block_size for kv_cache_group in kv_cache_config.kv_cache_groups],
+            kernel_block_sizes=[kv_cache_group.kv_cache_spec.block_size for kv_cache_group in kv_cache_config.kv_cache_groups],
         )
         self.input_batch.token_ids_cpu_tensor = torch.zeros(
             (self.max_num_reqs, self.model_config.max_model_len),
@@ -1005,37 +996,24 @@ class NPUModelRunner(GPUModelRunner):
             pin_memory=False,
         )
         self.input_batch.token_ids_cpu = self.input_batch.token_ids_cpu_tensor.numpy()
+
+        # Initialize attn backend
         self.initialize_attn_backend(kv_cache_config)
-        preemption_mode = self.vllm_config.scheduler_config.preemption_mode
+
+        # Reinitialize input batch
+        self.may_reinitialize_input_batch(kv_cache_config)
+        self.input_batch.token_ids_cpu_tensor = torch.zeros(
+            (self.max_num_reqs, self.model_config.max_model_len),
+            device="cpu",
+            dtype=torch.int64,
+            pin_memory=False,
+        )
+        self.input_batch.token_ids_cpu = self.input_batch.token_ids_cpu_tensor.numpy()
         
-        kv_caches = self.initialize_kv_cache_tensors(kv_cache_config)
+        # Initialize KV caches
+        kv_caches = self.initialize_kv_cache_tensors(kv_cache_config)  # TODO readd preemption swap handling
 
-        # for i, kv_cache_group in enumerate(kv_cache_config.kv_cache_groups):
-        #     kv_cache_spec = kv_cache_group.kv_cache_spec
-        #     for j, layer_name in enumerate(kv_cache_group.layer_names):
-        #         tensor_config = kv_cache_config.tensors[j]
-        #         if tensor_config.size % kv_cache_spec.page_size_bytes != 0:
-        #             raise RuntimeError("tensor_config.size must be divisible by kv_cache_spec.page_size_bytes")
-        #         num_blocks = tensor_config.size // kv_cache_spec.page_size_bytes
-        #         if isinstance(kv_cache_spec, AttentionSpec):
-        #             kv_cache_shape = self.attn_backends[i].get_kv_cache_shape(
-        #                 num_blocks, kv_cache_spec.block_size,
-        #                 kv_cache_spec.num_kv_heads, kv_cache_spec.head_size)
-        #             kv_caches[layer_name] = self.attn_backends[i].init_kv_cache_each_layer(kv_cache_shape, self.dtype,
-        #                                                                                    self.device,
-        #                                                                                    self.model_config,
-        #                                                                                    self.enable_torchair_graph_mode)
-        #             if preemption_mode and preemption_mode == "swap":
-        #                 cpu_num_blocks = int(self.vllm_config.cache_config.swap_space_bytes //
-        #                                   kv_cache_spec.page_size_bytes // len(kv_cache_config.tensors))
-        #                 cpu_kv_cache_shape = self.attn_backends[i].get_kv_cache_shape(
-        #                     cpu_num_blocks, kv_cache_spec.block_size,
-        #                     kv_cache_spec.num_kv_heads, kv_cache_spec.head_size)
-        #                 cpu_caches[layer_name] = self.attn_backends[i].init_kv_cache_each_layer(cpu_kv_cache_shape, self.dtype,
-        #                                                                                    "cpu",
-        #                                                                                    self.model_config,
-        #                                                                                    self.enable_torchair_graph_mode)  # TODO add attn_backend reshapes? preemption?
-
+        preemption_mode = self.vllm_config.scheduler_config.preemption_mode
         if preemption_mode and preemption_mode == "swap":
             self.cache_engine = CacheEngine(self.attn_backends, self.kv_cache_config, gpu_cache=kv_caches, cpu_cache=cpu_caches)
 
@@ -1044,6 +1022,131 @@ class NPUModelRunner(GPUModelRunner):
 
         if EmsEnv.enable_vllm_ems:
             self.ems_adapter.bind_kvcaches(self.kv_caches)
+
+    def may_reinitialize_input_batch(self, kv_cache_config: KVCacheConfig) -> None:
+        """
+        Re-initialize the input batch if the block sizes are different from
+        `[self.cache_config.block_size]`. This usually happens when there
+        are multiple KV cache groups.
+
+        Args:
+            kv_cache_config: The KV cache configuration.
+        """
+        block_sizes = [
+            kv_cache_group.kv_cache_spec.block_size
+            for kv_cache_group in kv_cache_config.kv_cache_groups
+        ]
+
+        # Generate kernel_block_sizes that matches each block_size
+        kernel_block_sizes = self._prepare_kernel_block_sizes(kv_cache_config)
+
+        if block_sizes != [self.cache_config.block_size] or kernel_block_sizes != [
+            self.cache_config.block_size
+        ]:
+            assert self.cache_config.cpu_offload_gb == 0, (
+                "Cannot re-initialize the input batch when CPU weight "
+                "offloading is enabled. See https://github.com/vllm-project/vllm/pull/18298 "  # noqa: E501
+                "for more details."
+            )
+            self.input_batch = InputBatch(
+                max_num_reqs=self.max_num_reqs,
+                max_model_len=max(self.model_config.max_model_len, self.max_encoder_len) if hasattr(self, "max_encoder_len") else self.model_config.max_model_len,
+                max_num_batched_tokens=self.max_num_tokens,
+                device=self.device,
+                pin_memory=is_pin_memory_available(),
+                vocab_size=self.model_config.get_vocab_size(),
+                block_sizes=block_sizes,
+                kernel_block_sizes=kernel_block_sizes,
+                num_speculative_tokens=(
+                    self.vllm_config.speculative_config.num_speculative_tokens
+                    if self.vllm_config.speculative_config
+                    else 0
+                ),
+            )
+
+    def _prepare_kernel_block_sizes(self, kv_cache_config: KVCacheConfig) -> list[int]:
+        """
+        Generate kernel_block_sizes that matches each block_size.
+
+        For attention backends that support virtual block splitting,
+        use the supported block sizes from the backend.
+        For other backends (like Mamba), use the same block size (no splitting).
+
+        Args:
+            kv_cache_config: The KV cache configuration.
+
+        Returns:
+            list[int]: List of kernel block sizes for each cache group.
+        """
+        kernel_block_sizes = []
+        for kv_cache_group_id, kv_cache_group in enumerate(
+            kv_cache_config.kv_cache_groups
+        ):
+            kv_cache_spec = kv_cache_group.kv_cache_spec
+            if isinstance(kv_cache_spec, UniformTypeKVCacheSpecs):
+                # All layers in the UniformTypeKVCacheSpecs have the same type,
+                # Pick an arbitrary one to dispatch.
+                kv_cache_spec = next(iter(kv_cache_spec.kv_cache_specs.values()))
+            if isinstance(kv_cache_spec, AttentionSpec):
+                # This is an attention backend that supports virtual
+                # block splitting. Get the supported block sizes from
+                # all backends in the group.
+                kv_manager_block_size = kv_cache_group.kv_cache_spec.block_size
+                selected_kernel_size = self._select_common_block_size(
+                    kv_manager_block_size, kv_cache_group_id
+                )
+                kernel_block_sizes.append(selected_kernel_size)
+            elif isinstance(kv_cache_spec, MambaSpec):
+                # This is likely Mamba or other non-attention cache,
+                # no splitting.
+                kernel_block_sizes.append(kv_cache_spec.block_size)
+            else:
+                raise NotImplementedError(
+                    f"unknown kv cache spec {kv_cache_group.kv_cache_spec}"
+                )
+        return kernel_block_sizes
+
+    def _select_common_block_size(
+        self, kv_manager_block_size: int, kv_cache_group_id: int
+    ) -> int:
+        """
+        Select common block size for all backends.
+
+        Args:
+            kv_manager_block_size: Block size of KV cache
+            kv_cache_group_id: KV cache group id
+
+        Returns:
+            Block size supported by all backends,
+            prioritizing cache_config.block_size
+
+        Raises:
+            ValueError: If no common block size found
+        """
+        all_backend_supports = []
+
+        for attn_backend in self.attn_backends[kv_cache_group_id-1:kv_cache_group_id]:
+            compatible_sizes = self._find_compatible_block_sizes(
+                kv_manager_block_size, attn_backend, return_all=True
+            )
+            supported_sizes = sorted(list(set(compatible_sizes)), reverse=True)
+            all_backend_supports.append(set(supported_sizes))
+
+        common_supported_sizes = set.intersection(*all_backend_supports)
+
+        if not common_supported_sizes:
+            error_msg = f"No common block size for {kv_manager_block_size}. "
+            for i, attn_backend in enumerate(self.attn_backends):
+                supported = all_backend_supports[i]
+                error_msg += (
+                    f"Backend {attn_backend} supports: {sorted(supported)}. "
+                )
+            raise ValueError(error_msg)
+
+        if self.cache_config.block_size in common_supported_sizes:
+            return self.cache_config.block_size
+
+        return max(common_supported_sizes)
 
     def _allocate_kv_cache_tensors(
         self, kv_cache_config: KVCacheConfig
@@ -1139,6 +1242,9 @@ class NPUModelRunner(GPUModelRunner):
         Raises:
             ValueError: If no compatible block size found
         """
+        # AscendAttentionBackendImpl needs 128
+        return [128]
+
         supported_block_size = backend_cls.get_supported_kernel_block_size()
         compatible_sizes = []
 
@@ -1146,11 +1252,10 @@ class NPUModelRunner(GPUModelRunner):
             if isinstance(block_size, int):
                 if kv_manager_block_size % block_size == 0:
                     compatible_sizes.append(block_size)
-            # elif (
-            #     isinstance(block_size, MultipleOf)
-            #     and kv_manager_block_size % block_size.base == 0
-            # ):
-            #     compatible_sizes.append(kv_manager_block_size)
+            elif (
+                kv_manager_block_size % block_size.base == 0
+            ):
+                compatible_sizes.append(kv_manager_block_size)
 
         if not compatible_sizes:
             raise ValueError(f"No compatible block size for {kv_manager_block_size}")
@@ -1252,6 +1357,7 @@ class NPUModelRunner(GPUModelRunner):
                 else:
                     raise NotImplementedError
 
+        # NOTE: NPU kernels need contiguous layout
         # if has_attn and has_mamba:
         #     self._update_hybrid_attention_mamba_layout(kv_caches)
 
