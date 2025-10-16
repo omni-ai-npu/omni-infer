@@ -5,29 +5,20 @@
         },
         "messages": {
             "validator_type": "supported",
-            "subfield": ["messages.name", "messages.role", "messages.tool_call_id", "messages.content", 
-                         "messages.prefix", "messages.refusal", "messages.partial", "messages.tool_calls", 
-                         "messages.tool_calls.type", "messages.tool_calls.id", "messages.tool_calls.function", 
-                         "messages.tool_calls.function.arguments", "messages.tool_calls.function.name"],
-            "need_check_subfield": ["messages", "messages.tool_calls", "messages.tool_calls.function"]
+            "unsupported_subfield": ["messages.content.text", "messages.content.type", "messages.content.refusal"]
         },
         "stream": {
             "validator_type": "supported"
         },
         "stream_options": {
-            "validator_type": "supported",
-            "subfield": ["stream_options.include_usage", "stream_options.chunk_include_usage"],
-            "need_check_subfield": ["stream_options"]
+            "validator_type": "supported"
         },
         "tool_choice": {
             "validator_type": "value",
             "target_value": ["auto"]
         },
         "tools": {
-            "validator_type": "supported",
-            "subfield": ["tools.type", "tools.function", "tools.function.description", "tools.function.name",
-                         "tools.function.parameters", "tools.function.strict"],
-            "need_check_subfield": ["tools", "tools.function"]
+            "validator_type": "supported"
         },
         "chat_template": {
             "validator_type": "supported"
@@ -121,20 +112,9 @@
         },
         "enable_thinking": {
             "validator_type": "supported"
-        }
-    },
-    "custom_validators": {
-        "continue_final_message": {
-            "validator_type": "value",
-            "param_name": "add_generation_prompt", 
-            "target_value": [false],
-            "error_msg": "`add_generation_prompt` must equal false to use `continue_final_message`"
         },
-        "stream_options": {
-            "validator_type": "value",
-            "param_name": "stream", 
-            "target_value": [true],
-            "error_msg": "`stream` must equal true to use `stream_options`"
+        "kv_transfer_params": {
+            "validator_type": "supported"
         }
     }
 }

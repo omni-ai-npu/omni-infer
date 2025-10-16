@@ -37,41 +37,37 @@ class SupportedValidator(BaseValidator):
             self,
             param_name: str,
             error_msg: Optional[str] = None,
-            subfield: list = [],
-            need_check_subfield: list = []
+            unsupported_subfield: list = []
     ):
         super().__init__(param_name, error_msg)
-        self.subfield = subfield
-        self.need_check_subfield = need_check_subfield
+        self.unsupported_subfield = unsupported_subfield
 
     def check_field(self, value: Any, curr_field: str = ""):
-        if curr_field in self.need_check_subfield:
-            if isinstance(value, dict):
-                return self.check_subfield_dict(value, curr_field)
-            if isinstance(value, list):
-                return self.check_subfield_list(value, curr_field)
+        if isinstance(value, dict):
+            return self.check_subfield_dict(value, curr_field)
+        if isinstance(value, list):
+            return self.check_subfield_list(value, curr_field)
         return None
 
     def check_subfield_dict(self, value: Any, curr_field: str):
-        for param_name, val in value.items():
+        for param_name, val in list(value.items()):
             curr_subfield = f"{curr_field}.{param_name}"
-            if curr_subfield not in self.subfield:
-                return self.error_msg or f"`{curr_subfield}` is not supported."
-            if isinstance(val, (dict, list)):
-                if check_result := self.check_field(val, curr_subfield):
-                    return check_result
+            if curr_subfield in self.unsupported_subfield:
+                value.pop(param_name)
+            elif isinstance(val, (dict, list)):
+                self.check_field(val, curr_subfield)
         return None
     
     def check_subfield_list(self, value: Any, curr_field: str):
         for val in value:
             if isinstance(val, dict):
-                if check_result := self.check_subfield_dict(val, curr_field):
-                    return check_result
+                self.check_subfield_dict(val, curr_field)
         return None
 
     def validate(self, value: Any) -> Optional[str]:
         # The value must be included within the subfield.
-        return self.check_field(value, self.param_name)
+        self.check_field(value, self.param_name)
+        return None
 
 
 class RangeValidator(BaseValidator):
@@ -125,8 +121,7 @@ def create_validator(param_name: str, config: dict[str, Any]) -> Optional[BaseVa
         return SupportedValidator(
             param_name=config.get("param_name", param_name),
             error_msg=config.get("error_msg"),
-            subfield=config.get("subfield", []),
-            need_check_subfield=config.get("need_check_subfield", [])
+            unsupported_subfield=config.get("unsupported_subfield", [])
         )
     
     elif validator_type == "value":
@@ -206,11 +201,16 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
             except json.JSONDecodeError:
                 return await call_next(request)
             
+            if not VALIDATORS:
+                return await call_next(request)
+            
             status_code = HTTPStatus.BAD_REQUEST
+            unsupported_param = []
             for param_name, value in json_load.items():
                 validator = VALIDATORS.get(param_name)
                 if not validator:
-                    return self.create_error_response(status_code, f"{param_name} is not supported.")
+                    unsupported_param.append(param_name)
+                    continue
                 if error := validator.validate(value):
                     return self.create_error_response(status_code, error)
                 if validator := CUSTOM_VALIDATORS.get(param_name):
@@ -218,6 +218,10 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
                         return self.create_error_response(status_code, validator.error_msg)
                     elif error := validator.validate(json_load[validator.param_name]):
                         return self.create_error_response(status_code, error)
+            
+            for param_name in unsupported_param:
+                json_load.pop(param_name)
+            request._body = json.dumps(json_load).encode("utf-8")
 
         if request.method == "GET" and request.url.path == "/v1/models":
             response = await call_next(request)
