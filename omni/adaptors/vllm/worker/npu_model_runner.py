@@ -1125,7 +1125,7 @@ class NPUModelRunner(GPUModelRunner):
         """
         all_backend_supports = []
 
-        for attn_backend in self.attn_backends[kv_cache_group_id-1:kv_cache_group_id]:
+        for attn_backend in self.attn_backends[kv_cache_group_id:kv_cache_group_id+1]:
             compatible_sizes = self._find_compatible_block_sizes(
                 kv_manager_block_size, attn_backend, return_all=True
             )
@@ -1242,9 +1242,6 @@ class NPUModelRunner(GPUModelRunner):
         Raises:
             ValueError: If no compatible block size found
         """
-        # AscendAttentionBackendImpl needs 128
-        return [128]
-
         supported_block_size = backend_cls.get_supported_kernel_block_size()
         compatible_sizes = []
 

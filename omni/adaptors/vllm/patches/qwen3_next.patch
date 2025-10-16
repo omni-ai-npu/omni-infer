@@ -48,7 +48,7 @@ index 5b255e210..b5775094c 100644
  
  
 -BlockSize = Literal[1, 8, 16, 32, 64, 128]
-+BlockSize = Literal[1, 8, 16, 32, 64, 128, 640]
++BlockSize = Literal[1, 8, 16, 32, 64, 128, 256, 384, 512, 640]
  CacheDType = Literal["auto", "fp8", "fp8_e4m3", "fp8_e5m2"]
  PrefixCachingHashAlgo = Literal["builtin", "sha256"]
  

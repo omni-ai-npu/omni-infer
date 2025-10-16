@@ -843,5 +843,5 @@ class AscendAttentionBackend(AttentionBackend):
 
     @staticmethod
     def get_supported_kernel_block_size() -> list[int | MultipleOf]:
-        return [MultipleOf(128)]
+        return [128]
     
