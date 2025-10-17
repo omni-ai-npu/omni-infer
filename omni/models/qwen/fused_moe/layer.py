@@ -182,6 +182,16 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
         topk_ids = topk_ids.int()
 
         tp_world_size = 1
+        
+        # print(f"{x.shape=}")
+        # print(f"{topk_ids.shape=}")
+        # print(f"{layer.moe_all_to_all_group_name=}")
+        # print(f"{layer.moe_rs_group_name=}")
+        # print(f"{layer.all2all_world_size=}")
+        # print(f"{layer.all2all_global_rank=}")
+        # print(f"{tp_world_size=}")
+        # print(f"{global_num_experts=}")
+
         expand_x, dynamic_scales, expand_idx, expert_token_nums, ep_recv_counts, tp_recv_counts, expand_scales = torch_npu.npu_moe_distribute_dispatch_v2(
             x=x,
             expert_ids=topk_ids,
@@ -476,6 +486,10 @@ class FusedMoE(torch.nn.Module):
             self.moe_rs_group = get_pp_group().device_group
             self.moe_rs_group_rank = get_pp_group().rank_in_group
             self.moe_rs_group_name = self.moe_rs_group._get_backend(torch.device('npu')).get_hccl_comm_name(self.moe_rs_group_rank)
+
+            is_a2 = os.getenv("ASCEND_PLATFORM", "A3") == "A2"
+            if is_a2:
+                self.moe_rs_group_name = ""
 
         # Determine expert maps
         if self.use_ep:

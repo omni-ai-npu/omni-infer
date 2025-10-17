@@ -17,12 +17,12 @@ def run_vllm_serve(tp=1, dp=1, model="/home/kc/models/DeepSeek-V2-Lite"):
         "--max_model_len", "8000",
         "--tensor_parallel_size", f"{tp}",
         "--data_parallel_size", f"{dp}",
-        "--gpu_memory_utilization", "0.4",
+        "--gpu_memory_utilization", "0.8",
         "--trust_remote_code",
         "--served-model-name", "deepseek",
         "--dtype", "bfloat16",
         "--distributed-executor-backend", "mp",
-        "--block_size", "640",
+        "--block_size", "512",
         "--no-enable-prefix-caching",
     ]
 
@@ -42,6 +42,9 @@ if __name__ == "__main__":
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "fork"
     os.environ["USING_LCCL_COM"] = "0"
 
+    os.environ["MOE_DISPATCH_COMBINE"] = "1"
+    os.environ["ASCEND_PLATFORM"] = "A2"
     # os.environ["RANDOM_MODE"] = "1"
+    os.environ["ASCEND_GLOBAL_LOG_LEVEL"] = "0"
     
-    run_vllm_serve(tp=1, dp=1, model="/home/ma-user/work/models/Qwen/Qwen3-Next")
+    run_vllm_serve(tp=8, dp=1, model="/home/ma-user/work/models/Qwen/Qwen3-Next-mini")

@@ -171,17 +171,15 @@ class Qwen3NextSparseMoeBlock(nn.Module):
         router_logits, _ = self.gate(hidden_states)
 
         # TODO Fix FusedMoE
-        # final_hidden_states = self.experts(hidden_states=hidden_states,
-        #                                    router_logits=router_logits)
-        final_hidden_states = hidden_states
+        final_hidden_states = self.experts(hidden_states=hidden_states,
+                                           router_logits=router_logits)
 
         if shared_output is not None:
             final_hidden_states = final_hidden_states + shared_output
 
-        # TODO Fix FusedMoE
-        # if self.tp_size > 1:
-        #     final_hidden_states = self.experts.maybe_all_reduce_tensor_model_parallel(  # noqa E501
-        #         final_hidden_states)
+        # # TODO Fix FusedMoE
+        # final_hidden_states = self.experts.maybe_all_reduce_tensor_model_parallel(  # noqa E501
+        #     final_hidden_states)
 
         return final_hidden_states.view(orig_shape)
 

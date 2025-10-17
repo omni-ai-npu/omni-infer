@@ -937,8 +937,10 @@ class NPUModelRunner(GPUModelRunner):
     def profile_run(self) -> None:
         if self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer":
             hidden_states = self._dummy_run(self.max_batch_size * get_dp_group().world_size)
-        else:
+        elif self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_producer":
             hidden_states = self._dummy_run(self.max_num_tokens)
+        else:
+            hidden_states = self._dummy_run(self.max_batch_size)
 
         NPUPlatform.synchronize()
         del hidden_states
