@@ -19,6 +19,7 @@ import os
 import torch
 from torch import nn
 from transformers import PretrainedConfig
+import torchair as tng
 
 from sglang.srt.distributed import get_tensor_model_parallel_world_size, tensor_model_parallel_all_gather
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
@@ -154,6 +155,7 @@ class DeepseekDecoderLayer(nn.Module):
         self.layer_id = layer_id
         self.is_nextn = is_nextn
         self.quant_symbol = quant_config is not None
+        self.use_super_kernel = os.environ.get("USE_SUPER_KERNEL", "0") == "1"
 
         self.is_layer_sparse = is_nextn or (
                 self.config.n_routed_experts is not None
@@ -237,7 +239,11 @@ class DeepseekDecoderLayer(nn.Module):
             zero_allocator=zero_allocator,
         )
 
-        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+        if self.is_layer_sparse and self.use_super_kernel and not forward_batch.is_extend_in_batch:
+            with tng.scope.super_kernel(self.mlp.prefix, 'stream-fusion=1'):
+                hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+        else:
+            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         hidden_states, residual = self.mlp(
             hidden_states=hidden_states,
             residual=residual,

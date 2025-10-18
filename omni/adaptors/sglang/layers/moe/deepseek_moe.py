@@ -4,7 +4,7 @@
 from enum import IntEnum, auto
 from typing import Any, Dict, Iterable, Optional, Tuple, Callable
 from contextlib import nullcontext
-
+import os
 import torch
 from torch import nn
 import torch.distributed as dist
@@ -144,6 +144,7 @@ class DeepseekMoE(nn.Module):
     ) -> None:
 
         super().__init__()
+        self.prefix = prefix
         self.config = config
         self.layer_id = layer_id
         self.world_size = get_world_group().world_size
@@ -152,6 +153,8 @@ class DeepseekMoE(nn.Module):
         self.top_k = config.num_experts_per_tok
 
         self.quant_symbol = True if quant_config else False
+
+        self.use_super_kernel = os.environ.get("USE_SUPER_KERNEL", "0") == "1"
 
         self.num_fused_shared_experts = 0
         if not global_server_args_dict["disable_shared_experts_fusion"]:
@@ -303,7 +306,11 @@ class DeepseekMoE(nn.Module):
         if forward_batch.is_extend_in_batch:
             return self._forward_prefill_norm(hidden_states, residual, forward_batch)
         else:
-            return self._forward_decode_dispatch_combine(hidden_states, residual, forward_batch, prefetch_list)
+            if self.use_super_kernel:
+                with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
+                    return self._forward_decode_dispatch_combine(hidden_states, residual, forward_batch, prefetch_list)
+            else:
+                return self._forward_decode_dispatch_combine(hidden_states, residual, forward_batch, prefetch_list)
 
     def _forward_prefill_norm(self, hidden_states, residual, forward_batch) -> torch.Tensor:
 
@@ -417,7 +424,7 @@ class DeepseekMoE(nn.Module):
         # ====================== dispatch ======================
 
         # TODO: apply_expert_load_balance & best_topk not aligned with vLLM's
-
+        mc2_mask = forward_batch.attn_backend.forward_metadata.mc2_mask
         dispatch_quant_mode = 2 # 0: non-quant; 1: static quant(not supported now); 2: dynamic quant
 
         (
@@ -442,7 +449,7 @@ class DeepseekMoE(nn.Module):
             group_tp=self.moe_rs_group_name,                    # self.experts.moe_rs_group_name
             tp_world_size=self.experts_tp_size,                 # disable tp for shared experts when enable deepep moe
             tp_rank_id=0,                                       # disable tp for shared experts when enable deepep moe
-            x_active_mask=None,                                 # TODO: mc2_mask, not aligned with vLLM's
+            x_active_mask=mc2_mask,                                 # TODO: mc2_mask, not aligned with vLLM's
         )[:6]
 
         group_list = expert_token_nums.to(torch.int64)
@@ -629,7 +636,7 @@ class DeepseekMoE(nn.Module):
             group_tp=self.moe_rs_group_name,
             tp_world_size=self.experts_tp_size,                 # disable tp for shared experts when enable deepep moe
             tp_rank_id=0,                                       # disable tp for shared experts when enable deepep moe
-            x_active_mask=None,                                 # TODO: mc2_mask, not aligned with vLLM's
+            x_active_mask=mc2_mask,                                 # TODO: mc2_mask, not aligned with vLLM's
         )
 
         return hidden_states_route + shared_output, residual

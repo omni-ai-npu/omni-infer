@@ -28,10 +28,8 @@ if TYPE_CHECKING:
     from sglang.srt.speculative.eagle_utils import EagleDraftInput, EagleVerifyInput
     from sglang.srt.speculative.spec_info import SpecInfo
 
-
 PAGE_SIZE = 128
 MAX_SEQ_LEN = 4096
-DECODE_GEAR_LIST = [16, 32, 48, 64]
 
 @dataclass
 class NpuMLADecodeMetadata:
@@ -44,15 +42,17 @@ class NpuMLADecodeMetadata:
         self,
         npumla_metadata: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_kv_indices: Optional[torch.Tensor] = None,
+        mc2_mask: Optional[torch.Tensor] = None,
         seq_lens_list=None,
         forward_batch: ForwardBatch = None,
         actual_seq_lengths: Dict = None,
-        norm_res: Dict = None
+        norm_res: Dict = None,
     ):
         self.page_size = PAGE_SIZE
         self.npumla_metadata = npumla_metadata
         self.block_kv_indices = block_kv_indices
         batch_size = forward_batch.input_ids.size(0)
+        self.mc2_mask = mc2_mask
         # decode when block_kv_indices is not None
         if block_kv_indices is not None:
             self.seq_lens = (forward_batch.positions + 1).to(forward_batch.seq_lens.dtype)
@@ -113,6 +113,7 @@ class NpuMLABackend(TorchNativeAttnBackend):
         )
         self.norm_res = {}
         self.actual_seq_lengths = {}
+        self.mc2_mask = None
         if "deepseek" in model_runner.model_config.hf_config.architectures[0].lower():
             self.kv_lora_rank = model_runner.model_config.kv_lora_rank
             self.q_lora_rank = model_runner.model_config.hf_config.q_lora_rank
@@ -122,10 +123,10 @@ class NpuMLABackend(TorchNativeAttnBackend):
             self.kv_cache_dim = self.kv_lora_rank + self.qk_rope_head_dim
             self.scaling = model_runner.model_config.scaling
             if model_runner.dp_size > 1:
-                for batch_size in DECODE_GEAR_LIST:
-                    self.norm_res[batch_size] = torch.zeros([batch_size, self.q_lora_rank], dtype=torch.bfloat16, device="npu")
-                    self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size + 1)), dtype=torch.int64, device="npu")
-
+                max_graph_bs = model_runner.server_args.torch_compile_max_bs
+                self.norm_res = torch.zeros([max_graph_bs, self.q_lora_rank], dtype=torch.bfloat16, device="npu")
+                self.actual_seq_lengths = torch.tensor(list(range(1, max_graph_bs + 1)), dtype=torch.int64, device="npu")
+                self.mc2_mask = torch.zeros(max_graph_bs, dtype=torch.bool, device="npu")
         self.data_type = model_runner.kv_cache_dtype
         self.q_data_type = model_runner.dtype
 
@@ -156,6 +157,11 @@ class NpuMLABackend(TorchNativeAttnBackend):
         self.max_seqlen_pad = max_total_tokens // model_runner.server_args.page_size
         self.model_runner = model_runner
 
+    def generate_activate_mask(self, actual_seqs_num):
+        if self.mc2_mask is not None :
+            self.mc2_mask.zero_()
+            self.mc2_mask[:actual_seqs_num].fill_(True)
+
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         bs = forward_batch.input_ids.size(0)
         if forward_batch.forward_mode.is_decode_or_idle():
@@ -175,26 +181,28 @@ class NpuMLABackend(TorchNativeAttnBackend):
                 self.req_to_token.stride(0),
                 self.max_seqlen_pad,
             )
-            if bs in DECODE_GEAR_LIST:
-                actual_seq_lengths = self.actual_seq_lengths[bs]
-                norm_res = self.norm_res[bs]
-            else:
-                actual_seq_lengths = torch.tensor(list(range(1, bs + 1)), dtype=torch.int64, device="npu")
-                norm_res = None
+            if self.actual_seq_lengths is None :
+                self.actual_seq_lengths = torch.tensor(list(range(1, bs + 1)), dtype=torch.int64, device="npu")
+
+            if forward_batch.can_run_graph :
+                self.generate_activate_mask(forward_batch.num_token_non_padded)
+
             self.forward_metadata = NpuMLADecodeMetadata(
                 None,
                 block_kv_indices,
+                self.mc2_mask if forward_batch.can_run_graph else None,
                 forward_batch.seq_lens_cpu.tolist(),
                 forward_batch,
-                actual_seq_lengths,
-                norm_res
+                self.actual_seq_lengths,
+                self.norm_res,
             )
         else:
             self.forward_metadata = NpuMLADecodeMetadata(
-                None,
-                None,
-                forward_batch.extend_seq_lens_cpu,
-                forward_batch,
+                npumla_metadata=None,
+                block_kv_indices=None,
+                mc2_mask=None,
+                seq_lens_list=forward_batch.extend_seq_lens_cpu,
+                forward_batch=forward_batch,
             )
         if hasattr(self.model_runner.model.model, "layers"):
             self.forward_metadata.cos, self.forward_metadata.sin = self.model_runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(forward_batch.positions)

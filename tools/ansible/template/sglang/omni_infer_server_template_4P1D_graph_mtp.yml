@@ -124,6 +124,7 @@
       export GLOO_SOCKET_IFNAME={{ansible_env.GLOO_SOCKET_IFNAME}}
       export PYTHONPATH=${CODE_PATH}/omniinfer/infer_engines/sglang/python:${CODE_PATH}/omniinfer:$PYTHONPATH
       export MLP_TP_SIZE=4
+      export USE_SUPER_KERNEL=1
       dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
       ((dp++))
 
