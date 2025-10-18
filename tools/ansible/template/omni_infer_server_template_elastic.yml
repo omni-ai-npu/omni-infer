@@ -27,7 +27,7 @@
     MODEL_LEN_MAX_DECODE: "16384"
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
     CODE_PATH: "/data/local_code_path"
-    KV_CONNECTOR: "AscendHcclConnectorV1"
+    KV_CONNECTOR: "LMCacheConnectorV1"
 
     # Configuration for containers
     DOCKER_IMAGE_ID: "REPOSITORY:TAG"
@@ -98,7 +98,7 @@
       
       export MOONCAKE_CONFIG_PATH=$MOONCAKE_CONFIG_PATH
       export LMCACHE_CONFIG_FILE=$LMCACHE_MOONCAKE_CONFIG_PATH
-      kv_role="kv_both"
+      kv_role="kv_producer"
 
       bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
