@@ -706,15 +706,14 @@ class NPUModelRunner(GPUModelRunner):
         for self.curr_step in range(self.total_step):
             start_1 = time.time()
             if not scheduler_output.total_num_scheduled_tokens:
-                if not has_kv_transfer_group():
-                    # Return empty ModelRunnerOuptut if there's no work to do.
-                    return EMPTY_MODEL_RUNNER_OUTPUT
-                res = self.kv_connector_no_forward(scheduler_output)
                 if get_dp_group().world_size > 1:
                    self._dummy_run(1)
                 else:
                     time.sleep(0.001) # release GIL
-                return res
+                if not has_kv_transfer_group():
+                    # Return empty ModelRunnerOuptut if there's no work to do.
+                    return EMPTY_MODEL_RUNNER_OUTPUT
+                return self.kv_connector_no_forward(scheduler_output)
             if self.curr_step == 0:
                 attn_metadata, graph_pad_size, sample_indices, positions = self._prepare_inputs(scheduler_output)
             else:
