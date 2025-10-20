@@ -31,6 +31,7 @@ all:
             additional-config:
               graph_model_compile_config:
                 level: 1
+                use_ge_graph_cached: true
                 block_num_floating_range: 50
             base-api-port: $API_PORT
             enable-mtp: ''
@@ -151,6 +152,7 @@ all:
             additional-config:
               graph_model_compile_config:
                 level: 1
+                use_ge_graph_cached: true
                 block_num_floating_range: 50
             base-api-port: $API_PORT
             enable-mtp: ''
@@ -271,6 +273,7 @@ all:
             additional-config:
               graph_model_compile_config:
                 level: 1
+                use_ge_graph_cached: true
                 block_num_floating_range: 50
             base-api-port: $API_PORT
             enable-mtp: ''
@@ -391,6 +394,7 @@ all:
             additional-config:
               graph_model_compile_config:
                 level: 1
+                use_ge_graph_cached: true
                 block_num_floating_range: 50
             base-api-port: $API_PORT
             enable-mtp: ''
