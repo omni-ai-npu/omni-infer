@@ -412,7 +412,6 @@ class DecodeConnectorScheduler:
             num_computed_tokens: int) -> tuple[int, bool]:
         if request.request_id in self.processed_request:
             return 0, False
-        self.processed_request.add(request.request_id)
         params = request.kv_transfer_params
         if params is None:
             return 0, False
@@ -441,6 +440,7 @@ class DecodeConnectorScheduler:
             "num_external_tokens=%s, kv_transfer_params=%s",
             num_external_tokens, params)
 
+        self.processed_request.add(request.request_id)
         if params is not None:
             if params.get("remote_block_ids"):
                 if all(p in params for p in ("remote_cluster_id", "remote_host_ip")):

@@ -141,6 +141,8 @@ class ParallelDeepseekMLP(nn.Module):
 
 class DeepseekDecoderLayer(nn.Module):
 
+    is_split_hidden_states = False
+
     def __init__(
             self,
             config: PretrainedConfig,
@@ -238,7 +240,10 @@ class DeepseekDecoderLayer(nn.Module):
         # hidden : tokens * 7168
 
         # Perform full hidden splitting to avoid OOM
-        if model_extra_config.parall_config.dp_size > 1 and attn_metadata is None:
+        if (model_extra_config.parall_config.dp_size > 1 or DeepseekDecoderLayer.is_split_hidden_states) and is_prefill:
+            # During prefill, chunk is only triggered when an extremely large number of identical tokens is detected — to prevent GMM from OOM. 
+            # Prefill performance may degrade slightly as a trade-off. 
+            # For longer sequences (e.g., >256K or 512K tokens), consider adjusting SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER to optimize memory usage or avoid OOM.
             reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device=current_platform.device_type)
             local_length = hidden_states.shape[0]
             # global_max_length = torch.tensor(0, dtype=torch.int64)
@@ -388,6 +393,24 @@ class DeepseekV3Model(nn.Module):
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids, reduce=1)
 
+    def should_split_hidden_states(self, input_ids: torch.Tensor, ratio_threshold: float, count_threshold: int) -> bool:
+        is_split_hidden_states = False
+        if ratio_threshold == 0.0 or count_threshold == 0:
+            return is_split_hidden_states
+        flattened = input_ids.view(-1)
+        min_val = flattened.min()
+        if min_val.item() < 0:
+            flattened = flattened - min_val # Ensure tensor is non-negative
+        counts = torch.bincount(flattened)
+        max_count = counts.max().item()
+        total = flattened.numel() 
+        if total == 0:
+            return is_split_hidden_states
+        max_token_ratio = max_count / total
+        # Split hidden_states if token count or ratio exceeds threshold, to prevent GMM OOM in MoE.
+        is_split_hidden_states = max_token_ratio >= ratio_threshold or max_count >= count_threshold
+        return is_split_hidden_states
+
     def forward(
             self,
             input_ids: torch.Tensor,
@@ -422,7 +445,20 @@ class DeepseekV3Model(nn.Module):
             attn_metadata: AttentionMetadata,
             intermediate_tensors: Optional[IntermediateTensors],
     ) -> Union[torch.Tensor, IntermediateTensors]:
+        attn_metadata_first = self.get_layer_attn_metadata(attn_metadata, 0)
+        is_prefill = attn_metadata is None or (attn_metadata_first is not None and attn_metadata_first.prefill is not None)
+        if is_prefill:
+            DeepseekDecoderLayer.is_split_hidden_states = False
         if get_pp_group().is_first_rank:
+            if input_ids.numel() >= model_extra_config.operator_opt_config.max_split_token_count_threshold and \
+                    is_prefill and \
+                    kv_caches is not None:
+                DeepseekDecoderLayer.is_split_hidden_states = self.should_split_hidden_states(
+                    input_ids,
+                    model_extra_config.operator_opt_config.max_split_token_ratio_threshold,
+                    model_extra_config.operator_opt_config.max_split_token_count_threshold
+                )
+
             hidden_states = self.get_input_embeddings(input_ids)
             residual = None
         else:
