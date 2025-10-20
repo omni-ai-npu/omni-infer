@@ -2,6 +2,8 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 import os
 from omni.adaptors.vllm.patches.pangu_patch import patch_pangu
+from omni.adaptors.vllm.patches.shm_bug_fix_patch import patch_shm_to_zmq
+from omni.adaptors.vllm.patches.thinking_tag_bug_fix_patch import patch_thinking_bug_fix
 
 def patch_vllm_distributed():
     from vllm import distributed
@@ -63,6 +65,8 @@ def patch_all():
     patch_compilation()
     patch_pangu()
     patch_linear()
+    patch_shm_to_zmq()
+    patch_thinking_bug_fix()
     _patch_done = True
 
 patch_all() 
