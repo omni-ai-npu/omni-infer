@@ -315,18 +315,14 @@ static PyObject* python_create_and_map(PyObject* self, PyObject* args)
 
 static PyObject* py_memcpy(PyObject* self, PyObject* args)
 {
-  void* dst;
-  size_t destMax;
-  const void* src;
-  size_t count;
-  int kind;
-
+  unsigned long long dst, destMax, src, count, kind;
   if (!PyArg_ParseTuple(args, "KKKKK", &dst, &destMax, &src, &count, &kind)) {
     PyErr_SetString(PyExc_TypeError, "Failed to parse py_memcpy tuple params.");
     return nullptr;
   }
-
-  aclError ret = aclrtMemcpy(dst, destMax, src, count, (aclrtMemcpyKind)kind);
+  void* dst_ptr = (void*)dst;
+  const void* src_ptr = (const void*)src;
+  aclError ret = aclrtMemcpy(dst_ptr, (size_t)destMax, src_ptr, (size_t)count, (aclrtMemcpyKind)kind);
   if (ret != 0) {
     LOG_ERR("Failed to memcpy, ret " << ret);
   }
