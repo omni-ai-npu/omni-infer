@@ -58,7 +58,7 @@ index bc11686d7..699238c63 100644
 +        if reuse_prefilled_tokens:
 +            if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
 +                num_generated_tokens += 1
-+            if request.kv_transfer_params:
++            if final_res.kv_transfer_params:
 +                final_res.kv_transfer_params["stop_reasons"] = [
 +                    output.stop_reason for output in final_res.outputs
 +                ]
