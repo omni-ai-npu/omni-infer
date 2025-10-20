@@ -125,7 +125,7 @@ class Qwen3NextSparseMoeBlock(nn.Module):
                                 intermediate_size=config.moe_intermediate_size,
                                 renormalize=config.norm_topk_prob,
                                 quant_config=quant_config,
-                                prefix=f"{prefix}.experts")  # TODO need to not reduce results here.
+                                prefix=f"{prefix}.experts")
 
         self.gate = ReplicatedLinear(config.hidden_size,
                                      config.num_experts,
@@ -133,7 +133,7 @@ class Qwen3NextSparseMoeBlock(nn.Module):
                                      quant_config=None,
                                      prefix=f"{prefix}.gate")
 
-        if config.shared_expert_intermediate_size > 0:  # TODO?
+        if config.shared_expert_intermediate_size > 0:
             self.shared_expert = Qwen3NextMLP(
                 hidden_size=config.hidden_size,
                 intermediate_size=config.shared_expert_intermediate_size,
@@ -170,14 +170,12 @@ class Qwen3NextSparseMoeBlock(nn.Module):
         # router_logits: (num_tokens, n_experts)
         router_logits, _ = self.gate(hidden_states)
 
-        # TODO Fix FusedMoE
         final_hidden_states = self.experts(hidden_states=hidden_states,
                                            router_logits=router_logits)
 
         if shared_output is not None:
             final_hidden_states = final_hidden_states + shared_output
 
-        # # TODO Fix FusedMoE
         # final_hidden_states = self.experts.maybe_all_reduce_tensor_model_parallel(  # noqa E501
         #     final_hidden_states)
 

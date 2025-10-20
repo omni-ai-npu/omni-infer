@@ -5,7 +5,7 @@ curl -X POST http://127.0.0.1:8089/v1/completions  \
      -H "Content-Type: application/json" \
      -d '{
      	 "model": "deepseek",
-     	 "prompt": ["Hello, my name is", "Hi, my name is"],
+     	 "prompt": ["The capital of France is", "Hi, my name is", "Did you know that", "The capital of France is"],
      	 "max_tokens": 35,
      	 "temperature": 0.0,
       	 "top_p": 1,

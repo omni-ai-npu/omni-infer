@@ -287,20 +287,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
             x = torch.cat(x_output_list)
             router_logits = torch.cat(router_logits_output_list)
         else:
-            return self.apply_all2all_decode(
-                layer,
-                x,
-                router_logits,
-                top_k,
-                renormalize,
-                use_grouped_topk,
-                topk_group,
-                num_expert_group,
-                global_num_experts,
-                custom_routing_function,
-                scoring_func,
-                e_score_correction_bias
-            )
+            x = get_ep_group().all_gather(x, dim=0)
+            router_logits = get_ep_group().all_gather(router_logits, dim=0)
 
         topk_weights, topk_ids = FusedMoE.select_experts(
             hidden_states=x,

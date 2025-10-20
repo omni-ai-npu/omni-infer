@@ -45,6 +45,10 @@ if __name__ == "__main__":
     os.environ["MOE_DISPATCH_COMBINE"] = "1"
     os.environ["ASCEND_PLATFORM"] = "A2"
     # os.environ["RANDOM_MODE"] = "1"
-    os.environ["ASCEND_GLOBAL_LOG_LEVEL"] = "0"
     
-    run_vllm_serve(tp=8, dp=1, model="/home/ma-user/work/models/Qwen/Qwen3-Next-mini")
+    os.environ["HCCL_INTRA_ROCE_ENABLE"] = "1"
+    os.environ["HCCL_INTRA_PCIE_ENABLE"] = "0"
+    os.environ["HCCL_BUFFSIZE"] = "1000"
+    os.environ["HCCL_OP_EXPANSION_MODE"] = "AIV"
+    
+    run_vllm_serve(tp=8, dp=1, model="/home/ma-user/work/models/Qwen/Qwen3-Next")
