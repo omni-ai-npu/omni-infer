@@ -222,12 +222,12 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             assert num_accepted_tokens is not None
             num_accepted_tokens = num_accepted_tokens[spec_sequence_masks]
 
-        # if num_prefills > 0:
-        has_initial_state = context_lens_tensor > 0
-        if spec_sequence_masks is not None:
-            has_initial_state = has_initial_state[~spec_sequence_masks]
-        # else:
-        #     has_initial_state = None
+        if num_prefills > 0:
+            has_initial_state = context_lens_tensor > 0
+            if spec_sequence_masks is not None:
+                has_initial_state = has_initial_state[~spec_sequence_masks]
+        else:
+            has_initial_state = None
         num_actual_tokens = num_prefill_tokens + num_decode_tokens + \
             num_spec_decode_tokens
 
