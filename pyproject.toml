@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omni_infer"
-version = "0.5.0"
+version = "0.6.0rc1"
 description = "Omni_Infer is a powerful suite of inference accelerators tailored for the Ascend NPU platform, fully compatible with vLLM, and designed to deliver high-performance, enterprise-grade inference with native support and a growing feature set."
 authors = [
     { name = "Huawei" }
