@@ -1168,11 +1168,10 @@ class NPUModelRunner(GPUModelRunner):
         """
         kv_cache_raw_tensors: dict[str, torch.Tensor] = {}
         for kv_cache_tensor in kv_cache_config.tensors:
-            tensor = torch.zeros(
-                kv_cache_tensor.size, dtype=torch.int8, device=self.device
-            )
             for layer_name in kv_cache_tensor.shared_by:
-                kv_cache_raw_tensors[layer_name] = tensor
+                kv_cache_raw_tensors[layer_name] = torch.zeros(
+                    kv_cache_tensor.size, dtype=torch.int8, device=self.device  # NOTE: No sharing of tensors.
+                )
 
         layer_names = set()
         for group in kv_cache_config.kv_cache_groups:

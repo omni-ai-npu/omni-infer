@@ -1631,7 +1631,7 @@ index 4965df17e..c84df03e5 100644
          self.allocators[device].free(request)
          return src_block_ids
 diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
-index 403b5401b..dbc6224ac 100644
+index 403b5401b..3a0b5ea94 100644
 --- a/vllm/v1/core/kv_cache_utils.py
 +++ b/vllm/v1/core/kv_cache_utils.py
 @@ -1,22 +1,27 @@
@@ -1683,7 +1683,7 @@ index 403b5401b..dbc6224ac 100644
  
      raise NotImplementedError
  
-@@ -746,3 +751,545 @@ def unify_kv_cache_configs(kv_cache_configs: list[KVCacheConfig]):
+@@ -746,3 +751,549 @@ def unify_kv_cache_configs(kv_cache_configs: list[KVCacheConfig]):
          kv_cache_config.num_blocks = min_num_blocks
  
      return kv_cache_configs
@@ -1875,6 +1875,10 @@ index 403b5401b..dbc6224ac 100644
 +        num_blocks = get_num_blocks(
 +            vllm_config, group_size, available_memory, page_size
 +        )
++
++        # NOTE: NPU does not allow sharing across groups, so we adjust the computation here.
++        num_blocks //= len(kv_cache_groups)
++
 +        kv_cache_tensors = []
 +        for i in range(group_size):
 +            shared_by = []

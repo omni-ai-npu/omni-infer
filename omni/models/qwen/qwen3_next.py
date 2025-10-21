@@ -574,7 +574,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
             mixed_qkv_spec = rearrange(mixed_qkv_spec, 'b d l -> (b l) d')
 
         # 2.2: process the remaining part
-        if attn_metadata.num_prefills > 0:
+        if attn_metadata.num_prefills > 0 or attn_metadata.num_decodes > 0:
             # - "cache_indices" updates the conv_state cache in positions
             #   pointed to by "mamba_cache_params.state_indices_tensor"
             mixed_qkv_non_spec = causal_conv1d_fn(
@@ -587,17 +587,17 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                 cache_indices=non_spec_state_indices_tensor,
                 query_start_loc=non_spec_query_start_loc,
             ).transpose(0, 1)
-        elif attn_metadata.num_decodes > 0:
-            mixed_qkv_non_spec = causal_conv1d_update(
-                mixed_qkv_non_spec,
-                conv_state,
-                conv_weights,
-                self.conv1d.bias,
-                self.activation,
-                conv_state_indices=non_spec_state_indices_tensor[:attn_metadata
-                                                                 .num_decodes],
-                validate_data=True,
-            )
+        # elif attn_metadata.num_decodes > 0:
+        #     mixed_qkv_non_spec = causal_conv1d_update(
+        #         mixed_qkv_non_spec,
+        #         conv_state,
+        #         conv_weights,
+        #         self.conv1d.bias,
+        #         self.activation,
+        #         conv_state_indices=non_spec_state_indices_tensor[:attn_metadata
+        #                                                          .num_decodes],
+        #         validate_data=True,
+        #     )
         else:
             mixed_qkv_non_spec = None
 
@@ -652,12 +652,12 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
             core_attn_out_spec, last_recurrent_state = None, None
 
         # 3.2: process the remaining part
-        if attn_metadata.num_prefills > 0:
+        if attn_metadata.num_prefills > 0 or attn_metadata.num_decodes > 0:
             initial_state = ssm_state[
                 non_spec_state_indices_tensor].contiguous()
             initial_state[~has_initial_state, ...] = 0
             
-            batch_size = attn_metadata.num_prefills
+            batch_size = attn_metadata.num_prefills + attn_metadata.num_decodes
             core_attn_out = []
             last_recurrent_state = []
 
@@ -703,23 +703,23 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
             last_recurrent_state = torch.cat(last_recurrent_state, dim=0)
 
             # Init cache
-            ssm_state[non_spec_state_indices_tensor] = last_recurrent_state.to(
+            ssm_state[non_spec_state_indices_tensor[:batch_size]] = last_recurrent_state.to(
                 ssm_state.dtype)
-        elif attn_metadata.num_decodes > 0:
-            core_attn_out_non_spec, last_recurrent_state = (
-                fused_recurrent_gated_delta_rule(
-                    q=query_non_spec,
-                    k=key_non_spec,
-                    v=value_non_spec,
-                    g=g_non_spec,
-                    beta=beta_non_spec,
-                    initial_state=ssm_state,
-                    inplace_final_state=True,
-                    cu_seqlens=non_spec_query_start_loc[:attn_metadata.
-                                                        num_decodes + 1],
-                    ssm_state_indices=non_spec_state_indices_tensor,
-                    use_qk_l2norm_in_kernel=True,
-                ))
+        # elif attn_metadata.num_decodes > 0:
+        #     core_attn_out_non_spec, last_recurrent_state = (
+        #         fused_recurrent_gated_delta_rule(
+        #             q=query_non_spec,
+        #             k=key_non_spec,
+        #             v=value_non_spec,
+        #             g=g_non_spec,
+        #             beta=beta_non_spec,
+        #             initial_state=ssm_state,
+        #             inplace_final_state=True,
+        #             cu_seqlens=non_spec_query_start_loc[:attn_metadata.
+        #                                                 num_decodes + 1],
+        #             ssm_state_indices=non_spec_state_indices_tensor,
+        #             use_qk_l2norm_in_kernel=True,
+        #         ))
         else:
             core_attn_out_non_spec, last_recurrent_state = None, None
 

@@ -24,6 +24,7 @@ def run_vllm_serve(tp=1, dp=1, model="/home/kc/models/DeepSeek-V2-Lite"):
         "--distributed-executor-backend", "mp",
         "--block_size", "512",
         "--no-enable-prefix-caching",
+        "--no-enable-chunked-prefill",
     ]
 
     # Set sys.argv to include the script name and all parameters
@@ -51,4 +52,4 @@ if __name__ == "__main__":
     os.environ["HCCL_BUFFSIZE"] = "1000"
     os.environ["HCCL_OP_EXPANSION_MODE"] = "AIV"
     
-    run_vllm_serve(tp=8, dp=1, model="/home/ma-user/work/models/Qwen/Qwen3-Next")
+    run_vllm_serve(tp=4, dp=1, model="/home/ma-user/work/models/Qwen/Qwen3-Next")
