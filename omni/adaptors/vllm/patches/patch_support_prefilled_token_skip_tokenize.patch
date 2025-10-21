@@ -1,5 +1,5 @@
 diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
-index bc11686d7..81a167592 100644
+index bc11686d7..699238c63 100644
 --- a/vllm/entrypoints/openai/serving_chat.py
 +++ b/vllm/entrypoints/openai/serving_chat.py
 @@ -45,6 +45,9 @@ from vllm.transformers_utils.tokenizers import (maybe_serialize_tool_calls,
@@ -12,20 +12,25 @@ index bc11686d7..81a167592 100644
  
  class OpenAIServingChat(OpenAIServing):
  
-@@ -211,6 +214,12 @@ class OpenAIServingChat(OpenAIServing):
+@@ -211,6 +214,17 @@ class OpenAIServingChat(OpenAIServing):
          try:
              for i, engine_prompt in enumerate(engine_prompts):
                  sampling_params: Union[SamplingParams, BeamSearchParams]
 +                if reuse_prefilled_tokens:
 +                    if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
-+                        engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
-+                        new_tokens = tokenizer.convert_ids_to_tokens(engine_prompt["prefilled_token_ids"][0])
++                        new_tokens = tokenizer.convert_ids_to_tokens(request.kv_transfer_params["prefilled_token"][0])
 +                        delta_text = tokenizer.convert_tokens_to_string([new_tokens])
-+                        engine_prompt["prefilled_texts"] = delta_text
++                        # If the decoded text ends with '�', it indicates an incomplete UTF-8 sequence — abandon reuse.
++                        # If the prefilled side has already triggered a stop reason, we also fall back to normal generation.
++                        if delta_text.endswith("�") or any(s is not None for s in request.kv_transfer_params["stop_reasons"]):
++                            request.kv_transfer_params.pop("prefilled_token", None)
++                        else:
++                            engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
++                            engine_prompt["prefilled_texts"] = delta_text
                  default_max_tokens = self.max_model_len - len(
                      engine_prompt["prompt_token_ids"])
                  if request.use_beam_search:
-@@ -912,6 +921,20 @@ class OpenAIServingChat(OpenAIServing):
+@@ -912,6 +926,20 @@ class OpenAIServingChat(OpenAIServing):
  
          assert final_res is not None
  
@@ -46,18 +51,22 @@ index bc11686d7..81a167592 100644
          choices: list[ChatCompletionResponseChoice] = []
  
          role = self.get_chat_request_role(request)
-@@ -1069,6 +1092,9 @@ class OpenAIServingChat(OpenAIServing):
+@@ -1069,6 +1097,13 @@ class OpenAIServingChat(OpenAIServing):
              num_prompt_tokens += len(final_res.encoder_prompt_token_ids)
          num_generated_tokens = sum(
              len(output.token_ids) for output in final_res.outputs)
 +        if reuse_prefilled_tokens:
 +            if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
 +                num_generated_tokens += 1
++            if final_res.kv_transfer_params:
++                final_res.kv_transfer_params["stop_reasons"] = [
++                    output.stop_reason for output in final_res.outputs
++                ]
          usage = UsageInfo(prompt_tokens=num_prompt_tokens,
                            completion_tokens=num_generated_tokens,
                            total_tokens=num_prompt_tokens +
 diff --git a/vllm/entrypoints/openai/serving_engine.py b/vllm/entrypoints/openai/serving_engine.py
-index 2f35619ca..42d6d2659 100644
+index e604ca33c..9832f5803 100644
 --- a/vllm/entrypoints/openai/serving_engine.py
 +++ b/vllm/entrypoints/openai/serving_engine.py
 @@ -81,6 +81,8 @@ from multiprocessing import Manager
@@ -162,7 +171,7 @@ index 843c45bd6..f1e55df86 100644
  class EmbedsPrompt(TypedDict):
      """Schema for a prompt provided via token embeddings."""
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 994350062..a6a769e2b 100644
+index dbb6a62c4..ebec8fcce 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -33,6 +33,8 @@ from vllm.v1.structured_output import StructuredOutputManager
@@ -174,7 +183,7 @@ index 994350062..a6a769e2b 100644
  
  class Scheduler(SchedulerInterface):
  
-@@ -1021,6 +1023,12 @@ class Scheduler(SchedulerInterface):
+@@ -1019,6 +1021,12 @@ class Scheduler(SchedulerInterface):
          num_computed_tokens = len(block_ids) * self.block_size
          if num_computed_tokens == request.num_tokens:
              num_computed_tokens -= 1
