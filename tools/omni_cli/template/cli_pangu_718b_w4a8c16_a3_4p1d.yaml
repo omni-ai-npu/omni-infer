@@ -118,7 +118,7 @@ all:
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_d.json
             MODEL_LEN_MAX_DECODE: 16384
-            MODEL_PATH: /mnt/sfs_turbo/w30069348/ckpt/718B/ascend_vllm_w8a8_mtp_1010/ascend_vllm_w8a8_mtp_1010
+            MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 4
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -239,7 +239,7 @@ all:
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_d.json
             MODEL_LEN_MAX_DECODE: 16384
-            MODEL_PATH: /mnt/sfs_turbo/w30069348/ckpt/718B/ascend_vllm_w8a8_mtp_1010/ascend_vllm_w8a8_mtp_1010
+            MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 4
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -360,7 +360,7 @@ all:
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_d.json
             MODEL_LEN_MAX_DECODE: 16384
-            MODEL_PATH: /mnt/sfs_turbo/w30069348/ckpt/718B/ascend_vllm_w8a8_mtp_1010/ascend_vllm_w8a8_mtp_1010
+            MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 4
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -481,7 +481,7 @@ all:
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_d.json
             MODEL_LEN_MAX_DECODE: 16384
-            MODEL_PATH: /mnt/sfs_turbo/w30069348/ckpt/718B/ascend_vllm_w8a8_mtp_1010/ascend_vllm_w8a8_mtp_1010
+            MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 4
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -602,7 +602,7 @@ all:
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_p.json
             MODEL_LEN_MAX_PREFILL: 32000
-            MODEL_PATH: /mnt/sfs_turbo/w30069348/ckpt/718B/ascend_vllm_w8a8_mtp_1010/ascend_vllm_w8a8_mtp_1010
+            MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 4
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
@@ -724,7 +724,7 @@ all:
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_p.json
             MODEL_LEN_MAX_PREFILL: 32000
-            MODEL_PATH: /mnt/sfs_turbo/w30069348/ckpt/718B/ascend_vllm_w8a8_mtp_1010/ascend_vllm_w8a8_mtp_1010
+            MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 4
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
@@ -846,7 +846,7 @@ all:
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_p.json
             MODEL_LEN_MAX_PREFILL: 32000
-            MODEL_PATH: /mnt/sfs_turbo/w30069348/ckpt/718B/ascend_vllm_w8a8_mtp_1010/ascend_vllm_w8a8_mtp_1010
+            MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 4
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
@@ -968,7 +968,7 @@ all:
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_p.json
             MODEL_LEN_MAX_PREFILL: 32000
-            MODEL_PATH: /mnt/sfs_turbo/w30069348/ckpt/718B/ascend_vllm_w8a8_mtp_1010/ascend_vllm_w8a8_mtp_1010
+            MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 4
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
