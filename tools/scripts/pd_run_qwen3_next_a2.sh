@@ -5,9 +5,9 @@
 # Default parameters
 # llmdatadist-specific parameters
 GLOBAL_RANK_TABLE_FILE_PATH="1p1d_save_dir/global_ranktable_merge.json"
-RANK_TABLE_FILE_PATH="save_dir_64/local_ranktable_7.150.10.24_01234567.json"
-LOCAL_DECODE_SERVER_IP_LIST="7.150.8.134"
-GLOBAL_DECODE_SERVER_IP_LIST="7.150.8.134"
+RANK_TABLE_FILE_PATH="save_dir_64/local_ranktable_7.242.108.64_0123.json"
+LOCAL_DECODE_SERVER_IP_LIST="7.242.108.196"
+GLOBAL_DECODE_SERVER_IP_LIST="7.242.108.196"
 ROLE="prefill"
 PREFILL_POD_NUM=1
 DECODE_POD_NUM=1
@@ -24,7 +24,7 @@ ascend_rt_set=0
 NUM_SERVERS=1
 NUM_DP=1
 SERVER_OFFSET=0
-MASTER_IP="7.150.10.24"
+MASTER_IP="7.242.108.64"
 MASTER_PORT=8503
 BASE_API_PORT=9001
 # vLLM framework parameters
@@ -33,7 +33,7 @@ TP_SOCKET_IFNAME="enp23s0f3"
 VLLM_LOGGING_LEVEL="INFO"
 VLLM_USE_V1=1
 VLLM_WORKER_MULTIPROC_METHOD="fork"
-MODEL_PATH="/data/kai/infer/c00923721/Qwen3-Next-80B-A3B-Instruct/"
+MODEL_PATH="/home/dsv3/models/DeepSeek-V3-w8a8-0423"
 TP=4
 SERVED_MODEL_NAME="deepseek"
 MAX_MODEL_LEN=4096
@@ -44,7 +44,7 @@ KV_BUFFER_DEVICE="npu"
 KV_ROLE="kv_producer"
 KV_RANK=0
 KV_ENGINE_ID=0
-KV_PARALLEL_SIZE=4
+KV_PARALLEL_SIZE=2
 
 MODEL_EXTRA_CFG_PATH="/workspace/omni_infer/test/test_config/test_config_prefill.json"
 GPU_UTIL=0.9
@@ -300,8 +300,9 @@ export VLLM_LLMDATADIST_ZMQ_PORT
 #export KV_CACHE_MOD
 #export FORWARD_TIME
 
-export HCCL_INTRA_ROCE_ENABLE
-export HCCL_INTRA_PCIE_ENABLE
+export ASCEND_PLATFORM=A2
+export HCCL_INTRA_ROCE_ENABLE=1
+export HCCL_INTRA_PCIE_ENABLE=0
 if [ $ascend_rt_set -eq 1 ]; then
     export ASCEND_RT_VISIBLE_DEVICES
     echo "ASCEND_RT_VISIBLE_DEVICES: $ASCEND_RT_VISIBLE_DEVICES"
@@ -422,6 +423,8 @@ common_operations() {
     --log-dir "$LOG_DIR" \
     --kv-transfer-config "$KV_TRANSFER_CONFIG" \
     --gpu-util "$GPU_UTIL" \
+    --block-size 512 \
+    --no-enable-prefix-caching \
     --additional-config "$ADDITIONAL_CONFIG" \
     --num-speculative-tokens "$NUM_SPECULATIVE_TOKENS" \
     --extra-args "$EXTRA_ARGS"

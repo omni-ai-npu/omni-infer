@@ -1351,7 +1351,7 @@ class NPUModelRunner(GPUModelRunner):
                             stride=target_stride,
                             storage_offset=storage_offset_bytes // dtype_size,
                         )
-                        state_tensors.append(tensor)
+                        state_tensors.append(tensor.contiguous())
                         storage_offset_bytes += stride[0] * dtype_size
 
                     kv_caches[layer_name] = state_tensors

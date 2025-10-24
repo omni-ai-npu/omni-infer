@@ -155,11 +155,19 @@ class LLMDataDistManager:
             flatten_kv_caches = unzip_kv_cache_list(kv_caches)
 
         # dense model.
-        flatten_kv_caches = maybe_merge_kv_caches(flatten_kv_caches)
+        # flatten_kv_caches = maybe_merge_kv_caches(flatten_kv_caches)  # This is bugged
 
-        for model_id, sub_kv_caches in enumerate(flatten_kv_caches):
-            cache_desc = CacheDesc(num_tensors=len(sub_kv_caches), shape=tuple(sub_kv_caches[0].shape),
-                                   data_type=TORCH_DTYPE_TO_NPU_DTYPE[sub_kv_caches[0].dtype])
+        # group by kv cache shape
+        key_func = lambda kv_cache: tuple(kv_cache.shape)
+        grouped_by_shape = defaultdict(set)
+        for kv_cache in flatten_kv_caches[0]:
+            grouped_by_shape[key_func(kv_cache)].add(kv_cache)
+
+        for model_id, sub_kv_caches in enumerate(grouped_by_shape.values()):
+            a_kv_cache = next(iter(sub_kv_caches))
+            print(f"{tuple(a_kv_cache.shape)=}")
+            cache_desc = CacheDesc(num_tensors=len(sub_kv_caches), shape=tuple(a_kv_cache.shape),
+                                   data_type=TORCH_DTYPE_TO_NPU_DTYPE[a_kv_cache.dtype])
 
             cache_addrs = [int(item.data_ptr()) for item in sub_kv_caches]
 
@@ -360,6 +368,9 @@ def unzip_kv_cache_dict(kv_caches: dict[str, torch.Tensor], ):
         if isinstance(kv_cache, tuple):
             for index, sub_cache in enumerate(kv_cache):
                 flatten_kv_caches[index].append(sub_cache)
+        elif isinstance(kv_cache, list):
+            for index, sub_cache in enumerate(kv_cache):
+                flatten_kv_caches[0].append(sub_cache)
         else:
             flatten_kv_caches[0].append(kv_cache)
     return flatten_kv_caches
@@ -378,6 +389,9 @@ def unzip_kv_cache_list(kv_caches: list[torch.Tensor], ):
         if isinstance(kv_cache, tuple):
             for index, sub_cache in enumerate(kv_cache):
                 flatten_kv_caches[index].append(sub_cache)
+        elif isinstance(kv_cache, list):
+            for index, sub_cache in enumerate(kv_cache):
+                flatten_kv_caches[0].append(sub_cache)
         else:
             flatten_kv_caches[0].append(kv_cache)
     return flatten_kv_caches

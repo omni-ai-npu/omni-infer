@@ -265,7 +265,7 @@
       NUM_SERVERS=8
 
       # export VLLM_ENABLE_PROFILING=1
-      # export VLLM_TORCH_PROFILER_DIR=/data/kai/infer/c00923721/log/profiling
+      # export VLLM_TORCH_PROFILER_DIR=/opt/LingCF/omni/Qwen235B/log/profiling
 
       KV_PARALLEL_SIZE=$((DECODE_TENSOR_PARALLEL_SIZE + 0))
 
@@ -297,11 +297,11 @@
       pip uninstall omni_placement -y
       
       python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
-      echo "config_dict ${config_dict[$HOST]:-0}; ${config_dict[$HOST]}" >> ${LOG_PATH}/run.log 2>&1
-      echo "HOST $HOST" >> ${LOG_PATH}/run.log 2>&1
+      echo "config_dict ${config_dict[$HOST]:-0}; ${config_dict[$HOST]}" >> ${LOG_PATH}d/run.log 2>&1
+      echo "HOST $HOST" >> ${LOG_PATH}d/run.log 2>&1
       cd /workspace/omniinfer/tools/scripts
       
-      PROFILING_FORWARD=1 PROFILING_SAVE_PATH=/data/kai/infer/c00923721/log/profiling bash /workspace/omniinfer/tools/scripts/pd_run.sh \
+      PROFILING_FORWARD=1 PROFILING_SAVE_PATH=/opt/LingCF/omni/Qwen235B/log/profiling bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -330,7 +330,7 @@
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
-        --log-dir "${LOG_PATH}" > ${LOG_PATH}/run_decode.log 2>&1 &
+        --log-dir "${LOG_PATH}d" > ${LOG_PATH}d/run_decode.log 2>&1 &
 
     run_proxy_cmd: |
       #!/bin/bash
@@ -505,12 +505,12 @@
 
     docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/"
     docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/"
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && export http_proxy=${HTTP_PROXY} && export https_proxy=${HTTP_PROXY} && export ASCEND_TOOLKIT_HOME={{ ansible_env.ASCEND_TOOLKIT_HOME }}   && cd /workspace/omniinfer && pip uninstall omniinfer -y  && pip install -e . --proxy=$HTTP_PROXY --trusted-host mirrors.aliyun.com --index-url https://mirrors.aliyun.com/pypi/simple/ && pip uninstall numpy -y && pip install numpy==1.26 --proxy=$HTTP_PROXY --trusted-host mirrors.aliyun.com --index-url https://mirrors.aliyun.com/pypi/simple/ > ${LOG_PATH}/pip.log'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && export http_proxy=${HTTP_PROXY} && export https_proxy=${HTTP_PROXY} && export ASCEND_TOOLKIT_HOME={{ ansible_env.ASCEND_TOOLKIT_HOME }}   && cd /workspace/omniinfer && pip uninstall omniinfer -y  && pip install -e . --proxy=$HTTP_PROXY --trusted-host mirrors.aliyun.com --index-url https://mirrors.aliyun.com/pypi/simple/ && pip uninstall numpy -y && pip install numpy==1.26 --proxy=$HTTP_PROXY --trusted-host mirrors.aliyun.com --index-url https://mirrors.aliyun.com/pypi/simple/ > ${LOG_PATH}/pip.log'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && export ASCEND_TOOLKIT_HOME={{ ansible_env.ASCEND_TOOLKIT_HOME }}   && cd /workspace/omniinfer && pip uninstall omniinfer -y  && pip install -e . --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple && pip uninstall numpy -y && pip install numpy==1.26 transformers==4.57.1 --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple > ${LOG_PATH}/pip.log'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && export ASCEND_TOOLKIT_HOME={{ ansible_env.ASCEND_TOOLKIT_HOME }}   && cd /workspace/omniinfer && pip uninstall omniinfer -y  && pip install -e . --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple && pip uninstall numpy -y && pip install numpy==1.26 transformers==4.57.1 --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple > ${LOG_PATH}/pip.log'"
 
-    docker_update_prefill_vllm_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && export http_proxy=${HTTP_PROXY} && export https_proxy=${HTTP_PROXY} && export ASCEND_TOOLKIT_HOME={{ ansible_env.ASCEND_TOOLKIT_HOME }}   && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --proxy=$HTTP_PROXY --trusted-host mirrors.aliyun.com --index-url https://mirrors.aliyun.com/pypi/simple/'"
+    docker_update_prefill_vllm_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && export ASCEND_TOOLKIT_HOME={{ ansible_env.ASCEND_TOOLKIT_HOME }}   && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple'"
 
-    docker_update_decode_vllm_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && export http_proxy=${HTTP_PROXY} && export https_proxy=${HTTP_PROXY} && export ASCEND_TOOLKIT_HOME={{ ansible_env.ASCEND_TOOLKIT_HOME }}   && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --proxy=$HTTP_PROXY --trusted-host mirrors.aliyun.com --index-url https://mirrors.aliyun.com/pypi/simple/'"
+    docker_update_decode_vllm_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && export ASCEND_TOOLKIT_HOME={{ ansible_env.ASCEND_TOOLKIT_HOME }}   && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple'"
 
     docker_del_prefill_graph_cache_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'rm -rf /workspace/omniinfer/tools/scripts/.torch*'"
     docker_del_decode_graph_cache_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'rm -rf /workspace/omniinfer/tools/scripts/.torch*'"
@@ -613,6 +613,13 @@
     - name: Create a directory to store the log.
       ansible.builtin.file:
         path: "{{ ansible_env.LOG_PATH }}"
+        state: directory
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      tags: sync_code
+
+    - name: Create a directory to store the log.
+      ansible.builtin.file:
+        path: "{{ ansible_env.LOG_PATH }}d"
         state: directory
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags: sync_code
