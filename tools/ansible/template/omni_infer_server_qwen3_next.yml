@@ -26,11 +26,11 @@
     MODEL_LEN_MAX_PREFILL: "1024" #"8192"
     MODEL_LEN_MAX_DECODE: "32768"
     LOG_PATH_IN_EXECUTOR: "/data/kai/infer/c00923721/logs"
-    CODE_PATH: "/root"
+    CODE_PATH: "/data/kai/infer/c00923721/code"
     HTTP_PROXY: "http://p_atlas:proxy%40123@172.18.100.92:8080" # set to your own proxy
 
     # Configuration for containers
-    DOCKER_IMAGE_ID: "4e0f5ae1558d"
+    DOCKER_IMAGE_ID: "75c0701521a2"
     # DOCKER_IMAGE_ID: "ef518138f490"
     DOCKER_NAME_P: "mtk"
     DOCKER_NAME_D: "mtk"
@@ -183,7 +183,7 @@
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
       EXTRA_ARGS='--max-num-batched-tokens 1024 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 4 --enable-chunked-prefill'
       ADDITIONAL_CONFIG='{"ascend_scheduler_config":{"enabled":false,"enable_chunked_prefill":true}}'
-      GPU_UTIL=0.98
+      GPU_UTIL=0.7
       VLLM_ENABLE_MC2=0
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
@@ -282,8 +282,8 @@
       )
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode.json"
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 16 --no-enable-prefix-caching --max-num-batched-tokens 64'
-      GPU_UTIL=0.92
-      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}}'
+      GPU_UTIL=0.7
+      # ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}}'
       #ADDITIONAL_CONFIG=''
       VLLM_ENABLE_MC2=0
       HCCL_OP_EXPANSION_MODE="AIV"

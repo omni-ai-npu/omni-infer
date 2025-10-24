@@ -71,6 +71,7 @@ if model_extra_config.operator_opt_config.use_omni_placement:
 
 MAX_GEAR_NUM = 6
 NPU_GENERATOR_OFFSET_STEP = 12 # ascend npu, move 12 every one generation, which is 4 on cuda.
+LLMDATADIST_ALIGNMENT_BYTES = 2 * 1024 * 1024
 
 def _get_pad_size(num_seqs):
     tp_size = get_tensor_model_parallel_world_size()
@@ -410,7 +411,7 @@ class NPUModelRunner(GPUModelRunner):
                 req_indices * block_table.max_num_blocks_per_req +
                 positions[:total_num_scheduled_tokens] // block_size
             )
-            block_table_cpu = block_table.get_device_tensor()
+            block_table_cpu = block_table.get_device_tensor(num_reqs)
             block_numbers = block_table_cpu.flatten()[block_table_indices]
             block_offsets = positions[:total_num_scheduled_tokens] % block_size
             block_table.slot_mapping[:total_num_scheduled_tokens] = block_numbers * block_size + block_offsets
@@ -1167,11 +1168,36 @@ class NPUModelRunner(GPUModelRunner):
             corresponding memory buffer for KV cache.
         """
         kv_cache_raw_tensors: dict[str, torch.Tensor] = {}
+
+        layer_to_spec_map = {
+            layer_name: group.kv_cache_spec
+            for group in kv_cache_config.kv_cache_groups
+            for layer_name in group.layer_names
+        }
+
         for kv_cache_tensor in kv_cache_config.tensors:
             for layer_name in kv_cache_tensor.shared_by:
-                kv_cache_raw_tensors[layer_name] = torch.zeros(
-                    kv_cache_tensor.size, dtype=torch.int8, device=self.device  # NOTE: No sharing of tensors.
-                )
+                if layer_name in kv_cache_raw_tensors:
+                    continue
+
+                spec = layer_to_spec_map[layer_name]
+
+                if isinstance(spec, AttentionSpec):
+                    cache_size = kv_cache_tensor.size // 2
+                    
+                    k_tensor = self._create_aligned_tensor(cache_size)
+                    v_tensor = self._create_aligned_tensor(cache_size)
+                    
+                    kv_cache_raw_tensors[layer_name] = (k_tensor, v_tensor)
+
+                elif isinstance(spec, MambaSpec):
+                    # For Mamba, we still allocate a single temporary staging buffer.
+                    # Alignment and splitting will happen in the reshape function.
+                    kv_cache_raw_tensors[layer_name] = torch.zeros(
+                        kv_cache_tensor.size, dtype=torch.int8, device=self.device
+                    )
+                else:
+                    raise NotImplementedError
 
         layer_names = set()
         for group in kv_cache_config.kv_cache_groups:
@@ -1263,6 +1289,26 @@ class NPUModelRunner(GPUModelRunner):
 
         return compatible_sizes if return_all else [max(compatible_sizes)]
 
+    def _align_memory(self, tensor: torch.Tensor) -> torch.Tensor:
+        data_ptr = tensor.data_ptr()
+        alignment = LLMDATADIST_ALIGNMENT_BYTES
+        aligned_addr = (data_ptr + alignment - 1) // alignment * alignment
+        offset_bytes = aligned_addr - data_ptr
+        offset_elements = offset_bytes // tensor.element_size()
+        return tensor[int(offset_elements):]
+
+    def _create_aligned_tensor(self, size_in_bytes: int) -> torch.Tensor:
+        """
+        Creates a tensor of a specific size with its memory address
+        aligned to LLMDATADIST_ALIGNMENT_BYTES.
+        """
+        # Over-allocate by the alignment amount
+        aligned_size = size_in_bytes + LLMDATADIST_ALIGNMENT_BYTES
+        tensor = torch.zeros(aligned_size, dtype=torch.int8, device=self.device)
+        # Find the aligned slice within it
+        aligned_tensor = self._align_memory(tensor)
+        return aligned_tensor[:size_in_bytes]
+    
     def _reshape_kv_cache_tensors(
         self,
         kv_cache_config: KVCacheConfig,
@@ -1287,9 +1333,11 @@ class NPUModelRunner(GPUModelRunner):
                 # if layer_name in self.runner_only_attn_layers:
                 #     continue
                 raw_tensor = kv_cache_raw_tensors[layer_name]
-                assert raw_tensor.numel() % kv_cache_spec.page_size_bytes == 0
-                num_blocks = raw_tensor.numel() // kv_cache_spec.page_size_bytes
                 if isinstance(kv_cache_spec, AttentionSpec):
+                    assert isinstance(raw_tensor, tuple)
+                    raw_k, raw_v = raw_tensor
+                    num_blocks = (raw_k.numel() + raw_v.numel()) // kv_cache_spec.page_size_bytes
+                    
                     has_attn = True
                     kv_manager_block_size = kv_cache_spec.block_size
                     kernel_size_list = self._find_compatible_block_sizes(
@@ -1299,41 +1347,60 @@ class NPUModelRunner(GPUModelRunner):
                     num_blocks_per_kv_block = kv_manager_block_size // kernel_size
                     kernel_num_blocks = num_blocks * num_blocks_per_kv_block
 
-                    kv_cache_shape = attn_backend.get_kv_cache_shape(
+                    # kv_cache_shape = attn_backend.get_kv_cache_shape(
+                    #     kernel_num_blocks,
+                    #     kernel_size,
+                    #     kv_cache_spec.num_kv_heads,
+                    #     kv_cache_spec.head_size,
+                    #     cache_dtype_str=self.cache_config.cache_dtype,
+                    # )
+                    # dtype = kv_cache_spec.dtype
+
+                    kv_cache_shape = (
                         kernel_num_blocks,
                         kernel_size,
-                        kv_cache_spec.num_kv_heads,
-                        kv_cache_spec.head_size,
-                        cache_dtype_str=self.cache_config.cache_dtype,
+                        kv_cache_spec.num_kv_heads * kv_cache_spec.head_size,
                     )
                     dtype = kv_cache_spec.dtype
-                    try:
-                        kv_cache_stride_order = attn_backend.get_kv_cache_stride_order()  # noqa: E501
-                        assert len(kv_cache_stride_order) == len(kv_cache_shape)
-                    except (AttributeError, NotImplementedError):
-                        kv_cache_stride_order = tuple(range(len(kv_cache_shape)))
-                    # The allocation respects the backend-defined stride order
-                    # to ensure the semantic remains consistent for each
-                    # backend. We first obtain the generic kv cache shape and
-                    # then permute it according to the stride order which could
-                    # result in a non-contiguous tensor.
-                    kv_cache_shape = tuple(
-                        kv_cache_shape[i] for i in kv_cache_stride_order
-                    )
-                    # Maintain original KV shape view.
-                    inv_order = [
-                        kv_cache_stride_order.index(i)
-                        for i in range(len(kv_cache_stride_order))
-                    ]
-                    kv_caches[layer_name] = (
-                        kv_cache_raw_tensors[layer_name]
-                        .view(dtype)
-                        .view(kv_cache_shape)
-                        .permute(*inv_order)
-                    )
+                    
+                    # Reshape each tensor individually
+                    k_cache = raw_k.view(dtype).view(kv_cache_shape)
+                    v_cache = raw_v.view(dtype).view(kv_cache_shape)
+                    kv_caches[layer_name] = (k_cache, v_cache)
+                    
+                    # Ensure they are contiguous and aligned as allocated
+                    assert k_cache.is_contiguous() and v_cache.is_contiguous()
+                    assert k_cache.data_ptr() % LLMDATADIST_ALIGNMENT_BYTES == 0
+                    assert v_cache.data_ptr() % LLMDATADIST_ALIGNMENT_BYTES == 0
+
+                    # try:
+                    #     kv_cache_stride_order = attn_backend.get_kv_cache_stride_order()  # noqa: E501
+                    #     assert len(kv_cache_stride_order) == len(kv_cache_shape)
+                    # except (AttributeError, NotImplementedError):
+                    #     kv_cache_stride_order = tuple(range(len(kv_cache_shape)))
+                    # # The allocation respects the backend-defined stride order
+                    # # to ensure the semantic remains consistent for each
+                    # # backend. We first obtain the generic kv cache shape and
+                    # # then permute it according to the stride order which could
+                    # # result in a non-contiguous tensor.
+                    # kv_cache_shape = tuple(
+                    #     kv_cache_shape[i] for i in kv_cache_stride_order
+                    # )
+                    # # Maintain original KV shape view.
+                    # inv_order = [
+                    #     kv_cache_stride_order.index(i)
+                    #     for i in range(len(kv_cache_stride_order))
+                    # ]
+                    # kv_caches[layer_name] = (
+                    #     kv_cache_raw_tensors[layer_name]
+                    #     .view(dtype)
+                    #     .view(kv_cache_shape)
+                    #     .permute(*inv_order)
+                    # )
                 elif isinstance(kv_cache_spec, MambaSpec):
                     has_mamba = True
                     raw_tensor = kv_cache_raw_tensors[layer_name]
+                    num_blocks = raw_tensor.numel() // kv_cache_spec.page_size_bytes
                     state_tensors = []
                     storage_offset_bytes = 0
                     for shape, dtype in zip(kv_cache_spec.shapes, kv_cache_spec.dtypes):
@@ -1351,7 +1418,15 @@ class NPUModelRunner(GPUModelRunner):
                             stride=target_stride,
                             storage_offset=storage_offset_bytes // dtype_size,
                         )
-                        state_tensors.append(tensor.contiguous())
+
+                        # Remake contiguous and aligned tensor
+                        final_size_bytes = tensor.numel() * tensor.element_size()
+                        aligned_contiguous_tensor = self._create_aligned_tensor(final_size_bytes)
+                        final_tensor = aligned_contiguous_tensor.view(dtype).view(target_shape)
+
+                        assert final_tensor.is_contiguous()
+                        assert final_tensor.data_ptr() % LLMDATADIST_ALIGNMENT_BYTES == 0
+                        state_tensors.append(final_tensor)
                         storage_offset_bytes += stride[0] * dtype_size
 
                     kv_caches[layer_name] = state_tensors

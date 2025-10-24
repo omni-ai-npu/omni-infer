@@ -221,6 +221,7 @@ class LLMDataDistManager:
             prefill_server_groups = self.data_dist_config.global_rank_table.prefill_group
             decode_server_groups = [self.data_dist_config.local_group]
 
+        print(f"{prefill_server_groups[0].device_list=} {self.data_dist_config.kv_producer_dp_size=}")
         prefill_tp_size = len(prefill_server_groups[0].device_list) // self.data_dist_config.kv_producer_dp_size
         prefill_dp_size = self.data_dist_config.kv_producer_dp_size
 
@@ -235,6 +236,7 @@ class LLMDataDistManager:
                 for decode_device in decode_server_group.device_list:
                     d_rank = decode_device.rank_id
                     # compute p_rank with dp_size=1, and expand to dp_size>1.
+                    print(f"{prefill_tp_size=} {decode_tp_size=} {decode_dp_size=} {decode_num=} {decode_id=} {d_rank=}")
                     p_rank_start = get_p_start_rank(prefill_tp_size, 1, decode_tp_size, decode_dp_size,
                                               decode_num, decode_id, d_rank)
 
@@ -367,7 +369,7 @@ def unzip_kv_cache_dict(kv_caches: dict[str, torch.Tensor], ):
         kv_cache = kv_caches[layer_name]
         if isinstance(kv_cache, tuple):
             for index, sub_cache in enumerate(kv_cache):
-                flatten_kv_caches[index].append(sub_cache)
+                flatten_kv_caches[0].append(sub_cache)
         elif isinstance(kv_cache, list):
             for index, sub_cache in enumerate(kv_cache):
                 flatten_kv_caches[0].append(sub_cache)
