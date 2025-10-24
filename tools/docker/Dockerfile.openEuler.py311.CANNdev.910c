@@ -41,7 +41,7 @@ enabled=1\n\
 gpgcheck=0" > /etc/yum.repos.d/openeuler.repo && \
     yum clean all && yum makecache
 
-RUN yum install -y git vim wget net-tools openssl-devel bzip2-devel libffi-devel pciutils kmod systemd systemd-udev sqlite-devel pcre libuuid-devel cjson-devel xz-devel hostname grep && \
+RUN yum install -y git vim wget net-tools openssl-devel bzip2-devel libffi-devel pciutils kmod systemd systemd-udev sqlite-devel pcre libuuid-devel cjson-devel xz-devel hostname grep cronie crontabs logrotate && \
     yum -y groupinstall "Development Tools" && \
     yum clean all && rm -rf /var/cache/yum && rm -rf /tmp/*
 

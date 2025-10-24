@@ -2,7 +2,7 @@
 
 ray_log_path=$1
 if [ -z "$ray_log_path" ]; then
-    ray_log_path="/tmp/ray/session_*/logs"
+    ray_log_path="/tmp/ray/session_latest/logs"
 fi
 
 log_file="${ray_log_path}/log_rotate.log"
