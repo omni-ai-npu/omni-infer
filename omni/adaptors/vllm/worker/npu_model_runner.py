@@ -887,7 +887,34 @@ class NPUModelRunner(GPUModelRunner):
             builder = self.attn_metadata_builders[kv_cache_group_id]
             if not isinstance(builder, DummyAttentionMetadataBuilder):
                 raise ValueError(f"{builder} does not implement DummyAttentionMetadataBuilder")
-            attn_metadata_i = builder.build_dummy(num_tokens, self.max_batch_size)
+
+            if not isinstance(kv_cache_group_spec.kv_cache_spec, MambaSpec):
+                attn_metadata_i = builder.build_dummy(num_tokens, self.max_batch_size)
+            else:
+                from vllm.v1.attention.backends.utils import CommonAttentionMetadata
+                num_scheduled_tokens = np.array([1 for _ in range(self.max_batch_size)], dtype=np.int32)
+                cu_num_tokens = np.cumsum(num_scheduled_tokens)
+                query_start_loc = np.pad(cu_num_tokens, pad_width=(1, 0), mode='constant', constant_values=0)
+                common_attn_metadata = CommonAttentionMetadata(
+                    query_start_loc=torch.from_numpy(query_start_loc), seq_lens=torch.ones(self.max_batch_size, dtype=torch.int64, device=self.device))
+                extra_builder_kwargs = {'graph_pad_size': 0}
+
+                self.attn_metadata_builders[kv_cache_group_id]._num_decodes = self.max_batch_size
+                self.attn_metadata_builders[kv_cache_group_id]._num_prefills = 0
+                self.attn_metadata_builders[kv_cache_group_id]._num_decode_tokens = self.max_batch_size
+                self.attn_metadata_builders[kv_cache_group_id]._num_prefill_tokens = 0
+
+                attn_metadata_i = (
+                    self.attn_metadata_builders[kv_cache_group_id].build(
+                        num_reqs=self.max_batch_size,
+                        num_actual_tokens=self.max_batch_size,   
+                        max_query_len=num_tokens,
+                        common_attn_metadata=common_attn_metadata,
+                        num_computed_tokens_cpu_tensor=self.input_batch.num_computed_tokens_cpu_tensor,
+                        **extra_builder_kwargs,
+                    )
+                )
+
             if self.enable_torchair_graph_mode:
                 builder.mark_static_for_attn_metadata(attn_metadata_i)
             for layer_name in kv_cache_group_spec.layer_names:
