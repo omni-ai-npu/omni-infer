@@ -388,7 +388,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         # function. We should avoid GPU -> CPU sync as much as possible because
         # it blocks on all previous kernels.
         device = self.runner.device
-        block_table = self.block_table.get_device_tensor()[:num_reqs]
+        block_table = self.block_table.get_device_tensor(num_reqs)
 
         slot_mapping = self.block_table.slot_mapping_cpu[:num_actual_tokens].to(
             device, non_blocking=True)
@@ -582,7 +582,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             graph_block_tables = torch.zeros((max_pad_size, self.runner.graph_block_tables.shape[1]))
         block_table = graph_block_tables.to(
             device=self.runner.device,
-            dtype=self.runner.input_batch.block_table[0].get_device_tensor().dtype
+            dtype=self.runner.input_batch.block_table[0].get_device_tensor(max_pad_size).dtype
         )
 
         seq_lens = torch.ones(max_pad_size, dtype=torch.long, device=self.runner.device, pin_memory=True) * 2

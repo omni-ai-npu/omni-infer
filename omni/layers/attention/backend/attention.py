@@ -355,7 +355,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             graph_block_tables = torch.zeros((max_pad_size, self.runner.graph_block_tables.shape[1]))
         block_table = graph_block_tables.to(
             device=self.runner.device,
-            dtype=self.runner.input_batch.block_table[0].get_device_tensor().dtype
+            dtype=self.runner.input_batch.block_table[0].get_device_tensor(max_pad_size).dtype
         )
 
         query_lens = torch.ones(max_pad_size, dtype=torch.long, device=self.runner.device, pin_memory=True)
