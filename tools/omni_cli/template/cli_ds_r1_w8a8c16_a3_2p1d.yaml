@@ -39,6 +39,7 @@ all:
               max-num-seqs: 32
               no-enable-prefix-caching: ''
               preemption-mode: 'swap'
+              swap_space: 6
             gpu-util: '0.90'
             kv-transfer-config:
               engine_id: 1
@@ -157,6 +158,7 @@ all:
               max-num-seqs: 32
               no-enable-prefix-caching: ''
               preemption-mode: 'swap'
+              swap_space: 6
             gpu-util: '0.90'
             kv-transfer-config:
               engine_id: 1
@@ -356,7 +358,8 @@ all:
             PREFILL_TENSOR_PARALLEL_SIZE: 16
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
-            RANK_TABLE_FILE_PATH: $(ls /tmp/ranktable_save_path/prefill_config/local_*0123456789101112131415.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$(echo
+              $PREFILL_SERVER_LIST | tr -d ",").json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.3,127.0.0.4
             SERVER_OFFSET: 0
@@ -473,7 +476,8 @@ all:
             PREFILL_TENSOR_PARALLEL_SIZE: 16
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
-            RANK_TABLE_FILE_PATH: $(ls /tmp/ranktable_save_path/prefill_config/local_*0123456789101112131415.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$(echo
+              $PREFILL_SERVER_LIST | tr -d ",").json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.3,127.0.0.4
             SERVER_OFFSET: 0

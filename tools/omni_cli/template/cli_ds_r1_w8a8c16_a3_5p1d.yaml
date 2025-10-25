@@ -629,7 +629,8 @@ all:
             PYTHONPATH: /usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
-            RANK_TABLE_FILE_PATH: $(ls /tmp/ranktable_save_path/prefill_config/local_*0123456789101112131415.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$(echo
+              $PREFILL_SERVER_LIST | tr -d ",").json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             SERVER_OFFSET: 0
@@ -755,7 +756,8 @@ all:
             PYTHONPATH: /usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
-            RANK_TABLE_FILE_PATH: $(ls /tmp/ranktable_save_path/prefill_config/local_*0123456789101112131415.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$(echo
+              $PREFILL_SERVER_LIST | tr -d ",").json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             SERVER_OFFSET: 0
@@ -881,7 +883,8 @@ all:
             PYTHONPATH: /usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
-            RANK_TABLE_FILE_PATH: $(ls /tmp/ranktable_save_path/prefill_config/local_*0123456789101112131415.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$(echo
+              $PREFILL_SERVER_LIST | tr -d ",").json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             SERVER_OFFSET: 0
@@ -1007,7 +1010,8 @@ all:
             PYTHONPATH: /usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
-            RANK_TABLE_FILE_PATH: $(ls /tmp/ranktable_save_path/prefill_config/local_*0123456789101112131415.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$(echo
+              $PREFILL_SERVER_LIST | tr -d ",").json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             SERVER_OFFSET: 0
@@ -1133,7 +1137,8 @@ all:
             PYTHONPATH: /usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
-            RANK_TABLE_FILE_PATH: $(ls /tmp/ranktable_save_path/prefill_config/local_*0123456789101112131415.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$(echo
+              $PREFILL_SERVER_LIST | tr -d ",").json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             SERVER_OFFSET: 0
