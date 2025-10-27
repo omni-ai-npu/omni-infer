@@ -1095,7 +1095,7 @@ index 000000000..3a135d524
 +        dcp_world_size=dcp_world_size,
 +    )
 diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
-index 4965df17e..e6d53bc0d 100644
+index 4965df17e..d62353d5b 100644
 --- a/vllm/v1/core/kv_cache_manager.py
 +++ b/vllm/v1/core/kv_cache_manager.py
 @@ -8,6 +8,7 @@ from vllm.distributed.kv_events import KVCacheEvent
@@ -1165,7 +1165,7 @@ index 4965df17e..e6d53bc0d 100644
 -    def get_unhashed_block_ids(self) -> list[int]:
 -        """Get block_ids of unhashed blocks from KVCacheBlocks instance."""
 +    def get_unhashed_block_ids(self) -> list[list[int]]:
-+        """Get block_ids of unhashed blocks from OmniKVCacheBlocks instance."""
++        """Get block_ids of unhashed blocks from KVCacheBlocks instances."""
          return [
 -            block.block_id for block in self.blocks if block.block_hash is None
 +            [block.block_id for block in group if block.block_hash is None]
@@ -2237,7 +2237,7 @@ index 403b5401b..3a0b5ea94 100644
 +    
 +    return create_kv_cache_group_specs(kv_cache_spec, grouped_layers)
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index e386183af..fd778f6f7 100644
+index e386183af..6a6cbf976 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -280,7 +280,6 @@ class Scheduler(SchedulerInterface):
@@ -2276,6 +2276,15 @@ index e386183af..fd778f6f7 100644
          del self.requests[request.request_id]
  
      def get_num_unfinished_requests(self) -> int:
+@@ -1056,7 +1056,7 @@ class Scheduler(SchedulerInterface):
+             return False, None
+         # assert len(self.kv_cache_config.kv_cache_groups
+         #            ) == 1, "KV connector only supports one KV cache group now"
+-        block_ids = self.kv_cache_manager.get_block_ids(request.request_id)[0]
++        block_ids = self.kv_cache_manager.get_block_ids(request.request_id)
+         return self.connector.request_finished(request, block_ids)
+ 
+     def _update_waiting_for_remote_kv(self, request: Request) -> bool:
 diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
 index 0223c9cee..2912db1f3 100644
 --- a/vllm/v1/core/single_type_kv_cache_manager.py

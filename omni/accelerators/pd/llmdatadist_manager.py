@@ -210,7 +210,7 @@ class LLMDataDistManager:
             prompt_cache_key = BlocksCacheKey(
                 prompt_cluster_id=prompt_cluster_id, model_id=model_id)
             self._pull_blocks(prompt_cache_key, kv_cache,
-                              src_blocks, tgt_blocks)
+                              src_blocks[model_id], tgt_blocks[model_id])
 
     def register_link(self):
 
