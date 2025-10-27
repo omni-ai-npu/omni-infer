@@ -1,34 +1,31 @@
 diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
-index b0e3fac30..834b010d9 100644
+index b0e3fac30..a325a56e9 100644
 --- a/vllm/entrypoints/openai/protocol.py
 +++ b/vllm/entrypoints/openai/protocol.py
-@@ -6,7 +6,7 @@ import json
+@@ -3,6 +3,7 @@
+ # Adapted from
+ # https://github.com/lm-sys/FastChat/blob/168ccc29d3f7edc50823016105c024fe2282732a/fastchat/protocol/openai_api_protocol.py
+ import json
++import os
  import time
  from http import HTTPStatus
  from typing import Annotated, Any, ClassVar, Literal, Optional, Union
--
-+import os
- import regex as re
- import torch
- from fastapi import HTTPException, UploadFile
-@@ -612,12 +612,33 @@ class ChatCompletionRequest(OpenAIBaseModel):
+@@ -612,12 +613,28 @@ class ChatCompletionRequest(OpenAIBaseModel):
      @model_validator(mode="before")
      @classmethod
      def check_logprobs(cls, data):
 -        if (_ := data.get("prompt_logprobs")) is not None:
 -            raise ValueError("`prompt_logprobs` are not supported")
++
 +        vllm_plugins = os.getenv('VLLM_PLUGINS','').strip()
 +        if (prompt_logprobs := data.get("prompt_logprobs")) is not None:
 +            if 'npu' in vllm_plugins.split(','):
 +                raise ValueError("`prompt_logprobs` are not supported")
 +            else:
 +                if data.get("stream") and prompt_logprobs > 0:
-+                    raise ValueError(
-+                        "`prompt_logprobs` are not available when `stream=True`.")
-+
++                    raise ValueError("`prompt_logprobs` are not available when `stream=True`.")
 +                if prompt_logprobs < 0:
 +                    raise ValueError("`prompt_logprobs` must be a positive value.")
-+
 +        if (top_logprobs := data.get("top_logprobs")) is not None:
 +            if 'npu' in vllm_plugins.split(','):
 +                raise ValueError("`top_logprobs` are not supported")
@@ -36,9 +33,7 @@ index b0e3fac30..834b010d9 100644
 +                if top_logprobs < 0:
 +                    raise ValueError("`top_logprobs` must be a positive value.")
 +                if top_logprobs > 0 and not data.get("logprobs"):
-+                    raise ValueError(
-+                        "when using `top_logprobs`, `logprobs` must be set to true."
-+                    )
++                    raise ValueError("when using `top_logprobs`, `logprobs` must be set to true.")
 +
          if(_ := data.get("logprobs")) is not None:
 -            raise ValueError("`logprobs` are not supported")
@@ -46,11 +41,10 @@ index b0e3fac30..834b010d9 100644
 -            raise ValueError("`top_logprobs` are not supported")
 +            if 'npu' in vllm_plugins.split(','):
 +                raise ValueError("`logprobs` are not supported")
-+
          return data
  
      @model_validator(mode="before")
-@@ -993,10 +1014,25 @@ class CompletionRequest(OpenAIBaseModel):
+@@ -993,10 +1010,21 @@ class CompletionRequest(OpenAIBaseModel):
      @model_validator(mode="before")
      @classmethod
      def check_logprobs(cls, data):
@@ -64,31 +58,26 @@ index b0e3fac30..834b010d9 100644
 +                raise ValueError("`prompt_logprobs` is not supported")
 +            else:
 +                if data.get("stream") and prompt_logprobs > 0:
-+                    raise ValueError(
-+                        "`prompt_logprobs` are not available when `stream=True`.")
-+
++                    raise ValueError("`prompt_logprobs` are not available when `stream=True`.")
 +                if prompt_logprobs < 0:
 +                    raise ValueError("`prompt_logprobs` must be a positive value.")
-+
 +        if (logprobs := data.get("logprobs")) is not None:
 +            if 'npu' in vllm_plugins.split(','):
 +                raise ValueError("`logprobs` is not supported")
 +            else:
 +                if logprobs < 0:
 +                    raise ValueError("`logprobs` must be a positive value.")
-+
          return data
  
      @model_validator(mode="before")
 diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
-index 943abbed4..949325d82 100644
+index 943abbed4..928d163b8 100644
 --- a/vllm/entrypoints/openai/serving_chat.py
 +++ b/vllm/entrypoints/openai/serving_chat.py
-@@ -225,9 +225,14 @@ class OpenAIServingChat(OpenAIServing):
+@@ -225,9 +225,13 @@ class OpenAIServingChat(OpenAIServing):
                          engine_prompt["prefilled_texts"] = delta_text
                  default_max_tokens = self.max_model_len - len(
                      engine_prompt["prompt_token_ids"])
-+                
 +                vllm_plugins = os.getenv('VLLM_PLUGINS','').strip()
                  if request.use_beam_search:
 -                    sampling_params = request.to_beam_search_params(
@@ -102,7 +91,7 @@ index 943abbed4..949325d82 100644
                      sampling_params = request.to_sampling_params(
                          default_max_tokens,
 diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
-index a162a01ee..eaaf8beef 100644
+index a162a01ee..f5cdee492 100644
 --- a/vllm/entrypoints/openai/serving_completion.py
 +++ b/vllm/entrypoints/openai/serving_completion.py
 @@ -5,7 +5,7 @@ import time
@@ -114,7 +103,7 @@ index a162a01ee..eaaf8beef 100644
  import jinja2
  from fastapi import Request
  from typing_extensions import assert_never
-@@ -162,16 +162,18 @@ class OpenAIServingCompletion(OpenAIServing):
+@@ -162,10 +162,13 @@ class OpenAIServingCompletion(OpenAIServing):
                  else:
                      assert_never(engine_prompt)
                  default_max_tokens = self.max_model_len - input_length
@@ -131,26 +120,20 @@ index a162a01ee..eaaf8beef 100644
                  else:
                      sampling_params = request.to_sampling_params(
                          default_max_tokens,
-                         self.model_config.logits_processor_pattern,
-                         self.default_sampling_params)
--
-                 request_id_item = f"{request_id}-{i}"
- 
-                 self._log_inputs(request_id_item,
 diff --git a/vllm/sampling_params.py b/vllm/sampling_params.py
-index 65c019d78..b2f414889 100644
+index 65c019d78..5b2563205 100644
 --- a/vllm/sampling_params.py
 +++ b/vllm/sampling_params.py
-@@ -5,7 +5,7 @@ from dataclasses import dataclass
- from enum import Enum, IntEnum
- from functools import cached_property
- from typing import Annotated, Any, Optional, Union
--
-+import os
+@@ -9,7 +9,7 @@ from from typing import Annotated, Any, Optional, Union
  import msgspec
  from pydantic import BaseModel
  from typing_extensions import deprecated
-@@ -384,11 +384,18 @@ class SamplingParams(
+-
++import os
+ from vllm.logger import init_logger
+ from vllm.logits_process import LogitsProcessor
+ from vllm.transformers_utils.tokenizer import AnyTokenizer
+@@ -384,11 +384,16 @@ class SamplingParams(
          self._all_stop_token_ids.update(self.stop_token_ids)
  
      def _verify_args(self) -> None:
@@ -160,51 +143,46 @@ index 65c019d78..b2f414889 100644
                               f"type {type(self.n)}")
 -        if self.n < 1:
 -            raise ValueError(f"n must be at least 1, got {self.n}.")
-+        
 +        if 'npu' in vllm_plugins.split(','):
 +            if self.n != 1:
-+                raise ValueError(f"n must be at least 1 in npu_version, got {self.n}.")
++                raise ValueError(f"n must be equal to 1 in npu_version, got {self.n}.")
 +        else:
 +            if self.n < 1:
 +                raise ValueError(f"n must be at least 1, got {self.n}.")
-+
          if not -2.0 <= self.presence_penalty <= 2.0:
              raise ValueError("presence_penalty must be in [-2, 2], got "
                               f"{self.presence_penalty}.")
-@@ -424,12 +431,29 @@ class SamplingParams(
-             raise ValueError(
+@@ -425,11 +430,26 @@ class SamplingParams(
                  f"min_tokens must be less than or equal to "
                  f"max_tokens={self.max_tokens}, got {self.min_tokens}.")
-+        
          if self.logprobs is not None:
 -            raise ValueError("logprobs is not supported.")
 +            if 'npu' in vllm_plugins.split(','):
 +                raise ValueError("logprobs is not supported.")
 +            else:
 +                if self.logprobs < 0:
-+                    raise ValueError(
-+                        f"logprobs must be non-negative, got {self.logprobs}.")
++                    raise ValueError(f"logprobs must be non-negative, got {self.logprobs}.")
++
          if self.prompt_logprobs is not None:
 -            raise ValueError("prompt_logprobs is not supported.")
 +            if 'npu' in vllm_plugins.split(','):
 +                raise ValueError("prompt_logprobs is not supported.")
 +            else:
 +                if self.prompt_logprobs < 0:
-+                    raise ValueError(f"prompt_logprobs must be non-negative, got "
-+                                    f"{self.prompt_logprobs}.")
++                    raise ValueError(f"prompt_logprobs must be non-negative, got "f"{self.prompt_logprobs}.")
++
          if self.truncate_prompt_tokens is not None:
 -            raise ValueError("truncate_prompt_tokens is not supported.")
 +            if 'npu' in vllm_plugins.split(','):
 +                raise ValueError("truncate_prompt_tokens is not supported.")
 +            else:
 +                if self.truncate_prompt_tokens < 1:
-+                    raise ValueError(f"truncate_prompt_tokens must be >= 1, "
-+                                    f"got {self.truncate_prompt_tokens}")
++                    raise ValueError(f"truncate_prompt_tokens must be >= 1, "f"got {self.truncate_prompt_tokens}")
 +
          assert isinstance(self.stop_token_ids, list)
          if not all(isinstance(st_id, int) for st_id in self.stop_token_ids):
              raise ValueError(f"stop_token_ids must contain only integers, "
-@@ -444,8 +468,9 @@ class SamplingParams(
+@@ -444,8 +464,9 @@ class SamplingParams(
          if self.best_of != self._real_n and self.output_kind == (
                  RequestOutputKind.DELTA):
              raise ValueError("best_of must equal n to use output_kind=DELTA")
