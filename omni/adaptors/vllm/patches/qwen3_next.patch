@@ -1095,7 +1095,7 @@ index 000000000..3a135d524
 +        dcp_world_size=dcp_world_size,
 +    )
 diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
-index 4965df17e..c84df03e5 100644
+index 4965df17e..e6d53bc0d 100644
 --- a/vllm/v1/core/kv_cache_manager.py
 +++ b/vllm/v1/core/kv_cache_manager.py
 @@ -8,6 +8,7 @@ from vllm.distributed.kv_events import KVCacheEvent
@@ -1106,7 +1106,7 @@ index 4965df17e..c84df03e5 100644
  from vllm.v1.core.kv_cache_utils import (BlockHashType, KVCacheBlock,
                                           hash_request_tokens)
  from vllm.v1.core.single_type_kv_cache_manager import (
-@@ -21,33 +22,53 @@ logger = init_logger(__name__)
+@@ -21,34 +22,56 @@ logger = init_logger(__name__)
  
  @dataclass
  class KVCacheBlocks:
@@ -1162,21 +1162,24 @@ index 4965df17e..c84df03e5 100644
 +            return None
 +        return tuple([blk.block_id for blk in group] for group in self.blocks)
  
-     def get_unhashed_block_ids(self) -> list[int]:
-         """Get block_ids of unhashed blocks from KVCacheBlocks instance."""
--        return [
+-    def get_unhashed_block_ids(self) -> list[int]:
+-        """Get block_ids of unhashed blocks from KVCacheBlocks instance."""
++    def get_unhashed_block_ids(self) -> list[list[int]]:
++        """Get block_ids of unhashed blocks from OmniKVCacheBlocks instance."""
+         return [
 -            block.block_id for block in self.blocks if block.block_hash is None
--        ]
-+        assert len(self.blocks) == 1, "Only one group is supported"
-+        return [block.block_id for block in self.blocks[0] if block.block_hash is None]
-+
++            [block.block_id for block in group if block.block_hash is None]
++            for group in self.blocks
+         ]
+ 
 +    def new_empty(self) -> "KVCacheBlocks":
 +        """Creates a new KVCacheBlocks instance with no blocks."""
 +        return KVCacheBlocks(tuple([] for _ in range(len(self.blocks))))
- 
++
  
  class KVCacheManager:
-@@ -61,13 +82,11 @@ class KVCacheManager:
+ 
+@@ -61,13 +84,11 @@ class KVCacheManager:
          use_eagle: bool = False,
          log_stats: bool = False,
          enable_kv_cache_events: bool = False,
@@ -1194,7 +1197,7 @@ index 4965df17e..c84df03e5 100644
          self.max_model_len = max_model_len
  
          self.enable_caching = enable_caching
-@@ -77,22 +96,56 @@ class KVCacheManager:
+@@ -77,22 +98,56 @@ class KVCacheManager:
          # FIXME: make prefix cache stats conditional on log_stats
          self.prefix_cache_stats = PrefixCacheStats() if log_stats else None
  
@@ -1261,7 +1264,7 @@ index 4965df17e..c84df03e5 100644
  
      @property
      def usage(self) -> float:
-@@ -103,7 +156,7 @@ class KVCacheManager:
+@@ -103,7 +158,7 @@ class KVCacheManager:
          """
          return self.block_pool.get_usage()
  
@@ -1270,7 +1273,7 @@ index 4965df17e..c84df03e5 100644
          """Get (and reset) the prefix cache stats.
  
          Returns:
-@@ -115,8 +168,7 @@ class KVCacheManager:
+@@ -115,8 +170,7 @@ class KVCacheManager:
          self.prefix_cache_stats = PrefixCacheStats()
          return stats
  
@@ -1280,7 +1283,7 @@ index 4965df17e..c84df03e5 100644
          """Get the computed (cached) blocks for the request.
          Note that the computed blocks must be full.
  
-@@ -130,21 +182,11 @@ class KVCacheManager:
+@@ -130,21 +184,11 @@ class KVCacheManager:
          """
          # Prefix caching is disabled or
          # When the request requires prompt logprobs, we skip prefix caching.
@@ -1307,7 +1310,7 @@ index 4965df17e..c84df03e5 100644
  
          # NOTE: When all tokens hit the cache, we must recompute the last token
          # to obtain logits. Thus, set max_cache_hit_length to prompt_length - 1.
-@@ -153,32 +195,37 @@ class KVCacheManager:
+@@ -153,32 +197,37 @@ class KVCacheManager:
          # num_computed_tokens to be block-size aligned. Removing this limitation
          # could slightly improve performance in the future.
          max_cache_hit_length = request.num_tokens - 1
@@ -1360,7 +1363,7 @@ index 4965df17e..c84df03e5 100644
          """Add slots for a request with new tokens to append.
  
          Args:
-@@ -188,10 +235,10 @@ class KVCacheManager:
+@@ -188,10 +237,10 @@ class KVCacheManager:
                  already been computed locally (i.e. new_computed_blocks).
              num_new_computed_tokens: The number of new computed tokens just
                  hitting the prefix caching, excluding external tokens.
@@ -1373,7 +1376,7 @@ index 4965df17e..c84df03e5 100644
                  as eagle.
              delay_cache_blocks: Whether to skip caching the blocks. This is
                  used by P/D when allocating blocks used in a KV transfer
-@@ -214,13 +261,15 @@ class KVCacheManager:
+@@ -214,13 +263,15 @@ class KVCacheManager:
          Returns:
              A list of new allocated blocks.
          """
@@ -1391,7 +1394,7 @@ index 4965df17e..c84df03e5 100644
  
          # Free the blocks that are skipped during the attention computation
          # (e.g., tokens outside the sliding window).
-@@ -228,22 +277,24 @@ class KVCacheManager:
+@@ -228,22 +279,24 @@ class KVCacheManager:
          # insufficient free blocks.
          # Should call this function before allocating new blocks to reduce
          # the number of evicted blocks.
@@ -1427,7 +1430,7 @@ index 4965df17e..c84df03e5 100644
  
          if num_blocks_to_allocate > self.block_pool.get_num_free_blocks():
              # Cannot allocate new blocks
-@@ -253,42 +304,45 @@ class KVCacheManager:
+@@ -253,42 +306,45 @@ class KVCacheManager:
          if self.enable_caching:
              self.block_pool.touch(new_computed_block_list)
          else:
@@ -1489,7 +1492,7 @@ index 4965df17e..c84df03e5 100644
  
      def reset_prefix_cache(self) -> bool:
          """Reset prefix cache. This function may be used in RLHF
-@@ -306,58 +360,39 @@ class KVCacheManager:
+@@ -306,58 +362,39 @@ class KVCacheManager:
              self.prefix_cache_stats.reset = True
          return True
  
@@ -1566,7 +1569,7 @@ index 4965df17e..c84df03e5 100644
  
      def take_events(self) -> list[KVCacheEvent]:
          """Take the KV cache events from the block pool.
-@@ -367,12 +402,22 @@ class KVCacheManager:
+@@ -367,12 +404,22 @@ class KVCacheManager:
          """
          return self.block_pool.take_events()
  
@@ -1594,7 +1597,7 @@ index 4965df17e..c84df03e5 100644
  
  class CpuNpuKVCacheManager:
  
-@@ -384,7 +429,7 @@ class CpuNpuKVCacheManager:
+@@ -384,7 +431,7 @@ class CpuNpuKVCacheManager:
          self.max_model_len = max_model_len
  
      def _can_swap(self, device: Device, num_need_blocks: int = 0) -> bool:
@@ -1603,7 +1606,7 @@ index 4965df17e..c84df03e5 100644
          if num_free_blocks < num_need_blocks:
              return False
          return True
-@@ -396,7 +441,7 @@ class CpuNpuKVCacheManager:
+@@ -396,7 +443,7 @@ class CpuNpuKVCacheManager:
              num_computed_tokens + num_new_tokens + num_lookahead_tokens,
              self.max_model_len)
          num_blocks_to_allocate = (
@@ -1612,7 +1615,7 @@ index 4965df17e..c84df03e5 100644
                  request_id=request.request_id,
                  num_tokens=num_tokens_need_slot,
                  new_computed_blocks=[],
-@@ -404,7 +449,7 @@ class CpuNpuKVCacheManager:
+@@ -404,7 +451,7 @@ class CpuNpuKVCacheManager:
          return self._can_swap(Device.GPU, num_blocks_to_allocate)
  
      def can_swap_out(self, request: Request) -> bool:
@@ -1621,7 +1624,7 @@ index 4965df17e..c84df03e5 100644
          return self._can_swap(Device.CPU, num_cached_blocks)
  
      def swap(self,request: Request, src_device: Device, dst_device: Device)-> list[tuple[int, int]]:
-@@ -423,7 +468,7 @@ class CpuNpuKVCacheManager:
+@@ -423,7 +470,7 @@ class CpuNpuKVCacheManager:
          return dst_block_ids
  
      def _swap_out(self,request: Request, device: Device) -> list[int]:
