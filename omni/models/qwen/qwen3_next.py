@@ -2,12 +2,13 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Inference-only Qwen3Next model."""
 from collections.abc import Iterable
-from typing import Optional
+from typing import Optional, Callable
 
 import torch
 import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
+from torch.library import Library
 from transformers.activations import ACT2FN
 
 from vllm import envs
@@ -54,6 +55,7 @@ from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
 from vllm.triton_utils import tl, triton
 from vllm.utils import direct_register_custom_op
+from vllm.utils import vllm_lib
 from omni.layers.attention.backend.gdn_attn import GDNAttentionMetadata
 
 from vllm.model_executor.models.interfaces import (HasInnerState, IsHybrid,
@@ -485,6 +487,8 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         output: torch.Tensor,
         cache_params: Optional[MambaCacheParams] = None,
     ):
+        #return
+        #return self._forward(hidden_states=hidden_states, output=output)
         return torch.ops.vllm.gdn_attention(
             hidden_states,
             output,
@@ -892,6 +896,7 @@ class Qwen3NextDecoderLayer(nn.Module):
                 quant_config=quant_config,
                 speculative_config=speculative_config,
                 prefix=f'{prefix}.linear_attn')
+            self.layer_name = f'{prefix}.linear_attn'
         elif self.layer_type == "full_attention":
             self.self_attn = Qwen3NextAttention(
                 config,
@@ -900,6 +905,7 @@ class Qwen3NextDecoderLayer(nn.Module):
                 quant_config=quant_config,
                 prefix=f'{prefix}.self_attn',
             )
+            self.layer_name = f'{prefix}.self_attn.attn'
         else:
             raise ValueError(f"Invalid layer_type {self.layer_type}")
 
@@ -1000,7 +1006,7 @@ class Qwen3NextDecoderLayer(nn.Module):
         return hidden_states, residual
 
 
-@support_torch_compile
+#@support_torch_compile
 class Qwen3NextModel(nn.Module):
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
@@ -1172,8 +1178,8 @@ class Qwen3NextModel(nn.Module):
             loaded_params.add(name)
         return loaded_params
 
-
-class Qwen3NextForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP, IsHybrid):
+@support_torch_compile
+class Qwen3NextForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP, IsHybrid, GraphCompileConfiguration):
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -1302,6 +1308,16 @@ class Qwen3NextForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP, I
     def get_expert_mapping(self) -> list[tuple[str, str, int, str]]:
         return self.model.get_expert_mapping()
 
+    def should_use_eager_mode(self, *args, **kwargs):
+        attn_metadata = kwargs.get("attn_metadata", None)
+        if not attn_metadata:
+            return True
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
+        return attn_metadata.attn_state != AscendAttentionState.DecodeOnly
+
+    def mark_static_for_graph(self, *args, **kwargs):
+        pass
 
 def gdn_attention(
     hidden_states: torch.Tensor,
@@ -1320,6 +1336,34 @@ def gdn_attention_fake(
 ) -> None:
     return
 
+def ascend_direct_register_custom_op(
+        op_name: str,
+        op_func: Callable,
+        mutates_args: list[str],
+        fake_impl: Optional[Callable] = None,
+        target_lib: Optional[Library] = None,
+        dispatch_key: str = "CUDA",
+        tags: Tuple[torch.Tag, ...] = (),
+):
+    # In pytorch 2.5.1, torch.library.infer_schema require the input function to
+    # have annotations supported by typing library. But in pytorch 2.7.0 which
+    # vllm using, torch.library.infer_schema require the python builtin type. In
+    # this case, we should revert built type to typing type for 2.5.1 backward
+    # compatibility.
+    for k, v in op_func.__annotations__.items():
+        if v == list[int]:
+            op_func.__annotations__[k] = List[int]
+        if v == Optional[list[int]]:
+            op_func.__annotations__[k] = Optional[List[int]]
+    import torch.library
+    schema_str = torch.library.infer_schema(op_func, mutates_args=mutates_args)
+    my_lib = target_lib or vllm_lib
+    my_lib.define(op_name + schema_str, tags=tags)
+    my_lib.impl(op_name, op_func, dispatch_key=dispatch_key)
+    if fake_impl is not None:
+        my_lib._register_fake(op_name, fake_impl)
+
+direct_register_custom_op = ascend_direct_register_custom_op
 
 direct_register_custom_op(
     op_name="gdn_attention",
