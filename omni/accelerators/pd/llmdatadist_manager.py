@@ -205,13 +205,13 @@ class LLMDataDistManager:
     def pull_kv(self, src_blocks, tgt_blocks, prompt_cluster_id):
         # If this line is not added, the fx mode will report an error.
         # The preliminary reason is that the context is lost when multiple coroutines pull kv.
-        print(f"pull_kv {len(src_blocks)=} {len(tgt_blocks)=} {len(src_blocks[0])=} {len(tgt_blocks[0])=}")
+        print(f"pull_kv {len(src_blocks)=} {len(tgt_blocks)=} {len(src_blocks[0])=} {len(tgt_blocks[0])=} {src_blocks[0]=} {tgt_blocks[0]=} ")
         torch.npu.set_device(f"npu:{self.local_rank}")
         for model_id, kv_cache in enumerate(self.registered_kv_caches):
             prompt_cache_key = BlocksCacheKey(
                 prompt_cluster_id=prompt_cluster_id, model_id=model_id)
             self._pull_blocks(prompt_cache_key, kv_cache,
-                              src_blocks[model_id][0], tgt_blocks[model_id][0])
+                              src_blocks[model_id][0], tgt_blocks[model_id])
 
     def register_link(self):
 
