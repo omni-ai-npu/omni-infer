@@ -88,6 +88,16 @@ def process_results(results, inventory, inv_file):
         prefill_lb_sdk = args.get('prefill-lb-sdk', 'pd_score_balance')
         decode_lb_sdk = args.get('decode-lb-sdk', 'pd_score_balance')
 
+    prefill_max_num_seqs = 16
+    decode_max_num_seqs = 32
+    for _, vars in inventory['all']['children']['P']['hosts'].items():
+        args: Dict[str, Any] = vars.get("args", {}) or {}
+        prefill_max_num_seqs = args.get('extra-args', {}).get('max-num-seqs', prefill_max_num_seqs)
+
+    for _, vars in inventory['all']['children']['D']['hosts'].items():
+        args: Dict[str, Any] = vars.get("args", {}) or {}
+        decode_max_num_seqs = args.get('extra-args', {}).get('max-num-seqs', decode_max_num_seqs)
+
     with tempfile.NamedTemporaryFile(
         "w", delete=False,
         dir="./",
@@ -104,6 +114,8 @@ def process_results(results, inventory, inv_file):
           --log-level notice \\\n\
           --core-num 4 \\\n\
           --start-core-index 16 \\\n\
+          --prefill-max-num-seqs {prefill_max_num_seqs} \\\n\
+          --decode-max-num-seqs {decode_max_num_seqs} \\\n\
           --prefill-lb-sdk {prefill_lb_sdk} \\\n\
           --decode-lb-sdk {decode_lb_sdk}\n\n")
         tf.write("EOF\n")
