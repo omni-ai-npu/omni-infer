@@ -69,6 +69,7 @@ from omni.layers.moe.deepseek_moe import DeepseekMoE
 from omni.layers.attention.deepseek_mla import DeepseekMLA 
 from omni.models.config_loader.loader import model_extra_config
 from omni.layers.attention.backend.mla import group_request_list
+from omni.layers.utils import ConditionalTNGScope
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64
 
@@ -130,6 +131,8 @@ class ParallelPanguUltraMoEMLP(nn.Module):
 
 
 class PanguUltraMoEDecoderLayer(nn.Module):
+
+    is_split_hidden_states = False
 
     def __init__(
             self,
@@ -215,22 +218,23 @@ class PanguUltraMoEDecoderLayer(nn.Module):
         is_prefill = attn_metadata is None or attn_metadata.prefill is not None
         enable_superkernel = not is_prefill and model_extra_config.operator_opt_config.use_super_kernel
 
-        # Self Attention
-        if residual is None:
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
-        elif not enable_superkernel:
-            # Adapt: adapt for w8a8 dynamic, do quant
-            # Combines residual add and rmsnorm
-            hidden_states, residual = self.input_layernorm(
-                hidden_states, residual, quant_symbol=(not model_extra_config.operator_opt_config.use_mlaprolog and self.quant_symbol))
-            # Adapt end.
-        hidden_states = self.self_attn(
-            positions=positions,
-            hidden_states=hidden_states,
-            kv_cache=kv_cache,
-            attn_metadata=attn_metadata,
-        )
+        with ConditionalTNGScope(super_kernel=(enable_superkernel and model_extra_config.operator_opt_config.use_mlaprolog), scope=self.self_attn.prefix):
+            # Self Attention
+            if residual is None:
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
+            elif not enable_superkernel:
+                # Adapt: adapt for w8a8 dynamic, do quant
+                # Combines residual add and rmsnorm
+                hidden_states, residual = self.input_layernorm(
+                    hidden_states, residual, quant_symbol=(not model_extra_config.operator_opt_config.use_mlaprolog and self.quant_symbol))
+                # Adapt end.
+            hidden_states = self.self_attn(
+                positions=positions,
+                hidden_states=hidden_states,
+                kv_cache=kv_cache,
+                attn_metadata=attn_metadata,
+            )
 
         if enable_superkernel:
             with tng.scope.super_kernel(self.self_attn.prefix, 'stream-fusion=1'):
@@ -255,7 +259,7 @@ class PanguUltraMoEDecoderLayer(nn.Module):
             hidden_states, residual = self.pre_mlp_layernorm(hidden_states, residual)
 
             # Perform full hidden splitting to avoid OOM
-            if get_dp_group().world_size > 1 and attn_metadata is None:
+            if (get_dp_group().world_size > 1 or PanguUltraMoEDecoderLayer.is_split_hidden_states) and is_prefill:
                 reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device=current_platform.device_type)
                 local_length = hidden_states.shape[0]
                 # global_max_length = torch.tensor(0, dtype=torch.int64)

@@ -449,6 +449,13 @@ class NPUModelRunner(GPUModelRunner):
 
             if not isinstance(self.attn_metadata_builders[kv_cache_group_id], DummyAttentionMetadataBuilder):
                 raise ValueError(f"{self.attn_metadata_builders[kv_cache_group_id]} does not implement DummyAttentionMetadataBuilder")
+            if attn_state == AscendAttentionState.DecodeOnly and model_extra_config.operator_opt_config.mtp_remove_redundant_kv:
+                num_speculative_tokens = 0 if not self.speculative_config else self.speculative_config.num_speculative_tokens
+                mtp_idx = torch.arange(1, self.max_batch_size, 1 + num_speculative_tokens, dtype=torch.int64).npu()
+                new_block_table = torch.index_select(attn_metadata_i.decode.block_table, dim=0, index=mtp_idx)
+                new_seq_lens = torch.index_select(attn_metadata_i.decode.seq_lens, dim=0, index=mtp_idx)
+                attn_metadata_i.decode.block_table = new_block_table
+                attn_metadata_i.decode.seq_lens = new_seq_lens
             if self.enable_torchair_graph_mode and attn_state == AscendAttentionState.DecodeOnly:
                 self.attn_metadata_builders[kv_cache_group_id].mark_static_for_attn_metadata(attn_metadata_i)
             for layer_name in kv_cache_group_spec.layer_names:
@@ -1050,6 +1057,13 @@ class NPUModelRunner(GPUModelRunner):
             if not isinstance(builder, DummyAttentionMetadataBuilder):
                 raise ValueError(f"{builder} does not implement DummyAttentionMetadataBuilder")
             attn_metadata_i = builder.build_dummy(num_tokens, self.max_batch_size)
+            if model_extra_config.operator_opt_config.mtp_remove_redundant_kv:
+                num_speculative_tokens = 0 if not self.speculative_config else self.speculative_config.num_speculative_tokens
+                mtp_idx = torch.arange(1, self.max_batch_size, 1 + num_speculative_tokens, dtype=torch.int64).npu()
+                new_block_table = torch.index_select(attn_metadata_i.decode.block_table, dim=0, index=mtp_idx)
+                new_seq_lens = torch.index_select(attn_metadata_i.decode.seq_lens, dim=0, index=mtp_idx)
+                attn_metadata_i.decode.block_table = new_block_table
+                attn_metadata_i.decode.seq_lens = new_seq_lens
             if self.enable_torchair_graph_mode:
                 builder.mark_static_for_attn_metadata(attn_metadata_i)
             for layer_name in kv_cache_group_spec.layer_names:

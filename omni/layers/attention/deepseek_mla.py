@@ -408,6 +408,7 @@ class DeepseekMLA(nn.Module):
         self.attn_mask = ~torch.tril(
             torch.ones((2048, 2048), dtype=torch.bool, device=current_platform.device_type)
         )
+        self.decode_attn_mask = self.attn_mask.to(torch.uint8)
 
         self.fa_quant = model_extra_config.operator_opt_config.fa_quant
         self.kv_scale_reci_tile = None
@@ -458,11 +459,13 @@ class DeepseekMLA(nn.Module):
             self.W_UK = self.W_UK.permute(1, 2, 0)
             self.W_UV = self.W_UV.transpose(0, 1)
             self.is_init = False
+            self.num_speculative_tokens = 0 if not cur_vllm_config.speculative_config or not model_extra_config.operator_opt_config.mtp_remove_redundant_kv else cur_vllm_config.speculative_config.num_speculative_tokens
             self.norm_res = {}
             self.actual_seq_lengths = {}
             for batch_size in model_extra_config.task_config.decode_gear_list:
                 self.norm_res[batch_size] = torch.zeros([batch_size * self.tp_size, self.q_lora_rank], dtype=torch.bfloat16, device=current_platform.device_type)
-                self.actual_seq_lengths[batch_size] = torch.tensor(list(range(1, batch_size * self.tp_size + 1)), dtype=torch.int64, device=current_platform.device_type)
+                self.actual_seq_lengths[batch_size] = (1 + self.num_speculative_tokens) * \
+                    torch.arange(1, batch_size * self.tp_size // (1 + self.num_speculative_tokens) + 1, dtype=torch.int64, device=current_platform.device_type)
         if self.quant_symbol and model_extra_config.operator_opt_config.use_mlaprolog:
             self.q_a_proj.weight_scale.data = self.q_a_proj.weight_scale.data.to(torch.float)
             self.q_b_proj.weight_scale.data = self.q_b_proj.weight_scale.data.to(torch.float)
@@ -1073,6 +1076,13 @@ class DeepseekMLA(nn.Module):
         input_layout = "TND_NTD"
         op_scope = tng.ops if self.enable_graph_mode else torch.ops.npu
 
+        if model_extra_config.operator_opt_config.mtp_remove_redundant_kv:
+            attn_mask = self.decode_attn_mask
+            sparse_mode = 3
+        else:
+            attn_mask = None
+            sparse_mode = 0
+
         if self.fa_quant:
             assert dequant_scale_q_nope is not None
             dequant_scale_q_nope = dequant_scale_q_nope.squeeze(-1)
@@ -1080,6 +1090,7 @@ class DeepseekMLA(nn.Module):
                 q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
                 num_query_heads=self.num_heads, num_key_value_heads=1,
                 input_layout=input_layout, softmax_scale=self.scale,
+                atten_mask=attn_mask, sparse_mode=sparse_mode,
                 dequant_scale_query=dequant_scale_q_nope, 
                 dequant_scale_key=self.kv_scale, dequant_scale_value=self.kv_scale,
                 query_quant_mode=3, inner_precise=0,
@@ -1115,6 +1126,8 @@ class DeepseekMLA(nn.Module):
                 q_nope, k_nope, k_nope, query_rope=q_pe, key_rope=k_rope,
                 num_heads=self.num_local_heads,
                 num_key_value_heads=1, input_layout=input_layout,
+                atten_mask=attn_mask,
+                sparse_mode=sparse_mode,
                 scale=self.scale,
                 antiquant_mode=0, antiquant_scale=None,
                 block_table=attn_metadata.decode.block_table,
@@ -1123,25 +1136,23 @@ class DeepseekMLA(nn.Module):
                 actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
             )
 
-        with ConditionalTNGScope(super_kernel=model_extra_config.operator_opt_config.use_super_kernel,
-                                        scope=self.prefix):
-            if model_extra_config.operator_opt_config.enable_dsa:
-                attn_output = attn_output.squeeze(1).transpose(0, 1)
-            else:
-                # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
-                attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
+        if model_extra_config.operator_opt_config.enable_dsa:
+            attn_output = attn_output.squeeze(1).transpose(0, 1)
+        else:
+            # Apply UV, (N, B, L) @ W_UV (N, L, V) -> (N, B, V)
+            attn_output = attn_output.view(self.num_local_heads, bsz*q_len, self.kv_lora_rank) # adapter BSND_NBSD
 
-            attn_output = (
-                torch.matmul(attn_output, self.W_UV)
-                .transpose(1, 0)
-                .reshape(bsz, q_len, -1)
-            )
-            attn_output = attn_output.view(
-                -1, self.num_local_heads * self.v_head_dim)
-            if model_extra_config.parall_config.o_proj_tp_size > 1:
-                output, _ = self.o_proj.forward(attn_output, bsz, q_len, self.num_local_heads, self.v_head_dim)
-            else:
-                output, _ = self.o_proj.forward(attn_output)
+        attn_output = (
+            torch.matmul(attn_output, self.W_UV)
+            .transpose(1, 0)
+            .reshape(bsz, q_len, -1)
+        )
+        attn_output = attn_output.view(
+            -1, self.num_local_heads * self.v_head_dim)
+        if model_extra_config.parall_config.o_proj_tp_size > 1:
+            output, _ = self.o_proj.forward(attn_output, bsz, q_len, self.num_local_heads, self.v_head_dim)
+        else:
+            output, _ = self.o_proj.forward(attn_output)
         return output
     
     def _forward_prefill_a2(

@@ -75,7 +75,8 @@ class ModelOperatorOptConfig:
     mla_multistream_limit_core: str = '' # 空字符串代表不开启多流分核，形如'20|36'代表主流分配的AIC和AIV核数分别为20和36
     shared_experts_to_gmm: bool = False # 当redundancy_shared_expert_num > 0时，共享专家使用GMM代替BMM进行计算（限定收益场景：EP288 + 单die bs >= 48，仅针对Decode阶段）
     enable_gmm_swiglu_quant: bool = False # 当redundancy_shared_expert_num > 0时，使用npu_grouped_matmul_swiglu_quant_v2融合算子
-
+    mtp_remove_redundant_kv: bool = False # MTP场景下，去除FIA算子对同一请求的冗余KV cache搬运，当前不支持与Omni Attention同时使用
+    
     use_prefetch: bool = True # 是否开启预取
     expert_gate_up_prefetch: int = 50 # 默认预取大小为 50Mb；如果是权重是BF16型，设置为 30Mb
     expert_down_prefetch: int = 28 # 当权重是w8a8且ep_size > 64 时，默认预取大小为 28Mb，否则为0
