@@ -63,7 +63,7 @@ class LongcatRotaryEmbedding(nn.Module):
         rotary_dim: int,
         max_position_embeddings: int,
         base: int,
-        is_neox_style: bool,
+        is_neox_style: bool = True,
         dtype: torch.dtype = torch.bfloat16,
     ) -> None:
         super().__init__()

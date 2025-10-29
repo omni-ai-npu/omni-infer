@@ -118,7 +118,7 @@ class LongcatFlashDecoderLayer(nn.Module):
                 rotary_dim=config.qk_rope_head_dim,
                 max_position_embeddings=max_position_embeddings,
                 base=rope_theta,
-                is_neox_style=False
+                is_neox_style=True
             )
 
         self.input_layernorm = nn.ModuleList(

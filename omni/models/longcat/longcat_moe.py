@@ -169,6 +169,41 @@ class LongcatFlashMoE(nn.Module):
         else:
             return self._forward_decode_norm(hidden_states, attn_metadata)
 
+    def tranfer_zero_expert_ids(self, topk_ids: torch.Tensor, zero_expert_mask: torch.Tensor, normal_expert_mask: torch.Tensor) -> torch.Tensor:
+        device = topk_ids.device
+        out_dtype = topk_ids.dtype
+
+        row_idx, slot_idx = torch.nonzero(normal_expert_mask, as_tuple=True)
+        used_ids_flat = topk_ids[row_idx, slot_idx].to(torch.long)
+
+        used_mask = torch.zeros((topk_ids.shape[0], self.n_routed_experts), dtype=torch.bool, device=device)
+        used_mask.index_put_((row_idx, used_ids_flat), torch.ones_like(used_ids_flat, dtype=torch.bool), accumulate=True)
+        available_mask = ~used_mask
+
+        num_zero_each_row = zero_expert_mask.sum(dim=1)
+        max_zero_each_row = int(num_zero_each_row.max().item())
+        if max_zero_each_row == 0:
+            return topk_ids
+
+        idxN = torch.arange(self.n_routed_experts, device=device).float().unsqueeze(0).expand(topk_ids.shape[0], -1)
+        score_cand = torch.where(available_mask, -idxN, torch.full_like(idxN, float('-inf')))
+        _, cand_idx = torch.topk(score_cand, k=max_zero_each_row, largest=True, sorted=True)
+
+        col_idx = torch.arange(topk_ids.shape[1], device=device).float().unsqueeze(0).expand(topk_ids.shape[0], -1)
+        score_zero = torch.where(zero_expert_mask, -col_idx, torch.full_like(col_idx, float('-inf')))
+        _, z_indices_pad = torch.topk(score_zero, k=max_zero_each_row, largest=True, sorted=True)
+
+        j = torch.arange(max_zero_each_row, device=device).unsqueeze(0).expand(topk_ids.shape[0], max_zero_each_row)
+        valid_assign = j < num_zero_each_row.view(-1, 1)
+
+        rows_expanded = torch.arange(topk_ids.shape[0], device=device).unsqueeze(1).expand_as(j)
+        rows_sel = rows_expanded[valid_assign]
+        cols_sel = z_indices_pad[valid_assign]
+        vals_sel = cand_idx[valid_assign].to(out_dtype)
+
+        topk_ids.index_put_((rows_sel, cols_sel), vals_sel, accumulate=False)
+        return topk_ids
+
     def compute_zero_experts(self, hidden_states, topk_weights, topk_ids):
         zero_expert_mask = topk_ids >= self.n_routed_experts
         normal_expert_mask = topk_ids < self.n_routed_experts
@@ -178,7 +213,8 @@ class LongcatFlashMoE(nn.Module):
         total_weights = zero_expert_weights.sum(dim=-1, keepdim=True)   # [T, 1]
         zero_expert_output = hidden_states * total_weights              # [T, H]
         zero_expert_output = zero_expert_output.to(hidden_states.dtype)
-        topk_ids[zero_expert_mask] = 0 # 都用0号专家替代
+        
+        topk_ids = self.tranfer_zero_expert_ids(topk_ids, zero_expert_mask, normal_expert_mask)
         topk_weights[zero_expert_mask] = 0.0
         return zero_expert_output, topk_ids, topk_weights
 
