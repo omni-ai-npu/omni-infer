@@ -1,0 +1,1044 @@
+diff --git a/python/sglang/srt/disaggregation/decode.py b/python/sglang/srt/disaggregation/decode.py
+index f7de06220..560c994e3 100644
+--- a/python/sglang/srt/disaggregation/decode.py
++++ b/python/sglang/srt/disaggregation/decode.py
+@@ -753,6 +753,8 @@ class SchedulerDisaggregationDecodeMixin:
+                         self.prepare_mlp_sync_batch(batch)
+                     result = self.run_batch(batch)
+                     result_queue.append((batch.copy(), result))
++                    if batch.spec_algorithm.is_mtp():
++                        batch.seq_lens.add_(1)  # update seq_lens for MTP
+ 
+                     if (self.last_batch is None) or (not self.last_batch_in_queue):
+                         # Create a dummy first batch to start the pipeline for overlap schedule.
+@@ -779,6 +781,11 @@ class SchedulerDisaggregationDecodeMixin:
+                 tmp_batch.next_batch_sampling_info = (
+                     self.tp_worker.cur_sampling_info if batch else None
+                 )
++                if batch and batch.forward_mode.is_decode():
++                    tmp_batch.seq_lens = batch.seq_lens   # update seq_lens for next batch
++                    if batch.keep_indices_device is not None:
++                        tmp_batch.keep_indices_device = batch.keep_indices_device
++                        batch.keep_indices_device = None
+                 self.process_batch_result(tmp_batch, tmp_result)
+ 
+             if batch is None and (
+diff --git a/python/sglang/srt/disaggregation/prefill.py b/python/sglang/srt/disaggregation/prefill.py
+index 4edf3ee07..92483ef5d 100644
+--- a/python/sglang/srt/disaggregation/prefill.py
++++ b/python/sglang/srt/disaggregation/prefill.py
+@@ -390,7 +390,7 @@ class SchedulerDisaggregationPrefillMixin:
+         # Transfer kv for prefill completed requests and add it into disagg_prefill_inflight_queue
+         if self.enable_overlap:
+             # wait
+-            logits_output, next_token_ids, _ = self.tp_worker.resolve_last_batch_result(
++            logits_output, next_token_ids, _, _, _ = self.tp_worker.resolve_last_batch_result(
+                 launch_done
+             )
+         else:
+diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
+index 05eb2f74a..b338ce840 100644
+--- a/python/sglang/srt/managers/schedule_batch.py
++++ b/python/sglang/srt/managers/schedule_batch.py
+@@ -907,6 +907,8 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+ 
+     # hicache pointer for synchronizing data loading from CPU to GPU
+     hicache_consumer_index: int = 0
++    
++    keep_indices_device: torch.Tensor = None
+ 
+     @classmethod
+     def init_new(
+@@ -1627,8 +1629,18 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+         if keep_indices is None or len(keep_indices) == 0:
+             # Filter out all requests
+             self.reqs = []
++            if keep_indices == []:
++                self.keep_indices_device = torch.tensor([], dtype=torch.int64).to(
++                    self.device
++                )
++            else:
++                self.keep_indices_device = None
+             return
+ 
++        self.keep_indices_device = torch.tensor(keep_indices, dtype=torch.int64).to(
++            self.device
++        )
++
+         if len(keep_indices) == len(self.reqs):
+             # No need to filter
+             return
+@@ -1664,6 +1676,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+         self.sampling_info.filter_batch(keep_indices, keep_indices_device)
+         if self.spec_info:
+             self.spec_info.filter_batch(keep_indices_device)
++        self.keep_indices_device = keep_indices_device
+ 
+     def merge_batch(self, other: "ScheduleBatch"):
+         # Penalizer orchestrator must be merged before Batch.reqs is merged. This is because
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 56ac4d1a1..161cd11b9 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -376,9 +376,13 @@ class Scheduler(
+                 moe_ep_rank=moe_ep_rank,
+                 server_args=server_args,
+                 nccl_port=port_args.nccl_port,
+-                target_worker=self.tp_worker,
++                target_worker=self.tp_worker if not self.enable_overlap else self.tp_worker.worker,
+                 dp_rank=dp_rank,
+             )
++            
++            if self.enable_overlap:
++                # MTP with overlap requires special handling
++                self.tp_worker.draft_worker = self.draft_worker
+         else:
+             self.draft_worker = None
+ 
+@@ -1803,17 +1807,32 @@ class Scheduler(
+                     )
+                 bid = model_worker_batch.bid
+             else:
+-                (
+-                    logits_output,
+-                    next_token_ids,
+-                    bid,
+-                    num_accepted_tokens,
+-                    can_run_cuda_graph,
+-                ) = self.draft_worker.forward_batch_speculative_generation(batch)
+-                bs = batch.batch_size()
+-                self.spec_num_total_accepted_tokens += num_accepted_tokens + bs
+-                self.spec_num_total_forward_ct += bs
+-                self.num_generated_tokens += num_accepted_tokens
++                if not self.enable_overlap:
++                    (
++                        logits_output,
++                        next_token_ids,
++                        bid,
++                        num_accepted_tokens,
++                        can_run_cuda_graph,
++                    ) = self.draft_worker.forward_batch_speculative_generation(batch)
++                    bs = batch.batch_size()
++                    self.spec_num_total_accepted_tokens += num_accepted_tokens + bs
++                    self.spec_num_total_forward_ct += bs
++                    self.num_generated_tokens += num_accepted_tokens
++                else:
++                    if batch.forward_mode.is_decode_or_idle():
++                        model_worker_batch = self.tp_worker.draft_worker.prepare_for_decode_target(batch)
++                    else:
++                        model_worker_batch = batch
++
++                    logits_output, next_token_ids, bid, num_accepted_tokens, can_run_cuda_graph = \
++                        self.tp_worker.forward_batch_generation(model_worker_batch)
++                    bs = batch.batch_size()
++
++                    # zxp: should move into resolve_last_batch_result()
++                    # self.spec_num_total_accepted_tokens += num_accepted_tokens + bs
++                    # self.spec_num_total_forward_ct += bs
++                    # self.num_generated_tokens += num_accepted_tokens
+ 
+             if self.pp_group.is_last_rank:
+                 batch.output_ids = next_token_ids
+diff --git a/python/sglang/srt/managers/scheduler_output_processor_mixin.py b/python/sglang/srt/managers/scheduler_output_processor_mixin.py
+index 9b6e7ec7c..c9c5ad0bd 100644
+--- a/python/sglang/srt/managers/scheduler_output_processor_mixin.py
++++ b/python/sglang/srt/managers/scheduler_output_processor_mixin.py
+@@ -28,6 +28,7 @@ class SchedulerOutputProcessorMixin:
+     This class implements the output processing logic for Scheduler.
+     We put them into a separate file to make the `scheduler.py` shorter.
+     """
++    unfree_kv_indices_dict = {}
+ 
+     def process_batch_result_prefill(
+         self: Scheduler,
+@@ -51,7 +52,7 @@ class SchedulerOutputProcessorMixin:
+             )
+ 
+             if self.enable_overlap:
+-                logits_output, next_token_ids, _ = (
++                logits_output, next_token_ids, _, _, _ = (
+                     self.tp_worker.resolve_last_batch_result(launch_done)
+                 )
+             else:
+@@ -205,10 +206,27 @@ class SchedulerOutputProcessorMixin:
+         self.num_generated_tokens += len(batch.reqs)
+ 
+         if self.enable_overlap:
+-            logits_output, next_token_ids, can_run_cuda_graph = (
++            logits_output, next_token_ids, accept_length, previous_rollback_lens, can_run_cuda_graph = (
+                 self.tp_worker.resolve_last_batch_result(launch_done)
+             )
+             next_token_logprobs = logits_output.next_token_logprobs
++            if batch.spec_algorithm.is_mtp():
++                rollback_lens = accept_length - 1   # TODO:should get from config
++                num_accepted_tokens = accept_length.sum().item()
++                bs = batch.batch_size()
++                self.spec_num_total_accepted_tokens += num_accepted_tokens + bs
++                self.spec_num_total_forward_ct += bs
++                self.num_generated_tokens += num_accepted_tokens
++                if batch.keep_indices_device is not None:
++                    rollback_lens = rollback_lens[batch.keep_indices_device]
++                if batch.forward_mode.is_decode() and batch.seq_lens is not None:
++                    batch.seq_lens[:len(rollback_lens)].add_(rollback_lens)
++                mask = (previous_rollback_lens == -1)
++                need_free_loc = batch.out_cache_loc[1::2][mask]  # TODO: should get from config
++                need_free_loc = need_free_loc[need_free_loc % self.page_size == 0]
++                if len(need_free_loc) > 0:
++                    self.token_to_kv_pool_allocator.free(need_free_loc)
++
+         elif batch.spec_algorithm.is_none() or batch.spec_algorithm.is_mtp():
+             # spec decoding handles output logprobs inside verify process.
+             next_token_ids = next_token_ids.tolist()
+@@ -230,13 +248,32 @@ class SchedulerOutputProcessorMixin:
+                     self.token_to_kv_pool_allocator.free(batch.out_cache_loc[i : i + 1])
+                 else:
+                     # Only free when the extra token is in a new page
+-                    if (
+-                        len(req.origin_input_ids) + len(req.output_ids) - 1
+-                    ) % self.page_size == 0:
+-                        self.token_to_kv_pool_allocator.free(
+-                            batch.out_cache_loc[i : i + 1]
+-                        )
+-                continue
++                    if batch.spec_algorithm.is_none():
++                        if (
++                            len(req.origin_input_ids) + len(req.output_ids) - 1
++                        ) % self.page_size == 0:
++                            self.token_to_kv_pool_allocator.free(
++                                batch.out_cache_loc[i : i + 1]
++                            )
++                        continue
++                    elif batch.spec_algorithm.is_mtp():
++                        need_free_loc = self.unfree_kv_indices_dict.pop(req.rid, None)
++                        if need_free_loc is not None and len(need_free_loc) > 0:
++                            self.token_to_kv_pool_allocator.is_not_in_free_group = True
++                            self.token_to_kv_pool_allocator.free(
++                                need_free_loc
++                            )
++                            self.token_to_kv_pool_allocator.is_not_in_free_group = False
++                        continue
++
++            if batch.spec_algorithm.is_mtp():
++                for token_id in logits_output.bonus_ids[i]:
++                    if token_id == -1:
++                        break
++                    req.output_ids.append(token_id)
++                    req.check_finished()
++                    if req.finished():
++                        break
+ 
+             if batch.spec_algorithm.is_none() or batch.spec_algorithm.is_mtp():
+                 # speculative worker will solve the output_ids in speculative decoding
+@@ -244,7 +281,13 @@ class SchedulerOutputProcessorMixin:
+ 
+             req.check_finished()
+             if req.finished():
+-                self.tree_cache.cache_finished_req(req)
++                unfree_kv_indices = self.tree_cache.cache_finished_req(req)
++                maybe_need_free_loc = unfree_kv_indices[unfree_kv_indices != 0]
++                rollback_lens = accept_length[i] - 1
++                if rollback_lens < 0:
++                    maybe_need_free_loc = maybe_need_free_loc[:rollback_lens]
++                need_free_loc = maybe_need_free_loc[maybe_need_free_loc % self.page_size == 0]
++                self.unfree_kv_indices_dict[req.rid] = need_free_loc
+                 req.time_stats.completion_time = time.time()
+ 
+             if req.return_logprob and batch.spec_algorithm.is_none():
+diff --git a/python/sglang/srt/managers/tp_worker.py b/python/sglang/srt/managers/tp_worker.py
+index 24b5b374d..701c162ae 100644
+--- a/python/sglang/srt/managers/tp_worker.py
++++ b/python/sglang/srt/managers/tp_worker.py
+@@ -241,7 +241,7 @@ class TpModelWorker:
+             logits_output, can_run_cuda_graph = self.model_runner.forward(
+                 forward_batch, pp_proxy_tensors=pp_proxy_tensors
+             )
+-            if launch_done is not None:
++            if model_worker_batch.spec_algorithm.is_none() and launch_done is not None:
+                 launch_done.set()
+ 
+             if skip_sample:
+diff --git a/python/sglang/srt/managers/tp_worker_overlap_thread.py b/python/sglang/srt/managers/tp_worker_overlap_thread.py
+index 3b6a7ed33..4841799ae 100644
+--- a/python/sglang/srt/managers/tp_worker_overlap_thread.py
++++ b/python/sglang/srt/managers/tp_worker_overlap_thread.py
+@@ -18,7 +18,7 @@ import logging
+ import signal
+ import threading
+ from queue import Queue
+-from typing import Optional, Tuple
++from typing import Optional, Tuple, Union
+ 
+ import psutil
+ import torch
+@@ -32,7 +32,7 @@ from sglang.srt.managers.io_struct import (
+     UpdateWeightsFromDistributedReqInput,
+     UpdateWeightsFromTensorReqInput,
+ )
+-from sglang.srt.managers.schedule_batch import ModelWorkerBatch
++from sglang.srt.managers.schedule_batch import ModelWorkerBatch, ScheduleBatch
+ from sglang.srt.managers.tp_worker import TpModelWorker
+ from sglang.srt.server_args import ServerArgs
+ from sglang.srt.utils import DynamicGradMode, get_compiler_backend, is_npu
+@@ -49,6 +49,23 @@ def resolve_future_token_ids(input_ids, future_token_ids_map):
+         input_ids,
+     )
+ 
++@torch.compile(dynamic=True, backend=get_compiler_backend())
++def resolve_future_spec_token_ids(input_ids, future_token_ids_map, future_spec_token_ids_map):
++    future_token_index = input_ids[::2].clone()
++    verified_token_ids = input_ids[::2]  # get num of speculative from config
++    spec_token_ids = input_ids[1::2]  # get num of speculative from config
++
++    verified_token_ids[:] = torch.where(
++        future_token_index < 0,
++        future_token_ids_map[torch.clamp(-future_token_index, min=0)],
++        verified_token_ids,
++    )
++
++    spec_token_ids[:] = torch.where(
++        future_token_index < 0,
++        future_spec_token_ids_map[torch.clamp(-future_token_index, min=0)],
++        spec_token_ids,
++    )
+ 
+ class TpModelWorkerClient:
+     """A tensor parallel model worker."""
+@@ -67,6 +84,7 @@ class TpModelWorkerClient:
+         self.worker = TpModelWorker(
+             server_args, gpu_id, tp_rank, moe_ep_rank, pp_rank, dp_rank, nccl_port, enable_overlap=True
+         )
++        self.draft_worker = None
+         self.max_running_requests = self.worker.max_running_requests
+         self.device = self.worker.device
+         self.gpu_id = gpu_id
+@@ -77,6 +95,12 @@ class TpModelWorkerClient:
+         self.future_token_ids_map = torch.empty(
+             (self.max_running_requests * 5,), dtype=torch.int64, device=self.device
+         )
++        self.future_spec_token_ids_map = torch.empty(
++            (self.max_running_requests * 5,), dtype=torch.int64, device=self.device
++        )
++        self.rollback_lens_map = torch.zeros(
++            (self.max_running_requests * 5,), dtype=torch.int64, device=self.device
++        )
+ 
+         # Launch threads
+         self.input_queue = Queue()
+@@ -169,22 +193,44 @@ class TpModelWorkerClient:
+ 
+             # Resolve future tokens in the input
+             input_ids = model_worker_batch.input_ids
+-            resolve_future_token_ids(input_ids, self.future_token_ids_map)
+-
++            bs = len(model_worker_batch.raw_seq_lens if hasattr(model_worker_batch, 'raw_seq_lens') else model_worker_batch.seq_lens)
++            if model_worker_batch.keep_indices_device is not None:
++                rollback_lens = self.rollback_lens_map[model_worker_batch.keep_indices_device]
++            else:
++                rollback_lens = self.rollback_lens_map[:bs]
++            if not model_worker_batch.forward_mode.is_decode_or_idle() or model_worker_batch.spec_algorithm.is_none():
++                resolve_future_token_ids(input_ids, self.future_token_ids_map)
++            else:
++                resolve_future_spec_token_ids(input_ids, self.future_token_ids_map, self.future_spec_token_ids_map)
++                self.draft_worker.update_model_worker_batch(model_worker_batch, rollback_lens)
+             # update the consumer index of hicache to the running batch
+             self.set_hicache_consumer(model_worker_batch.hicache_consumer_index)
+             # Run forward
+-            logits_output, next_token_ids, can_run_cuda_graph = (
+-                self.worker.forward_batch_generation(
+-                    model_worker_batch, model_worker_batch.launch_done
++            if self.draft_worker is None:
++                logits_output, next_token_ids, can_run_cuda_graph = (
++                    self.worker.forward_batch_generation(
++                        model_worker_batch, model_worker_batch.launch_done
++                    )
+                 )
+-            )
++                accept_length = None
++            else:
++                logits_output, next_token_ids, bid, num_accepted_tokens, can_run_cuda_graph = (
++                    self.draft_worker.forward_batch_speculative_generation(
++                        model_worker_batch, model_worker_batch.launch_done
++                    )
++                )
++                accept_length = model_worker_batch.spec_info.accept_length
+ 
+             # Update the future token ids map
+-            bs = len(model_worker_batch.seq_lens)
+             self.future_token_ids_map[
+                 future_token_ids_ct + 1 : future_token_ids_ct + bs + 1
+             ] = next_token_ids
++            self.future_spec_token_ids_map[
++                future_token_ids_ct + 1 : future_token_ids_ct + bs + 1
++            ] = model_worker_batch.spec_info.topk_index.reshape(-1)
++            if accept_length is not None:
++                self.rollback_lens_map[:bs] = accept_length - 1
++                self.rollback_lens_map[bs:] = 0
+ 
+             # Copy results to the CPU
+             if model_worker_batch.return_logprob:
+@@ -203,7 +249,7 @@ class TpModelWorkerClient:
+             copy_done.record()
+ 
+             self.output_queue.put(
+-                (copy_done, logits_output, next_token_ids, can_run_cuda_graph)
++                (copy_done, logits_output, next_token_ids, accept_length, rollback_lens,can_run_cuda_graph)
+             )
+ 
+     def resolve_last_batch_result(self, launch_done: Optional[threading.Event] = None):
+@@ -211,7 +257,7 @@ class TpModelWorkerClient:
+         This function is called to resolve the last batch result and
+         wait for the current batch to be launched. Used in overlap mode.
+         """
+-        copy_done, logits_output, next_token_ids, can_run_cuda_graph = (
++        copy_done, logits_output, next_token_ids, accept_length, rollback_lens, can_run_cuda_graph = (
+             self.output_queue.get()
+         )
+ 
+@@ -227,8 +273,10 @@ class TpModelWorkerClient:
+                 logits_output.input_token_logprobs = tuple(
+                     logits_output.input_token_logprobs.tolist()
+                 )
++        if logits_output.bonus_ids is not None:
++            logits_output.bonus_ids = logits_output.bonus_ids.tolist()
+         next_token_ids = next_token_ids.tolist()
+-        return logits_output, next_token_ids, can_run_cuda_graph
++        return logits_output, next_token_ids, accept_length, rollback_lens, can_run_cuda_graph
+ 
+     def forward_batch_generation(
+         self, model_worker_batch: ModelWorkerBatch
+@@ -250,7 +298,7 @@ class TpModelWorkerClient:
+         self.input_queue.put((model_worker_batch, self.future_token_ids_ct, sync_event))
+ 
+         # Allocate output future objects
+-        bs = len(model_worker_batch.seq_lens)
++        bs = len(model_worker_batch.raw_seq_lens if hasattr(model_worker_batch, 'raw_seq_lens') else model_worker_batch.seq_lens)
+         future_next_token_ids = torch.arange(
+             -(self.future_token_ids_ct + 1),
+             -(self.future_token_ids_ct + 1 + bs),
+@@ -261,7 +309,11 @@ class TpModelWorkerClient:
+         self.future_token_ids_ct = (
+             self.future_token_ids_ct + bs
+         ) % self.future_token_ids_limit
+-        return None, future_next_token_ids, False
++        
++        if self.draft_worker is None:
++            return None, future_next_token_ids, False
++        else:
++            return None, future_next_token_ids, None, None, False
+ 
+     def update_weights_from_disk(self, recv_req: UpdateWeightFromDiskReqInput):
+         success, message = self.worker.update_weights_from_disk(recv_req)
+diff --git a/python/sglang/srt/mem_cache/allocator.py b/python/sglang/srt/mem_cache/allocator.py
+index ddaf1bf1d..94f889e7d 100644
+--- a/python/sglang/srt/mem_cache/allocator.py
++++ b/python/sglang/srt/mem_cache/allocator.py
+@@ -21,6 +21,7 @@ Page-aligned memory pool.
+ 
+ import abc
+ import weakref
++import threading
+ from typing import TYPE_CHECKING
+ 
+ import torch
+@@ -423,6 +424,7 @@ class PagedTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
+         self.num_pages = size // page_size
+         self.debug_mode = get_bool_env_var("SGLANG_DEBUG_MEMORY_POOL")
+         self.ret_values = torch.empty((), dtype=torch.int64, device=self.device)
++        self.lock = threading.Lock()
+         self.clear()
+ 
+     def alloc(self, need_size: int):
+@@ -545,14 +547,15 @@ class PagedTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
+         if free_index.numel() == 0:
+             return
+ 
+-        if self.is_not_in_free_group:
+-            free_page_indices = torch.unique(free_index // self.page_size)
+-            self.release_pages = torch.cat((free_page_indices, self.release_pages))
+-        else:
+-            self.free_group.append(free_index)
++        with self.lock:
++            if self.is_not_in_free_group:
++                free_page_indices = torch.unique(free_index // self.page_size)
++                self.release_pages = torch.cat((free_page_indices, self.release_pages))
++            else:
++                self.free_group.append(free_index)
+ 
+-        if self.debug_mode:
+-            assert len(torch.unique(self.free_pages)) == len(self.free_pages)
++            if self.debug_mode:
++                assert len(torch.unique(self.free_pages)) == len(self.free_pages)
+ 
+     def clear(self):
+         # The padded slot 0 is used for writing dummy outputs from padded tokens.
+@@ -763,38 +766,38 @@ class AscendPagedTokenToKVPoolAllocator(PagedTokenToKVPoolAllocator):
+         out_indices = torch.empty(
+             (extend_num_tokens,), dtype=torch.int32, device=self.device
+         )
+-
+-        if torch.all(prefix_lens == 0):
+-            # real prefill case
+-            self.ret_values = alloc_extend_kernel_ascend(
+-                prefix_lens,
+-                seq_lens,
+-                last_loc,
+-                self.free_pages,
+-                out_indices,
+-                self.page_size,
+-                self.device,
+-            )
+-        else:
+-            # speculative decode case
+-            self.ret_values = alloc_extend_kernel_ascend_vectorized(
+-                prefix_lens,
+-                seq_lens,
+-                last_loc,
+-                self.free_pages,
+-                out_indices,
+-                self.page_size,
+-                self.device,
+-            )
+-
+-        if self.debug_mode:
+-            assert len(torch.unique(out_indices)) == len(out_indices)
+-
+-        num_new_pages = self.ret_values.sum()
+-        if num_new_pages > len(self.free_pages):
+-            return None
+-
+-        self.free_pages = self.free_pages[num_new_pages:]
++        with self.lock:
++            if torch.all(prefix_lens == 0):
++                # real prefill case
++                self.ret_values = alloc_extend_kernel_ascend(
++                    prefix_lens,
++                    seq_lens,
++                    last_loc,
++                    self.free_pages,
++                    out_indices,
++                    self.page_size,
++                    self.device,
++                )
++            else:
++                # speculative decode case
++                self.ret_values = alloc_extend_kernel_ascend_vectorized(
++                    prefix_lens,
++                    seq_lens,
++                    last_loc,
++                    self.free_pages,
++                    out_indices,
++                    self.page_size,
++                    self.device,
++                )
++
++            if self.debug_mode:
++                assert len(torch.unique(out_indices)) == len(out_indices)
++
++            num_new_pages = self.ret_values.sum()
++            if num_new_pages > len(self.free_pages):
++                return None
++
++            self.free_pages = self.free_pages[num_new_pages:]
+         return out_indices
+ 
+     def alloc_decode(
+diff --git a/python/sglang/srt/mem_cache/chunk_cache.py b/python/sglang/srt/mem_cache/chunk_cache.py
+index 1cec3d21b..c8ffd7a22 100644
+--- a/python/sglang/srt/mem_cache/chunk_cache.py
++++ b/python/sglang/srt/mem_cache/chunk_cache.py
+@@ -39,14 +39,22 @@ class ChunkCache(BasePrefixCache):
+         )
+ 
+     def cache_finished_req(self, req: Req):
++        # The req.output_ids will be appended by MTP, in overlap the length may be longer than actual generated tokens, it may cause inconsistency when calculating kv_indices and unfree_kv_indices
++        total_lens = len(req.origin_input_ids) + max(len(req.output_ids) - 1, 0)
+         kv_indices = self.req_to_token_pool.req_to_token[
+             req.req_pool_idx,
+             # For decode server: if req.output_ids is empty, we want to free all req.origin_input_ids
+-            : len(req.origin_input_ids) + max(len(req.output_ids) - 1, 0),
++            : total_lens,
++        ]
++        unfree_kv_indices = self.req_to_token_pool.req_to_token[
++            req.req_pool_idx,
++            total_lens : total_lens + 10, # keep last 10 tokens for safety
+         ]
+         self.req_to_token_pool.free(req.req_pool_idx)
+         self.token_to_kv_pool_allocator.free(kv_indices)
+ 
++        return unfree_kv_indices
++
+     def cache_unfinished_req(self, req: Req):
+         kv_indices = self.req_to_token_pool.req_to_token[
+             req.req_pool_idx, : len(req.fill_ids)
+diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
+index 6bc85cf4b..b7a30301f 100644
+--- a/python/sglang/srt/server_args.py
++++ b/python/sglang/srt/server_args.py
+@@ -632,11 +632,17 @@ class ServerArgs:
+         if self.speculative_algorithm in ("EAGLE", "EAGLE3", "MTP"):
+             if self.max_running_requests is None:
+                 self.max_running_requests = 48
+-            self.disable_overlap_schedule = True
+-            logger.warning(
+-                "Overlap scheduler is disabled because of using "
+-                "eagle speculative decoding."
+-            )
++            if self.speculative_algorithm in ("MTP"):
++                self.disable_overlap_schedule = False
++                logger.warning(
++                    "Overlap scheduler is enabled for MTP speculative decoding."
++                )
++            else:
++                self.disable_overlap_schedule = True
++                logger.warning(
++                    "Overlap scheduler is disabled because of using "
++                    "eagle speculative decoding."
++                )
+             if self.enable_mixed_chunk:
+                 self.enable_mixed_chunk = False
+                 logger.warning(
+diff --git a/python/sglang/srt/speculative/eagle_worker.py b/python/sglang/srt/speculative/eagle_worker.py
+index 9e4cf2dc2..bfe8d6f9f 100644
+--- a/python/sglang/srt/speculative/eagle_worker.py
++++ b/python/sglang/srt/speculative/eagle_worker.py
+@@ -1,6 +1,7 @@
+ import logging
+ import os
+ import time
++import threading
+ from contextlib import contextmanager
+ from typing import List, Optional, Tuple
+ 
+@@ -381,7 +382,8 @@ class EAGLEWorker(TpModelWorker):
+         return need_forward
+ 
+     def forward_target_extend(
+-        self, batch: ScheduleBatch
++        self, batch: ScheduleBatch,
++        launch_done: Optional[threading.Event] = None,
+     ) -> Tuple[LogitsProcessorOutput, torch.Tensor, int, Optional[torch.Tensor]]:
+         """Run the target extend.
+ 
+@@ -398,7 +400,8 @@ class EAGLEWorker(TpModelWorker):
+         model_worker_batch = batch.get_model_worker_batch()
+         model_worker_batch.capture_hidden_mode = CaptureHiddenMode.FULL
+         logits_output, next_token_ids, _ = self.target_worker.forward_batch_generation(
+-            model_worker_batch
++            model_worker_batch,
++            launch_done
+         )
+         return (
+             logits_output,
+diff --git a/python/sglang/srt/speculative/mtp_worker.py b/python/sglang/srt/speculative/mtp_worker.py
+index 9228c0f77..783703e65 100644
+--- a/python/sglang/srt/speculative/mtp_worker.py
++++ b/python/sglang/srt/speculative/mtp_worker.py
+@@ -1,8 +1,9 @@
+ import logging
+ import os
+ import time
++import threading
+ from contextlib import contextmanager
+-from typing import List, Optional, Tuple
++from typing import List, Optional, Tuple, Union
+ 
+ import torch
+ 
+@@ -13,6 +14,7 @@ from sglang.srt.distributed import (
+ from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+ from sglang.srt.managers.schedule_batch import (
+     ScheduleBatch,
++    ModelWorkerBatch,
+     get_last_loc,
+ )
+ from sglang.srt.managers.tp_worker import TpModelWorker
+@@ -71,7 +73,7 @@ class MTPWorker(EAGLEWorker):
+         logger.info(
+             f"Compile draft npu graph begin. This can take up to several minutes. avail mem={before_mem:.2f} GB"
+         )
+-        with torch.get_device_module(self.device).stream(self.draft_model_runner.forward_stream):
++        with torch.get_device_module(self.device).stream(self.target_worker.model_runner.forward_stream):
+             self.draft_model_runner.device_graph_runner = NpuGraphRunner(self.draft_model_runner)
+         after_mem = get_available_gpu_memory(self.device, self.gpu_id)
+         self.graph_mem_usage = before_mem - after_mem
+@@ -80,8 +82,112 @@ class MTPWorker(EAGLEWorker):
+             f"mem usage={self.graph_mem_usage:.2f} GB. avail mem={after_mem:.2f} GB."
+         )
+ 
++    def update_model_worker_batch(
++        self,
++        model_worker_batch: ModelWorkerBatch,
++        rollback_lens: torch.Tensor
++    ):
++        """In MTP overlap, schedule prepare the next batch based on the suppose that all tokens are accepted.
++           In the function, we conduct two updates as follows:
++             1. Update the locs, last_loc, out_cache_locs base on the actual accepted_lens
++             2. Free the pages that are allocated unnecessary
++        """
++        # mask = (rollback_lens == -1)                          # mark candidates
++        # need_free_loc = model_worker_batch.out_cache_loc[1::self.speculative_num_steps+1][mask]
++        # need_free_loc = need_free_loc[need_free_loc % self.page_size == 0]  # page-start only
++
++        model_worker_batch.raw_seq_lens.add_(rollback_lens)
++        rollback_lens = rollback_lens.repeat_interleave(self.speculative_num_steps+1, dim=0)  # [B*(1+spec)]
++        model_worker_batch.seq_lens.add_(rollback_lens)
++        model_worker_batch.seq_lens_cpu = model_worker_batch.seq_lens.cpu()
++        locs = model_worker_batch.seq_lens - 1    # actual locs
++        model_worker_batch.spec_info.positions = locs
++
++        req_pool_indices = model_worker_batch.req_pool_indices
++        rollback_out_cache_loc = self.req_to_token_pool.req_to_token[(req_pool_indices, locs)]
++        model_worker_batch.out_cache_loc = rollback_out_cache_loc
++        
++        # if len(need_free_loc) > 0:
++        #     self.token_to_kv_pool_allocator.free(need_free_loc)
++
++    def prepare_for_decode_target(
++        self,
++        batch: ScheduleBatch,
++    ):
++
++        # turn spec info from EagleDraftInput -> EagleVerifyInput
++        if batch.forward_mode.is_idle():
++            verify_spec_info = self._target_preprocess_idle()
++        else:
++            verify_spec_info = self._target_preprocess_decode(batch)
++
++        batch.forward_mode = (
++            ForwardMode.DECODE
++            if not batch.forward_mode.is_idle()
++            else ForwardMode.IDLE
++        )
++
++        # from prepare_for_verify
++        raw_seq_lens = batch.seq_lens.clone()   # before repeat interleave
++        seq_lens = raw_seq_lens.repeat_interleave(self.speculative_num_steps+1, dim=0)
++        seq_lens[1::2] += 1
++        locs = seq_lens.clone() - 1
++        input_ids = torch.cat((batch.input_ids.reshape(-1,1), verify_spec_info.draft_token), dim=-1).flatten()
++        if not batch.forward_mode.is_idle():
++            if self.page_size == 1:
++                batch.out_cache_loc = batch.alloc_token_slots(len(input_ids))
++                end_offset = raw_seq_lens + verify_spec_info.draft_token_num
++            else:
++                prefix_lens = raw_seq_lens - 1
++                end_offset = prefix_lens + verify_spec_info.draft_token_num
++                last_loc = get_last_loc(
++                    batch.req_to_token_pool.req_to_token,
++                    batch.req_pool_indices,
++                    prefix_lens,
++                )
++                batch.out_cache_loc = batch.alloc_paged_token_slots_extend(
++                    prefix_lens, end_offset, last_loc, len(input_ids)
++                )
++                verify_spec_info.last_loc = last_loc
++
++            num_tokens_per_req = verify_spec_info.draft_token_num
++            req_pool_indices = batch.req_pool_indices.repeat_interleave(num_tokens_per_req)
++
++            batch.req_to_token_pool.write(
++                        (req_pool_indices, locs), batch.out_cache_loc.to(torch.int32)
++            )
++
++        positions = seq_lens - 1
++        model_worker_batch = batch.get_model_worker_batch()
++        model_worker_batch.reqs = batch.reqs
++        model_worker_batch.keep_indices_device = batch.keep_indices_device
++        model_worker_batch.raw_seq_lens = raw_seq_lens
++        model_worker_batch.input_ids = input_ids
++        model_worker_batch.seq_lens = seq_lens
++        model_worker_batch.seq_lens_cpu = seq_lens.cpu()
++        model_worker_batch.spec_info = verify_spec_info
++        model_worker_batch.spec_info.positions = positions
++        model_worker_batch.capture_hidden_mode=(
++                CaptureHiddenMode.FULL
++                if batch.return_hidden_states
++                else (
++                    getattr(
++                        verify_spec_info, "capture_hidden_mode", CaptureHiddenMode.NULL
++                    )
++                    if verify_spec_info
++                    else CaptureHiddenMode.NULL
++                )
++            )
++        if not batch.forward_mode.is_idle():
++            model_worker_batch.req_pool_indices = req_pool_indices
++
++        return model_worker_batch
++
++
+     def forward_batch_speculative_generation(
+-        self, batch: ScheduleBatch
++        self,
++        model_worker_batch: Union[ScheduleBatch, ModelWorkerBatch],
++        launch_done: Optional[threading.Event] = None,
+     ) -> Tuple[LogitsProcessorOutput, torch.Tensor, int, int, bool]:
+         """Run speculative decoding forward.
+ 
+@@ -94,80 +200,31 @@ class MTPWorker(EAGLEWorker):
+             A tuple of the final logit output of the target model, next tokens accepted,
+             the batch id (used for overlap schedule), and number of accepted tokens.
+         """
+-        if batch.forward_mode.is_extend() or batch.is_extend_in_batch:
++        if model_worker_batch.forward_mode.is_extend() or model_worker_batch.is_extend_in_batch:
+             logits_output, next_token_ids, bid, seq_lens_cpu = (
+-                self.forward_target_extend(batch)
++                self.forward_target_extend(model_worker_batch, launch_done)
+             )
+             with self.draft_tp_context(self.draft_model_runner.tp_group):
+                 self.forward_draft_extend(
+-                    batch, logits_output.hidden_states, next_token_ids, seq_lens_cpu
++                    model_worker_batch, logits_output.hidden_states, next_token_ids, seq_lens_cpu
+                 )
++            logits_output.bonus_ids = None
+ 
+             return logits_output, next_token_ids, bid, 0, False
+ 
+         else:
+-            # turn spec info from EagleDraftInput -> EagleVerifyInput
+-            if batch.forward_mode.is_idle():
+-                self._target_preprocess_idle(batch)
+-            else:
+-                self._target_preprocess_decode(batch)
+-
+-            batch.forward_mode = (
+-                ForwardMode.DECODE
+-                if not batch.forward_mode.is_idle()
+-                else ForwardMode.IDLE
+-            )
+-
+-            # from prepare_for_verify
+-            seq_lens = batch.seq_lens.repeat_interleave(self.speculative_num_steps+1, dim=0)
+-            seq_lens[1::2] += 1
+-            locs = seq_lens.clone() - 1
+-            input_ids = torch.cat((batch.input_ids.reshape(-1,1), batch.spec_info.draft_token), dim=-1).flatten()
+-            if not batch.forward_mode.is_idle():
+-                if self.page_size == 1:
+-                    batch.out_cache_loc = batch.alloc_token_slots(len(input_ids))
+-                    end_offset = batch.seq_lens + batch.spec_info.draft_token_num
+-                else:
+-                    prefix_lens = batch.seq_lens - 1
+-                    end_offset = prefix_lens + batch.spec_info.draft_token_num
+-                    last_loc = get_last_loc(
+-                        batch.req_to_token_pool.req_to_token,
+-                        batch.req_pool_indices,
+-                        prefix_lens,
+-                    )
+-                    batch.out_cache_loc = batch.alloc_paged_token_slots_extend(
+-                        prefix_lens, end_offset, last_loc, len(input_ids)
+-                    )
+-                    batch.spec_info.last_loc = last_loc
+-
+-                num_tokens_per_req = batch.spec_info.draft_token_num
+-                req_pool_indices = batch.req_pool_indices.repeat_interleave(num_tokens_per_req)
+-
+-                batch.req_to_token_pool.write(
+-                            (req_pool_indices, locs), batch.out_cache_loc.to(torch.int32)
+-                )
+-            model_worker_batch = batch.get_model_worker_batch()
+-
+-            num_reqs = len(batch.reqs)
+-
+-            positions = seq_lens - 1
+-            model_worker_batch.input_ids = input_ids
+-            model_worker_batch.seq_lens = seq_lens
+-            model_worker_batch.spec_info.positions = positions
+-            model_worker_batch.seq_lens_cpu = seq_lens.cpu()
+-            self.prepare_sampling_info(batch.sampling_info)
++            self.prepare_sampling_info(model_worker_batch.sampling_info)
++            num_reqs = model_worker_batch.seq_lens.size(0) // (self.speculative_num_steps + 1)
+ 
+-            if not batch.forward_mode.is_idle():
+-                model_worker_batch.req_pool_indices = req_pool_indices
+ 
+             ## forward
+             if self.pp_group.is_last_rank:
+                 logits_output, next_token_ids, can_run_cuda_graph, forward_batch = (
+-                    self.target_worker.forward_batch_generation(model_worker_batch, return_forward_batch=True)
++                    self.target_worker.forward_batch_generation(model_worker_batch, launch_done, return_forward_batch=True)
+                 )
+             else:
+                 pp_hidden_states_proxy_tensors, _, can_run_cuda_graph = (
+-                    self.target_worker.forward_batch_generation(model_worker_batch)
++                    self.target_worker.forward_batch_generation(model_worker_batch, launch_done)
+                 )
+             bid = model_worker_batch.bid
+ 
+@@ -175,13 +232,13 @@ class MTPWorker(EAGLEWorker):
+             verified_id, accept_length, last_accepted_index, bouns_ids, evict_mask = (
+                 self.verify(model_worker_batch.input_ids,
+                             next_token_ids,
+-                            num_reqs, batch)
++                            num_reqs, model_worker_batch)
+             )
+ 
+ 
+             # Set inputs for MTP
+             # 1. turn spec_info from EagleVerifyInput to EagleDraftInput
+-            if batch.forward_mode.is_idle():
++            if model_worker_batch.forward_mode.is_idle():
+                 draft_input = EagleDraftInput.create_idle_input(
+                     device=self.device,
+                     hidden_size=self.model_config.hidden_size,
+@@ -195,8 +252,8 @@ class MTPWorker(EAGLEWorker):
+                                 verified_id=verified_id,
+                                 accept_length=accept_length,
+                                 accept_length_cpu=[],
+-                                seq_lens_for_draft_extend=batch.seq_lens,
+-                                req_pool_indices_for_draft_extend=batch.req_pool_indices,
++                                seq_lens_for_draft_extend=model_worker_batch.seq_lens,
++                                req_pool_indices_for_draft_extend=model_worker_batch.req_pool_indices,
+                                 capture_hidden_mode=CaptureHiddenMode.LAST
+                                 )
+ 
+@@ -209,6 +266,9 @@ class MTPWorker(EAGLEWorker):
+                 logits_output, _ = self.draft_model_runner.forward(
+                     forward_batch, skip_attn_backend_init=True
+                 )
++            
++            if not model_worker_batch.spec_algorithm.is_none() and launch_done is not None:
++                launch_done.set()
+ 
+             accept_length_per_req_cpu = accept_length.tolist()
+             probs = torch.softmax(logits_output.next_token_logits, dim=-1)
+@@ -217,13 +277,14 @@ class MTPWorker(EAGLEWorker):
+             forward_batch.spec_info.topk_index = next_tokens[last_accepted_index]
+ 
+             # post process
+-            batch.spec_info = forward_batch.spec_info
+-            batch.input_ids = verified_id
+-            batch.seq_lens += accept_length
+-            if not batch.forward_mode.is_idle():
+-                self.free_unaccepted_slot(batch, bouns_ids, evict_mask)
++            model_worker_batch.spec_info = forward_batch.spec_info
++            model_worker_batch.spec_info.accept_length = accept_length
++            if not model_worker_batch.forward_mode.is_idle():
++                logits_output.bonus_ids = bouns_ids
++            else:
++                logits_output.bonus_ids = None
+             accept_length_per_req_cpu = accept_length.tolist()
+-            self.restore_sampling_info(batch.sampling_info)
++            self.restore_sampling_info(model_worker_batch.sampling_info)
+ 
+             # if not process, EagleDraftInput merge batch will error
+             forward_batch.spec_info.topk_p = torch.ones_like(forward_batch.spec_info.topk_index, device=self.device, dtype=self.model_config.dtype)
+@@ -258,45 +319,35 @@ class MTPWorker(EAGLEWorker):
+             sampling_info.min_ps = self.raw_min_ps
+ 
+     def _target_preprocess_decode(self, batch: ScheduleBatch):
+-
+-
+         # Prepare Input
+         spec_info = batch.spec_info
+         draft_tokens = spec_info.topk_index
+-        # position: where each token belongs to
+-        position = batch.seq_lens - 1
+-
+-
+-        # change spec_into to EagleVerifyInfo for target model
+-        batch.spec_info =EagleVerifyInput(
+-                            draft_token=draft_tokens,
+-                            custom_mask=None,
+-                            positions=position,
+-                            retrive_index=None,
+-                            retrive_next_token=None,
+-                            retrive_next_sibling=None,
+-                            retrive_cum_len=None,
+-                            spec_steps=self.speculative_num_steps,
+-                            topk=self.topk,
+-                            draft_token_num=self.server_args.speculative_num_draft_tokens,
+-                            capture_hidden_mode=CaptureHiddenMode.FULL,
+-                            seq_lens_sum=batch.seq_lens_sum,
+-                            seq_lens_cpu=batch.seq_lens.cpu(),
+-                        )
+-
+-        # spec_info: EagleVerifyInput
+-        num_seqs = batch.batch_size()
+-        spec_info = batch.spec_info
+-        batch.seq_lens_sum = torch.sum(batch.seq_lens).item()
+-        batch.return_hidden_states = False
+-        spec_info.positions = batch.seq_lens.repeat_interleave(self.topk, dim=0)
+ 
+-    def _target_preprocess_idle(self, batch: ScheduleBatch):
+-        batch.spec_info = EagleVerifyInput.create_idle_input(
++        # create EagleVerifyInput for Target model
++        verify_spec_info = EagleVerifyInput(
++            draft_token=draft_tokens,
++            custom_mask=None,
++            positions=None,
++            retrive_index=None,
++            retrive_next_token=None,
++            retrive_next_sibling=None,
++            retrive_cum_len=None,
++            spec_steps=self.speculative_num_steps,
++            topk=self.topk,
++            draft_token_num=self.server_args.speculative_num_draft_tokens,
++            capture_hidden_mode=CaptureHiddenMode.FULL,
++            seq_lens_sum=batch.seq_lens_sum,
++            seq_lens_cpu=batch.seq_lens.cpu(),
++        )
++        return verify_spec_info
++
++    def _target_preprocess_idle(self):
++        verify_spec_info = EagleVerifyInput.create_idle_input(
+             self.topk,
+             self.speculative_num_steps,
+             self.speculative_num_draft_tokens,
+         )
++        return verify_spec_info
+ 
+     def free_unaccepted_slot(self, batch, bouns_ids, evict_mask):
+ 
+@@ -304,32 +355,34 @@ class MTPWorker(EAGLEWorker):
+         # should be checked BEFORE free kv cache slots
+         bouns_ids_cpu = bouns_ids.tolist()
+         for i, (req, bonus_ids_per_reqs) in enumerate(zip(batch.reqs, bouns_ids_cpu)):
++            bak_finished_reason = req.finished_reason
+             for token_id in bonus_ids_per_reqs:
+                 if token_id == -1:
+                     break
+                 req.output_ids.append(token_id)
+                 req.check_finished()
+                 if req.finished():
++                    req.finished_reason = bak_finished_reason
+                     # has_finished = True
+                     break
+ 
+         # Free the KV cache for unaccepted tokens in new pages
+-        if self.page_size == 1:
+-            # TODO: boolean array index leads to a device sync. Remove it.
+-            batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask])
+-        else:
+-            batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask.view(-1)])
++        # if self.page_size == 1:
++        #     # TODO: boolean array index leads to a device sync. Remove it.
++        #     batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask])
++        # else:
++        #     batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask.view(-1)])
+ 
+-    def verify(self, input_ids, forward_token_ids, num_reqs, batch):
++    def verify(self, input_ids, forward_token_ids, num_reqs, model_worker_batch):
+ 
+-        num_sampling_tokens_per_req = batch.spec_info.draft_token_num
++        num_sampling_tokens_per_req = model_worker_batch.spec_info.draft_token_num
+         num_valid_tokens = num_reqs * num_sampling_tokens_per_req
+         input_ids = input_ids[:num_valid_tokens]
+         forward_token_ids = forward_token_ids[:num_valid_tokens]
+         bouns_ids = None
+         evict_mask = None
+ 
+-        if batch.forward_mode.is_idle():
++        if model_worker_batch.forward_mode.is_idle():
+             accepted_num = torch.zeros(num_reqs, device=input_ids.device, dtype=torch.int32)  # (b,)
+             last_accepted_index = torch.arange(num_reqs, device=input_ids.device, dtype=torch.int32) * num_sampling_tokens_per_req + accepted_num
+             output_token_ids = forward_token_ids[::num_sampling_tokens_per_req]
+@@ -353,7 +406,7 @@ class MTPWorker(EAGLEWorker):
+ 
+             # Calculate evict mask for unaccepted tokens in new pages
+             evict_mask = offset[None, :] > accepted_num[:, None]  # [B, num_tokens], evict unaccpeted tokens
+-            page_first_slot_mask = (batch.seq_lens[:, None] + offset[None, :]) % self.page_size == 1 # [num_tokens]
++            page_first_slot_mask = (model_worker_batch.raw_seq_lens[:, None] + offset[None, :]) % self.page_size == 1 # [num_tokens]
+             evict_mask = evict_mask & page_first_slot_mask
+ 
+         return output_token_ids, accepted_num, last_accepted_index, bouns_ids, evict_mask
+\ No newline at end of file

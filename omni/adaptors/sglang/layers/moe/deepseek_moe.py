@@ -89,14 +89,15 @@ class ReplicatedDeepseekMLP(nn.Module):
         x:Optional[torch.Tensor]=None,
         stage:Optional[str]="full",
         dependency:Optional[torch.Tensor]=None,
-        ena_multi_stream:Optional[bool]=None
+        ena_multi_stream:Optional[bool]=None,
+        in_graph:bool=True,
     )->Optional[torch.Tensor]:
 
         if stage in ["full", "gate_up_proj"]:
             assert isinstance(x, torch.Tensor)
             self._x = x
 
-        with self._stream_switch(ena_multi_stream):
+        with self._stream_switch(ena_multi_stream, in_graph):
             if self.ena_multi_stream and dependency is not None:
                 tng.scope.npu_wait_tensor(self._get_tensor_x(), dependency)
 
@@ -110,11 +111,32 @@ class ReplicatedDeepseekMLP(nn.Module):
 
     # ================ utils ==================
 
-    def _stream_switch(self, ena_multi_stream=None):
+    def _stream_switch(self, ena_multi_stream, in_graph):
         if ena_multi_stream is not None:
             self.ena_multi_stream = ena_multi_stream
-        return (tng.scope.npu_stream_switch('stream_shared_expert')
-            if self.ena_multi_stream else nullcontext())
+        if not self.ena_multi_stream:
+            return nullcontext()
+
+        if in_graph:
+            return tng.scope.npu_stream_switch('stream_shared_expert')
+        else:
+            _stream = self._get_stream()
+            _stream.wait_stream(torch.npu.current_stream())
+            return torch.npu.stream(_stream)
+
+    # shared stream by layers, not for graph
+    stream_shared_expert = None
+
+    @classmethod
+    def _get_stream(cls): # not for graph
+        if cls.stream_shared_expert is None:
+            cls.stream_shared_expert = torch.npu.Stream()
+        return cls.stream_shared_expert
+
+    def _stream_join(self): # not for graph
+        _stream = self._get_stream()
+        torch.npu.current_stream().wait_stream(_stream)
+        _stream.wait_stream(torch.npu.current_stream())
 
     def _get_tensor_x(self):
         if isinstance(self._x, torch.Tensor):
@@ -296,7 +318,8 @@ class DeepseekMoE(nn.Module):
             if self.shared_experts is not None:
                 shared_output = self.shared_experts(
                     x=hidden_states,
-                    ena_multi_stream=False)
+                    ena_multi_stream=True,
+                    in_graph=False)
 
             router_logits, _ = self.gate(hidden_states.float())
 
@@ -336,6 +359,8 @@ class DeepseekMoE(nn.Module):
         hidden_states = final_hidden_states_list[0]
         gathered_tokens = final_hidden_states_list[1]
         expanded_row_idx = final_hidden_states_list[2]
+
+        self.shared_experts._stream_join()
 
         # finalize-routing
         hidden_states = torch_npu.npu_moe_finalize_routing(
