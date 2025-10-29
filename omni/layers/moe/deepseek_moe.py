@@ -535,7 +535,7 @@ class DeepseekMoE(nn.Module):
 
         layer = self.experts
         
-        max_num_deployed_expert = self.local_expert_num * get_dp_group().world_size
+        max_num_deployed_expert = self.local_expert_num * get_ep_group().world_size
         act_dtype = hidden_states.dtype
         shared_expert_rank_num = 0
         kwargs = {
