@@ -155,7 +155,7 @@ ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml --tags clean_
 
 # 五、动态添加节点
 ## 特性介绍
-在已有部署推理实例的情况下，为该实例动态新增推理节点（e.g. 已有一个2P1D实例，动态增加至3P1D或2P2D），这个过程中无需实例所有节点重启，除 nginx 重新连接导致服务断开几秒之外，实例服务其他大部分时间下都是可用状态。
+在已有部署推理实例的情况下，为该实例动态新增推理节点（e.g. 已有一个2P1D实例，动态增加至3P1D或2P2D），这个过程中无需实例所有节点重启。
 
 该特性可有效缓解在高并发场景下，由于节点性能达到瓶颈造成的推理实例请求阻塞问题。
 
@@ -192,18 +192,17 @@ ansible-playbook -i omni_infer_inventory_used_for_2P2D.yml omni_infer_server_tem
 ### 第五步：重新建立proxy连接
 待观察到新增节点已完成拉起后，执行以下命令重启proxy服务。
 ```bash
-ansible-playbook -i omni_infer_inventory_used_for_2P2D.yml omni_infer_server_template_elastic.yml --tags run_proxy
+ansible-playbook -i omni_infer_inventory_used_for_2P2D.yml omni_infer_server_template_elastic.yml --tags reload_proxy
 ```
-在这个过程中，nginx会短暂断开重连，导致服务有几秒中断，正在推理的请求可能会失败。
-
 启动后，由于当前的推理实例，和直接使用当前 **inventory.yml** 配置启动的服务并没有差异。如果需要修改代码或重启服务，可直接使用第四章提到的 `--tags run_server` 方法。
 
 ## 节点缩容操作步骤
 ### 第一步：重新建立proxy连接
 修改 **inventory.yml** 至目标缩容后的部署形态，运行：
 ```bash
-ansible-playbook -i omni_infer_inventory_used_for_2P2D.yml omni_infer_server_template_elastic.yml --tags run_proxy
+ansible-playbook -i omni_infer_inventory_used_for_2P2D.yml omni_infer_server_template_elastic.yml --tags reload_proxy
 ```
+在这个过程中，nginx会短暂存在新旧两套实例，正在推理的请求可能还在缩容的节点机器上执行，如此时该节点机器被清理，那么对应的请求可能会失败。
 
 ### 第二步：杀掉进程
 登录要被缩容的节点机器，执行：
