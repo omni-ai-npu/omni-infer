@@ -116,9 +116,6 @@ class ModelExtraConfig:
             self.operator_opt_config.attn_prefetch = 0
             logger.warning(f"[WARNING] When enable_prefetch is false, prefetch_Mb must be set to 0.")
         
-        if self.task_config.hardware_platform.startswith("A2") and \
-                self.operator_opt_config.prefill_moe_all_to_all:
-            raise ValueError(f"When hardware_platform is A2, prefill_moe_all_to_all must be set to false.")
 
         if self.operator_opt_config.enable_round_pipeline_comm:
             # Determine NPU count based on hardware platform
@@ -208,9 +205,12 @@ def parse_hf_config(hf_config):
     if hasattr(hf_config, "quantization_config") and hf_config.quantization_config['format'].strip() == 'int-quantized':
         weights_type = hf_config.quantization_config["config_groups"]["group_0"]["weights"]["num_bits"]
         input_activations_type = hf_config.quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"]
+        kv_cache_scheme_type = hf_config.quantization_config["kv_cache_scheme"]
         quant_type = f"w{weights_type}a{input_activations_type}"
         if isinstance(weights_type, dict) and weights_type.get('mlp.experts', None) == 4:
             quant_type = "w4a8"
+        if kv_cache_scheme_type == "Opti-C8":
+            quant_type = quant_type+"_fa_c8"
     else:
         quant_type = "bf16"
 
