@@ -352,7 +352,7 @@ export ENABLE_OVERWRITE_REQ_IDS=1
 export ENABLE_APC_EVENT=0
 
 # enable middleware
-if [[ "$ROLE" == "prefill" && -n "$VALIDATORS_CONFIG_PATH" ]]; then
+if [[ -n "$VALIDATORS_CONFIG_PATH" ]]; then
     EXTRA_ARGS="$EXTRA_ARGS --middleware omni.adaptors.vllm.entrypoints.middleware.param_check.ValidateSamplingParams"
 else
     EXTRA_ARGS="$EXTRA_ARGS"

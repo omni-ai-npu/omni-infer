@@ -257,6 +257,21 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
             except json.JSONDecodeError:
                 return await call_next(request)
 
+            # Only True and False are allowed for "thinking" in chat_template_kwargs.thinking.
+            chat_template_kwargs = json_load.get("chat_template_kwargs")
+            if chat_template_kwargs is not None and "thinking" in chat_template_kwargs \
+                    and chat_template_kwargs["thinking"] not in {True, False}:
+                chat_template_kwargs.pop("thinking")
+            # Ignore guided decoding if parameter json_schema is missing.
+            response_format = json_load.get("response_format")
+            if response_format is not None and "type" in response_format and response_format["type"] == "json_schema":
+                if "json_schema" not in response_format:
+                    json_load.pop("response_format")
+            # guided_decoding_backend is not supported
+            if "guided_decoding_backend" in json_load:
+                json_load.pop("guided_decoding_backend")
+            request._body = json.dumps(json_load).encode("utf-8")
+
             if json_load.get("kv_transfer_params"):
                 max_tokens = json_load.get("max_tokens", -1)
                 if max_tokens < 0:
@@ -286,6 +301,8 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
             
             for param_name in unsupported_param:
                 json_load.pop(param_name)
+            if os.environ.get("ROLE", "") == "prefill":
+                json_load["max_tokens"] = 1
             request._body = json.dumps(json_load).encode("utf-8")
 
         if request.method == "GET" and request.url.path == "/v1/models":
