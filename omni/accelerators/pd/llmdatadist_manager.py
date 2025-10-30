@@ -150,10 +150,12 @@ class LLMDataDistManager:
         if len(self.registered_kv_caches) > 0:
             raise ValueError("Attr `registered_kv_caches` must be empty before register kv_caches.")
         
-        if "self_attn" in list(kv_caches.keys())[3] and "linear_attn" in list(kv_caches.keys())[0]:  # Qwen3-Next
+        from vllm.model_executor.models.utils import extract_layer_index
+        if True:  # "self_attn" in list(kv_caches.keys())[3] and "linear_attn" in list(kv_caches.keys())[0]:  # TODO only Qwen3-Next
             model_id = 0
             for kv_cache_group in range(4):
-                kv_caches_of_group = [kv_caches[i] for i in range(len(kv_caches)) if i % 4 == kv_cache_group]
+                kv_caches_of_group = {k: kv_caches[k] for i, k in enumerate(sorted(kv_caches.keys(), key=extract_layer_index)) if i % 4 == kv_cache_group}
+                print(f"{kv_caches_of_group.keys()=} {list(sorted(kv_caches.keys(), key=extract_layer_index))=}")
                 flatten_kv_caches = unzip_kv_cache_dict(kv_caches_of_group)
 
                 # group by kv cache shape
