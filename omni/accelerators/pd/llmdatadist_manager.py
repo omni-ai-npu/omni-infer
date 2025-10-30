@@ -239,13 +239,13 @@ class LLMDataDistManager:
         print(f"pull_kv {len(src_blocks)=} {len(tgt_blocks)=} {len(src_blocks[0])=} {len(tgt_blocks[0])=} {src_blocks=} {tgt_blocks=} ")
         
         torch.npu.set_device(f"npu:{self.local_rank}")
-        if len(src_blocks) == 4 == len(tgt_blocks):  # Qwen3-Next
+        if len(src_blocks) == 4 and 4 == len(tgt_blocks):  # Qwen3-Next
             model_id = 0
             for kv_cache_group in range(4):
                 for sub_kv_cache_id in range(1 if kv_cache_group == 3 else 2):
                     prompt_cache_key = BlocksCacheKey(
                         prompt_cluster_id=prompt_cluster_id, model_id=model_id)
-                    self._pull_blocks(prompt_cache_key, kv_cache,
+                    self._pull_blocks(prompt_cache_key, self.registered_kv_caches[model_id],
                                     src_blocks[kv_cache_group], tgt_blocks[kv_cache_group])
                     model_id += 1
         else:
