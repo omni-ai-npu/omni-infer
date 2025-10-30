@@ -19,6 +19,7 @@ omni_proxy_max_batch_num_token="32000"
 omni_proxy_prefill_max_num_seqs="32"
 omni_proxy_decode_max_num_seqs="32"
 omni_proxy_prefill_starvation_timeout="400"
+omni_proxy_schedule_algo="default"
 stream_ops="off"
 
 dry_run=false
@@ -318,6 +319,11 @@ function generate_nginx_conf() {
         fi
     fi
 
+    local omni_proxy_schedule_algo_directive=""
+    if [[ -n "$omni_proxy_schedule_algo" ]]; then
+        omni_proxy_schedule_algo_directive="            omni_proxy_schedule_algo $omni_proxy_schedule_algo;"
+    fi
+
     cat > "$nginx_conf_file" <<EOF
 load_module /usr/local/nginx/modules/ngx_http_omni_proxy_module.so;
 load_module /usr/local/nginx/modules/ngx_http_set_request_id_module.so;
@@ -369,7 +375,7 @@ $(gen_upstream_block "decode_endpoints" "$decode_endpoints")
             omni_proxy_prefill_max_num_seqs $omni_proxy_prefill_max_num_seqs;
             omni_proxy_decode_max_num_seqs $omni_proxy_decode_max_num_seqs;
             omni_proxy_prefill_starvation_timeout $omni_proxy_prefill_starvation_timeout;
-            omni_proxy_schedule_algo $omni_proxy_schedule_algo;
+${omni_proxy_schedule_algo_directive}
 EOF
 
     if [[ -n "$omni_proxy_model_path" ]]; then
