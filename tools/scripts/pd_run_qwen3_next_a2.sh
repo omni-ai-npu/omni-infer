@@ -280,7 +280,7 @@ KV_TRANSFER_CONFIG=$(cat <<EOF
     "engine_id": $KV_ENGINE_ID,
     "kv_parallel_size": $KV_PARALLEL_SIZE,
     "kv_connector_extra_config": {
-		"kv_producer_dp_size": 2
+		"kv_producer_dp_size": 1 
 	}
 }
 EOF

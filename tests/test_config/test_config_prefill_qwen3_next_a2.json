@@ -13,6 +13,7 @@
         "use_omni_placement": false,
         "omni_placement_config_path": "../../tests/test_config/config_p.yaml",
         "control_accept_rate": -1,
-        "enable_prefill_micro_batch": false
+        "enable_prefill_micro_batch": false,
+        "experts_pruning": false
     }
 }
