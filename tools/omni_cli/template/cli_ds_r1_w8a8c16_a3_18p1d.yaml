@@ -34,7 +34,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -163,7 +163,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -292,7 +292,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -421,7 +421,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -550,7 +550,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -679,7 +679,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -808,7 +808,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -937,7 +937,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -1066,7 +1066,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -1195,7 +1195,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -1324,7 +1324,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -1453,7 +1453,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -1582,7 +1582,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -1711,7 +1711,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -1840,7 +1840,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -1969,7 +1969,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -2098,7 +2098,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -2227,7 +2227,7 @@ all:
                 use_ge_graph_cached: true
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_d.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: false
                 max_redundant_per_expert: 30
@@ -2354,9 +2354,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -2483,9 +2483,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -2612,9 +2612,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -2741,9 +2741,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -2870,9 +2870,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -2999,9 +2999,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -3128,9 +3128,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -3257,9 +3257,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -3386,9 +3386,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -3515,9 +3515,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -3644,9 +3644,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -3773,9 +3773,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -3902,9 +3902,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -4031,9 +4031,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -4160,9 +4160,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -4289,9 +4289,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -4418,9 +4418,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
@@ -4547,9 +4547,9 @@ all:
             additional-config:
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_pangu_718b_w4a8c16_a3_18p1d_p.npy"
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_18p1d_p.npy"
                 max_moe_layer_num: 58
-                enable_dynamic: true
+                enable_dynamic: false
                 max_redundant_per_expert: 1
                 max_redundant_per_rank: 0
                 enable_rank_round_robin: false
