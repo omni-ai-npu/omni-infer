@@ -650,7 +650,6 @@ class DecodeConnectorWorker:
     # Now go asynchronous pull_kv
     def start_load_kv(self, metadata: DatadistConnectorMetadata):
         logger.debug(f" ***** start_load_kv: {len(metadata.requests)}")
-        print(f"{self.multi_rank_pull_kv=} {self.multi_thread_pull_kv=} {meta.remote_block_ids=} {meta.local_block_ids=}")
         futures = []
         for req_id, meta in metadata.requests.items():
             # if the local_block_ids is empty, skip pulling kv for the request
