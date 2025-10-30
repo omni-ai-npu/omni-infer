@@ -18,7 +18,7 @@ TYPE_MAPPING = {
     "list": list,
     "dict": dict
 }
-
+DEFAULT_MAX_MODEL_LEN = 8192
 
 class BaseValidator(ABC):
     def __init__(self,
@@ -256,7 +256,14 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
                 json_load = json.loads(body.decode("utf-8"))
             except json.JSONDecodeError:
                 return await call_next(request)
-            
+
+            if json_load.get("kv_transfer_params"):
+                max_tokens = json_load.get("max_tokens", -1)
+                if max_tokens < 0:
+                    json_load["max_tokens"] = int(os.getenv("DEFAULT_MAX_TOKENS", DEFAULT_MAX_MODEL_LEN))
+                    request._body = json.dumps(json_load).encode("utf-8")
+                return await call_next(request)
+
             if not VALIDATORS:
                 return await call_next(request)
             
