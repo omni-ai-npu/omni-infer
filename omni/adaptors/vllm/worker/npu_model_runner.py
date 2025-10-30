@@ -174,13 +174,30 @@ class NPUModelRunner(GPUModelRunner):
              (self.model_config.max_model_len + self.block_size - 1) // self.block_size),
             dtype=np.int32)
 
-        # cu_num_draft_tokens : self.max_num_reqs
-        # logits_indices : self.decode_max_num_tokens
-        # target_logits_indices : self.max_num_reqs
-        # bonus_logits_indices : self.max_num_reqs
-        self.buffer_spec_metadata = torch.zeros(
-            self.max_num_reqs + self.decode_max_num_tokens + self.max_num_reqs + self.max_num_reqs,
-            dtype=torch.int32, device=self.device,
+        self.cu_num_draft_tokens = torch.zeros(
+            self.max_num_reqs, dtype=torch.int32, device=self.device,
+        )
+        self.logits_indices = torch.zeros(
+            self.decode_max_num_tokens, dtype=torch.int32, device=self.device,
+        )
+        self.target_logits_indices = torch.zeros(
+            self.max_num_reqs, dtype=torch.int32, device=self.device,
+        )
+        self.bonus_logits_indices = torch.zeros(
+            self.max_num_reqs, dtype=torch.int32, device=self.device,
+        )
+
+        self.cu_num_draft_tokens_cpu = torch.zeros(
+            self.max_num_reqs, dtype=torch.int32, pin_memory=is_pin_memory_available(),
+        )
+        self.logits_indices_cpu = torch.zeros(
+            self.decode_max_num_tokens, dtype=torch.int32, pin_memory=is_pin_memory_available(),
+        )
+        self.target_logits_indices_cpu = torch.zeros(
+            self.max_num_reqs, dtype=torch.int32, pin_memory=is_pin_memory_available(),
+        )
+        self.bonus_logits_indices_cpu = torch.zeros(
+            self.max_num_reqs, dtype=torch.int32, pin_memory=is_pin_memory_available(),
         )
 
         self.attn_mask = None
@@ -283,29 +300,21 @@ class NPUModelRunner(GPUModelRunner):
         # [0, 1, 2, 5, 6, 9]
         target_logits_indices += arange
 
-        # TODO: Optimize the CPU -> GPU copy.
-        cu_num_draft_tokens = torch.from_numpy(cu_num_draft_tokens)
-        logits_indices = torch.from_numpy(logits_indices)
-        target_logits_indices = torch.from_numpy(target_logits_indices)
-        bonus_logits_indices = torch.from_numpy(bonus_logits_indices)
+        # Adapt: Optimize the CPU -> NPU copy.
+        self.cu_num_draft_tokens_cpu[:cu_num_draft_tokens.size] = torch.from_numpy(cu_num_draft_tokens)
+        self.logits_indices_cpu[:logits_indices.size] = torch.from_numpy(logits_indices)
+        self.target_logits_indices_cpu[:target_logits_indices.size] = torch.from_numpy(target_logits_indices)
+        self.bonus_logits_indices_cpu[:bonus_logits_indices.size] = torch.from_numpy(bonus_logits_indices)
 
-        all_info = torch.cat(
-            [cu_num_draft_tokens, logits_indices, target_logits_indices, bonus_logits_indices]
-        )
-        self.buffer_spec_metadata[:all_info.numel()].copy_(all_info, non_blocking=True)
+        self.cu_num_draft_tokens.copy_(self.cu_num_draft_tokens_cpu, non_blocking=True)
+        self.logits_indices.copy_(self.logits_indices_cpu, non_blocking=True)
+        self.target_logits_indices.copy_(self.target_logits_indices_cpu, non_blocking=True)
+        self.bonus_logits_indices.copy_(self.bonus_logits_indices_cpu, non_blocking=True)
 
-        start_index = 0
-        end_index = cu_num_draft_tokens.numel()
-        cu_num_draft_tokens = self.buffer_spec_metadata[start_index:end_index]
-        start_index = end_index
-        end_index += logits_indices.numel()
-        logits_indices = self.buffer_spec_metadata[start_index:end_index]
-        start_index = end_index
-        end_index += target_logits_indices.numel()
-        target_logits_indices = self.buffer_spec_metadata[start_index:end_index]
-        start_index = end_index
-        end_index += bonus_logits_indices.numel()
-        bonus_logits_indices = self.buffer_spec_metadata[start_index:end_index]
+        cu_num_draft_tokens = self.cu_num_draft_tokens[:cu_num_draft_tokens.size]
+        logits_indices = self.logits_indices[:logits_indices.size]
+        target_logits_indices = self.target_logits_indices[:target_logits_indices.size]
+        bonus_logits_indices = self.bonus_logits_indices[:bonus_logits_indices.size]
 
         # Compute the draft token ids.
         # draft_token_indices:      [  1,   2,   3, 105, 106, 208]
@@ -779,7 +788,7 @@ class NPUModelRunner(GPUModelRunner):
         scheduler_output: "SchedulerOutput",
         intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> Union[ModelRunnerOutput, IntermediateTensors]:
-        start = time.time()
+        start_0 = time.time()
 
         if self.save_token_ids:
             self.save_tokens(scheduler_output)
@@ -805,6 +814,16 @@ class NPUModelRunner(GPUModelRunner):
         finished_recving = set()
         loading_kv_failure = set()
         sampled_token_ids_list = []
+
+        cost_upd_states = time.time() - start_0
+        cost_proc_reqs = 0
+        cost_logits = 0
+        cost_bitmask = 0
+        cost_disc = 0
+        cost_sampler = 0
+        cost_drafter = 0
+        cost_device_output = 0
+
         for self.curr_step in range(self.total_step):
             start_1 = time.time()
             if not scheduler_output.total_num_scheduled_tokens:
@@ -931,18 +950,16 @@ class NPUModelRunner(GPUModelRunner):
             if has_kv_transfer_group():
                 get_kv_transfer_group().clear_connector_metadata()
 
-            cost_upd_states = start_1 - start
-            cost_proc_reqs = start_2 - start_1
-            cost_logits = start_3 - start_2
-            cost_bitmask = start_4 - start_3
-            cost_disc = start_5 - start_4
-            cost_sampler = start_6 - start_5
-            cost_drafter = start_7 - start_6
-            cost_output = time.time() - start_7
-            cost = cost_upd_states + cost_proc_reqs + cost_logits + cost_bitmask + cost_sampler + cost_disc + cost_drafter + cost_output
-            logger.info(f" ***** execute model cost:{cost:.6f}="
-                        f"{cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}"
-                        f"+{cost_disc:.6f}+{cost_sampler:.6f}+{cost_drafter:.6f}+{cost_output:.6f}")
+            start_8 = time.time()
+            cost_proc_reqs += start_2 - start_1
+            cost_logits += start_3 - start_2
+            cost_bitmask += start_4 - start_3
+            cost_disc += start_5 - start_4
+            cost_sampler += start_6 - start_5
+            cost_drafter += start_7 - start_6
+            cost_device_output += start_8 - start_7
+
+        start_9 = time.time()
 
         spec_token_ids = None if spec_tokens_tensor is None else self.rejection_sampler.parse_output(
             spec_tokens_tensor,
@@ -973,6 +990,12 @@ class NPUModelRunner(GPUModelRunner):
             cached_sampled_token_ids[i].clear()
             if spec_token_ids is not None:
                 spec_token_ids[i].clear()
+
+        cost_output = time.time() - start_9
+        cost = cost_upd_states + cost_proc_reqs + cost_logits + cost_bitmask + cost_sampler + cost_disc + cost_drafter + cost_device_output + cost_output
+        logger.info(f" ***** execute model cost:{cost:.6f}="
+                    f"{cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}"
+                    f"+{cost_disc:.6f}+{cost_sampler:.6f}+{cost_drafter:.6f}+{cost_device_output:.6f}+{cost_output:.6f}")
 
         return ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,

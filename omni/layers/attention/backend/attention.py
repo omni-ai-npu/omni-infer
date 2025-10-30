@@ -32,7 +32,7 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
 from vllm.attention.backends.utils import CommonAttentionState
 from vllm.model_executor.layers.rotary_embedding import DynamicNTKScalingRotaryEmbedding
 from vllm.forward_context import ForwardContext, get_forward_context
-from vllm.utils import (direct_register_custom_op, supports_dynamo)
+from vllm.utils import (direct_register_custom_op, supports_dynamo, is_pin_memory_available)
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.worker.gpu_input_batch import InputBatch
 from vllm.v1.kv_cache_interface import AttentionSpec
@@ -149,6 +149,9 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         self.decode_num_tokens = torch.zeros(
             runner.max_num_reqs, dtype=torch.int32, device=runner.device
         )
+        self.decode_num_tokens_cpu = torch.zeros(
+            runner.max_num_reqs, dtype=torch.int32, pin_memory=is_pin_memory_available(),
+        )
 
         current_layers_names = []
         for i, kv_cache_group in enumerate(self.runner.kv_cache_config.kv_cache_groups):
@@ -205,7 +208,8 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         self._num_prefills = num_prefills
         self._num_decode_tokens = num_decode_tokens
         self._num_prefill_tokens = num_prefill_tokens
-        self.decode_num_tokens[:num_decodes].copy_(torch.tensor(decode_num_tokens), non_blocking=True)
+        self.decode_num_tokens_cpu[:num_decodes] = torch.tensor(decode_num_tokens)
+        self.decode_num_tokens.copy_(self.decode_num_tokens_cpu, non_blocking=True)
 
         return modified_batch
 

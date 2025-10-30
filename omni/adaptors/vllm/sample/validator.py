@@ -1,12 +1,13 @@
 import torch
 from typing import Any
+import torch_npu
 
 from vllm.v1.outputs import SamplerOutput
 from vllm.v1.sample.rejection_sampler import RejectionSampler as RejectionSamplerV1
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
+
 from omni.layers.sampler import random_choice
-
-
+from omni.models.config_loader.loader import model_extra_config
 
 class SimpleValidator(RejectionSamplerV1):
 
@@ -19,6 +20,8 @@ class SimpleValidator(RejectionSamplerV1):
         self.runner = runner
         self.minus_one = None
         self.minus_ones = None
+        self.force_accept_rate = model_extra_config.operator_opt_config.control_accept_rate
+        self.enable_force_accept = self.force_accept_rate >= 0 and self.force_accept_rate <= 1
 
     def forward(self,
                 metadata: SpecDecodeMetadata,
@@ -53,12 +56,18 @@ class SimpleValidator(RejectionSamplerV1):
         last_accepted_index = indices.clone()
         valid_flag = torch.ones(batch_size, dtype=bool, device=input_ids.device)
         accepted_num = torch.zeros_like(last_accepted_index)
+
+        if self.enable_force_accept:
+            with torch_npu.npu.stream(self.main_sampler.sampler_preparing_stream): 
+                accepted = torch.empty_like(key_tokens, dtype=torch.float32).uniform_() < self.force_accept_rate
+
         for i in range(metadata.max_spec_len + 1):
-            sampled_token_ids = all_sampled_tokens[indices % key_tokens.numel()]
+            now_indices = indices % key_tokens.numel()
+            sampled_token_ids = all_sampled_tokens[now_indices]
             if i == 0:
                 forward_tokens = sampled_token_ids
             else:
-                valid_flag &= output_token_ids[:, i - 1] == key_tokens[indices % key_tokens.numel()]
+                valid_flag &= output_token_ids[:, i - 1] == key_tokens[now_indices] if not self.enable_force_accept else accepted[now_indices]
                 valid_flag &= indices <= metadata.bonus_logits_indices
                 sampled_token_ids = torch.where(valid_flag, sampled_token_ids, self.minus_one[0])
                 forward_tokens = torch.where(valid_flag, sampled_token_ids, forward_tokens)

@@ -25,6 +25,7 @@ from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_world_size,
     get_tensor_model_parallel_rank,
 )
+from vllm.utils import is_pin_memory_available
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.worker.gpu_input_batch import InputBatch
@@ -275,6 +276,9 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         self.decode_num_tokens = torch.zeros(
             runner.max_num_reqs, dtype=torch.int32, device=runner.device
         )
+        self.decode_num_tokens_cpu = torch.zeros(
+            runner.max_num_reqs, dtype=torch.int32, pin_memory=is_pin_memory_available(),
+        )
 
     def generate_activate_mask(self, actual_seqs_num, batch_size):
         if len(self.decode_gear_list) > 1:
@@ -360,7 +364,8 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         self._num_prefills = num_prefills
         self._num_decode_tokens = num_decode_tokens
         self._num_prefill_tokens = num_prefill_tokens
-        self.decode_num_tokens[:num_decodes].copy_(torch.tensor(decode_num_tokens), non_blocking=True)
+        self.decode_num_tokens_cpu[:num_decodes] = torch.tensor(decode_num_tokens)
+        self.decode_num_tokens.copy_(self.decode_num_tokens_cpu, non_blocking=True)
 
         return modified_batch
 
