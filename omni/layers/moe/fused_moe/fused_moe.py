@@ -522,6 +522,12 @@ def fused_experts_allgather_ep_a3(layer: torch.nn.Module,
             quant_mode=-1, active_expert_range=expert_range, row_idx_type=1)
 
         if is_prefill or not model_extra_config.operator_opt_config.enable_kv_rmsnorm_rope_cache:
+            range1 = torch.arange(0, expanded_x_idx.shape[0], dtype=torch.int32, device="npu")
+            range2 = range1 * torch.tensor(991, dtype=torch.int32, device="npu")
+            mask = (range1 >= torch.sum(expert_tokens)).to(torch.int32)
+            expanded_x_idx += range2 * mask
+            expanded_x_idx = expanded_x_idx % expanded_x_idx.shape[0]
+            expanded_x_idx = torch.clamp(expanded_x_idx, min=0, max=expanded_x_idx.shape[0] - 1)
             sorted_topk_weight = torch.index_select(topk_weights.reshape(-1), 0, expanded_x_idx)
             row_index = expanded_x_idx // topk_ids.shape[-1]
             row_index = row_index.to(torch.int64)
@@ -529,6 +535,12 @@ def fused_experts_allgather_ep_a3(layer: torch.nn.Module,
                                       device=current_platform.device_type)
         else:
             with tng.scope.npu_stream_switch('11'):
+                range1 = torch.arange(0, expanded_x_idx.shape[0], dtype=torch.int32, device="npu")
+                range2 = range1 * torch.tensor(991, dtype=torch.int32, device="npu")
+                mask = (range1 >= torch.sum(expert_tokens)).to(torch.int32)
+                expanded_x_idx += range2 * mask
+                expanded_x_idx = expanded_x_idx % expanded_x_idx.shape[0]
+                expanded_x_idx = torch.clamp(expanded_x_idx, min=0, max=expanded_x_idx.shape[0] - 1)
                 expanded_x_idx = tng.scope.npu_wait_tensor(expanded_x_idx, expanded_x_idx)
                 sorted_topk_weight = torch.index_select(topk_weights.reshape(-1), 0, expanded_x_idx)
                 row_index = expanded_x_idx // topk_ids.shape[-1]
