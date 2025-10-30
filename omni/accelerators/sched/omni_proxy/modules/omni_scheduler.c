@@ -729,28 +729,28 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf
                     omni_upstream_prefill_t *prefill = &gs->prefill_states[j];
                     if (prefill->comm.status != STATUS_ENABLE) {
                         if (prefill->comm.status == STATUS_UNUSED) {
-                            m = MAX_PREFILL_UPSTREAMS; /* skip unuse upstream and start from 0 */
+                            m = MAX_PREFILL_UPSTREAMS - 1; /* skip unuse upstream and start from 0 */
                         }
                         continue;
                     }
                     cnt++;
-                        if (gs->prefill_states[j].num_tokens < least_load)
+                    if (gs->prefill_states[j].num_tokens < least_load)
+                    {
+                        least_load = gs->prefill_states[j].num_tokens;
+                        selected = j;
+                        if (least_load == 0)
                         {
-                            least_load = gs->prefill_states[j].num_tokens;
-                            selected = j;
-                            if (least_load == 0)
-                            {
-                                break;
-                            }
+                            break;
                         }
                     }
-                    ngx_log_error(NGX_LOG_INFO,
-                                  ngx_cycle->log,
-                                  0,
-                                  "[Prefill-%d] No Prefix cache hit, choose least workload Prefill %d with load %d",
-                                  req->slot_index,
-                                  selected,
-                                  least_load);
+                }
+                ngx_log_error(NGX_LOG_INFO,
+                              ngx_cycle->log,
+                              0,
+                              "[Prefill-%d] No Prefix cache hit, choose least workload Prefill %d with load %d",
+                              req->slot_index,
+                              selected,
+                              least_load);
             }
         }
 
@@ -830,7 +830,7 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs, ngx_http_omni_loc_conf_
             omni_upstream_decode_t *decode = &gs->decode_states[j];
             if (decode->comm.status != STATUS_ENABLE) {
                 if (decode->comm.status == STATUS_UNUSED) {
-                    m = MAX_DECODE_UPSTREAMS; /* skip unuse upstream and start from 0 */
+                    m = MAX_DECODE_UPSTREAMS - 1; /* skip unuse upstream and start from 0 */
                 }
                 continue;
             }

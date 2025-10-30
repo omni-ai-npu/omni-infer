@@ -284,6 +284,8 @@ function gen_access_log() {
         'decoded_tks:\"\$decoded_tks\",'
         'max_tks:\"\$max_tks\",'
         'max_match:\"\$max_match\",'
+        'prefill_idx:\"\$prefill_idx\",'
+        'decode_idx:\"\$decode_idx\",'
         'rcved:\"\$rcved\",'
         'cont_rcved:\"\$cont_rcved\",'
         'tknized:\"\$tknized\",'

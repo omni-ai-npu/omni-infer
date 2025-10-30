@@ -26,6 +26,8 @@ enum req_metrics_tokens_var {
     VAR_DECODED_TOKENS,
     VAR_MAX_TOKENS,
     VAR_MAX_MATCH_DEPTH,
+    VAR_PREFILL_UPSTREAM_IDX,
+    VAR_DECODE_UPSTREAM_IDX,
 };
 
 enum req_metrics_time_var {
@@ -2410,6 +2412,12 @@ static ngx_int_t omni_req_uint_var_get(ngx_http_request_t *r,
         case VAR_MAX_MATCH_DEPTH:
             value = ctx->max_match_depth;
             break;
+        case VAR_PREFILL_UPSTREAM_IDX:
+            value = ctx->prefill_upstream_endpoint_idx;
+            break;
+        case VAR_DECODE_UPSTREAM_IDX:
+            value = ctx->decode_upstream_endpoint_idx;
+            break;
         default :
             v->not_found = 1;
             return NGX_ERROR;
@@ -2509,6 +2517,10 @@ static ngx_http_variable_t ngx_http_omni_variables[] = {
      VAR_MAX_TOKENS, NGX_HTTP_VAR_CHANGEABLE, 0},
     {ngx_string("max_match"), NULL, omni_req_uint_var_get,
      VAR_MAX_MATCH_DEPTH, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("prefill_idx"), NULL, omni_req_uint_var_get,
+     VAR_PREFILL_UPSTREAM_IDX, NGX_HTTP_VAR_CHANGEABLE, 0},
+    {ngx_string("decode_idx"), NULL, omni_req_uint_var_get,
+     VAR_DECODE_UPSTREAM_IDX, NGX_HTTP_VAR_CHANGEABLE, 0},
 
     {ngx_string("rcved"), NULL, omni_req_time_var_get,
      VAR_TIME_RECEIVED, NGX_HTTP_VAR_CHANGEABLE, 0},

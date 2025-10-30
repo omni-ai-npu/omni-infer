@@ -370,6 +370,7 @@
           --decode-endpoints "$decode_result" \
           --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
           --log-level notice \
+          --access-log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_access.log \
           --core-num 4 \
           --start-core-index 16 \
           --omni-proxy-pd-policy sequential \
