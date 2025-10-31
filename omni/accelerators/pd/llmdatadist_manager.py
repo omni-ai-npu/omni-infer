@@ -151,7 +151,7 @@ class LLMDataDistManager:
             raise ValueError("Attr `registered_kv_caches` must be empty before register kv_caches.")
         
         from vllm.model_executor.models.utils import extract_layer_index
-        if "self_attn" in list(sorted(kv_caches.keys(), key=extract_layer_index))[3] and "linear_attn" in list(sorted(kv_caches.keys(), key=extract_layer_index))[0]:
+        if True:
             model_id = 0
             for kv_cache_group in range(4):
                 kv_caches_of_group = {k: kv_caches[k] for i, k in enumerate(sorted(kv_caches.keys(), key=extract_layer_index)) if i % 4 == kv_cache_group}
