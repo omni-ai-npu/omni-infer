@@ -25,20 +25,20 @@ class GDNAttentionBackend(AttentionBackend):
 
 @dataclass
 class GDNAttentionMetadata:
-    block_tables: torch.Tensor
-    query_lens: torch.Tensor
-    query_lens_list: List
-    seq_lens: torch.Tensor
-    seq_lens_list: List
-    max_query_len: Optional[int]
-    slot_mapping: torch.Tensor
-    slot_indices: torch.Tensor
-    is_only_prefill: bool
-    attn_state: AscendAttentionState
-    cos: Optional[torch.Tensor]
-    sin: Optional[torch.Tensor]
-    is_pd_seperate_d: bool
-    kv_index: Optional[torch.Tensor]
+    block_tables: torch.Tensor  # not used
+    query_lens: torch.Tensor  # not used
+    query_lens_list: List  # not used
+    seq_lens: torch.Tensor  # not used
+    seq_lens_list: List  # not used
+    max_query_len: Optional[int]  # not used
+    slot_mapping: torch.Tensor  # not used
+    slot_indices: torch.Tensor  # not used
+    is_only_prefill: bool  # not used
+    attn_state: AscendAttentionState  # not used
+    cos: Optional[torch.Tensor]  # not used
+    sin: Optional[torch.Tensor]  # not used
+    is_pd_seperate_d: bool  # not used
+    kv_index: Optional[torch.Tensor]  # not used
 
     num_prefills: int
     num_prefill_tokens: int
@@ -320,7 +320,7 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             sin=ascend_attn_metadata.sin,
             is_pd_seperate_d=ascend_attn_metadata.is_pd_seperate_d,
             kv_index=ascend_attn_metadata.kv_index,
-            # up to here, just copy AscendMetadata
+            # up to here, just copy AscendMetadata and not used.
             num_prefills=num_prefills,
             num_prefill_tokens=num_prefill_tokens,
             num_decodes=num_decodes,

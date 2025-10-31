@@ -151,7 +151,7 @@ class LLMDataDistManager:
             raise ValueError("Attr `registered_kv_caches` must be empty before register kv_caches.")
         
         from vllm.model_executor.models.utils import extract_layer_index
-        if True:  # "self_attn" in list(kv_caches.keys())[3] and "linear_attn" in list(kv_caches.keys())[0]:  # TODO only Qwen3-Next
+        if "self_attn" in list(sorted(kv_caches.keys(), key=extract_layer_index))[3] and "linear_attn" in list(sorted(kv_caches.keys(), key=extract_layer_index))[0]:
             model_id = 0
             for kv_cache_group in range(4):
                 kv_caches_of_group = {k: kv_caches[k] for i, k in enumerate(sorted(kv_caches.keys(), key=extract_layer_index)) if i % 4 == kv_cache_group}
@@ -160,15 +160,13 @@ class LLMDataDistManager:
 
                 # group by kv cache shape
                 key_func = lambda kv_cache: tuple(kv_cache.shape)
-                grouped_by_shape = defaultdict(set)
+                grouped_by_shape = defaultdict(list)
                 for kv_cache in flatten_kv_caches[0]:
-                    grouped_by_shape[key_func(kv_cache)].add(kv_cache)
+                    grouped_by_shape[key_func(kv_cache)].append(kv_cache)
 
                 for sub_kv_cache_shape in sorted(list(grouped_by_shape.keys())):
                     a_kv_cache = next(iter(grouped_by_shape[sub_kv_cache_shape]))
-                    print(f"{tuple(a_kv_cache.shape)=}")
-                    cache_desc = CacheDesc(num_tensors=len(grouped_by_shape[sub_kv_cache_shape]), shape=tuple(a_kv_cache.shape),
-                                        data_type=TORCH_DTYPE_TO_NPU_DTYPE[a_kv_cache.dtype])
+                    cache_desc = CacheDesc(num_tensors=len(grouped_by_shape[sub_kv_cache_shape]), shape=tuple(sub_kv_cache_shape), data_type=TORCH_DTYPE_TO_NPU_DTYPE[a_kv_cache.dtype])
 
                     cache_addrs = [int(item.data_ptr()) for item in grouped_by_shape[sub_kv_cache_shape]]
 
@@ -248,7 +246,13 @@ class LLMDataDistManager:
                     prompt_cache_key = BlocksCacheKey(
                         prompt_cluster_id=prompt_cluster_id, model_id=model_id)
                     self._pull_blocks(prompt_cache_key, self.registered_kv_caches[model_id],
-                                    src_blocks[kv_cache_group], tgt_blocks[kv_cache_group])
+                                    [val for x in src_blocks[kv_cache_group] for val in range(x*4, x*4+4)]  # TODO fix (replace 4 with block_size // 128)
+                                    if kv_cache_group == 3
+                                    else [x for x in src_blocks[kv_cache_group]], 
+                                    [val for x in tgt_blocks[kv_cache_group] for val in range(x*4, x*4+4)]
+                                    if kv_cache_group == 3
+                                    else [x for x in tgt_blocks[kv_cache_group]])
+                    print(f"_pull_blocks {prompt_cache_key=} {self.registered_kv_caches[model_id]=} {src_blocks[kv_cache_group]=} {tgt_blocks[kv_cache_group]=}")
                     model_id += 1
         else:
             for model_id, kv_cache in enumerate(self.registered_kv_caches):
