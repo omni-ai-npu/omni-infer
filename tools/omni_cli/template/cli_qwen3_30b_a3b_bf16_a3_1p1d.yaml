@@ -16,6 +16,7 @@ all:
           env:
             API_PORT: 7200
             CODE_PATH: /workspace/omniinfer
+            PYTHONPATH: $CODE_PATH:$PYTHONPATH
             LOG_PATH: /tmp/log_path
             ROLE: proxy
 
@@ -34,14 +35,11 @@ all:
                 use_ge_graph_cached: true
             base-api-port: $API_PORT
             extra-args:
-              max-num-batched-tokens: 40960
+              max-num-batched-tokens: 4096
               disable-log-requests: ''
-              enable-expert-parallel: ''
-              enforce-eager: ''
               enable-reasoning: ''
               reasoning-parser: 'deepseek_r1'
               max-num-seqs: 4
-              no-enable-prefix-caching: ''
             gpu-util: '0.88'
             kv-transfer-config:
               engine_id: 1
@@ -76,6 +74,7 @@ all:
             ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
             ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
             CODE_PATH: /workspace/omniinfer
+            PYTHONPATH: $CODE_PATH:$PYTHONPATH
             DECODE_POD_NUM: 1
             DECODE_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
@@ -93,8 +92,8 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_DECODE: 40960
-            MODEL_PATH: /data/models/Qwen3-30B-A3B
+            MODEL_LEN_MAX_DECODE: 4096
+            MODEL_PATH: /tmp/models/Qwen3-30B-A3B-Thinking-2507
             OMNI_USE_QWEN: 1
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -114,9 +113,10 @@ all:
             USING_LCCL_COM: 0
             VLLM_ENABLE_MC2: 1
             VLLM_LLMDATADIST_ZMQ_PORT: 5668
-            VLLM_LOGGING_LEVEL: INFO
+            VLLM_LOGGING_LEVEL: ERROR
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
+            TORCHAIR_CACHE_HOME: /tmp/omniinfer_cache_d
           host_ip: 127.0.0.2
           master_node: d0
     P:
@@ -130,14 +130,12 @@ all:
           args:
             base-api-port: $API_PORT
             extra-args:
-              max-num-batched-tokens: 16384
+              max-num-batched-tokens: 4096
               disable-log-requests: ''
-              enable-expert-parallel: ''
               enforce-eager: ''
               max-num-seqs: 16
               num-gpu-blocks-override: 1224
-              no-enable-prefix-caching: ''
-            gpu-util: '0.65'
+            gpu-util: '0.85'
             kv-transfer-config:
               engine_id: 0
               kv_buffer_device: npu
@@ -150,11 +148,11 @@ all:
             master-port: $MASTER_PORT
             max-model-len: $MODEL_LEN_MAX_PREFILL
             model-path: $MODEL_PATH
-            num-dp: 4
-            num-servers: 4
+            num-dp: 1
+            num-servers: 1
             served-model-name: qwen
             server-offset: $SERVER_OFFSET
-            tp: 4
+            tp: 16
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: omni_infer_prefill_p0
           env:
@@ -171,6 +169,7 @@ all:
             ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
             ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
             CODE_PATH: /workspace/omniinfer
+            PYTHONPATH: $CODE_PATH:$PYTHONPATH
             DECODE_POD_NUM: 1
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
@@ -185,8 +184,8 @@ all:
             LCCL_PARALLEL: 0
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 16384
-            MODEL_PATH: /data/models/Qwen3-30B-A3B
+            MODEL_LEN_MAX_PREFILL: 4096
+            MODEL_PATH: /tmp/models/Qwen3-30B-A3B-Thinking-2507
             OMNI_USE_QWEN: 1
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -207,7 +206,7 @@ all:
             TP_SOCKET_IFNAME: enp23s0f3
             USING_LCCL_COM: 0
             VLLM_LLMDATADIST_ZMQ_PORT: 5568
-            VLLM_LOGGING_LEVEL: INFO
+            VLLM_LOGGING_LEVEL: ERROR
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.1
