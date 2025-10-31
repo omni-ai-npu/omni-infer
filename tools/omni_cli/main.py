@@ -192,10 +192,14 @@ def _build_string_args(extra_args: dict) -> str:
     """Convert extra-args dict to CLI string"""
     parts = []
     for k, v in extra_args.items():
-        if v == "":
-            parts.append(f"--{k}")
+        if k == "kv-events-config" and isinstance(v, dict):
+            v_str = json.dumps(v, separators=(',', ':'))
+            parts.append(f"--{k} {v_str}")
         else:
-            parts.append(f"--{k} {v}")
+            if v == "":
+                parts.append(f"--{k}")
+            else:
+                parts.append(f"--{k} {v}")
     return " ".join(parts)
 
 def _build_args_line(args: Dict[str, Any]) -> str:
@@ -1080,6 +1084,7 @@ def run_docker_containers(
 
     # Base Docker command template without LOG_PATH or MODEL_PATH
     base_docker_run_cmd = """docker run -it --shm-size=500g \\
+        -e PYTHONHASHSEED=123 \\
         --net=host \\
         --privileged=true \\
         -u root \\
@@ -1089,6 +1094,7 @@ def run_docker_containers(
         --device=/dev/devmm_svm \\
         --entrypoint=bash \\
         -v /tmp:/tmp \\
+        -v /tmp/scripts_path:/tmp/scripts_path \\
         -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \\
         -v /usr/local/dcmi:/usr/local/dcmi \\
         -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \\
@@ -1159,8 +1165,8 @@ def run_docker_containers(
             # Add LOG_PATH mount with actual path
             tf.write(f"docker_cmd+=\" -v {shlex.quote(log_path)}:{shlex.quote(log_path)}\"\n")
 
-            # Add MODEL_PATH mount for P and D roles
-            if role in ['P', 'D'] and model_path:
+            # Add MODEL_PATH
+            if model_path:
                 tf.write(f"docker_cmd+=\" -v {shlex.quote(model_path)}:{shlex.quote(model_path)}\"\n")
 
             tf.write(f"docker_cmd+=\" -d --name {shlex.quote(container_name)} {shlex.quote(docker_image_id)}\"\n")
