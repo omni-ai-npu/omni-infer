@@ -75,7 +75,7 @@ index 12445ac43..5c522eb2f 100644
 +    file_path = get_npu_status_path()
 +    if not os.path.exists(file_path):
 +        return NPUStatusInfo.HEALTH
-+    health_level = ['L0', 'L1', 'L2']
++    health_level = ['L0', 'L1']
 +    try:
 +        with open(file_path, 'r', encoding='utf-8') as file:
 +            import yaml
