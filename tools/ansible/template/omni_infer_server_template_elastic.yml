@@ -39,7 +39,7 @@
     #Configuration for lb_sdk in global proxy
     PREFILL_LB_SDK: "pd_score_balance"
     DECODE_LB_SDK: "pd_score_balance"
-    USE_OMNI_PROXY: "1"
+    USE_OMNI_PROXY: "0"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
