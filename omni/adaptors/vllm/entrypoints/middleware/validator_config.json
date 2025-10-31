@@ -6,7 +6,9 @@
         "messages": [
             {
                 "validator_type": "supported",
-                "unsupported_subfield": ["messages.content.text", "messages.content.type", "messages.content.refusal"]
+                "subfield": ["messages", "messages.name", "messages.role", "messages.tool_call_id", "messages.tool_calls",
+                             "messages.tool_calls.type", "messages.tool_calls.function", "messages.tool_calls.function.arguments", 
+                             "messages.tool_calls.function.name", "messages.content"]
             },
             {
                 "validator_type": "nested_value",
@@ -18,20 +20,17 @@
             "validator_type": "supported"
         },
         "stream_options": {
-            "validator_type": "supported"
-        },
-        "tool_choice": {
-            "validator_type": "value",
-            "target_value": ["auto"]
+            "validator_type": "supported",
+            "subfield": ["stream_options", "stream_options.include_usage"]
         },
         "tools": {
-            "validator_type": "supported"
-        },
-        "chat_template": {
-            "validator_type": "supported"
+            "validator_type": "supported",
+            "subfield": ["tools", "tools.function", "tools.function.description", "tools.function.name", "tools.function.parameters", 
+                         "tools.function.strict", "tools.type"]
         },
         "chat_template_kwargs": {
-            "validator_type": "supported"
+            "validator_type": "supported",
+            "subfield": ["chat_template_kwargs", "chat_template_kwargs.thinking", "chat_template_kwargs.enable_thinking"]
         },
         "top_k": {
             "validator_type": "supported"
@@ -39,55 +38,16 @@
         "top_p": {
             "validator_type": "supported"
         },
-        "frequency_penalty": {
-            "validator_type": "supported"
-        },
-        "presence_penalty": {
-            "validator_type": "supported"
-        },
         "temperature": {
-            "validator_type": "supported"
-        },
-        "seed": {
             "validator_type": "supported"
         },
         "stop": {
             "validator_type": "supported"
         },
-        "logit_bias": {
-            "validator_type": "supported"
-        },
         "max_tokens": {
             "validator_type": "supported"
         },
-        "add_generation_prompt": {
-            "validator_type": "supported"
-        },
-        "add_special_tokens": {
-            "validator_type": "supported"
-        },
-        "allowed_token_ids": {
-            "validator_type": "supported"
-        },
-        "bad_words": {
-            "validator_type": "supported"
-        },
-        "continue_final_message": {
-            "validator_type": "supported"
-        },
-        "detokenize": {
-            "validator_type": "supported"
-        },
-        "echo": {
-            "validator_type": "supported"
-        },
         "ignore_eos": {
-            "validator_type": "supported"
-        },
-        "include_stop_str_in_output": {
-            "validator_type": "supported"
-        },
-        "length_penalty": {
             "validator_type": "supported"
         },
         "max_completion_tokens": {
@@ -96,32 +56,20 @@
         "min_p": {
             "validator_type": "supported"
         },
-        "min_tokens": {
-            "validator_type": "supported"
-        },
-        "prompt": {
-            "validator_type": "supported"
-        },
-        "repetition_penalty": {
-            "validator_type": "supported"
-        },
         "request_id": {
             "validator_type": "supported"
         },
         "skip_special_tokens": {
             "validator_type": "supported"
         },
-        "spaces_between_special_tokens": {
-            "validator_type": "supported"
-        },
-        "stop_token_ids": {
-            "validator_type": "supported"
-        },
-        "enable_thinking": {
-            "validator_type": "supported"
-        },
         "kv_transfer_params": {
             "validator_type": "supported"
+        }
+    },
+    "validators_json": {
+        "tool_choice": {
+            "validator_type": "value",
+            "target_value": ["auto"]
         }
     }
 }
