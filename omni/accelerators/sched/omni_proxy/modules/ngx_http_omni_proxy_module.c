@@ -993,7 +993,6 @@ static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r)
 {
     ngx_chain_t *cl;
     size_t body_len = 0;
-    ngx_str_t host;
     omni_req_context_t *ctx = ngx_http_get_module_ctx(r, ngx_http_omni_proxy_module);
 
     omni_proxy_prepare_decode_request_body(r, ctx);
@@ -1010,16 +1009,38 @@ static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r)
         body_len += ngx_buf_size(cl->buf);
     }
 
-    if (r->headers_in.host && r->headers_in.host->value.len)
+    size_t header_len = sizeof("POST ") - 1 + r->uri.len + sizeof(" HTTP/1.1\r\n") - 1;
+
+    ngx_list_part_t *part = &r->headers_in.headers.part;
+    ngx_table_elt_t *h = part->elts;
+    ngx_uint_t i;
+
+    for (;;)
     {
-        host = r->headers_in.host->value;
-    }
-    else
-    {
-        host = r->headers_in.server;
+        for (i = 0; i < part->nelts; i++)
+        {
+            if (h[i].key.len == sizeof("Content-Length") - 1 &&
+                ngx_strncasecmp(h[i].key.data,
+                                (u_char *)"Content-Length",
+                                h[i].key.len) == 0)
+            {
+                continue;
+            }
+
+            header_len += h[i].key.len + sizeof(": ") - 1 + h[i].value.len + sizeof("\r\n") - 1;
+        }
+
+        if (part->next == NULL)
+        {
+            break;
+        }
+        part = part->next;
+        h = part->elts;
     }
 
-    ngx_buf_t *hdr = ngx_create_temp_buf(r->pool, 256 + r->uri.len + host.len);
+    header_len += sizeof("Content-Length: ") - 1 + NGX_OFF_T_LEN + sizeof("\r\n\r\n") - 1;
+
+    ngx_buf_t *hdr = ngx_create_temp_buf(r->pool, header_len);
     if (hdr == NULL)
     {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
@@ -1030,9 +1051,8 @@ static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r)
     hdr->last = ngx_snprintf(hdr->last, hdr->end - hdr->last,
                              "POST %V HTTP/1.1\r\n", &r->uri);
 
-    ngx_list_part_t *part = &r->headers_in.headers.part;
-    ngx_table_elt_t *h = part->elts;
-    ngx_uint_t i;
+    part = &r->headers_in.headers.part;
+    h = part->elts;
 
     for (;;)
     {
