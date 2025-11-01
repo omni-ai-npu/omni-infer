@@ -41,6 +41,7 @@ class TaskConfig:
     prefill_node_num: int = 0
     decode_node_num: int = 0
     enable_omni_placement: bool = False
+    enable_pd_elastic_scaling: bool = False # 是否支持动态扩缩容，开启时使用默认一套配置
     decode_gear_list: list[int] = field(default_factory = lambda: [1])
     enable_chunked_prefill: bool = False
     enable_graph_mode: bool = True
@@ -244,18 +245,29 @@ def _load_best_practice_config():
     config_map = {
         (c["model"], c["hardware"], c["precision"], c["pd_disaggregation"],c["prefill_node_num"],c["decode_node_num"]): \
         (c["prefill_config_file"], c["decode_config_file"])
-        for c in configs_data
+        for c in configs_data if c.get("pd_disaggregation") is not None
     }
 
-    return config_map
+    node_elasticly_config_map = {
+        (c["model"], c["hardware"], c["precision"],c["enable_pd_elastic_scaling"]): \
+        (c["prefill_config_file"], c["decode_config_file"])
+        for c in configs_data if c.get("enable_pd_elastic_scaling") is not None
+    }
+
+    return config_map, node_elasticly_config_map
+
 
 
 def _get_best_practice_config(task_config):
-    config_map = _load_best_practice_config()
+    config_map, node_elasticly_config_map = _load_best_practice_config()
 
-    best_practice_model_config_path = config_map.get((task_config.model_name,
-        task_config.hardware_platform, task_config.quant_type, task_config.is_pd_disaggregation,
-        task_config.prefill_node_num,task_config.decode_node_num), None)
+    if not task_config.enable_pd_elastic_scaling:
+        best_practice_model_config_path = config_map.get((task_config.model_name,
+            task_config.hardware_platform, task_config.quant_type, task_config.is_pd_disaggregation,
+            task_config.prefill_node_num,task_config.decode_node_num), None)
+    else:
+        best_practice_model_config_path = node_elasticly_config_map.get((task_config.model_name,
+            task_config.hardware_platform, task_config.quant_type, task_config.enable_pd_elastic_scaling), None)
     
     task_info = f'{task_config.model_name}_{task_config.quant_type}_{task_config.hardware_platform}'
     if best_practice_model_config_path:

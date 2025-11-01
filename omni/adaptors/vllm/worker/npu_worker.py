@@ -180,8 +180,10 @@ class NPUWorker(WorkerBase):
         enable_chunked_prefill = self.scheduler_config.enable_chunked_prefill
         if self.vllm_config.additional_config is not None:
             enable_omni_placement = self.vllm_config.additional_config.get("enable_omni_placement", False)
+            enable_pd_elastic_scaling = self.vllm_config.additional_config.get("enable_pd_elastic_scaling", False)
         else:
             enable_omni_placement = False
+            enable_pd_elastic_scaling = False
         max_num_reqs = self.scheduler_config.max_num_seqs
         self.decode_gear_list = self.vllm_config.npu_compilation_config.decode_gear_list
         if self.decode_gear_list is None:
@@ -198,6 +200,7 @@ class NPUWorker(WorkerBase):
             decode_node_num = int(os.getenv("DECODE_POD_NUM", 1)),
             enable_chunked_prefill = enable_chunked_prefill,
             enable_omni_placement = enable_omni_placement,
+            enable_pd_elastic_scaling = enable_pd_elastic_scaling,
             decode_gear_list=self.decode_gear_list,
             enable_graph_mode=self.enable_torchair_graph_mode
         )

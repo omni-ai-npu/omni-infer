@@ -85,7 +85,7 @@
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
       KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
-      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
+      ADDITIONAL_CONFIG='{"enable_pd_elastic_scaling":true}'
       if [ ${USE_OMNI_PROXY} = "1" ]; then
         EXTRA_ARGS="--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --kv-events-config ${KV_EVENTS_CONFIG}"
       else
@@ -129,6 +129,7 @@
         --kv-connector ${KV_CONNECTOR} \
         --model-extra-cfg-path ${MODEL_EXTRA_CFG_PATH} \
         --gpu-util ${GPU_UTIL} \
+        --additional-config "$ADDITIONAL_CONFIG" \
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
@@ -156,7 +157,7 @@
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode.json"
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching'
       GPU_UTIL=0.92
-      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1}}'
+      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1},"enable_pd_elastic_scaling":true}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True

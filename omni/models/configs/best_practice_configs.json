@@ -71,6 +71,14 @@
    },
    {
       "model": "deepseek_v3",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "enable_pd_elastic_scaling": true,
+      "prefill_config_file": "ds_r1_w8a8c16_a3_xpyd_p.json",
+      "decode_config_file": "ds_r1_w8a8c16_a3_xpyd_d.json"
+   },
+   {
+      "model": "deepseek_v3",
       "hardware": "A2",
       "precision": "w4a8",
       "prefill_node_num": 2,
