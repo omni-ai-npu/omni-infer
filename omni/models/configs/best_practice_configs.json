@@ -186,8 +186,8 @@
       "prefill_node_num": 18,
       "decode_node_num": 1,        
       "pd_disaggregation": true,
-      "prefill_config_file": "pangu_718b_w8a8c16_a3_18p1d_p.json",
-      "decode_config_file": "pangu_718b_w8a8c16_a3_18p1d_d.json"
+      "prefill_config_file": "pangu_718b_w8a8c8_a3_18p1d_p.json",
+      "decode_config_file": "pangu_718b_w8a8c8_a3_18p1d_d.json"
    },
    {
       "model": "qwen3-235B",

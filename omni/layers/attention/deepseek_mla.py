@@ -408,7 +408,8 @@ class DeepseekMLA(nn.Module):
         self.attn_mask = ~torch.tril(
             torch.ones((2048, 2048), dtype=torch.bool, device=current_platform.device_type)
         )
-        self.decode_attn_mask = self.attn_mask.to(torch.uint8)
+        if model_extra_config.operator_opt_config.mtp_remove_redundant_kv:
+            self.decode_attn_mask = self.attn_mask.to(torch.uint8)
 
         self.fa_quant = model_extra_config.operator_opt_config.fa_quant
         self.kv_scale_reci_tile = None
