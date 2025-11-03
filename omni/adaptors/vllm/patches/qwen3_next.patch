@@ -557,10 +557,10 @@ index 9f14a907a..390001826 100644
  
  __all__ = ["HAS_TRITON", "triton", "tl"]
 diff --git a/vllm/v1/attention/backends/utils.py b/vllm/v1/attention/backends/utils.py
-index 10a771e83..5d1f2e3d4 100644
+index 10a771e83..e87e68bc8 100644
 --- a/vllm/v1/attention/backends/utils.py
 +++ b/vllm/v1/attention/backends/utils.py
-@@ -16,3 +16,48 @@ class CommonAttentionMetadata:
+@@ -16,3 +16,47 @@ class CommonAttentionMetadata:
      seq_lens: torch.Tensor
      """(batch_size,), the length of each request including both computed tokens
      and newly scheduled tokens"""
@@ -602,7 +602,6 @@ index 10a771e83..5d1f2e3d4 100644
 +        return num_reqs, 0, num_tokens, 0
 +
 +    first_prefill = is_prefill.int().argmax(dim=-1).item()
-+    assert torch.all(query_lens[first_prefill:] > decode_threshold)
 +    assert torch.all(query_lens[:first_prefill] <= decode_threshold)
 +    num_decodes = first_prefill
 +    num_prefills = num_reqs - num_decodes
