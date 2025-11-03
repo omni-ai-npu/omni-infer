@@ -233,8 +233,8 @@ def _fused_recurrent_gated_delta_rule_ref(
     for n_idx in range(N_sequences):
         # Determine the start and end token indices for the current sequence
         if cu_seqlens is not None:
-            seq_start_idx = cu_seqlens[n_idx].item()
-            seq_end_idx = cu_seqlens[n_idx + 1].item()
+            seq_start_idx = cu_seqlens[n_idx]
+            seq_end_idx = cu_seqlens[n_idx + 1]
             current_seq_len = seq_end_idx - seq_start_idx
         else:
             seq_start_idx = 0  # Not used for fixed-length
@@ -245,7 +245,7 @@ def _fused_recurrent_gated_delta_rule_ref(
 
         # Determine the state slot index for the current sequence
         if ssm_state_indices is not None:
-            state_slot_idx = ssm_state_indices[n_idx].item()
+            state_slot_idx = ssm_state_indices[n_idx]
             if state_slot_idx == PAD_SLOT_ID:
                 continue
         else:

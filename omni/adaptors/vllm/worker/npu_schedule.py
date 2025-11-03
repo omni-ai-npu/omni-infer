@@ -199,8 +199,8 @@ class NpuHybridScheduler(Scheduler):
             if self.lora_config and request.lora_request:
                 scheduled_loras.add(request.lora_request.lora_int_id)
 
-            all_block_ids = computed_blocks.get_block_ids()[0] + new_blocks.get_block_ids()[0]    
-            req_to_new_block_ids[request.request_id] = [all_block_ids]
+            req_to_new_block_ids[request.request_id] = (
+                    self.kv_cache_manager.get_block_ids(request.request_id))
 
             # Update request info.
             num_scheduled_tokens[request.request_id] = num_new_tokens
@@ -291,7 +291,7 @@ class NpuHybridScheduler(Scheduler):
             any_request = self.running[0]
             num_common_prefix_blocks = (
                 self.kv_cache_manager.get_num_common_prefix_blocks(
-                    any_request, len(self.running)))
+                    any_request.request_id))
 
         # Construct the scheduler output.
         new_reqs_data = [
