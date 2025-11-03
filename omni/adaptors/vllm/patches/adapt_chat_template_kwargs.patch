@@ -30,7 +30,7 @@ index fc62dbf..c7cace5 100644
 +    def should_enable_thinking(self, request: ChatCompletionRequest):
 +        enable_thinking = self.reasoning_parser is not None
 +        should_apply_default_disable_thinking = request.chat_template_kwargs is None or "thinking" not in request.chat_template_kwargs
-+        default_disable_thinking = should_apply_default_disable_thinking and (
++        default_disable_thinking = should_apply_default_disable_thinking and self.tool_parser_name is not None and (
 +                "deepseek_v31" in self.tool_parser_name or "deepseek_v32" in self.tool_parser_name)
 +        kwargs_disable_thinking = (not should_apply_default_disable_thinking) and request.chat_template_kwargs.get(
 +            "thinking", False) is False
