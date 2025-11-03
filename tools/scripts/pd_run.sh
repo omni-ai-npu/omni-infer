@@ -440,7 +440,16 @@ start_ray_log_rotate(){
   fi
 }
 
+setup_multi_server_ray_backend_logging_config() {
+    [ -z "$VLLM_LOGGING_CONFIG_PATH" ] || [ ! -f "$VLLM_LOGGING_CONFIG_PATH" ] && return
+    local temp_file=$(mktemp)
+    cp "$VLLM_LOGGING_CONFIG_PATH" "$temp_file"
+    sed -i 's|"filename": *"[^"]*"|"filename": "'"$LOG_DIR"'/server_0.log"|g' "$temp_file"
+    export VLLM_LOGGING_CONFIG_PATH="$temp_file"
+}
+
 if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
+  setup_multi_server_ray_backend_logging_config
   if [ "$IP" = "$HOST_IP" ]; then
     export RAY_USAGE_STATS_ENABLED=0
     ray start --head
