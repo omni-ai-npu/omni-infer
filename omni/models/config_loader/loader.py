@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, asdict
 import json
 import os
 import torch.distributed
@@ -332,6 +332,13 @@ def update_task_config(**kwargs):
     task_config.model_name, task_config.quant_type = parse_hf_config(kwargs['hf_config'])
     _init_model_extra_config(task_config)
     _validate_config()
+
+    try:
+        model_info = json.dumps(asdict(model_extra_config), indent=2, default=str, ensure_ascii=False)
+    except Exception as e:
+        model_info = repr(model_extra_config)
+        logger.warning(f"Failed to JSON-serialize model_extra_config: {e}")
+    logger.info(f"ModelExtraConfig: {model_info}")
     
 
 

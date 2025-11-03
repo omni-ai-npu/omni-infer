@@ -737,7 +737,12 @@ class PanguUltraMoEForCausalLM(nn.Module):
 
         self.config = vllm_config.model_config.hf_config
         self.quant_config = vllm_config.quant_config
-        self.model = PanguUltraMoEModel(vllm_config=vllm_config, prefix="model")
+
+        if model_extra_config.task_config.hardware_platform.startswith("A2") and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
+            from omni.models.pangu.pangu_ultra_moe import PanguUltraMoEModel as PanguUltraMoEModel_A2
+            self.model = PanguUltraMoEModel_A2(vllm_config=vllm_config, prefix="model")
+        else:
+            self.model = PanguUltraMoEModel(vllm_config=vllm_config, prefix="model")
 
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
@@ -766,8 +771,14 @@ class PanguUltraMoEForCausalLM(nn.Module):
             inputs_embeds = None,
             **kwargs
     ) -> Optional[torch.Tensor]:
-        hidden_states = self.model(input_ids, positions, kv_caches,
+    
+        if model_extra_config.task_config.hardware_platform.startswith(f"A2") and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
+            hidden_states = self.model(input_ids, positions, kv_caches,
+                                   attn_metadata, intermediate_tensors)
+        else:
+            hidden_states = self.model(input_ids, positions, kv_caches,
                                    attn_metadata, intermediate_tensors, self.max_num_token)
+
         if attn_metadata is None:
             logits = self.compute_lmhead(hidden_states[-1:, ...], None)
         else:

@@ -3,7 +3,6 @@
 import os
 import torch_npu
 from vllm import ModelRegistry
-from omni.models.config_loader.loader import model_extra_config
 
 if os.getenv("PROFILING_NAMELIST", None):
     print("<<<Profiler patch environmental variable is enabled, applying profiler patches.")
@@ -11,26 +10,17 @@ if os.getenv("PROFILING_NAMELIST", None):
 
 def register_model():
     is_A2 = torch_npu.npu.get_device_name(0).startswith("Ascend910B")
-    all2all = model_extra_config.operator_opt_config.prefill_moe_all_to_all
     ModelRegistry.register_model(
         "DeepseekV2ForCausalLM",
         "omni.models.deepseek.deepseek_v2:CustomDeepseekV2ForCausalLM")
 
-    if is_A2 and not all2all:
-        ModelRegistry.register_model(
-            "DeepseekV3ForCausalLM",
-            "omni.models.deepseek.deepseek_v3_a2:DeepseekV3ForCausalLM")
-        ModelRegistry.register_model(
-            "PanguUltraMoEForCausalLM",
-            "omni.models.pangu.pangu_ultra_moe_a2:PanguUltraMoEForCausalLM")
-    else:
-        ModelRegistry.register_model(
+    ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             "omni.models.deepseek.deepseek_v3:DeepseekV3ForCausalLM")
-        ModelRegistry.register_model(
+    ModelRegistry.register_model(
             "DeepseekV32ForCausalLM",
             "omni.models.deepseek.deepseek_v32:DeepseekV32ForCausalLM")
-        ModelRegistry.register_model(
+    ModelRegistry.register_model(
             "PanguUltraMoEForCausalLM",
             "omni.models.pangu.pangu_ultra_moe:PanguUltraMoEForCausalLM")
 
@@ -130,10 +120,7 @@ def register_model():
         ModelRegistry.register_model(
             "Qwen2ForCausalLM",
             mock_model_class_factory(Qwen2ForCausalLM))
-        if is_A2 and not all2all:
-            from omni.models.deepseek.deepseek_v3_a2 import DeepseekV3ForCausalLM
-        else:
-            from omni.models.deepseek.deepseek_v3 import DeepseekV3ForCausalLM
+        from omni.models.deepseek.deepseek_v3 import DeepseekV3ForCausalLM
         ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             mock_model_class_factory(DeepseekV3ForCausalLM))
