@@ -463,6 +463,7 @@ class DeepseekMoE(nn.Module):
             num_tokens_per_rank=None,
             num_tokens_per_rdma_rank=None,
             num_tokens_per_expert=group_list,
+            ena_multi_stream=ena_multi_stream,
         )
 
         # ====================== call experts part 1 ======================
