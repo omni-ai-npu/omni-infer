@@ -313,6 +313,26 @@ static PyObject* python_create_and_map(PyObject* self, PyObject* args)
   Py_RETURN_NONE;
 }
 
+static PyObject* py_memcpy(PyObject* self, PyObject* args)
+{
+  void* dst;
+  size_t destMax;
+  const void* src;
+  size_t count;
+  int kind;
+
+  if (!PyArg_ParseTuple(args, "KKKKK", &dst, &destMax, &src, &count, &kind)) {
+    PyErr_SetString(PyExc_TypeError, "Failed to parse py_memcpy tuple params.");
+    return nullptr;
+  }
+
+  aclError ret = aclrtMemcpy(dst, destMax, src, count, (aclrtMemcpyKind)kind);
+  if (ret != 0) {
+    LOG_ERR("Failed to memcpy, ret " << ret);
+  }
+  return PyLong_FromLong((long)ret);
+}
+
 static PyMethodDef module_methods[] =
 {
     {"init_module", (PyCFunction)py_init_module, METH_VARARGS,
@@ -321,6 +341,8 @@ static PyMethodDef module_methods[] =
      "Create and map memory on the device."},
     {"python_unmap_and_release", (PyCFunction)python_unmap_and_release,
      METH_VARARGS, "Unmap and release memory on the device."},
+    {"memcpy", (PyCFunction)py_memcpy, METH_VARARGS,
+     "Copy memory between host and device."},
     {NULL, NULL, 0, NULL}  // sentinel
 };
 

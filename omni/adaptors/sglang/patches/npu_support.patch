@@ -1,32 +1,18 @@
-From 9152fc3617c02abf62581346b90ce75dd4e779db Mon Sep 17 00:00:00 2001
-From: gxf_xbd <gaoxiaofan1@huawei.com>
-Date: Sat, 23 Aug 2025 13:39:41 +0800
-Subject: [PATCH] NPU adatation for SGL
-
----
- python/sglang/launch_server.py                |  1 +
- .../sglang/srt/distributed/parallel_state.py  |  2 +-
- python/sglang/srt/layers/linear.py            |  5 ++
- python/sglang/srt/layers/moe/topk.py          |  4 +-
- .../srt/layers/quantization/__init__.py       |  2 +-
- .../srt/layers/quantization/fp8_kernel.py     |  4 +-
- .../srt/layers/quantization/moe_wna16.py      |  3 +-
- .../srt/managers/data_parallel_controller.py  |  1 +
- python/sglang/srt/managers/schedule_batch.py  | 11 ++---
- python/sglang/srt/managers/scheduler.py       |  2 +
- .../srt/managers/scheduler_profiler_mixin.py  | 31 +++++++++++-
- .../srt/managers/tp_worker_overlap_thread.py  |  4 +-
- python/sglang/srt/mem_cache/memory_pool.py    | 49 ++++++++++++++-----
- .../srt/model_executor/forward_batch_info.py  |  1 -
- .../sglang/srt/model_executor/model_runner.py |  7 +++
- .../sglang/srt/model_loader/weight_utils.py   |  5 +-
- python/sglang/srt/models/registry.py          |  5 +-
- python/sglang/srt/server_args.py              |  5 +-
- python/sglang/srt/utils.py                    |  7 ++-
- 19 files changed, 113 insertions(+), 36 deletions(-)
-
+diff --git a/python/sglang/bench_serving.py b/python/sglang/bench_serving.py
+index 3ba4eae0..072cd4fc 100644
+--- a/python/sglang/bench_serving.py
++++ b/python/sglang/bench_serving.py
+@@ -1359,7 +1359,7 @@ async def benchmark(
+         prompt=test_request.prompt,
+         api_url=api_url,
+         prompt_len=test_request.prompt_len,
+-        output_len=min(test_request.output_len, 32),
++        output_len=min(test_request.output_len, 16),
+         lora_name=lora_name,
+         image_data=test_request.image_data,
+         extra_request_body=extra_request_body,
 diff --git a/python/sglang/launch_server.py b/python/sglang/launch_server.py
-index caae7b0f6..6455d4e35 100644
+index caae7b0f..44df8bb6 100644
 --- a/python/sglang/launch_server.py
 +++ b/python/sglang/launch_server.py
 @@ -3,6 +3,7 @@
@@ -38,7 +24,7 @@ index caae7b0f6..6455d4e35 100644
  from sglang.srt.server_args import prepare_server_args
  from sglang.srt.utils import kill_process_tree
 diff --git a/python/sglang/srt/distributed/parallel_state.py b/python/sglang/srt/distributed/parallel_state.py
-index ad336c808..71fe73686 100644
+index ad336c80..71fe7368 100644
 --- a/python/sglang/srt/distributed/parallel_state.py
 +++ b/python/sglang/srt/distributed/parallel_state.py
 @@ -591,7 +591,7 @@ class GroupCoordinator:
@@ -50,11 +36,119 @@ index ad336c808..71fe73686 100644
              self._all_gather_into_tensor(output, input)
          else:
              torch.ops.sglang.reg_all_gather_into_tensor(
+diff --git a/python/sglang/srt/eplb/expert_distribution.py b/python/sglang/srt/eplb/expert_distribution.py
+index c954394e..5c296484 100644
+--- a/python/sglang/srt/eplb/expert_distribution.py
++++ b/python/sglang/srt/eplb/expert_distribution.py
+@@ -114,6 +114,20 @@ class _ExpertDistributionRecorderNoop(ExpertDistributionRecorder):
+     pass
+ 
+ 
++class NpuExpertDistributionRecorder(ExpertDistributionRecorder):
++    def __init__(self) -> None:
++        pass
++
++    def __enter__(self):
++        pass
++
++    def __exit__(self, exc_type, exc_value, traceback):
++        pass
++
++    def with_current_layer(self, layer_idx):
++        return self
++
++
+ class _ExpertDistributionRecorderReal(ExpertDistributionRecorder):
+     def __init__(
+         self,
+@@ -263,8 +277,11 @@ _global_expert_distribution_recorder: Optional[ExpertDistributionRecorder] = (
+ )
+ 
+ 
+-def get_global_expert_distribution_recorder():
+-    return _global_expert_distribution_recorder
++def get_global_expert_distribution_recorder(is_npu: bool = False):
++    if is_npu:
++        return NpuExpertDistributionRecorder()
++    else:
++        return _global_expert_distribution_recorder
+ 
+ 
+ def set_global_expert_distribution_recorder(value):
+diff --git a/python/sglang/srt/layers/attention/base_attn_backend.py b/python/sglang/srt/layers/attention/base_attn_backend.py
+index 3025d0b1..22175983 100644
+--- a/python/sglang/srt/layers/attention/base_attn_backend.py
++++ b/python/sglang/srt/layers/attention/base_attn_backend.py
+@@ -65,9 +65,9 @@ class AttentionBackend(ABC):
+         **kwargs,
+     ):
+         """Run forward on an attention layer."""
+-        if forward_batch.forward_mode.is_idle():
++        if forward_batch.is_prefill_idle:
+             return q.new_empty(q.shape[0], layer.tp_q_head_num * layer.v_head_dim)
+-        elif forward_batch.forward_mode.is_decode():
++        elif forward_batch.is_decode_or_idle:
+             return self.forward_decode(
+                 q,
+                 k,
+diff --git a/python/sglang/srt/layers/communicator.py b/python/sglang/srt/layers/communicator.py
+index 4ef752d7..5ec3bbee 100644
+--- a/python/sglang/srt/layers/communicator.py
++++ b/python/sglang/srt/layers/communicator.py
+@@ -36,7 +36,7 @@ from sglang.srt.layers.dp_attention import (
+ from sglang.srt.layers.utils import is_sm100_supported
+ from sglang.srt.managers.schedule_batch import global_server_args_dict
+ from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+-from sglang.srt.utils import is_cuda, is_flashinfer_available
++from sglang.srt.utils import is_cuda, is_flashinfer_available, is_npu
+ 
+ _is_flashinfer_available = is_flashinfer_available()
+ _is_sm100_supported = is_cuda() and is_sm100_supported()
+@@ -110,6 +110,7 @@ class LayerScatterModes:
+             return (
+                 ScatterMode.SCATTERED
+                 if not global_server_args_dict["moe_a2a_backend"].is_standard()
++                or (not (is_npu() and global_server_args_dict["enable_torch_compile"]))
+                 else ScatterMode.FULL
+             )
+         else:
+diff --git a/python/sglang/srt/layers/layernorm.py b/python/sglang/srt/layers/layernorm.py
+index 4c1f2268..b114c35e 100644
+--- a/python/sglang/srt/layers/layernorm.py
++++ b/python/sglang/srt/layers/layernorm.py
+@@ -49,12 +49,11 @@ if _use_aiter:
+     from aiter import rmsnorm2d_fwd_with_add as fused_add_rms_norm
+ elif _is_hip:
+     from vllm._custom_ops import fused_add_rms_norm, rms_norm
++elif _is_npu:
++    import torch_npu
+ 
+ logger = logging.getLogger(__name__)
+ 
+-if is_npu():
+-    import torch_npu
+-
+ 
+ class RMSNorm(CustomOp):
+     def __init__(
 diff --git a/python/sglang/srt/layers/linear.py b/python/sglang/srt/layers/linear.py
-index 2a9dfda59..15e11c165 100644
+index 2a9dfda5..587cb2fb 100644
 --- a/python/sglang/srt/layers/linear.py
 +++ b/python/sglang/srt/layers/linear.py
-@@ -216,6 +216,7 @@ class ReplicatedLinear(LinearBase):
+@@ -39,6 +39,12 @@ if TYPE_CHECKING:
+         QuantizeMethodBase,
+     )
+ 
++_is_npu = is_npu()
++if _is_npu:
++    import torch_npu
++
++    torch.npu.config.allow_internal_format = True
++
+ logger = logging.getLogger(__name__)
+ 
+ WEIGHT_LOADER_V2_SUPPORTED = [
+@@ -216,6 +222,7 @@ class ReplicatedLinear(LinearBase):
  
          # The per-tensor quant-scale must be 1 dimension
          if _is_npu:
@@ -62,7 +156,15 @@ index 2a9dfda59..15e11c165 100644
              if param.size() != loaded_weight.size() and param.size(0) == 1:
                  if torch.allclose(loaded_weight, loaded_weight[0]):
                      loaded_weight = loaded_weight[:1]
-@@ -378,6 +379,8 @@ class ColumnParallelLinear(LinearBase):
+@@ -227,7 +234,6 @@ class ReplicatedLinear(LinearBase):
+ 
+     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+         bias = self.bias if not self.skip_bias_add else None
+-        assert self.quant_method is not None
+         output = self.quant_method.apply(self, x, bias)
+         output_bias = self.bias if self.skip_bias_add else None
+         return output, output_bias
+@@ -378,6 +384,8 @@ class ColumnParallelLinear(LinearBase):
              loaded_weight = loaded_weight.reshape(1)
  
          assert param_data.shape == loaded_weight.shape
@@ -71,7 +173,7 @@ index 2a9dfda59..15e11c165 100644
          param_data.copy_(loaded_weight)
  
      def weight_loader_v2(self, param: Parameter, loaded_weight: torch.Tensor):
-@@ -1254,6 +1257,8 @@ class RowParallelLinear(LinearBase):
+@@ -1254,6 +1262,8 @@ class RowParallelLinear(LinearBase):
              loaded_weight = loaded_weight.reshape(1)
  
          assert param_data.shape == loaded_weight.shape
@@ -80,8 +182,189 @@ index 2a9dfda59..15e11c165 100644
          param_data.copy_(loaded_weight)
  
      def weight_loader_v2(self, param: BasevLLMParameter, loaded_weight: torch.Tensor):
+diff --git a/python/sglang/srt/layers/logits_processor.py b/python/sglang/srt/layers/logits_processor.py
+index 3384f5ef..238621c2 100644
+--- a/python/sglang/srt/layers/logits_processor.py
++++ b/python/sglang/srt/layers/logits_processor.py
+@@ -21,10 +21,12 @@ import torch
+ import triton
+ import triton.language as tl
+ from torch import nn
++from sglang.srt.utils import is_npu
+ 
+ from sglang.srt.distributed import (
+     get_tensor_model_parallel_world_size,
+     tensor_model_parallel_all_gather,
++    get_tp_group
+ )
+ from sglang.srt.layers.dp_attention import (
+     DPPaddingMode,
+@@ -104,6 +106,7 @@ class LogitsMetadata:
+ 
+     # DP attention metadata. Not needed when DP attention is not used.
+     # Number of tokens in the request.
++    global_num_tokens_cpu: Optional[List[int]] = None
+     global_num_tokens_gpu: Optional[torch.Tensor] = None
+     # The start position of local hidden states.
+     dp_local_start_pos: Optional[torch.Tensor] = None
+@@ -112,19 +115,26 @@ class LogitsMetadata:
+     # Buffer to gather logits from all ranks.
+     forward_batch_gathered_buffer: Optional[torch.Tensor] = None
+     # Number of tokens to sample per DP rank
+-    global_num_tokens_for_logprob_cpu: Optional[torch.Tensor] = None
++    global_num_tokens_for_logprob_cpu: Optional[List[int]] = None
+     global_num_tokens_for_logprob_gpu: Optional[torch.Tensor] = None
+     # The gather mode for DP attention
+     dp_padding_mode: Optional[DPPaddingMode] = None
++    dp_padding_max_len: bool = False
+     # for padding
+     padded_static_len: int = -1
+-
++    is_extend: bool = False
++    is_decode_or_idle: bool = False
++    is_target_verify: bool = False
++    is_draft_extend: bool = False
++    is_extend_or_draft_extend: bool = False
++    is_prefill_idle: bool = False
++    can_run_graph: bool = False
+     @classmethod
+     def from_forward_batch(cls, forward_batch: ForwardBatch):
+         if (
+-            forward_batch.forward_mode.is_extend()
++            forward_batch.is_extend
+             and forward_batch.return_logprob
+-            and not forward_batch.forward_mode.is_target_verify()
++            and not forward_batch.is_target_verify
+         ):
+             extend_return_top_logprob = any(
+                 x > 0 for x in forward_batch.top_logprobs_nums
+@@ -147,7 +157,7 @@ class LogitsMetadata:
+             ) = extend_logprob_pruned_lens_cpu = False
+ 
+         return cls(
+-            forward_mode=forward_batch.forward_mode,
++            forward_mode=None,
+             capture_hidden_mode=forward_batch.capture_hidden_mode,
+             next_token_logits_buffer=forward_batch.next_token_logits_buffer,
+             extend_return_logprob=extend_return_logprob,
+@@ -161,6 +171,7 @@ class LogitsMetadata:
+             token_ids_logprobs=forward_batch.token_ids_logprobs,
+             extend_input_logprob_token_ids_gpu=forward_batch.extend_input_logprob_token_ids_gpu,
+             padded_static_len=forward_batch.padded_static_len,
++            global_num_tokens_cpu=forward_batch.global_num_tokens_cpu,
+             global_num_tokens_gpu=forward_batch.global_num_tokens_gpu,
+             dp_local_start_pos=forward_batch.dp_local_start_pos,
+             dp_local_num_tokens=forward_batch.dp_local_num_tokens,
+@@ -169,24 +180,31 @@ class LogitsMetadata:
+             global_num_tokens_for_logprob_cpu=forward_batch.global_num_tokens_for_logprob_cpu,
+             global_num_tokens_for_logprob_gpu=forward_batch.global_num_tokens_for_logprob_gpu,
+             dp_padding_mode=DPPaddingMode.SUM_LEN,
++            is_extend=forward_batch.is_extend,
++            is_decode_or_idle=forward_batch.is_decode_or_idle,
++            is_target_verify=forward_batch.is_target_verify,
++            is_draft_extend=forward_batch.is_draft_extend,
++            is_extend_or_draft_extend=forward_batch.is_extend_or_draft_extend,
++            is_prefill_idle=forward_batch.is_prefill_idle,
++            can_run_graph=forward_batch.can_run_graph,
+         )
+ 
+     def compute_dp_attention_metadata(self):
++        if not self.can_run_graph:
++            cumtokens = torch.cumsum(self.global_num_tokens_for_logprob_gpu, dim=0)
++            dp_rank = get_attention_dp_rank()
++            if dp_rank == 0:
++                dp_local_start_pos = torch.zeros_like(
++                    self.global_num_tokens_for_logprob_gpu[0]
++                )
++            else:
++                dp_local_start_pos = cumtokens[dp_rank - 1]
++            dp_local_num_tokens = self.global_num_tokens_for_logprob_gpu[dp_rank]
+ 
+-        cumtokens = torch.cumsum(self.global_num_tokens_for_logprob_gpu, dim=0)
+-        dp_rank = get_attention_dp_rank()
+-        if dp_rank == 0:
+-            dp_local_start_pos = torch.zeros_like(
+-                self.global_num_tokens_for_logprob_gpu[0]
+-            )
+-        else:
+-            dp_local_start_pos = cumtokens[dp_rank - 1]
+-        dp_local_num_tokens = self.global_num_tokens_for_logprob_gpu[dp_rank]
+-
+-        self.dp_local_start_pos = dp_local_start_pos
+-        self.dp_local_num_tokens = dp_local_num_tokens
++            self.dp_local_start_pos = dp_local_start_pos
++            self.dp_local_num_tokens = dp_local_num_tokens
+ 
+-        if self.global_num_tokens_for_logprob_cpu is not None:
++        if self.global_num_tokens_for_logprob_cpu is not None and not self.can_run_graph:
+             # create a smaller buffer to reduce peak memory usage
+             self.gathered_buffer = torch.empty(
+                 (
+@@ -246,8 +264,8 @@ class LogitsProcessor(nn.Module):
+             logits_metadata = LogitsMetadata.from_forward_batch(logits_metadata)
+         # Get the last hidden states and last logits for the next token prediction
+         if (
+-            logits_metadata.forward_mode.is_decode_or_idle()
+-            or logits_metadata.forward_mode.is_target_verify()
++            logits_metadata.is_decode_or_idle
++            or logits_metadata.is_target_verify
+         ):
+             pruned_states = hidden_states
+             if aux_hidden_states is not None:
+@@ -255,7 +273,7 @@ class LogitsProcessor(nn.Module):
+             sample_indices = None
+             input_logprob_indices = None
+         elif (
+-            logits_metadata.forward_mode.is_extend()
++            logits_metadata.is_extend
+             and not logits_metadata.extend_return_logprob
+         ):
+             # Prefill without input logprobs.
+@@ -446,7 +464,13 @@ class LogitsProcessor(nn.Module):
+                 logits_metadata.gathered_buffer,
+                 hidden_states,
+             )
+-            dp_gather_replicate(hidden_states, local_hidden_states, logits_metadata)
++            if logits_metadata.can_run_graph:
++                # all gather the data from each dp rank
++                get_tp_group().all_gather_into_tensor(
++                    hidden_states, local_hidden_states
++                )
++            else:
++                dp_gather_replicate(hidden_states, local_hidden_states, logits_metadata)
+ 
+         if hasattr(lm_head, "weight"):
+             if use_intel_amx_backend(lm_head):
+@@ -500,15 +524,18 @@ class LogitsProcessor(nn.Module):
+                 logits = tensor_model_parallel_all_gather(logits)
+ 
+         if self.do_tensor_parallel_all_gather_dp_attn:
+-            logits, global_logits = (
+-                torch.empty(
+-                    (local_hidden_states.shape[0], logits.shape[1]),
+-                    device=logits.device,
+-                    dtype=logits.dtype,
+-                ),
+-                logits,
+-            )
+-            dp_scatter(logits, global_logits, logits_metadata)
++            if logits_metadata.can_run_graph:
++                logits = logits.tensor_split(get_attention_dp_size())[get_attention_dp_rank()]
++            else:
++                logits, global_logits = (
++                    torch.empty(
++                        (local_hidden_states.shape[0], logits.shape[1]),
++                        device=logits.device,
++                        dtype=logits.dtype,
++                    ),
++                    logits,
++                )
++                dp_scatter(logits, global_logits, logits_metadata)
+ 
+         if logits_metadata.next_token_logits_buffer is not None:
+             logits_buffer = logits_metadata.next_token_logits_buffer
 diff --git a/python/sglang/srt/layers/moe/topk.py b/python/sglang/srt/layers/moe/topk.py
-index 78bd6f08d..1cfbff498 100644
+index 78bd6f08..1cfbff49 100644
 --- a/python/sglang/srt/layers/moe/topk.py
 +++ b/python/sglang/srt/layers/moe/topk.py
 @@ -248,13 +248,13 @@ class TopK(CustomOp):
@@ -100,21 +383,8 @@ index 78bd6f08d..1cfbff498 100644
                  eps=float(1e-20),
              )
          else:
-diff --git a/python/sglang/srt/layers/quantization/__init__.py b/python/sglang/srt/layers/quantization/__init__.py
-index 19977012a..b4018fb31 100644
---- a/python/sglang/srt/layers/quantization/__init__.py
-+++ b/python/sglang/srt/layers/quantization/__init__.py
-@@ -72,7 +72,7 @@ from sglang.srt.layers.quantization.qoq import QoQConfig
- from sglang.srt.layers.quantization.utils import get_linear_quant_method
- from sglang.srt.layers.quantization.w4afp8 import W4AFp8Config
- from sglang.srt.layers.quantization.w8a8_fp8 import W8A8Fp8Config
--from sglang.srt.layers.quantization.w8a8_int8 import W8A8Int8Config
-+from omni.adaptors.sglang.layers.quantization.w8a8_int8 import W8A8Int8Config
- 
- if TYPE_CHECKING:
-     from sglang.srt.layers.moe.topk import TopKOutput
 diff --git a/python/sglang/srt/layers/quantization/fp8_kernel.py b/python/sglang/srt/layers/quantization/fp8_kernel.py
-index 16d1a4d7f..ae7074a9b 100644
+index 16d1a4d7..ae7074a9 100644
 --- a/python/sglang/srt/layers/quantization/fp8_kernel.py
 +++ b/python/sglang/srt/layers/quantization/fp8_kernel.py
 @@ -33,6 +33,7 @@ from sglang.srt.utils import (
@@ -143,7 +413,7 @@ index 16d1a4d7f..ae7074a9b 100644
          _per_token_group_quant_fp8_hopper_moe_mn_major
      )
 diff --git a/python/sglang/srt/layers/quantization/moe_wna16.py b/python/sglang/srt/layers/quantization/moe_wna16.py
-index fbbf11066..fc06cd8f7 100644
+index fbbf1106..fc06cd8f 100644
 --- a/python/sglang/srt/layers/quantization/moe_wna16.py
 +++ b/python/sglang/srt/layers/quantization/moe_wna16.py
 @@ -166,7 +166,8 @@ class MoeWNA16Config(QuantizationConfig):
@@ -156,8 +426,76 @@ index fbbf11066..fc06cd8f7 100644
              else capability_tuple[0] * 10 + capability_tuple[1]
          )
          # Avoid circular import
+diff --git a/python/sglang/srt/layers/quantization/unquant.py b/python/sglang/srt/layers/quantization/unquant.py
+index 9c33e317..7f5dea98 100644
+--- a/python/sglang/srt/layers/quantization/unquant.py
++++ b/python/sglang/srt/layers/quantization/unquant.py
+@@ -19,6 +19,7 @@ from sglang.srt.utils import (
+     get_bool_env_var,
+     is_cpu,
+     is_hip,
++    is_npu,
+     set_weight_attrs,
+     use_intel_amx_backend,
+ )
+@@ -33,6 +34,7 @@ has_triton_kernels = importlib.util.find_spec("triton_kernels") is not None
+ _is_cpu_amx_available = cpu_has_amx_support()
+ _is_hip = is_hip()
+ _is_cpu = is_cpu()
++_is_npu = is_npu()
+ _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
+ 
+ if _use_aiter:
+@@ -40,6 +42,9 @@ if _use_aiter:
+     from aiter.fused_moe import fused_moe
+     from aiter.ops.shuffle import shuffle_weight
+ 
++if _is_npu:
++    import torch_npu
++
+ 
+ class UnquantizedEmbeddingMethod(QuantizeMethodBase):
+     """Unquantized method for embeddings."""
+@@ -103,8 +108,15 @@ class UnquantizedLinearMethod(LinearMethodBase):
+         set_weight_attrs(weight, {"input_dim": 1, "output_dim": 0})
+         layer.register_parameter("weight", weight)
+         set_weight_attrs(weight, extra_weight_attrs)
++        self.enable_weight_nz = _is_npu
+ 
+     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
++        if self.enable_weight_nz:
++            layer.weight.data = torch_npu.npu_format_cast(
++                layer.weight.data.transpose(-1, -2).contiguous(), 29
++            )  # 29: NZ format
++            layer.weight.input_dim = 0
++            layer.weight.output_dim = 1
+         if _is_cpu and _is_cpu_amx_available:
+             _amx_process_weight_after_loading(layer, ["weight"])
+ 
+@@ -116,11 +128,18 @@ class UnquantizedLinearMethod(LinearMethodBase):
+     ) -> torch.Tensor:
+ 
+         if use_intel_amx_backend(layer):
+-            return torch.ops.sgl_kernel.weight_packed_linear(
++            out = torch.ops.sgl_kernel.weight_packed_linear(
+                 x, layer.weight, bias, True  # is_vnni
+             )
+-
+-        return F.linear(x, layer.weight, bias)
++        elif _is_npu and self.enable_weight_nz:
++            origin_shape = x.size()
++            out = torch.matmul(x.view(-1, origin_shape[-1]), layer.weight.data)
++            if bias is not None:
++                out = out + bias
++            out = out.view((*origin_shape[:-1], -1))
++        else:
++            out = F.linear(x, layer.weight, bias)
++        return out
+ 
+ 
+ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
 diff --git a/python/sglang/srt/managers/data_parallel_controller.py b/python/sglang/srt/managers/data_parallel_controller.py
-index 76b9e1a01..2bafd6f27 100644
+index 76b9e1a0..c30bf689 100644
 --- a/python/sglang/srt/managers/data_parallel_controller.py
 +++ b/python/sglang/srt/managers/data_parallel_controller.py
 @@ -343,6 +343,7 @@ def run_data_parallel_controller_process(
@@ -169,7 +507,7 @@ index 76b9e1a01..2bafd6f27 100644
      configure_logger(server_args)
      parent_process = psutil.Process().parent()
 diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
-index dca2cbfb7..761defe00 100644
+index dca2cbfb..8c0d9fb7 100644
 --- a/python/sglang/srt/managers/schedule_batch.py
 +++ b/python/sglang/srt/managers/schedule_batch.py
 @@ -64,7 +64,7 @@ from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, Forw
@@ -181,7 +519,35 @@ index dca2cbfb7..761defe00 100644
  
  if TYPE_CHECKING:
      from sglang.srt.configs.model_config import ModelConfig
-@@ -1713,15 +1713,12 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+@@ -75,6 +75,8 @@ INIT_INCREMENTAL_DETOKENIZATION_OFFSET = 5
+ 
+ GLOBAL_SERVER_ARGS_KEYS = [
+     "attention_backend",
++    "decode_attention_backend",
++    "prefill_attention_backend",
+     "mm_attention_backend",
+     "debug_tensor_dump_inject",
+     "debug_tensor_dump_output_folder",
+@@ -111,6 +113,7 @@ GLOBAL_SERVER_ARGS_KEYS = [
+     "enable_multimodal",
+     "enable_symm_mem",
+     "quantization",
++    "enable_torch_compile",
+ ]
+ 
+ # Put some global args for easy access
+@@ -1516,8 +1519,8 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+         self.input_ids = torch.empty(0, dtype=torch.int64, device=self.device)
+         self.seq_lens = torch.empty(0, dtype=torch.int64, device=self.device)
+         self.orig_seq_lens = torch.empty(0, dtype=torch.int32, device=self.device)
+-        self.out_cache_loc = torch.empty(0, dtype=torch.int64, device=self.device)
+-        self.req_pool_indices = torch.empty(0, dtype=torch.int32, device=self.device)
++        self.out_cache_loc = torch.empty(0, dtype=torch.int32, device=self.device)
++        self.req_pool_indices = torch.empty(0, dtype=torch.int64, device=self.device)
+         self.seq_lens_sum = 0
+         self.extend_num_tokens = 0
+         self.sampling_info = SamplingBatchInfo.from_schedule_batch(
+@@ -1713,15 +1716,12 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
              attention_backend_str = global_server_args_dict["prefill_attention_backend"]
          # Create seq_lens_cpu when needed
          if (
@@ -199,7 +565,7 @@ index dca2cbfb7..761defe00 100644
              or global_server_args_dict["enable_two_batch_overlap"]
          ):
              seq_lens_cpu = (
-@@ -1977,7 +1974,7 @@ def get_last_loc(
+@@ -1977,7 +1977,7 @@ def get_last_loc(
      prefix_lens_tensor: torch.Tensor,
  ) -> torch.Tensor:
      if (
@@ -209,7 +575,7 @@ index dca2cbfb7..761defe00 100644
      ):
          impl = get_last_loc_triton
 diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
-index 5d2204c3f..e84d35013 100644
+index 5d2204c3..9e3dc81a 100644
 --- a/python/sglang/srt/managers/scheduler.py
 +++ b/python/sglang/srt/managers/scheduler.py
 @@ -13,6 +13,7 @@
@@ -220,6 +586,17 @@ index 5d2204c3f..e84d35013 100644
  import faulthandler
  import logging
  import os
+@@ -2242,8 +2243,8 @@ class Scheduler(
+         }
+ 
+         if not _is_cpu:
+-            ret["memory_usage"]["cuda_graph"] = round(
+-                self.tp_worker.worker.model_runner.cuda_graph_mem_usage, 2
++            ret["memory_usage"]["graph"] = round(
++                self.tp_worker.worker.model_runner.graph_mem_usage, 2
+             )
+ 
+         if not self.spec_algorithm.is_none() and self.cum_spec_accept_count > 0:
 @@ -2514,6 +2515,7 @@ def run_scheduler_process(
      pipe_writer,
      balance_meta: Optional[DPBalanceMeta] = None,
@@ -229,7 +606,7 @@ index 5d2204c3f..e84d35013 100644
      prefix = ""
      if dp_rank is not None:
 diff --git a/python/sglang/srt/managers/scheduler_profiler_mixin.py b/python/sglang/srt/managers/scheduler_profiler_mixin.py
-index 3d061a8fe..4e78ec855 100644
+index 3d061a8f..4e78ec85 100644
 --- a/python/sglang/srt/managers/scheduler_profiler_mixin.py
 +++ b/python/sglang/srt/managers/scheduler_profiler_mixin.py
 @@ -8,6 +8,11 @@ import torch
@@ -291,8 +668,28 @@ index 3d061a8fe..4e78ec855 100644
  
          if "MEM" in activities:
              torch.cuda.memory._record_memory_history(max_entries=100000)
+diff --git a/python/sglang/srt/managers/tp_worker.py b/python/sglang/srt/managers/tp_worker.py
+index 77dac1ea..36fba088 100644
+--- a/python/sglang/srt/managers/tp_worker.py
++++ b/python/sglang/srt/managers/tp_worker.py
+@@ -63,6 +63,7 @@ class TpModelWorker:
+         is_draft_worker: bool = False,
+         req_to_token_pool: Optional[ReqToTokenPool] = None,
+         token_to_kv_pool_allocator: Optional[BaseTokenToKVPoolAllocator] = None,
++        enable_overlap: bool = False
+     ):
+         # Parse args
+         self.tp_size = server_args.tp_size
+@@ -96,6 +97,7 @@ class TpModelWorker:
+             is_draft_worker=is_draft_worker,
+             req_to_token_pool=req_to_token_pool,
+             token_to_kv_pool_allocator=token_to_kv_pool_allocator,
++            enable_overlap=enable_overlap,
+         )
+         if server_args.skip_tokenizer_init:
+             self.tokenizer = self.processor = None
 diff --git a/python/sglang/srt/managers/tp_worker_overlap_thread.py b/python/sglang/srt/managers/tp_worker_overlap_thread.py
-index 674a94195..5b3df8449 100644
+index 674a9419..3b6a7ed3 100644
 --- a/python/sglang/srt/managers/tp_worker_overlap_thread.py
 +++ b/python/sglang/srt/managers/tp_worker_overlap_thread.py
 @@ -35,7 +35,7 @@ from sglang.srt.managers.io_struct import (
@@ -304,6 +701,24 @@ index 674a94195..5b3df8449 100644
  from sglang.utils import get_exception_traceback
  
  logger = logging.getLogger(__name__)
+@@ -65,7 +65,7 @@ class TpModelWorkerClient:
+     ):
+         # Load the model
+         self.worker = TpModelWorker(
+-            server_args, gpu_id, tp_rank, moe_ep_rank, pp_rank, dp_rank, nccl_port
++            server_args, gpu_id, tp_rank, moe_ep_rank, pp_rank, dp_rank, nccl_port, enable_overlap=True
+         )
+         self.max_running_requests = self.worker.max_running_requests
+         self.device = self.worker.device
+@@ -81,7 +81,7 @@ class TpModelWorkerClient:
+         # Launch threads
+         self.input_queue = Queue()
+         self.output_queue = Queue()
+-        self.forward_stream = torch.get_device_module(self.device).Stream()
++        self.forward_stream = self.worker.model_runner.forward_stream
+         self.forward_thread = threading.Thread(
+             target=self.forward_thread_func,
+         )
 @@ -137,6 +137,8 @@ class TpModelWorkerClient:
  
      def forward_thread_func(self):
@@ -314,7 +729,7 @@ index 674a94195..5b3df8449 100644
                  self.forward_thread_func_()
          except Exception:
 diff --git a/python/sglang/srt/mem_cache/memory_pool.py b/python/sglang/srt/mem_cache/memory_pool.py
-index cc3faea0a..167bb22ed 100644
+index cc3faea0..aaa8490c 100644
 --- a/python/sglang/srt/mem_cache/memory_pool.py
 +++ b/python/sglang/srt/mem_cache/memory_pool.py
 @@ -36,13 +36,15 @@ import triton.language as tl
@@ -353,7 +768,30 @@ index cc3faea0a..167bb22ed 100644
          self.data_strides = torch.tensor(
              [
                  np.prod(x.shape[1:]) * x.dtype.itemsize
-@@ -624,8 +626,6 @@ class AscendTokenToKVPool(MHATokenToKVPool):
+@@ -403,8 +405,20 @@ class MHATokenToKVPool(KVCache):
+                 self.v_buffer[layer_id - self.start_layer][loc] = cache_v
+             current_stream.wait_stream(self.alt_stream)
+         else:
+-            self.k_buffer[layer_id - self.start_layer][loc] = cache_k
+-            self.v_buffer[layer_id - self.start_layer][loc] = cache_v
++            if _is_npu and loc.ndim == 1:
++                torch_npu.npu_scatter_nd_update_(
++                    self.k_buffer[layer_id - self.start_layer],
++                    loc.view(-1, 1),
++                    cache_k,
++                )
++                torch_npu.npu_scatter_nd_update_(
++                    self.v_buffer[layer_id - self.start_layer],
++                    loc.view(-1, 1),
++                    cache_v,
++                )
++            else:
++                self.k_buffer[layer_id - self.start_layer][loc] = cache_k
++                self.v_buffer[layer_id - self.start_layer][loc] = cache_v
+ 
+     def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor):
+         copy_all_layer_kv_cache[(len(self.data_ptrs),)](
+@@ -624,8 +638,6 @@ class AscendTokenToKVPool(MHATokenToKVPool):
              cache_k = cache_k.view(self.store_dtype)
              cache_v = cache_v.view(self.store_dtype)
  
@@ -362,7 +800,7 @@ index cc3faea0a..167bb22ed 100644
          torch_npu._npu_reshape_and_cache(
              key=cache_k,
              value=cache_v,
-@@ -704,6 +704,14 @@ def set_mla_kv_buffer_triton(
+@@ -704,6 +716,14 @@ def set_mla_kv_buffer_triton(
          BLOCK=BLOCK,
      )
  
@@ -377,7 +815,7 @@ index cc3faea0a..167bb22ed 100644
  
  class MLATokenToKVPool(KVCache):
      def __init__(
-@@ -753,9 +761,14 @@ class MLATokenToKVPool(KVCache):
+@@ -753,9 +773,14 @@ class MLATokenToKVPool(KVCache):
                  else nullcontext()
              ):
                  # The padded slot 0 is used for writing dummy outputs from padded tokens.
@@ -393,7 +831,7 @@ index cc3faea0a..167bb22ed 100644
                          dtype=self.store_dtype,
                          device=device,
                      )
-@@ -831,7 +844,14 @@ class MLATokenToKVPool(KVCache):
+@@ -831,7 +856,14 @@ class MLATokenToKVPool(KVCache):
                  self.store_dtype
              )
          else:
@@ -409,7 +847,7 @@ index cc3faea0a..167bb22ed 100644
  
      def set_mla_kv_buffer(
          self,
-@@ -848,9 +868,14 @@ class MLATokenToKVPool(KVCache):
+@@ -848,9 +880,14 @@ class MLATokenToKVPool(KVCache):
              cache_k_nope = cache_k_nope.view(self.store_dtype)
              cache_k_rope = cache_k_rope.view(self.store_dtype)
  
@@ -427,7 +865,7 @@ index cc3faea0a..167bb22ed 100644
  
      def get_cpu_copy(self, indices):
          torch.cuda.synchronize()
-@@ -953,8 +978,6 @@ class AscendMLAPagedTokenToKVPool(MLATokenToKVPool):
+@@ -953,8 +990,6 @@ class AscendMLAPagedTokenToKVPool(MLATokenToKVPool):
          if self.store_dtype != self.dtype:
              cache_k = cache_k.view(store_dtype)
  
@@ -436,23 +874,474 @@ index cc3faea0a..167bb22ed 100644
          torch_npu._npu_reshape_and_cache_siso(
              key=cache_k.view(-1, 1, self.kv_lora_rank + self.qk_rope_head_dim),
              key_cache=self.kv_buffer[layer_id - self.start_layer].view(
-diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
-index e5793a269..314635fcd 100644
---- a/python/sglang/srt/model_executor/forward_batch_info.py
-+++ b/python/sglang/srt/model_executor/forward_batch_info.py
-@@ -611,7 +611,6 @@ class ForwardBatch:
+diff --git a/python/sglang/srt/model_executor/cuda_graph_runner.py b/python/sglang/srt/model_executor/cuda_graph_runner.py
+index 05599c69..7fd1002f 100644
+--- a/python/sglang/srt/model_executor/cuda_graph_runner.py
++++ b/python/sglang/srt/model_executor/cuda_graph_runner.py
+@@ -20,8 +20,18 @@ import gc
+ import inspect
+ import logging
+ import os
++from abc import ABC, abstractmethod
+ from contextlib import contextmanager
+-from typing import TYPE_CHECKING, Callable, Optional, Union
++from typing import (
++    TYPE_CHECKING,
++    Any,
++    Callable,
++    ContextManager,
++    Generator,
++    Optional,
++    Tuple,
++    Union,
++)
+ 
+ import torch
+ import tqdm
+@@ -229,8 +239,36 @@ def set_global_graph_memory_pool(val):
+     global_graph_memory_pool = val
+ 
+ 
+-class CudaGraphRunner:
+-    """A CudaGraphRunner runs the forward pass of a model with cuda graph and torch.compile."""
++class DeviceRunnerBase(ABC):
++    """
++    Abstract base class for hardware-specific graph runners, providing unified interfaces
++    for AI accelerator device operations. This class abstracts common execution workflows
++    and enforces implementation of critical device management methods in derived classes.
++
++    Key Responsibilities:
++    1. Device lifecycle management: Initialization, warm-up, and resource teardown
++    2. Batch processing: Data preparation and execution flow control
++    3. Execution mode switching: Support for both graph compilation and eager execution
++    4. State validation: Runtime capability checks and fallback mechanisms
++
++    Required Abstract Methods:
++    - initialize(): Configure hardware-specific environment and allocate resources
++    - prepare_forward_batch(batch: Any) -> Any: Preprocess input data for device execution
++    - warm_up(): Pre-execution calibration for performance stabilization
++    - can_run_graph() -> bool: can use graph to accelerate the forward pass(eg: cuda: CudaGraph, npu: GraphEngine)
++    - get_runner_context(): Get runner context func for device-specific execution
++    - get_spec_info() -> Any: Get some info for speculative decoding
++
++    Example subclassing:
++    class CustomDeviceRunner(DeviceRunnerBase):
++        def __init__(self, device_config: Dict):
++            super().__init__()
++            # Hardware-specific initialization
++
++        # Implement all abstract methods with device-specific logic
++
++    Note: Concrete subclasses must be instantiated with valid hardware context.
++    """
+ 
+     def __init__(self, model_runner: ModelRunner):
+         # Parse args
+@@ -257,7 +295,9 @@ class CudaGraphRunner:
+ 
+         # Batch sizes to capture
+         self.capture_bs, self.compile_bs = get_batch_sizes_to_capture(model_runner)
+-        rank0_log(f"Capture cuda graph bs {self.capture_bs}")
++        rank0_log(
++            f"Device: {model_runner.device}, capture bs {self.capture_bs}, compile bs {self.compile_bs}"
++        )
+         self.capture_forward_mode = ForwardMode.DECODE
+         self.capture_hidden_mode = CaptureHiddenMode.NULL
+         self.num_tokens_per_bs = 1
+@@ -297,7 +337,7 @@ class CudaGraphRunner:
+             self.model_runner.lora_manager.init_cuda_graph_batch_info(self.max_bs)
+ 
+         # Graph inputs
+-        with torch.device("cuda"):
++        with torch.device(model_runner.device):
+             self.input_ids = torch.zeros((self.max_num_token,), dtype=torch.int64)
+             self.req_pool_indices = torch.zeros((self.max_bs,), dtype=torch.int32)
+             self.seq_lens = torch.full(
+@@ -373,14 +413,162 @@ class CudaGraphRunner:
+                     * self.num_tokens_per_bs
+                 ),
+                 dtype=torch.bool,
+-                device="cuda",
++                device=self.model_runner.device,
+             )
+             self.next_token_logits_buffer = torch.zeros(
+                 (self.max_num_token, self.model_runner.model_config.vocab_size),
+                 dtype=torch.float,
+-                device="cuda",
++                device=self.model_runner.device,
++            )
++        if self.model_runner.device != "npu":
++            # Capture
++            try:
++                with model_capture_mode():
++                    self.capture()
++            except RuntimeError as e:
++                raise Exception(
++                    f"Capture cuda graph failed: {e}\n{CUDA_GRAPH_CAPTURE_FAILED_MSG}"
++                )
++
++    def prepare_forward_batch(self, bs: int, num_tokens: int) -> ForwardBatch:
++        # Graph inputs
++        input_ids = self.input_ids[:num_tokens]
++        req_pool_indices = self.req_pool_indices[:bs]
++        seq_lens = self.seq_lens[:bs]
++        out_cache_loc = self.out_cache_loc[:num_tokens]
++        positions = self.positions[:num_tokens]
++        if self.is_encoder_decoder:
++            encoder_lens = self.encoder_lens[:bs]
++        else:
++            encoder_lens = None
++        mrope_positions = self.mrope_positions[:, :bs]
++        self.num_token_non_padded[...] = num_tokens
++
++        # pipeline parallelism
++        if self.pp_size > 1:
++            pp_proxy_tensors = PPProxyTensors(
++                {k: v[:num_tokens] for k, v in self.pp_proxy_tensors.items()}
              )
  
-     def prepare_mlp_sync_batch(self, model_runner: ModelRunner):
++        if self.require_mlp_tp_gather:
++            self.global_num_tokens_gpu.copy_(
++                torch.tensor(
++                    [
++                        num_tokens // self.dp_size + (i < (num_tokens % self.dp_size))
++                        for i in range(self.dp_size)
++                    ],
++                    dtype=torch.int32,
++                    device=input_ids.device,
++                )
++            )
++            global_num_tokens = self.global_num_tokens_gpu
++            gathered_buffer = self.gathered_buffer[:num_tokens]
++        elif self.require_attn_tp_gather:
++            self.global_num_tokens_gpu.copy_(
++                torch.tensor(
++                    [num_tokens],
++                    dtype=torch.int32,
++                    device=input_ids.device,
++                )
++            )
++            global_num_tokens = self.global_num_tokens_gpu
++            gathered_buffer = self.gathered_buffer[:num_tokens]
++        else:
++            global_num_tokens = None
++            gathered_buffer = None
++
++        spec_info = self.get_spec_info(num_tokens)
++        if self.capture_hidden_mode != CaptureHiddenMode.FULL:
++            self.capture_hidden_mode = (
++                spec_info.capture_hidden_mode if spec_info else CaptureHiddenMode.NULL
++            )
++
++        if self.model_runner.server_args.enable_lora:
++            # It is safe to capture CUDA graph using empty LoRA path, as the LoRA kernels will always be launched whenever
++            # `--enable-lora` is set to True (and return immediately if the LoRA path is empty for perf optimization).
++            lora_ids = [None] * bs
++        else:
++            lora_ids = None
++
++        forward_batch = ForwardBatch(
++            forward_mode=self.capture_forward_mode,
++            batch_size=bs,
++            input_ids=input_ids,
++            req_pool_indices=req_pool_indices,
++            seq_lens=seq_lens,
++            req_to_token_pool=self.model_runner.req_to_token_pool,
++            token_to_kv_pool=self.model_runner.token_to_kv_pool,
++            attn_backend=self.model_runner.attn_backend,
++            out_cache_loc=out_cache_loc,
++            seq_lens_sum=seq_lens.sum().item(),
++            encoder_lens=encoder_lens,
++            return_logprob=False,
++            positions=positions,
++            global_num_tokens_gpu=global_num_tokens,
++            gathered_buffer=gathered_buffer,
++            mrope_positions=mrope_positions,
++            spec_algorithm=self.model_runner.spec_algorithm,
++            spec_info=spec_info,
++            capture_hidden_mode=self.capture_hidden_mode,
++            num_token_non_padded=self.num_token_non_padded,
++            global_forward_mode=self.capture_forward_mode,
++            lora_ids=lora_ids,
++        )
++        return forward_batch
++
++    @abstractmethod
++    def warm_up(self):
++        raise NotImplementedError
++
++    @abstractmethod
++    def can_run_graph(self, forward_batch: ForwardBatch):
++        raise NotImplementedError
++
++    @contextmanager
++    def get_runner_context(
++        self, forward_batch: "ForwardBatch"
++    ) -> ContextManager[
++        Callable[..., Union["LogitsProcessorOutput", "PPProxyTensors"]]
++    ]:
++        raise NotImplementedError()
++
++    def get_spec_info(self, num_tokens: int):
++        spec_info = None
++        if self.model_runner.spec_algorithm.is_eagle():
++            from sglang.srt.speculative.eagle_utils import EagleVerifyInput
++
++            if self.model_runner.is_draft_worker:
++                raise RuntimeError("This should not happen.")
++            else:
++                spec_info = EagleVerifyInput(
++                    draft_token=None,
++                    custom_mask=self.custom_mask,
++                    positions=None,
++                    retrive_index=None,
++                    retrive_next_token=None,
++                    retrive_next_sibling=None,
++                    retrive_cum_len=None,
++                    spec_steps=self.model_runner.server_args.speculative_num_steps,
++                    topk=self.model_runner.server_args.speculative_eagle_topk,
++                    draft_token_num=self.model_runner.server_args.speculative_num_draft_tokens,
++                    capture_hidden_mode=CaptureHiddenMode.FULL,
++                    seq_lens_sum=None,
++                    seq_lens_cpu=None,
++                )
++
++        return spec_info
++
++
++class CudaGraphRunner(DeviceRunnerBase):
++    """A CudaGraphRunner runs the forward pass of a model with cuda graph and torch.compile."""
++
++    def __init__(self, model_runner: ModelRunner):
++        super().__init__(model_runner=model_runner)
++        self.warm_up()
++
++    def warm_up(self):
++        if self.enable_torch_compile:
++            set_torch_compile_config()
+         # Capture
+         try:
+             with model_capture_mode():
+@@ -390,7 +578,7 @@ class CudaGraphRunner:
+                 f"Capture cuda graph failed: {e}\n{CUDA_GRAPH_CAPTURE_FAILED_MSG}"
+             )
+ 
+-    def can_run(self, forward_batch: ForwardBatch):
++    def can_run_graph(self, forward_batch: ForwardBatch):
+         if self.require_mlp_tp_gather:
+             cuda_graph_bs = (
+                 max(forward_batch.global_num_tokens_cpu) // self.num_tokens_per_bs
+@@ -436,7 +624,8 @@ class CudaGraphRunner:
+         )
+ 
+         return (
+-            is_bs_supported
++            forward_batch.forward_mode.is_cuda_graph()
++            and is_bs_supported
+             and is_encoder_lens_supported
+             and is_tbo_supported
+             and capture_hidden_mode_matches
+@@ -804,31 +993,18 @@ class CudaGraphRunner:
+             assert isinstance(output, PPProxyTensors)
+             return PPProxyTensors({k: v[: self.bs] for k, v in output.tensors.items()})
+ 
+-    def get_spec_info(self, num_tokens: int):
+-        spec_info = None
+-        if self.model_runner.spec_algorithm.is_eagle():
+-            from sglang.srt.speculative.eagle_utils import EagleVerifyInput
 -
+-            if self.model_runner.is_draft_worker:
+-                raise RuntimeError("This should not happen.")
+-            else:
+-                spec_info = EagleVerifyInput(
+-                    draft_token=None,
+-                    custom_mask=self.custom_mask,
+-                    positions=None,
+-                    retrive_index=None,
+-                    retrive_next_token=None,
+-                    retrive_next_sibling=None,
+-                    retrive_cum_len=None,
+-                    spec_steps=self.model_runner.server_args.speculative_num_steps,
+-                    topk=self.model_runner.server_args.speculative_eagle_topk,
+-                    draft_token_num=self.model_runner.server_args.speculative_num_draft_tokens,
+-                    capture_hidden_mode=CaptureHiddenMode.FULL,
+-                    seq_lens_sum=None,
+-                    seq_lens_cpu=None,
+-                )
+-
+-        return spec_info
++    @contextmanager
++    def get_runner_context(
++        self, forward_batch: ForwardBatch, skip_attn_backend_init: bool
++    ) -> Generator[
++        Callable[[PPProxyTensors | None], LogitsProcessorOutput | PPProxyTensors],
++        Any,
++        None,
++    ]:
++        def runner_fn(pp_proxy_tensors: Optional[PPProxyTensors]):
++            return self.replay(forward_batch, skip_attn_backend_init, pp_proxy_tensors)
++
++        yield runner_fn
+ 
+ 
+ CUDA_GRAPH_CAPTURE_FAILED_MSG = (
+diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
+index e5793a26..8559184a 100644
+--- a/python/sglang/srt/model_executor/forward_batch_info.py
++++ b/python/sglang/srt/model_executor/forward_batch_info.py
+@@ -29,6 +29,7 @@ ScheduleBatch -> ModelWorkerBatch -> ForwardBatch
+ 
+ from __future__ import annotations
+ 
++import bisect
+ from dataclasses import dataclass
+ from enum import IntEnum, auto
+ from functools import total_ordering
+@@ -275,6 +276,7 @@ class ForwardBatch:
+     global_num_tokens_for_logprob_gpu: Optional[torch.Tensor] = None
+     # The padding mode for DP attention
+     dp_padding_mode: Optional[DPPaddingMode] = None
++    dp_padding_max_len: bool = True
+     # for extend, local start pos and num tokens is different in logits processor
+     # this will be computed in get_dp_local_info
+     # this will be recomputed in LogitsMetadata.from_forward_batch
+@@ -302,6 +304,16 @@ class ForwardBatch:
+     tbo_parent_token_range: Optional[Tuple[int, int]] = None
+     tbo_children: Optional[List[ForwardBatch]] = None
+ 
++    # can run this batch in graph mode?
++    can_run_graph: bool = False
++
++    is_extend: bool = False
++    is_decode_or_idle: bool = False
++    is_target_verify: bool = False
++    is_draft_extend: bool = False
++    is_extend_or_draft_extend: bool = False
++    is_prefill_idle: bool = False
++
+     @classmethod
+     def init_new(
+         cls,
+@@ -610,8 +622,15 @@ class ForwardBatch:
+                 dim=0,
+             )
+ 
+-    def prepare_mlp_sync_batch(self, model_runner: ModelRunner):
++    def prepare_batch_forward_mode(self):
++        self.is_extend = self.forward_mode.is_extend()
++        self.is_decode_or_idle = self.forward_mode.is_decode_or_idle()
++        self.is_target_verify = self.forward_mode.is_target_verify()
++        self.is_draft_extend = self.forward_mode.is_draft_extend()
++        self.is_extend_or_draft_extend = (self.forward_mode == ForwardMode.EXTEND  or self.forward_mode == ForwardMode.DRAFT_EXTEND)
++        self.is_prefill_idle = (self.forward_mode.is_idle() and self.is_extend_in_batch)
+ 
++    def prepare_mlp_sync_batch(self, model_runner: ModelRunner):
          from sglang.srt.speculative.eagle_utils import EagleDraftInput
  
          assert self.global_num_tokens_cpu is not None
+@@ -630,13 +649,22 @@ class ForwardBatch:
+ 
+         dp_padding_mode = DPPaddingMode.get_dp_padding_mode(global_num_tokens)
+         self.dp_padding_mode = dp_padding_mode
+-
++        self.dp_padding_max_len = dp_padding_mode.is_max_len()
+         if dp_padding_mode.is_max_len():
+             # when DP gather mode is all gather, we will use
+             # all_gather_into_tensor to gather hidden states, where transferred
+             # tokens should be padded to the same length. We will also use
+             # reduce-scatter instead of all-reduce after MLP.
+             max_num_tokens = max(global_num_tokens)
++            can_run_graph = bool(
++                model_runner.device_graph_runner
++                and model_runner.device_graph_runner.can_run_graph(self)
++            )
++            if can_run_graph and _is_npu:
++                # padding to compile bs gear
++                compile_bs = model_runner.device_graph_runner.compile_bs
++                index = bisect.bisect_left(compile_bs, max_num_tokens)
++                max_num_tokens = compile_bs[index]
+             global_num_tokens = [max_num_tokens] * sync_group_size
+             buffer_len = max_num_tokens * sync_group_size
+         else:
+@@ -658,6 +686,8 @@ class ForwardBatch:
+             self.batch_size = num_tokens
+ 
+         bs = self.batch_size
++        if self.forward_mode.is_idle() and not self.is_prefill_idle:
++            bs = num_tokens
+ 
+         # padding
+         self.input_ids = self._pad_tensor_to_size(self.input_ids, num_tokens)
+@@ -685,6 +715,8 @@ class ForwardBatch:
+         self.global_num_tokens_gpu = self.global_num_tokens_gpu.new_tensor(
+             global_num_tokens
+         )
++        self.global_num_tokens_for_logprob_cpu = global_num_tokens.copy()
++        self.global_num_tokens_for_logprob_gpu = self.global_num_tokens_gpu.clone()
+ 
+         if self.mrope_positions is not None:
+             self.mrope_positions = self._pad_tensor_to_size(self.mrope_positions, bs)
 diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
-index 923482d72..79e3de599 100644
+index 923482d7..a6aae6bc 100644
 --- a/python/sglang/srt/model_executor/model_runner.py
 +++ b/python/sglang/srt/model_executor/model_runner.py
-@@ -440,6 +440,7 @@ class ModelRunner:
+@@ -92,6 +92,7 @@ from sglang.srt.mem_cache.memory_pool import (
+ )
+ from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
++from omni.adaptors.sglang.model_executor.npu_graph_runner import NpuGraphRunner
+ from sglang.srt.model_loader import get_model
+ from sglang.srt.model_loader.loader import DefaultModelLoader, get_model_loader
+ from sglang.srt.model_loader.utils import set_default_torch_dtype
+@@ -167,6 +168,7 @@ class ModelRunner:
+         is_draft_worker: bool = False,
+         req_to_token_pool: Optional[ReqToTokenPool] = None,
+         token_to_kv_pool_allocator: Optional[BaseTokenToKVPoolAllocator] = None,
++        enable_overlap: bool = False,
+     ):
+         # Parse args
+         self.mem_fraction_static = mem_fraction_static
+@@ -203,6 +205,7 @@ class ModelRunner:
+         self.attention_chunk_size = model_config.attention_chunk_size
+ 
+         self.forward_pass_id = 0
++        self.device_graph_runner = None
+ 
+         # Model-specific adjustment
+         self.model_specific_adjustment()
+@@ -238,6 +241,10 @@ class ModelRunner:
+         if deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM:
+             deep_gemm_wrapper.update_deep_gemm_config(gpu_id, server_args)
+ 
++        # Create forward stream for overlap and use it for npu graph warmup
++        self.forward_stream = torch.get_device_module(self.device).Stream() \
++            if enable_overlap else torch.get_device_module(self.device).current_stream()
++
+         # If it is a draft model, tp_group can be different
+         self.initialize(min_per_gpu_memory)
+ 
+@@ -333,14 +340,15 @@ class ModelRunner:
+             server_args.max_running_requests,
+             server_args.max_total_tokens,
+         )
++
++        self.graph_mem_usage = 0
++        self.init_attention_backend()
+         if self.device == "cuda":
+-            self.init_cublas()
+-            self.init_attention_backend()
+             self.init_cuda_graphs()
++        elif self.device == "npu":
++            self.init_npu_graphs()
+         else:
+-            self.cuda_graph_runner = None
+-            self.cuda_graph_mem_usage = 0
+-            self.init_attention_backend()
++            pass
+ 
+         # auxiliary hidden capture mode. TODO: expose this to server args?
+         if self.spec_algorithm.is_eagle3() and not self.is_draft_worker:
+@@ -440,6 +448,7 @@ class ModelRunner:
                      "fa3",
                      "triton",
                      "flashmla",
@@ -460,7 +1349,7 @@ index 923482d72..79e3de599 100644
                      "cutlass_mla",
                      "trtllm_mla",
                      "ascend",
-@@ -639,6 +640,8 @@ class ModelRunner:
+@@ -639,6 +648,8 @@ class ModelRunner:
          monkey_patch_vllm_parallel_state()
          monkey_patch_isinstance_for_vllm_base_layer()
  
@@ -469,7 +1358,23 @@ index 923482d72..79e3de599 100644
          with self.memory_saver_adapter.region(GPU_MEMORY_TYPE_WEIGHTS):
              self.model = get_model(
                  model_config=self.model_config,
-@@ -1400,6 +1403,10 @@ class ModelRunner:
+@@ -1305,15 +1316,6 @@ class ModelRunner:
+             f"avail mem={get_available_gpu_memory(self.device, self.gpu_id):.2f} GB"
+         )
+ 
+-    def init_cublas(self):
+-        """We need to run a small matmul to init cublas. Otherwise, it will raise some errors later."""
+-        dtype = torch.float16
+-        device = "cuda"
+-        a = torch.ones((16, 16), dtype=dtype, device=device)
+-        b = torch.ones((16, 16), dtype=dtype, device=device)
+-        c = a @ b
+-        return c
+-
+     def init_attention_backend(self):
+         """Init attention kernel backend."""
+         if self.server_args.enable_two_batch_overlap and not self.is_draft_worker:
+@@ -1400,6 +1402,10 @@ class ModelRunner:
              from sglang.srt.layers.attention.ascend_backend import AscendAttnBackend
  
              return AscendAttnBackend(self)
@@ -480,8 +1385,132 @@ index 923482d72..79e3de599 100644
          elif backend_str == "triton":
              assert not self.model_config.is_encoder_decoder, (
                  "Cross attention is not supported in the triton attention backend. "
+@@ -1495,8 +1501,17 @@ class ModelRunner:
+ 
+     def init_cuda_graphs(self):
+         """Capture cuda graphs."""
+-        self.cuda_graph_runner = None
+-        self.cuda_graph_mem_usage = 0
++
++        def init_cublas():
++            """We need to run a small matmul to init cublas. Otherwise, it will raise some errors later."""
++            dtype = torch.float16
++            device = "cuda"
++            a = torch.ones((16, 16), dtype=dtype, device=device)
++            b = torch.ones((16, 16), dtype=dtype, device=device)
++            c = a @ b
++            return c
++
++        init_cublas()
+ 
+         if not self.is_generation:
+             # TODO: Currently, cuda graph only captures decode steps, which only exists for generation models
+@@ -1510,12 +1525,12 @@ class ModelRunner:
+         logger.info(
+             f"Capture cuda graph begin. This can take up to several minutes. avail mem={before_mem:.2f} GB"
+         )
+-        self.cuda_graph_runner = CudaGraphRunner(self)
++        self.device_graph_runner = CudaGraphRunner(self)
+         after_mem = get_available_gpu_memory(self.device, self.gpu_id)
+-        self.cuda_graph_mem_usage = before_mem - after_mem
++        self.graph_mem_usage = before_mem - after_mem
+         logger.info(
+             f"Capture cuda graph end. Time elapsed: {time.perf_counter() - tic:.2f} s. "
+-            f"mem usage={self.cuda_graph_mem_usage:.2f} GB. avail mem={after_mem:.2f} GB."
++            f"mem usage={self.graph_mem_usage:.2f} GB. avail mem={after_mem:.2f} GB."
+         )
+ 
+     def init_threads_binding(self):
+@@ -1542,6 +1557,29 @@ class ModelRunner:
+         else:
+             self.local_omp_cpuid = omp_cpuids.split("|")[self.tp_rank]
+ 
++    def init_npu_graphs(self):
++        """Enable torch.compile and graph engine with Npu."""
++        if not self.is_generation:
++            # TODO: Currently, npu graph only captures decode steps, which only exists for generation models
++            return
++
++        if not self.server_args.enable_torch_compile:
++            return
++
++        tic = time.perf_counter()
++        before_mem = get_available_gpu_memory(self.device, self.gpu_id)
++        logger.info(
++            f"Compile graph with npu begin. This can take up to several minutes. avail mem={before_mem:.2f} GB"
++        )
++        with torch.get_device_module(self.device).stream(self.forward_stream):
++            self.device_graph_runner = NpuGraphRunner(self)
++        after_mem = get_available_gpu_memory(self.device, self.gpu_id)
++        self.graph_mem_usage = before_mem - after_mem
++        logger.info(
++            f"Compile graph end. Time elapsed: {time.perf_counter() - tic:.2f} s. "
++            f"mem usage={self.graph_mem_usage:.2f} GB. avail mem={after_mem:.2f} GB."
++        )
++
+     def apply_torch_tp(self):
+         logger.info(f"Enabling torch tensor parallelism on {self.tp_size} devices.")
+         from sglang.srt.model_parallel import tensor_parallel
+@@ -1660,24 +1698,34 @@ class ModelRunner:
+         reinit_attn_backend: bool = False,
+         split_forward_count: int = 1,
+     ) -> Tuple[Union[LogitsProcessorOutput, PPProxyTensors], bool]:
+-        can_run_cuda_graph = bool(
+-            forward_batch.forward_mode.is_cuda_graph()
+-            and self.cuda_graph_runner
+-            and self.cuda_graph_runner.can_run(forward_batch)
++        forward_batch.prepare_batch_forward_mode()
++        if _is_npu:
++            if forward_batch.global_num_tokens_cpu is not None:
++                forward_batch.prepare_mlp_sync_batch(self)
++
++        can_run_graph = bool(
++            self.device_graph_runner
++            and self.device_graph_runner.can_run_graph(forward_batch)
+         )
+-        if can_run_cuda_graph:
+-            ret = self.cuda_graph_runner.replay(
+-                forward_batch,
+-                skip_attn_backend_init=skip_attn_backend_init,
+-                pp_proxy_tensors=pp_proxy_tensors,
+-            )
+-            return ret, can_run_cuda_graph
++        forward_batch.can_run_graph = can_run_graph
++        if can_run_graph:
++            with self.device_graph_runner.get_runner_context(
++                forward_batch, skip_attn_backend_init
++            ) as runner_fn:
++                ret = runner_fn(
++                    pp_proxy_tensors,
++                )
++
++            if _is_npu and forward_batch.global_num_tokens_cpu is not None:
++                forward_batch.post_forward_mlp_sync_batch(ret)
++            return ret, can_run_graph
+ 
+         # For MLP sync
+-        if forward_batch.global_num_tokens_cpu is not None:
+-            forward_batch.prepare_mlp_sync_batch(self)
++        if not _is_npu:
++            if forward_batch.global_num_tokens_cpu is not None:
++                forward_batch.prepare_mlp_sync_batch(self)
+ 
+-        if forward_batch.forward_mode.is_decode():
++        if forward_batch.forward_mode.is_decode_or_idle() and not forward_batch.is_prefill_idle:
+             ret = self.forward_decode(
+                 forward_batch,
+                 skip_attn_backend_init=skip_attn_backend_init,
+@@ -1703,7 +1751,7 @@ class ModelRunner:
+         if forward_batch.global_num_tokens_cpu is not None:
+             forward_batch.post_forward_mlp_sync_batch(ret)
+ 
+-        return ret, can_run_cuda_graph
++        return ret, can_run_graph
+ 
+     def _preprocess_logits(
+         self, logits_output: LogitsProcessorOutput, sampling_info: SamplingBatchInfo
 diff --git a/python/sglang/srt/model_loader/weight_utils.py b/python/sglang/srt/model_loader/weight_utils.py
-index a326e3f10..6f7d2b348 100644
+index a326e3f1..6f7d2b34 100644
 --- a/python/sglang/srt/model_loader/weight_utils.py
 +++ b/python/sglang/srt/model_loader/weight_utils.py
 @@ -37,7 +37,7 @@ from sglang.srt.configs.model_config import ModelConfig
@@ -504,7 +1533,7 @@ index a326e3f10..6f7d2b348 100644
      except Exception:
          # NOTE: This exception is added for the purpose of setting breakpoint to
 diff --git a/python/sglang/srt/models/registry.py b/python/sglang/srt/models/registry.py
-index f81d3c76e..e5c50528c 100644
+index f81d3c76..12c1dd2c 100644
 --- a/python/sglang/srt/models/registry.py
 +++ b/python/sglang/srt/models/registry.py
 @@ -104,4 +104,7 @@ def import_model_classes():
@@ -513,11 +1542,11 @@ index f81d3c76e..e5c50528c 100644
  
 -ModelRegistry = _ModelRegistry(import_model_classes())
 +tmp_ = _ModelRegistry(import_model_classes())
-+module = importlib.import_module("omni.adaptors.sglang.models.deepseek_v2")
++module = importlib.import_module("omni.adaptors.sglang.models.deepseek_v3")
 +tmp_.models["DeepseekV3ForCausalLM"] = module.EntryClass
 +ModelRegistry = tmp_
 diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
-index 7bfd443bf..aa9fd9943 100644
+index 7bfd443b..f2d2c26e 100644
 --- a/python/sglang/srt/server_args.py
 +++ b/python/sglang/srt/server_args.py
 @@ -409,7 +409,7 @@ class ServerArgs:
@@ -537,7 +1566,23 @@ index 7bfd443bf..aa9fd9943 100644
                  "intel_amx",
                  "torch_native",
                  "ascend",
-@@ -1910,7 +1911,7 @@ class ServerArgs:
+@@ -1374,6 +1375,7 @@ class ServerArgs:
+                 "fa3",
+                 "flashmla",
+                 "cutlass_mla",
++                "npumla",
+             ],
+             default=ServerArgs.decode_attention_backend,
+             help="Choose the kernels for decode attention layers (have priority over --attention-backend).",
+@@ -1389,6 +1391,7 @@ class ServerArgs:
+                 "fa3",
+                 "flashmla",
+                 "cutlass_mla",
++                "npumla",
+             ],
+             default=ServerArgs.prefill_attention_backend,
+             help="Choose the kernels for prefill attention layers (have priority over --attention-backend).",
+@@ -1910,7 +1913,7 @@ class ServerArgs:
              "--disaggregation-transfer-backend",
              type=str,
              default=ServerArgs.disaggregation_transfer_backend,
@@ -547,7 +1592,7 @@ index 7bfd443bf..aa9fd9943 100644
          )
          parser.add_argument(
 diff --git a/python/sglang/srt/utils.py b/python/sglang/srt/utils.py
-index edf441945..1f4134e33 100644
+index edf44194..5d631cc7 100644
 --- a/python/sglang/srt/utils.py
 +++ b/python/sglang/srt/utils.py
 @@ -203,7 +203,7 @@ def get_int_env_var(name: str, default: int = 0) -> int:
@@ -559,7 +1604,28 @@ index edf441945..1f4134e33 100644
  
  
  try:
-@@ -1677,12 +1677,15 @@ def get_compiler_backend() -> str:
+@@ -1660,13 +1660,16 @@ def get_device_capability(device_id: int = 0) -> Tuple[int, int]:
+     return major, minor
+ 
+ 
+-def get_npu_compiler_config():
+-    config = {
++npu_compile_config = {
++    "experimental_config": {
+         "frozen_parameter": True,
+         "tiling_schedule_optimize": True,
+         "topology_sorting_strategy": "StableRDFS",
+-    }
+-    return config
++    },
++    "inference_config": {"dynamic_gears_merge_policy": "zip"},
++    "mode": os.environ.get("SGLANG_TORCH_COMPILE_MODE", "max-autotune"),
++}
++npu_backend = None
+ 
+ 
+ def get_compiler_backend() -> str:
+@@ -1677,16 +1680,36 @@ def get_compiler_backend() -> str:
          try:
              import torchair
              import torchair.ge_concrete_graph.ge_converter.experimental.patch_for_hcom_allreduce
@@ -573,9 +1639,30 @@ index edf441945..1f4134e33 100644
                  "Please install torchair for torch.compile support on NPU."
 -            )
 +            ) from e
++        global npu_backend
++        if npu_backend is not None:
++            logger.info("npu_backend is already registered, return it.")
++            return npu_backend
          compiler_config = CompilerConfig()
-         predefined_config = get_npu_compiler_config()
-         for k, v in predefined_config.items():
--- 
-2.28.0.windows.1
-
+-        predefined_config = get_npu_compiler_config()
+-        for k, v in predefined_config.items():
+-            setattr(compiler_config.experimental_config, k, v)
++        for config_group, config_value in npu_compile_config.items():
++            config_obj = getattr(compiler_config, config_group, None)
++            if config_obj is None:
++                raise ValueError(
++                    f"Invalid config group for torch.compile with npu: {config_group}"
++                )
++
++            if isinstance(config_value, dict):
++                for key, value in config_value.items():
++                    setattr(config_obj, key, value)
++            elif isinstance(config_value, (set, str, bool, int)):
++                setattr(config_obj, config_group, config_value)
++            else:
++                raise TypeError(
++                    f"Unsupported config type for {config_group}: {type(config_value)}"
++                )
+ 
+         npu_backend = torchair.get_npu_backend(compiler_config=compiler_config)
+         return npu_backend

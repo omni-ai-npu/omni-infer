@@ -129,6 +129,7 @@ class Placement {
         return std::unique_lock<std::mutex>(mtx_);
     }
     Distribution *get_distribution() const { return dist_ptr_; }
+    void init_recv_buf() { dist_ptr_->allocate_recv_buffs(moe_weight_->get_expert_size()); }
     void placement_handle_instrucions(
         std::vector<ChangeInstruction> changeInstructions_this_rank);
     void placement_handle_one_batch(

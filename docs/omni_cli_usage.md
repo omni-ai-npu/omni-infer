@@ -14,10 +14,10 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
 1. 添加节点
 
    ```bash
-   omni_cli add_node --role C --name c0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
-   omni_cli add_node --role P --name p0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
-   omni_cli add_node --role D --name d0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
-   omni_cli add_node --role D --name d1 --host_ip 本机IP --master-node 主D节点 --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像
+   omni_cli add_node --role C --name c0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像 --model_name deepseek
+   omni_cli add_node --role P --name p0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像 --model_name deepseek
+   omni_cli add_node --role D --name d0 --host_ip 本机IP --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像 --model_name deepseek
+   omni_cli add_node --role D --name d1 --host_ip 本机IP --master-node 主D节点 --ssh_private_key_file 本机SSH_KEY文件 --docker_image_id 镜像 --model_name deepseek
    ```
 
 2. 修改配置
@@ -78,13 +78,13 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    效果展示：
 
    ```
-   Role  | Name  | IP Address
-   ------------------------------
-   C     | c0    | 127.0.0.1
-   D     | d0    | 127.0.0.2
-   D     | d1    | 127.0.0.3
-   P     | p0    | 127.0.0.1
-   ------------------------------
+   Role  | Name  | IP Address    | ascend_rt_visible_devices
+   ---------------------------------------------------------
+   C     | c0    | 127.0.0.1     | N/A
+   D     | d0    | 127.0.0.2     | 0,1,2,3,4,5,6,7
+   D     | d1    | 127.0.0.3     | 8,9,10,11,12,13,14,15
+   P     | p0    | 127.0.0.1     | 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+   ---------------------------------------------------------
 
    ```
 2. omni_cli add_node
@@ -110,12 +110,17 @@ omni_cli 会在命令执行路径创建配置文件，并依赖该配置文件�
    > --ssh_common_args：SSH通用参数，默认为"-o StrictHostKeyChecking=no -o IdentitiesOnly=yes"
    >
    >  --master-node：主节点名称，默认为当前添加的节点自己，用于多机组服务。主节点无需设置，从节点需要配置主节点，例如，d0.
+   >   
+   > --ascend_rt_visible_devices：实例需要用到的卡号, 默认为"0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+   > 
+   > --model_name：部署模型的名称, 默认指定为"deepseek", 每个模型有一套默认的环境变量与参数配置
 
    使用示例：
 
    ```bash
    omni_cli add_node --role P --name p0 --host_ip 127.0.0.1 \
-   --ssh_private_key_file /path/to/my/key --docker_image_id myapp:latest
+   --ssh_private_key_file /path/to/my/key --docker_image_id myapp:latest \
+   --ascend_rt_visible_devices 0,1,2,3 --model_name deepseek
    ```
 
 3. omni_cli rm_node

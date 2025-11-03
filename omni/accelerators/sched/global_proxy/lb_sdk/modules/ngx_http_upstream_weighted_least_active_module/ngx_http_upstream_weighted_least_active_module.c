@@ -22,6 +22,7 @@ typedef struct {
     ngx_uint_t chosen;
     int first_chunk;
     ngx_atomic_t decode_token_count;
+    ngx_uint_t last_total_tokens;
 } ngx_http_weighted_least_active_peer_data_t;
 
 typedef struct {
@@ -167,10 +168,21 @@ static ngx_int_t
 ngx_http_weighted_least_active_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
     ngx_chain_t *cl;
-    ngx_uint_t num_tokens = 0;
-    ngx_uint_t prompt_tokens = 0;
-    ngx_uint_t output_tokens = 0;
+    ngx_uint_t total_tokens = 0;
     ngx_http_weighted_least_active_peer_data_t *pdata;
+
+    ngx_http_weighted_least_active_conf_t *conf;
+    conf = ngx_http_conf_upstream_srv_conf(
+        r->upstream->upstream,
+        ngx_http_upstream_weighted_least_active_module);
+    if (conf->enable == 0) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+            "[WeightedLeastActive-Filter] WLA is not enable and thus skip body filter");
+        return ngx_http_next_body_filter(r, in);
+    } else {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+            "[WeightedLeastActive-Filter] WLA is enable and thus need body filter");
+    }
 
     if (r->upstream == NULL || r->upstream->peer.data == NULL) {
         return ngx_http_next_body_filter(r, in);
@@ -185,14 +197,12 @@ ngx_http_weighted_least_active_body_filter(ngx_http_request_t *r, ngx_chain_t *i
             u_char *p = cl->buf->pos;
             u_char *last = cl->buf->last;
 
-            static char key_output[] = "\"output_num_token\":";
-            static char key_prompt[] = "\"prompt_num_token\":";
-            size_t keylen_output = sizeof(key_output) - 1;
-            size_t keylen_prompt = sizeof(key_prompt) - 1;
+            static char key_total[] = "\"total_tokens\":";
+            size_t keylen_total = sizeof(key_total) - 1;
 
-            u_char *found = ngx_strnstr(p, key_output, last - p);
+            u_char *found = ngx_strnstr(p, key_total, last - p);
             if (found) {
-                u_char *num_start = found + keylen_output;
+                u_char *num_start = found + keylen_total;
                 while (num_start < last && (*num_start == ' ' || *num_start == '\"')) {
                     num_start++;
                 }
@@ -201,41 +211,37 @@ ngx_http_weighted_least_active_body_filter(ngx_http_request_t *r, ngx_chain_t *i
                     val = val * 10 + (*num_start - '0');
                     num_start++;
                 }
-                output_tokens = val;
-            }
-
-            if (!pdata->first_chunk) {
-                found = ngx_strnstr(p, key_prompt, last - p);
-                if (found) {
-                    u_char *num_start = found + keylen_prompt;
-                    while (num_start < last && (*num_start == ' ' || *num_start == '\"')) {
-                        num_start++;
-                    }
-                    ngx_uint_t val = 0;
-                    while (num_start < last && *num_start >= '0' && *num_start <= '9') {
-                        val = val * 10 + (*num_start - '0');
-                        num_start++;
-                    }
-                    prompt_tokens = val;
+                total_tokens = val;
+            } else {
+                if (pdata->first_chunk) {
+                    total_tokens = pdata->decode_token_count + 1;
+                } else {
+                    total_tokens = pdata->last_total_tokens + 1;
                 }
             }
         }
     }
 
-    int is_first = (pdata->first_chunk == 0);
-
-    if (is_first) {
-        num_tokens = prompt_tokens + output_tokens;
-        pdata->first_chunk = 1;
-    } else {
-        num_tokens = output_tokens;
+    if (pdata->first_chunk) {
+        pdata->first_chunk = 0;
+        ngx_atomic_fetch_add(&wla_shm->peers[pdata->chosen].total_decode_num,
+                (ngx_atomic_int_t)-pdata->decode_token_count);
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, 
+            "[WeightedLeastActive-Filter-First] first chunk, peer #%ui, request_decode_token_count %ui, peer_total_decode_token %ui,", pdata->chosen, pdata->decode_token_count, wla_shm->peers[pdata->chosen].total_decode_num);
+        pdata->decode_token_count = 0;
     }
 
-    if (num_tokens > 0) {
+    ngx_uint_t added_tokens = 0;
+    if (total_tokens > pdata->last_total_tokens) {
+        added_tokens = total_tokens - pdata->last_total_tokens;
+    }
+    pdata->last_total_tokens = total_tokens;
+
+    if (added_tokens > 0) {
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-            "[WeightedLeastActive-Filter] chunk tokens: %ui (prompt=%ui, output=%ui, first=%d)",
-            num_tokens, prompt_tokens, output_tokens, is_first);
-        ngx_http_weighted_least_active_add_decoded_tokens(r, num_tokens);
+            "[WeightedLeastActive-Filter] added_tokens: %ui, total_tokens: %ui",
+            added_tokens, total_tokens);
+        ngx_http_weighted_least_active_add_decoded_tokens(r, added_tokens);
     }
 
     return ngx_http_next_body_filter(r, in);
@@ -344,13 +350,16 @@ ngx_http_weighted_least_active_upstream_init(ngx_http_request_t *r,
     }
 
     ngx_atomic_fetch_add(&wla_shm->peers[chosen].active_requests, 1);
+    ngx_atomic_fetch_add(&wla_shm->peers[chosen].total_decode_num, (ngx_atomic_t)r->request_length / 4);
 
     ngx_shmtx_unlock(&shpool->mutex);
 
     pdata = ngx_pcalloc(r->pool, sizeof(*pdata));
     pdata->rrp = rrp;
     pdata->chosen = chosen;
-    pdata->decode_token_count = 0;
+    pdata->decode_token_count = (ngx_atomic_t)r->request_length / 4;
+    pdata->first_chunk = 1;
+    pdata->last_total_tokens = 0;
     u->peer.data = pdata;
     u->peer.get = ngx_http_weighted_least_active_get_peer;
     u->peer.free = ngx_http_weighted_least_active_free_peer;

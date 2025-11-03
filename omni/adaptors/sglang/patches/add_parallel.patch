@@ -1,0 +1,33 @@
+diff --git a/python/sglang/srt/distributed/parallel_state.py b/python/sglang/srt/distributed/parallel_state.py
+index 71fe73686..a64840a66 100644
+--- a/python/sglang/srt/distributed/parallel_state.py
++++ b/python/sglang/srt/distributed/parallel_state.py
+@@ -1288,6 +1288,7 @@ def initialize_model_parallel(
+     pipeline_model_parallel_size: int = 1,
+     backend: Optional[str] = None,
+     duplicate_tp_group: bool = False,
++    dp_size: int = 1,
+ ) -> None:
+     """
+     Initialize model parallel groups.
+@@ -1362,6 +1363,8 @@ def initialize_model_parallel(
+         _TP.pynccl_comm.disabled = False
+         _PDMUX_PREFILL_TP_GROUP.pynccl_comm.disabled = False
+ 
++    initialize_add_groups(backend, tensor_model_parallel_size, dp_size)
++
+     moe_ep_size = expert_model_parallel_size
+ 
+     moe_tp_size = tensor_model_parallel_size // moe_ep_size
+diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
+index a857c11f6..65ac2eba9 100644
+--- a/python/sglang/srt/model_executor/model_runner.py
++++ b/python/sglang/srt/model_executor/model_runner.py
+@@ -570,6 +570,7 @@ class ModelRunner:
+                 pipeline_model_parallel_size=self.pp_size,
+                 expert_model_parallel_size=self.moe_ep_size,
+                 duplicate_tp_group=self.server_args.enable_pdmux,
++                dp_size=self.server_args.dp_size,
+             )
+             initialize_dp_attention(
+                 enable_dp_attention=self.server_args.enable_dp_attention,

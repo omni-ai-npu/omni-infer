@@ -71,6 +71,9 @@ from omni.layers.attention.backend.mla import group_request_list
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64
 
+if model_extra_config.operator_opt_config.unquant_bmm_nz:
+    # if use weight nz, this config must be True
+    torch.npu.config.allow_internal_format = True
 
 class ParallelPanguUltraMoEMLP(nn.Module):
 

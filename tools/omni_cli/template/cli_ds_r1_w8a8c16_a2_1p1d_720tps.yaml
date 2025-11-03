@@ -44,7 +44,7 @@ all:
               engine_id: 1
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: $((PREFILL_POD_NUM + 1))
+              kv_parallel_size: 1
               kv_rank: $KV_RANK
               kv_role: kv_consumer
             log-dir: $LOG_PATH
@@ -164,7 +164,7 @@ all:
               engine_id: 1
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: $((PREFILL_POD_NUM + 1))
+              kv_parallel_size: 1
               kv_rank: $KV_RANK
               kv_role: kv_consumer
             log-dir: $LOG_PATH
@@ -284,7 +284,7 @@ all:
               engine_id: 1
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: $((PREFILL_POD_NUM + 1))
+              kv_parallel_size: 1
               kv_rank: $KV_RANK
               kv_role: kv_consumer
             log-dir: $LOG_PATH
@@ -404,7 +404,7 @@ all:
               engine_id: 1
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: $((PREFILL_POD_NUM + 1))
+              kv_parallel_size: 1
               kv_rank: $KV_RANK
               kv_role: kv_consumer
             log-dir: $LOG_PATH
@@ -524,7 +524,7 @@ all:
               engine_id: 0
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: $((PREFILL_POD_NUM + 1))
+              kv_parallel_size: 1
               kv_rank: $KV_RANK
               kv_role: kv_producer
             log-dir: $LOG_PATH
@@ -643,7 +643,7 @@ all:
               engine_id: 0
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: $((PREFILL_POD_NUM + 1))
+              kv_parallel_size: 1
               kv_rank: $KV_RANK
               kv_role: kv_producer
             log-dir: $LOG_PATH

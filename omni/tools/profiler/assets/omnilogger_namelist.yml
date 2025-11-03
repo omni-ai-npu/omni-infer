@@ -63,6 +63,16 @@ targets:
       request_id = args[1][0]
       safe_print(trace_output_directory, f"<<<Action: Finish pull kv; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
 
+  - module: "vllm.v1.serial_utils:MsgpackDecoder"
+    function_name: decode
+    exit_operation: |
+      import os, time
+      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from vllm.v1.engine import EngineCoreOutputs
+      if isinstance(result, EngineCoreOutputs) and os.getenv('ROLE') == "prefill":
+          for request in getattr(result, 'outputs', []):
+              safe_print(trace_output_directory, f"<<<Action: Client get prefill output; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+
   - module: "vllm.v1.engine.core_client:AsyncMPClient"
     function_name: get_output_async
     exit_operation: |
@@ -71,6 +81,7 @@ targets:
       from vllm.v1.engine import EngineCoreOutputs
       if isinstance(result, EngineCoreOutputs) and os.getenv('ROLE') == "prefill":
           for request in getattr(result, 'outputs', []):
+              safe_print(trace_output_directory, f"<<<Action: Pop output queues; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
               safe_print(trace_output_directory, f"<<<Action: Finish prefill pickle and start response; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
 
   - module: "vllm.v1.core.kv_cache_manager:KVCacheManager"
@@ -85,6 +96,8 @@ targets:
               safe_print(trace_output_directory, f"<<<Action: Prefill get new_blocks; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
           elif result and load_kv_async: #delay_cache_blocks is True
               safe_print(trace_output_directory, f"<<<Action: Add need pulling sequence; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+      if result is None and os.getenv('ROLE') == "prefill":
+          safe_print(trace_output_directory, f"<<<Action: fail to add result of kv insufficient; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
 
   - module: "vllm.v1.core.sched.scheduler:Scheduler"
     function_name: schedule
@@ -231,4 +244,3 @@ targets:
       local_rank = getattr(self, 'local_rank', -1)  
       with trace_file.open("a") as f:
           f.write(f"time={time.time()} tag=Worker pid={os.getpid()} local_rank={local_rank}\n")
-

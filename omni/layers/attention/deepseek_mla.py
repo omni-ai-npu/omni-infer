@@ -338,12 +338,16 @@ class DeepseekMLA(nn.Module):
                 q = self.q_a_layernorm(q)
                 q = self.q_b_proj(q)[0].view(-1, self.num_local_heads, self.qk_head_dim)
             else:
-                q = self.q_a_proj(hidden_states)[0]
                 latent_cache = self.kv_a_proj_with_mqa(hidden_states)[0]
-                # q = tensor_model_parallel_all_gather(q, dim=0)
+                q_stream = torch.npu.Stream()
+                q_stream.wait_stream(torch.npu.current_stream())
                 latent_cache = mla_tensor_model_parallel_all_gather(latent_cache, dim=0, comm_group=comm_group)
-
-                q = self.q_a_layernorm(q)
+                with torch.npu.stream(q_stream):
+                    q = self.q_a_proj(hidden_states)[0]
+                    # q = tensor_model_parallel_all_gather(q, dim=0)
+                    q = self.q_a_layernorm(q)
+                torch.npu.current_stream().wait_stream(q_stream)
+                q_stream.wait_stream(torch.npu.current_stream())
                 if self.quant_symbol:
                     q_quant, q_scale = torch_npu.npu_dynamic_quant(q)
                     # Quantizing before all_gather can reduce communication overhead.

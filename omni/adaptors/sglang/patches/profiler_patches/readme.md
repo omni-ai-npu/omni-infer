@@ -21,48 +21,23 @@ Set the corresponding environment variable to a YAML config file:
 Export the path to the namelist configuration:
 
 ```bash
-export PROFILING_NAMELIST={project_root}/omni_infer/omni/adaptors/vllm/patches/profiler_patches/assets/omnilogger_namelist.yml
+export PROFILING_NAMELIST={project_root}/omniinfer/omni/adaptors/sglang/patches/profiler_patches/assets/omnilogger_namelist.yml
+export OMNILOGGER_ARGS="$TARCE_LOG_PATH,P{{ kv_rank }},01"
 ```
-
-By default, logs are saved to `/tmp/trace_output_directory`.
-To change this location, set the `TRACE_OUTPUT_DIRECTORY` environment variable:
-
-```bash
-export TRACE_OUTPUT_DIRECTORY=/your/custom/path
-```
-You can collect logs from multiple nodes by specifying them in a `server_list.txt` file, then running the provided script.
-
-`server_list.txt`
-
-```
-10.11.123.1
-10.11.123.2
-10.11.123.3
-10.11.123.4
-```
-
- `collect_logs.sh`
-
-```bash
-#!/bin/bash
-
-# Usage: ./collect_logs.sh server_list.txt /tmp/trace_output_directory your_log_directory
-
-SERVER_LIST="$1"
-REMOTE_FOLDER="$2"
-TARGET_FOLDER="$3"
-
-mkdir $TARGET_FOLDER
-
-while read -r IP; do
-    echo "Collecting logs from $IP..."
-    scp -i key.pem -r "root@$IP:$REMOTE_FOLDER" "./logs_$IP"
-    mv "./logs_$IP" $TARGET_FOLDER
-done < "$SERVER_LIST"
-```
-
+`/dev/shm` is a special directory in the Linux system, which is essentially a memory-based file system (usually of the tmpfs type). In many cases, writing data to `/dev/shm` is indeed faster than writing to a regular disk partition.
+It is recommended to configure `TARCE_LOG_PATH` under `/dev/shm`. 
 Once logs are collected, parse them using:
 
-```bash
-python parse_logs.py your_log_directory
+Add the following code at the end of {project_root}/omniinfer/infer_engines/sglang/python/sglang/srt/managers/scheduler.py 
+```python
+import os
+if os.getenv("PROFILING_NAMELIST", None):
+  print("Profiler patch environmental variable is enable, applying profiler patches.")
+  from omni.adaptors.sglang.patches.profiler_patches import apply_profiler_patches
 ```
+
+```bash
+python omni_logger_print_parse_for_sglang.py trace_log "2025-09-08 15:47:49.185"
+```
+"2025-09-08 15:47:49.185" is the ramp-up time. If this time is not available, it can be set to "2025-01-01 00:00:00.000".
+The trace_log collects the directories of trace json files from various machines. The json files should be placed directly in the trace_log directory and not in any subdirectories. 

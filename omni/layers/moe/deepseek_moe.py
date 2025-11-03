@@ -321,7 +321,6 @@ class DeepseekMoE(nn.Module):
                 return self._forward_decode_norm(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
 
     def _forward_prefill_norm(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata) -> torch.Tensor:
-        shared_output = self.shared_experts(hidden_states)
 
         if not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             hidden_states_int8, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
@@ -337,6 +336,10 @@ class DeepseekMoE(nn.Module):
                                                                     self.experts.scoring_func, self.experts.e_score_correction_bias, self.routed_scaling_factor,
                                                                     layer=self.experts  # ENABLE_OMNI_PLANNER
                                                                     )
+        shared_stream = torch.npu.Stream()
+        shared_stream.wait_stream(torch.npu.current_stream())
+        with torch.npu.stream(shared_stream):
+            shared_output = self.shared_experts(hidden_states)        
         topk_ids = self.experts.apply_expert_load_balance(topk_ids=topk_ids)
 
         if self.experts_pruning:
@@ -371,6 +374,9 @@ class DeepseekMoE(nn.Module):
 
         if not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             final_hidden_states = reduce_scatter_two_stage(final_hidden_states, idx=0)
+
+        torch.npu.current_stream().wait_stream(shared_stream)
+        shared_stream.wait_stream(torch.npu.current_stream())
 
         if model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             final_hidden_states = torch_npu.npu_moe_finalize_routing(

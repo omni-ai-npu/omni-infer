@@ -93,11 +93,15 @@ class GraphCompileConfiguration:
 
 def mark_static_for_graph_default(
         input_ids,
+        inputs_embeds: Optional[torch.Tensor] = None,
         positions: Optional[torch.Tensor] = None,
         kv_caches: Optional[List[torch.Tensor]] = None,
         hidden_states: Optional[torch.Tensor] = None
     ):
-    torch._dynamo.mark_static(input_ids)
+    if input_ids is not None:
+        torch._dynamo.mark_static(input_ids)
+    if inputs_embeds is not None:
+        torch._dynamo.mark_static(inputs_embeds)
     if positions is not None:
         torch._dynamo.mark_static(positions)
 
@@ -485,6 +489,9 @@ class NPUModelRunner(GPUModelRunner):
                 inputs_embeds = self.model.get_input_embeddings(input_ids, mm_embeds)
             else:
                 inputs_embeds = self.model.get_input_embeddings(input_ids)
+                
+            self.inputs_embeds[:num_input_tokens].copy_(inputs_embeds)
+            inputs_embeds = self.inputs_embeds[:num_input_tokens]
 
             if graph_pad_size >= 0:
                 if attn_state == AscendAttentionState.DecodeOnly:
@@ -494,9 +501,7 @@ class NPUModelRunner(GPUModelRunner):
                     padding_embeds = torch.randint(1, vocab_size, (graph_pad_size, inputs_embeds.size(-1)), dtype=input_ids.dtype, device=input_ids.device)
 
                 inputs_embeds = torch.cat([inputs_embeds, padding_embeds])
-    
-            self.inputs_embeds[:num_input_tokens + graph_pad_size].copy_(inputs_embeds)
-            inputs_embeds = self.inputs_embeds[:num_input_tokens + graph_pad_size]
+            
             input_ids = None
         else:
             if graph_pad_size >= 0:
@@ -534,7 +539,7 @@ class NPUModelRunner(GPUModelRunner):
                     if isinstance(self.model, GraphCompileConfiguration):
                         self.model.mark_static_for_graph(input_ids, positions, attn_metadata, self.kv_caches)
                     else:
-                        mark_static_for_graph_default(input_ids, positions, self.kv_caches)
+                        mark_static_for_graph_default(input_ids, inputs_embeds, positions, self.kv_caches)
                     self.model_mark_static = True
                 start_os_env = time.time()
                 start_time = time.time()
@@ -876,9 +881,17 @@ class NPUModelRunner(GPUModelRunner):
         if self.enable_torchair_graph_mode and len(self.decode_gear_list) > 1:
             self.max_batch_size = self._get_max_token_num(
                 self.vllm_config.parallel_config.data_parallel_size > 1, num_tokens)
-        fake_input = torch.zeros(self.max_batch_size, dtype=input_ids.dtype, device=input_ids.device)
-        fake_positions = torch.zeros(self.max_batch_size, dtype=input_ids.dtype, device=input_ids.device)
-        input_ids, positions = fake_input, fake_positions
+        if self.is_multimodal_model:
+            fake_input = torch.zeros((self.max_batch_size, inputs_embeds.shape[1]), dtype=inputs_embeds.dtype, device=inputs_embeds.device)
+            if self.uses_mrope:
+                fake_positions = torch.zeros((self.mrope_positions.shape[0], self.max_batch_size), dtype=torch.int64, device=self.device)
+            else:
+                fake_positions = torch.zeros(self.max_batch_size, dtype=torch.int64, device=self.device)
+            inputs_embeds, positions = fake_input, fake_positions
+        else:
+            fake_input = torch.zeros(self.max_batch_size, dtype=input_ids.dtype, device=input_ids.device)
+            fake_positions = torch.zeros(self.max_batch_size, dtype=input_ids.dtype, device=input_ids.device)
+            input_ids, positions = fake_input, fake_positions
         self.attn_state = AscendAttentionState.DecodeOnly
 
         # Build dummy attn_metadata
@@ -933,7 +946,7 @@ class NPUModelRunner(GPUModelRunner):
                     if isinstance(self.model, GraphCompileConfiguration):
                         self.model.mark_static_for_graph(input_ids, positions, attn_metadata, self.kv_caches)
                     else:
-                        mark_static_for_graph_default(input_ids, positions, self.kv_caches)
+                        mark_static_for_graph_default(input_ids, inputs_embeds, positions, self.kv_caches)
                     self.dummy_model_mark_static = True
             else:
                 logger.debug("Start running dummy eager model.")
@@ -941,7 +954,7 @@ class NPUModelRunner(GPUModelRunner):
                 input_ids=input_ids,
                 positions=positions,
                 intermediate_tensors=intermediate_tensors,
-                inputs_embeds=None if use_compile else inputs_embeds,
+                inputs_embeds=inputs_embeds,
                 **model_kwargs
             )
             if isinstance(forward_results, tuple):

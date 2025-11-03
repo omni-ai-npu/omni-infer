@@ -10,21 +10,21 @@ from . import omni_placement
 from .config import Config
 
 class ExpertMapping:
-    def __init__(self, config: Config, device: str = "npu", rank: int = 0, world_size: int = 1, num_devices_per_host: int = 8, enable_dynamic: bool = False, num_experts: int = 256, enable_rank_round_robin: bool = False):
+    def __init__(self, config: Config, device: str = "npu", rank: int = 0, world_size: int = 1, num_devices_per_host: int = 8, enable_dynamic: bool = False, num_experts: int = 256, enable_rank_round_robin: bool = False, max_redundant_per_expert: int = None, max_redundant_per_rank: int = None, max_moe_layer_num: int = None):
         self.pattern_path = config.getattr("pattern_path", None)
         self.device = device
         self.rank = rank
         self.world_size = world_size 
         self.num_devices_per_host = num_devices_per_host
-        self.max_moe_layer_num = config.max_moe_layer_num
+        self.max_moe_layer_num = max_moe_layer_num
         self.num_experts = num_experts
         self.enable_rank_round_robin = enable_rank_round_robin
 
         self.placement_pattern = self._load_placement_pattern_with_validation()
 
         self.enable_dynamic = enable_dynamic
-        self.max_redundant_per_expert = config.getattr('max_redundant_per_expert', None) if self.enable_dynamic else None
-        self.max_redundant_per_rank = config.getattr('max_redundant_per_rank', None) if self.enable_dynamic else None
+        self.max_redundant_per_expert = max_redundant_per_expert
+        self.max_redundant_per_rank = max_redundant_per_rank
 
         self._init_expert_mapping()
         self.local_expert_offsets = self._calc_expert_offset_each_layer()
@@ -45,6 +45,7 @@ class ExpertMapping:
         self.num_redundant_per_expert = torch.zeros(num_layers, num_eps, dtype=torch.int32, device=self.device)
 
         self.placement_pattern_cpu = self.placement_pattern.cpu()
+        self.epid_position_init = torch.cumsum(self.placement_pattern_cpu, dim=2) - 1
         self.placement_mapping = omni_placement.PlacementMapping("",  # TODO: pattern path, parse pattern in native C++
                                                                 self.rank,
                                                                 self.num_devices_per_host,
@@ -110,8 +111,7 @@ class ExpertMapping:
         self,
         layer_idx_moe: int,
         expert_id: int,
-        current_rank: int,
-        experts_per_rank: int
+        current_rank: int
     ) -> Tuple[bool, int]:
         """
         Check if expert is deployed on current rank and get its position.
@@ -120,18 +120,16 @@ class ExpertMapping:
             layer_idx_moe: ID of the MoE layer
             expert_id: Expert ID within the layer
             current_rank: Target device rank to check
-            experts_per_rank: Experts per device in default deployment
 
         Returns:
             Tuple (exists_on_rank, local_position)
         """
         if not self.is_moe_layer(layer_idx_moe):
-            return self._default_deployment_check(expert_id, current_rank, experts_per_rank)
+            return self._default_deployment_check(expert_id, current_rank, self.get_total_num_expert()//self.world_size)
 
 
-        layer_mapping = self.placement_pattern[current_rank, layer_idx_moe]
-        exists = layer_mapping[expert_id] > 0.5
-        position = int(torch.sum(layer_mapping[:expert_id]).item())
+        exists = self.placement_pattern_cpu[current_rank, layer_idx_moe, expert_id].bool()
+        position = self.epid_position_init[current_rank, layer_idx_moe, expert_id]
         return exists, position
 
     def _default_deployment_check(

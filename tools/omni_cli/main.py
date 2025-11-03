@@ -1038,8 +1038,8 @@ def print_node_list(inventory_path: str) -> None:
 
     children = inv.get("all", {}).get("children", {})
 
-    print(f"{'Role':<5} | {'Name':<5} | {'IP Address':<15}")
-    print("-" * 30)
+    print(f"{'Role':<5} | {'Name':<5} | {'IP Address':<15} | {'ascend_rt_visible_devices':<30}")
+    print("-" * 60)
 
     for role, role_data in children.items():
         if role not in ["C", "D", "P"]:
@@ -1049,10 +1049,11 @@ def print_node_list(inventory_path: str) -> None:
 
         for host_name, host_data in hosts.items():
             ip_address = host_data.get("ansible_host", "N/A")
+            ascend_rt_visible_devices = host_data.get("ascend_rt_visible_devices", "N/A")
 
-            print(f"{role:<5} | {host_name:<5} | {ip_address:<15}")
+            print(f"{role:<5} | {host_name:<5} | {ip_address:<15} | {ascend_rt_visible_devices:<30}")
 
-    print("-" * 30)
+    print("-" * 60)
 
 def run_docker_containers(
     inventory_path,
@@ -1284,6 +1285,8 @@ def main():
                                 default=None,
                                 help="The default value is set to current node name.")
     addnode_parser.add_argument("--docker_image_id", required=True, help="docker_image_id")
+    addnode_parser.add_argument("--ascend_rt_visible_devices", default="0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15", help="ascend devices")
+    addnode_parser.add_argument("--model_name", default="deepseek", help="model name")
     addnode_parser.set_defaults(func=add_node)
 
     # RM_NODE command configuration

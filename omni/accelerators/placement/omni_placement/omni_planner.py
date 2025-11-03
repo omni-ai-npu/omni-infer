@@ -55,7 +55,8 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
     """
     def __init__(self, config_file: str = "/etc/omni/config.yaml", device: str = "npu",
                  rank: int = None, world_size: int = None, num_devices_per_host: int = 16,
-                 num_experts = 256, num_redundancy_shared_expert_rank=0):
+                 num_experts = 256, num_redundancy_shared_expert_rank=0, max_redundant_per_expert: int = None,
+                 max_redundant_per_rank: int = None, first_k_dense_replace: int = 0, num_layers: int = None):
         """Initialize OmniPlanner with configuration and distributed settings.
 
         Args:
@@ -68,9 +69,14 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         # Load configuration
         self.config = Config(config_file)
         self.device = torch.device(device)
-        self.max_moe_layer_num = self.config.getattr("max_moe_layer_num",None)
-        if self.max_moe_layer_num is None:
-            print(f"[Placement-Error]-max_moe_layer_num is not defined in config.yaml")
+        self.first_k_dense_replace = first_k_dense_replace
+        
+        try:
+            self.max_moe_layer_num = self.config.getattr("max_moe_layer_num", None)
+            if self.max_moe_layer_num is None:
+                self.max_moe_layer_num = num_layers - self.first_k_dense_replace
+        except:
+            print(f"[Placement-Error]-max_moe_layer_num is not defined in config.yaml and num_layers or first_k_dense_replace are not defined in the init func params, which is {num_layers} & {self.first_k_dense_replace}")
             exit(1)
 
         # Initialize distributed settings with fallback
@@ -82,9 +88,13 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         if self.enable_rank_round_robin is None:
             print(f"[Placement-Error]-enable_rank_round_robin is not defined in config.yaml")
             exit(1)
+        
+        self.max_redundant_per_rank = self.config.getattr('max_redundant_per_rank', max_redundant_per_rank) if self.enable_dynamic else None
+        max_redundant_per_expert = self.config.getattr('max_redundant_per_expert', max_redundant_per_expert) if self.enable_dynamic else None
 
         # Load and validate placement pattern
-        self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.world_size, self.num_devices_per_host, self.enable_dynamic, num_experts, self.enable_rank_round_robin)
+        self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.world_size, self.num_devices_per_host, self.enable_dynamic, num_experts, self.enable_rank_round_robin, max_redundant_per_expert,
+                                            max_redundant_per_rank, self.max_moe_layer_num)
         if (self.expert_mapping.get_world_size() != self.world_size):
             print(f"[Placement-Error]-Pattern world_size is {self.expert_mapping.get_world_size()} should be {self.world_size}.")
             exit(1)
@@ -117,7 +127,15 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
 
         # redundant_enable_per_layer, True is redundant layer, False is Origin Layer
         self.redundant_enable_per_layer = self.expert_mapping.get_redundant_enable_per_layer()
-        print("OmniPlanner successfully initialized.")
+        
+        print(self,flush=True)
+    
+    def __str__(self):
+        exclude_keys = ["config", "expert_mapping", "cluster_status", "npu_activation_count", "placement_manager", "selector",
+                        "max_activation_count","num_redundant_per_expert", "redundant_enable_per_layer", "cluster_activation"]
+        title = "************** Omni-Placement Info ************** \n \t"
+        attr_value = "\n \t".join("{}: {}".format(k, getattr(self,k)) for k in self.__dict__.keys() if k not in exclude_keys)
+        return title+attr_value+"\n"+title
 
     @classmethod
     def cleanup(cls):
@@ -210,7 +228,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         layer_id: int,
         expert_id: int,
         current_rank: int,
-        experts_per_rank: int
+        experts_per_rank: int = None
     ) -> Tuple[bool, int]:
         """
         Check if expert is deployed on current rank and get its position.
@@ -224,7 +242,21 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         Returns:
             Tuple (exists_on_rank, local_position)
         """
-        return self.expert_mapping.is_expert_on_current_rank(layer_id, expert_id, current_rank, experts_per_rank)
+        return self.expert_mapping.is_expert_on_current_rank(layer_id, expert_id, current_rank)
+    
+    def logical_to_all_physical(
+        self,
+        layer_id,
+        expert_id
+    ):
+        """
+        is_expert_on_current_rank func adapter for SGLang FrameWork
+        """
+        exists, local_position = self.is_expert_on_current_rank(layer_id - self.first_k_dense_replace, expert_id, self.rank)
+        if not exists:
+            return []
+        else:
+            return [local_position + self.rank * self.get_max_num_deployed_expert_per_rank()]
 
     def expert_mapping_on_current_layer(
         self,
@@ -343,6 +375,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         if self.enable_dynamic and not self.is_redundant_share_expert_rank():
             moe_weights = self.placement_manager.get_moe_weights()
             init_dram_weights(moe_weights, param_dict, first_k_dense_replace,init_shm=False)
+            self.placement_manager.init_recv_buf()
     
     def is_redundant_share_expert_rank(self):
         return self.rank>=self.world_size
@@ -354,6 +387,9 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             else:
                 with tng.scope.npu_stream_switch('21'):
                     self.npu_activation_count[layer_idx_moe:layer_idx_moe + 1] = (self.npu_activation_count[layer_idx_moe:layer_idx_moe + 1]+expert_token_num[None]) % self.max_activation_count
+
+    def get_moe_layer_idx(self, layer_idx):
+        return layer_idx - self.first_k_dense_replace
 
 # Example usage
 if __name__ == "__main__":

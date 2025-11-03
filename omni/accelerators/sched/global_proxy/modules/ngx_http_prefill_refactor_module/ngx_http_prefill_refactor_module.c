@@ -6,6 +6,67 @@
 #include <ngx_http.h>
 #include <time.h>
 
+#include <ngx_atomic.h>
+#include <stdlib.h>
+
+#define MAX_DECODE_SERVERS 512
+
+typedef struct {
+    ngx_atomic_t active_requests;
+    ngx_atomic_t total_decode_num;
+} ngx_http_weighted_least_active_shm_peer_t;
+
+typedef struct {
+    ngx_uint_t peer_count;
+    ngx_http_weighted_least_active_shm_peer_t peers[MAX_DECODE_SERVERS];
+} ngx_http_weighted_least_active_shm_block_t;
+
+static ngx_shm_zone_t *ngx_http_weighted_least_active_shm_zone = NULL;
+static ngx_uint_t ngx_http_weighted_least_active_shm_size = 0;
+static ngx_http_weighted_least_active_shm_block_t *wla_shm = NULL;
+
+static ngx_int_t
+ngx_http_weighted_least_active_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
+{
+    ngx_http_weighted_least_active_shm_block_t *shm_block;
+    ngx_uint_t i;
+
+    ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
+                  "prefill_refactor: initializing shared memory zone, addr: %p, size: %uz",
+                  shm_zone->shm.addr, shm_zone->shm.size);
+
+    if (shm_zone->data) {
+        wla_shm = shm_zone->data;
+        ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
+                      "prefill_refactor: shared memory already initialized");
+        return NGX_OK;
+    }
+
+    shm_block = (ngx_http_weighted_least_active_shm_block_t *)shm_zone->shm.addr;
+
+    if (shm_zone->shm.size < sizeof(ngx_http_weighted_least_active_shm_block_t)) {
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
+                      "prefill_refactor: shared memory too small: %uz < %uz",
+                      shm_zone->shm.size, sizeof(ngx_http_weighted_least_active_shm_block_t));
+        return NGX_ERROR;
+    }
+
+    shm_block->peer_count = MAX_DECODE_SERVERS;
+    for (i = 0; i < MAX_DECODE_SERVERS; i++) {
+        shm_block->peers[i].active_requests = 0;
+        shm_block->peers[i].total_decode_num = 0;
+    }
+    
+    shm_zone->data = shm_block;
+    wla_shm = shm_block;
+
+    ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
+                  "prefill_refactor: shared memory initialized successfully, peer_count: %ui",
+                  shm_block->peer_count);
+    
+    return NGX_OK;
+}
+
 typedef enum {
     NGX_HTTP_PREFILL_REFACTOR_BACKEND_VLLM = 0,
     NGX_HTTP_PREFILL_REFACTOR_BACKEND_SGLANG = 1
@@ -139,6 +200,27 @@ ngx_module_t ngx_http_prefill_refactor_module = {
     NGX_MODULE_V1_PADDING
 };
 
+static ngx_int_t
+ngx_http_weighted_least_active_create_shm(ngx_conf_t *cf)
+{
+    ngx_str_t shm_name = ngx_string("prefill_refactor_decode_shm");
+    size_t shm_size;
+
+    shm_size = sizeof(ngx_http_weighted_least_active_shm_block_t);
+
+    ngx_http_weighted_least_active_shm_zone = ngx_shared_memory_add(cf, &shm_name, shm_size, 
+                                                                   &ngx_http_prefill_refactor_module);
+    if (ngx_http_weighted_least_active_shm_zone == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_http_weighted_least_active_shm_zone->init = ngx_http_weighted_least_active_init_shm_zone;
+    ngx_http_weighted_least_active_shm_zone->data = NULL;
+
+    return NGX_OK;
+}
+
+
 static ngx_http_variable_t ngx_http_prefill_refactor_variables[] = {
     {ngx_string("prefill_server"), NULL, ngx_http_prefill_refactor_prefill_server_variable, 
      0, NGX_HTTP_VAR_CHANGEABLE, 0},
@@ -207,6 +289,110 @@ static ngx_str_t ngx_http_prefill_refactor_extract_host(ngx_pool_t *pool, ngx_st
     return result;
 }
 
+static ngx_str_t 
+ngx_http_prefill_refactor_select_decode_server_lb(ngx_http_request_t *r, ngx_array_t *servers)
+{
+    ngx_str_t result = ngx_null_string;
+    ngx_str_t *server_list;
+    ngx_uint_t min_requests = NGX_MAX_UINT32_VALUE;
+    ngx_int_t selected_index = -1;
+    ngx_uint_t i;
+
+    if (servers == NULL || servers->nelts == 0 || wla_shm == NULL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "[Decode_LB_SDK]: no decode servers or shared memory not initialized");
+        return result;
+    }
+
+    server_list = (ngx_str_t *)servers->elts;
+    ngx_uint_t server_count = servers->nelts;
+
+    if (server_count > wla_shm->peer_count) {
+        server_count = wla_shm->peer_count;
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "[Decode_LB_SDK]: server count %ui exceeds shared memory limit %ui, truncating",
+                      servers->nelts, wla_shm->peer_count);
+    }
+
+    for (i = 0; i < server_count; i++) {
+        ngx_atomic_t active = ngx_atomic_fetch_add(&wla_shm->peers[i].active_requests, 0);
+        
+        if (active < min_requests) {
+            min_requests = active;
+            selected_index = i;
+        }
+    }
+
+    if (selected_index >= 0) {
+        ngx_atomic_fetch_add(&wla_shm->peers[selected_index].active_requests, 1);
+        ngx_atomic_fetch_add(&wla_shm->peers[selected_index].total_decode_num, 1);
+        
+        result = server_list[selected_index];
+        
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                      "[Decode_LB_SDK]: selected decode server %V (index %ui) with %ui active requests, total: %ui",
+                      &result, selected_index, min_requests, 
+                      ngx_atomic_fetch_add(&wla_shm->peers[selected_index].total_decode_num, 0));
+    } else {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "[Decode_LB_SDK]: failed to select decode server");
+    }
+
+    return result;
+}
+
+static void 
+ngx_http_prefill_refactor_decrease_decode_count(ngx_http_request_t *r, ngx_str_t *decode_server, ngx_array_t *servers)
+{
+    if (wla_shm == NULL || decode_server->len == 0 || servers == NULL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "[Decode_LB_SDK]: cannot decrease count - invalid parameters");
+        return;
+    }
+
+    ngx_str_t *server_list = (ngx_str_t *)servers->elts;
+    ngx_uint_t server_count = servers->nelts;
+
+    if (server_count > wla_shm->peer_count) {
+        server_count = wla_shm->peer_count;
+    }
+
+    for (ngx_uint_t i = 0; i < server_count; i++) {
+        if (server_list[i].len == decode_server->len &&
+            ngx_strncmp(server_list[i].data, decode_server->data, decode_server->len) == 0) {
+            
+            ngx_atomic_fetch_add(&wla_shm->peers[i].active_requests, -1);
+            
+            ngx_atomic_t current_count = ngx_atomic_fetch_add(&wla_shm->peers[i].active_requests, 0);
+            ngx_atomic_t total_count = ngx_atomic_fetch_add(&wla_shm->peers[i].total_decode_num, 0);
+            
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                          "[Decode_LB_SDK]: decreased active requests for %V (index %ui), now %ui, total: %ui",
+                          decode_server, i, current_count, total_count);
+            return;
+        }
+    }
+
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                  "[Decode_LB_SDK]: decode server %V not found in server list", decode_server);
+}
+
+static void 
+ngx_http_prefill_refactor_cleanup(void *data)
+{
+    ngx_http_request_t *r = data;
+    ngx_http_prefill_refactor_ctx_t *ctx;
+    ngx_http_prefill_refactor_loc_conf_t *conf;
+    
+    ctx = ngx_http_get_module_ctx(r, ngx_http_prefill_refactor_module);
+    if (ctx != NULL && ctx->selected_decode_server.len > 0) {
+        conf = ngx_http_get_module_loc_conf(r, ngx_http_prefill_refactor_module);
+        if (conf != NULL && conf->decode_servers != NULL) {
+            ngx_http_prefill_refactor_decrease_decode_count(r, &ctx->selected_decode_server, conf->decode_servers);
+        }
+    }
+}
+
 // Load balance and select servers/ports
 static ngx_int_t ngx_http_prefill_refactor_load_balance(ngx_http_request_t *r, 
                                                         ngx_http_prefill_refactor_ctx_t *ctx, 
@@ -232,7 +418,7 @@ static ngx_int_t ngx_http_prefill_refactor_load_balance(ngx_http_request_t *r,
     }
     
     // Select decode server
-    ctx->selected_decode_server = ngx_http_prefill_refactor_select_server_from_array(conf->decode_servers);
+    ctx->selected_decode_server = ngx_http_prefill_refactor_select_decode_server_lb(r, conf->decode_servers);
     if (ctx->selected_decode_server.len == 0) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "prefill_refactor: failed to select decode server");
         return NGX_ERROR;
@@ -651,6 +837,8 @@ static void ngx_http_prefill_refactor_request_handler(ngx_http_request_t *r) {
         ngx_http_core_run_phases(r);
     }
 
+    ngx_http_finalize_request(r, NGX_DONE)
+
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "prefill_refactor: subrequest created for URI: %V", &uri);
 }
 
@@ -678,6 +866,14 @@ static ngx_int_t ngx_http_prefill_refactor_handler(ngx_http_request_t *r) {
     }
 
     ngx_http_set_ctx(r, ctx, ngx_http_prefill_refactor_module);
+
+    // Add cleanup handler
+    ngx_pool_cleanup_t *cln = ngx_pool_cleanup_add(r->pool, 0);
+    if (cln == NULL) {
+        return NGX_ERROR;
+    }
+    cln->handler = ngx_http_prefill_refactor_cleanup;
+    cln->data = r;
 
     // Read client request body
     ngx_int_t rc = ngx_http_read_client_request_body(r, ngx_http_prefill_refactor_request_handler);
@@ -932,6 +1128,12 @@ static ngx_int_t ngx_http_prefill_refactor_init(ngx_conf_t *cf) {
     }
 
     *h = ngx_http_prefill_refactor_handler;
+
+    if (ngx_http_weighted_least_active_create_shm(cf) != NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0, 
+                      "prefill_refactor: failed to create shared memory for decode load balancing");
+        return NGX_ERROR;
+    }
 
     // Initialize random seed for load balancing
     srand((unsigned int)time(NULL));

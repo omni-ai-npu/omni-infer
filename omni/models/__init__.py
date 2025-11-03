@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-from omni.adaptors.vllm.patches import model_patch 
 from vllm import ModelRegistry
 import os
 from omni.models.common.config.model_config import model_extra_config

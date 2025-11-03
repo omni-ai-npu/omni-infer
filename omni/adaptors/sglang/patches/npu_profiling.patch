@@ -1,0 +1,127 @@
+diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
+index f1cc2c38..1be39d99 100644
+--- a/python/sglang/srt/model_executor/forward_batch_info.py
++++ b/python/sglang/srt/model_executor/forward_batch_info.py
+@@ -639,6 +639,7 @@ class ForwardBatch:
+         global_num_tokens = self.global_num_tokens_cpu
+         sync_group_size = len(global_num_tokens)
+         attn_tp_size = get_attention_tp_size()
++        self.max_tokens = max(self.global_num_tokens_cpu)
+ 
+         for i in range(sync_group_size):
+             # make sure that the padded length is divisible by attn_tp_size because we may need reduce-scatter across attn_tp dim.
+diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
+index 5038dbf1..21464636 100644
+--- a/python/sglang/srt/model_executor/model_runner.py
++++ b/python/sglang/srt/model_executor/model_runner.py
+@@ -24,6 +24,7 @@ from dataclasses import dataclass
+ from typing import List, Optional, Tuple, Union
+ 
+ import torch
++import torch_npu
+ import torch.distributed as dist
+ 
+ from sglang.srt.configs.device_config import DeviceConfig
+@@ -151,6 +152,38 @@ class RankZeroFilter(logging.Filter):
+ 
+ class ModelRunner:
+     """ModelRunner runs the forward passes of the models."""
++    profiling_init: bool = False
++    profile_save_dir: str = ""
++
++    def _init_profiler(self):
++        self.profile_already_start = True
++        self.profile_step = 0
++        self.profile_finished = True
++        self.profile_save_dir = os.environ.get('PROFILER_DIR', "")
++        if self.profile_save_dir != "":
++            self.profiler_bs_threshold = int(os.environ.get('PROFILER_BS_THRESHOLD',"24"))
++            self.profiler_stop_step = int(os.environ.get('PROFILER_STOP_STEP',"5"))
++            logger.info("Profiling enabled. Traces will be saved to: %s", self.profile_save_dir)
++
++            experimental_config = torch_npu.profiler._ExperimentalConfig(
++                aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
++                profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
++            )
++            self.profile_already_start = False
++            self.profile_finished = False
++            return torch_npu.profiler.profile(
++                activities=[
++                    torch_npu.profiler.ProfilerActivity.CPU,
++                    torch_npu.profiler.ProfilerActivity.NPU,
++                ],
++                with_stack=False,
++                profile_memory=False,
++                with_modules=False,
++                record_shapes=False,
++                experimental_config=experimental_config,
++                on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(self.profile_save_dir))
++        else:
++            return None
+ 
+     def __init__(
+         self,
+@@ -372,6 +405,9 @@ class ModelRunner:
+                 eagle_aux_hidden_state_layer_ids = None
+ 
+             self.model.set_eagle3_layers_to_capture(eagle_aux_hidden_state_layer_ids)
++        if not self.profiling_init:
++            self.profiler = self._init_profiler()
++            self.profiling_init = True
+ 
+     def model_specific_adjustment(self):
+         server_args = self.server_args
+@@ -1604,12 +1640,25 @@ class ModelRunner:
+         kwargs = {}
+         if self.support_pp:
+             kwargs["pp_proxy_tensors"] = pp_proxy_tensors
+-        return self.model.forward(
++        if self.profile_save_dir != "":
++            if not self.profile_already_start and forward_batch.max_tokens >= self.profiler_bs_threshold:
++                logger.info(f"*******start eager decode profiling . . .")
++                self.profiler.start()
++                self.profile_already_start = True
++                self.profile_step = 0
++        ret = self.model.forward(
+             forward_batch.input_ids,
+             forward_batch.positions,
+             forward_batch,
+             **kwargs,
+         )
++        if self.profile_save_dir != "":
++            if self.profile_already_start and not self.profile_finished:
++                self.profile_step += 1
++            if not self.profile_finished and self.profile_step > self.profiler_stop_step:
++                self.profiler.stop()
++                self.profile_finished = True
++        return ret
+ 
+     def forward_extend(
+         self,
+@@ -1627,12 +1676,25 @@ class ModelRunner:
+             kwargs["input_embeds"] = forward_batch.input_embeds.bfloat16()
+         if not self.is_generation:
+             kwargs["get_embedding"] = True
+-        return self.model.forward(
++        if self.profile_save_dir != "":
++            if not self.profile_already_start and forward_batch.max_tokens >= self.profiler_bs_threshold:
++                logger.info(f"*******start eager decode profiling . . .")
++                self.profiler.start()
++                self.profile_already_start = True
++                self.profile_step = 0
++        ret = self.model.forward(
+             forward_batch.input_ids,
+             forward_batch.positions,
+             forward_batch,
+             **kwargs,
+         )
++        if self.profile_save_dir != "":
++            if self.profile_already_start and not self.profile_finished:
++                self.profile_step += 1
++            if not self.profile_finished and self.profile_step > self.profiler_stop_step:
++                self.profiler.stop()
++                self.profile_finished = True
++        return ret
+ 
+     def forward_idle(
+         self, forward_batch: ForwardBatch, pp_proxy_tensors=None

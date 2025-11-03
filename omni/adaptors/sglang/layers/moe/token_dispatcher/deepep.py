@@ -13,10 +13,7 @@ from typing import (
     runtime_checkable,
 )
 
-from sglang.srt.distributed import (
-    get_tensor_model_parallel_rank,
-    get_tensor_model_parallel_world_size,
-)
+from sglang.srt.distributed import get_pp_group, get_world_group
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.layers.moe.token_dispatcher.base_dispatcher import (
     BaseDispatcher,
@@ -27,13 +24,7 @@ from sglang.srt.layers.moe.token_dispatcher.base_dispatcher import (
 from sglang.srt.layers.moe.utils import DeepEPMode
 from sglang.srt.layers.quantization import deep_gemm_wrapper
 from sglang.srt.managers.schedule_batch import global_server_args_dict
-from sglang.srt.utils import (
-    get_bool_env_var,
-    get_int_env_var,
-    is_hip,
-    is_npu,
-    load_json_config,
-)
+from sglang.srt.utils import get_bool_env_var, get_int_env_var, is_npu, load_json_config
 
 _is_npu = is_npu()
 
@@ -42,7 +33,6 @@ if _is_npu:
 
 try:
     from deep_ep import Buffer, Config
-
     from sglang.srt.layers.quantization.fp8_kernel import (
         sglang_per_token_group_quant_fp8,
     )
@@ -55,15 +45,12 @@ from enum import Enum, IntEnum, auto
 
 import torch
 import torch.distributed as dist
-
 from sglang.srt.layers.moe.ep_moe.kernels import (
     deepep_permute_triton_kernel,
     deepep_post_reorder_triton_kernel,
     deepep_run_moe_deep_preprocess,
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-
-_use_aiter = get_bool_env_var("SGLANG_USE_AITER") and is_hip()
 
 logger = logging.getLogger(__name__)
 
@@ -300,175 +287,6 @@ class _DeepEPDispatcherImplBase:
         raise NotImplementedError
 
 
-class _DeepEPDispatcherImplNormal(_DeepEPDispatcherImplBase):
-    def __init__(self, async_finish: bool, **kwargs):
-        super().__init__(**kwargs)
-
-        self.async_finish = async_finish
-        self.src2dst = None
-
-    def dispatch_a(
-        self,
-        hidden_states: torch.Tensor,
-        topk_idx: torch.Tensor,
-        topk_weights: torch.Tensor,
-    ):
-        topk_idx = topk_idx.to(torch.int64)
-        if deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM:
-            # TODO hard code 128 block quant,use fp8 communication
-            hidden_states = sglang_per_token_group_quant_fp8(
-                hidden_states,
-                128,
-                column_major_scales=deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0,
-                scale_tma_aligned=deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0,
-                scale_ue8m0=deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0,
-            )
-        previous_event = Buffer.capture() if self.async_finish else None
-        return hidden_states, topk_idx, topk_weights, previous_event
-
-    def dispatch_b(self, hidden_states, topk_idx, topk_weights, previous_event):
-        (
-            hidden_states,
-            topk_idx,
-            topk_weights,
-            num_recv_tokens_per_expert,
-            event,
-        ) = self._dispatch_core(hidden_states, topk_idx, topk_weights, previous_event)
-        event.current_stream_wait() if self.async_finish else ()
-        return DeepEPNormalOutput(
-            hidden_states, topk_idx, topk_weights, num_recv_tokens_per_expert
-        )
-
-    def _dispatch_core(
-        self,
-        x: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
-        topk_idx: torch.Tensor,
-        topk_weights: torch.Tensor,
-        previous_event,
-    ):
-        buffer = self._get_buffer()
-        (
-            num_tokens_per_rank,
-            num_tokens_per_rdma_rank,
-            num_tokens_per_expert,
-            is_token_in_rank,
-            previous_event,
-        ) = buffer.get_dispatch_layout(
-            topk_idx,
-            self.num_experts,
-            previous_event=previous_event,
-            async_finish=self.async_finish,
-            allocate_on_comm_stream=previous_event is not None,
-        )
-
-        # FIXME: `handle` should be transmitted with tokens from dispatch to combine.
-        # However, doing this would incur an unknown synchronization error, but keeping
-        # `handle` as a member variable works.
-
-        (
-            recv_x,
-            recv_topk_idx,
-            recv_topk_weights,
-            num_recv_tokens_per_expert,
-            self.handle,
-            event,
-        ) = buffer.dispatch(
-            x,
-            topk_idx=topk_idx,
-            topk_weights=topk_weights,
-            num_tokens_per_rank=num_tokens_per_rank,
-            num_tokens_per_rdma_rank=num_tokens_per_rdma_rank,
-            is_token_in_rank=is_token_in_rank,
-            num_tokens_per_expert=num_tokens_per_expert,
-            previous_event=previous_event,
-            async_finish=self.async_finish,
-            allocate_on_comm_stream=(previous_event is not None) and self.async_finish,
-            expert_alignment=128 if deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM else 1,
-            config=DeepEPConfig.get_instance().normal_dispatch_config,
-        )
-
-        get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
-            num_recv_tokens_per_expert,
-            num_tokens_per_rank=num_tokens_per_rank,
-            num_tokens_per_rdma_rank=num_tokens_per_rdma_rank,
-            num_tokens_per_expert=num_tokens_per_expert,
-        )
-
-        return (
-            recv_x,
-            recv_topk_idx,
-            recv_topk_weights,
-            num_recv_tokens_per_expert,
-            event,
-        )
-
-    def combine_a(
-        self,
-        hidden_states: torch.Tensor,
-        topk_idx: torch.Tensor,
-        topk_weights: torch.Tensor,
-    ):
-        if deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM or _use_aiter:
-            output = hidden_states
-        else:
-            if hidden_states.shape[0] > 0:
-                num_tokens = self.src2dst.shape[0] // self.router_topk
-                output = torch.empty(
-                    (num_tokens, hidden_states.shape[1]),
-                    device=hidden_states.device,
-                    dtype=hidden_states.dtype,
-                )
-                deepep_post_reorder_triton_kernel[(num_tokens,)](
-                    hidden_states,
-                    output,
-                    self.src2dst,
-                    topk_idx,
-                    topk_weights,
-                    self.router_topk,
-                    hidden_states.shape[1],
-                    BLOCK_SIZE=512,
-                )
-            else:
-                output = torch.zeros(
-                    (0, hidden_states.shape[1]),
-                    device=hidden_states.device,
-                    dtype=hidden_states.dtype,
-                )
-        previous_event = Buffer.capture() if self.async_finish else None
-        return output, previous_event
-
-    def combine_b(self, output, previous_event):
-        hidden_states, event = self._combine_core(output, previous_event)
-        event.current_stream_wait() if self.async_finish else ()
-        self.handle = None
-        self.src2dst = None
-        return hidden_states
-
-    def _combine_core(self, x: torch.Tensor, previous_event):
-        buffer = self._get_buffer()
-        combined_x, _, event = buffer.combine(
-            x,
-            self.handle,
-            async_finish=self.async_finish,
-            previous_event=previous_event,
-            allocate_on_comm_stream=previous_event is not None,
-            config=DeepEPConfig.get_instance().normal_combine_config,
-        )
-        return combined_x, event
-
-    def _get_buffer(self):
-        DeepEPBuffer.set_dispatch_mode_as_normal()
-
-        return DeepEPBuffer.get_deepep_buffer(
-            self.group,
-            self.hidden_size,
-            self.params_bytes,
-            self.deepep_mode,
-            self.num_max_dispatch_tokens_per_rank,
-            self.num_experts,
-        )
-
-
 class _DeepEPDispatcherImplLowLatency(_DeepEPDispatcherImplBase):
     def __init__(self, return_recv_hook: bool, **kwargs):
         super().__init__(**kwargs)
@@ -643,10 +461,7 @@ class DeepEPDispatcher(BaseDispatcher):
                 **common_kwargs,
             )
         if self.deepep_mode.enable_normal():
-            dispatcher_cls = (
-                _DeepEPDispatcherImplNormal if not _is_npu else NpuDeepEPDispatcher
-            )
-            self._normal_dispatcher = dispatcher_cls(
+            self._normal_dispatcher = NpuDeepEPDispatcher(
                 async_finish=async_finish,
                 **common_kwargs,
             )
@@ -736,7 +551,7 @@ class NpuDeepEPDispatcher:
         return_recv_hook: bool = False,
         **kwargs,
     ):
-        self.group = group
+        self.group = get_world_group().device_group
         self.experts_share_num_copy = 1
         self.n_routed_experts_per_rank = num_local_experts
         self.route_share_on_same_card = True
@@ -745,14 +560,19 @@ class NpuDeepEPDispatcher:
         self.num_experts = num_experts
         self.num_experts_per_tok = kwargs.get("num_experts_per_tok")
         self.hidden_size = hidden_size
-        self.global_rank = get_tensor_model_parallel_rank()
-
+        self.global_rank = get_world_group().rank_in_group
+        self.world_size = get_world_group().world_size
         self.experts_tp_size = 1
-        self.world_size = get_tensor_model_parallel_world_size()
 
-        self.group_name = group._get_backend(torch.device("npu")).get_hccl_comm_name(
-            self.global_rank
-        )
+        self.group_name = self.group._get_backend(
+            torch.device("npu")
+        ).get_hccl_comm_name(self.global_rank)
+
+        self.moe_rs_group = get_pp_group().device_group
+        self.moe_rs_group_rank = get_pp_group().rank_in_group
+        self.moe_rs_group_name = self.moe_rs_group._get_backend(
+            torch.device("npu")
+        ).get_hccl_comm_name(self.moe_rs_group_rank)
 
         if self.route_share_on_same_card:
             self.shared_expert_rank_num = 0
@@ -836,6 +656,12 @@ class NpuDeepEPDispatcher:
             per_token_scales=gathered_pertoken_scale,
         )
         expert_tokens = expert_tokens.to(torch.int64)
+        get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
+            [],
+            num_tokens_per_rank=None,
+            num_tokens_per_rdma_rank=None,
+            num_tokens_per_expert=expert_tokens,
+        )
         return (
             hidden_states_ordered_by_experts,
             gathered_pertoken_scale,
@@ -860,7 +686,7 @@ class NpuDeepEPDispatcher:
             "group_ep": self.group_name,
             "ep_world_size": self.world_size,
             "ep_rank_id": self.global_rank,
-            "group_tp": self.group_name,
+            "group_tp": self.moe_rs_group_name,
             "tp_world_size": self.experts_tp_size,
         }
         (
@@ -871,6 +697,12 @@ class NpuDeepEPDispatcher:
             ep_recv_counts,
             tp_recv_counts,
         ) = torch_npu.npu_moe_distribute_dispatch_v2(**_kwargs)[:6]
+        get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
+            [],
+            num_tokens_per_rank=None,
+            num_tokens_per_rdma_rank=None,
+            num_tokens_per_expert=expert_tokens,
+        )
         return (
             hidden_states,
             dynamic_scale,
@@ -977,7 +809,7 @@ class NpuDeepEPDispatcher:
             "ep_world_size": self.world_size,
             "ep_rank_id": self.global_rank,
             "tp_send_counts": tp_send_counts,
-            "group_tp": self.group_name,
+            "group_tp": self.moe_rs_group_name,
             "tp_world_size": self.experts_tp_size,
         }
         hidden_states = torch_npu.npu_moe_distribute_combine_v2(**_kwargs)

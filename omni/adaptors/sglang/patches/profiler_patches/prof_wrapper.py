@@ -64,32 +64,6 @@ def _should_wrap(
             caller_function == scope_function)
 
 
-def _sync_execute(original_method, entry_operation, exit_operation, args, first_arg, kwargs, param_dict):
-    """Execute entry_operation, function, exit_operation"""
-    # entry_operation
-    _execute_operation(entry_operation, param_dict)
-    # original_method
-    result: Any = original_method(first_arg, *args, **kwargs)
-    # Add result to parameter dictionary
-    param_dict["result"] = result
-    # exit_operation
-    _execute_operation(exit_operation, param_dict)
-    return result
-
-
-async def _async_execute(original_method, entry_operation, exit_operation, args, first_arg, kwargs, param_dict):
-    """Execute entry_operation, function, exit_operation"""
-    # entry_operation
-    _execute_operation(entry_operation, param_dict)
-    # original_method
-    result: Any = await original_method(first_arg, *args, **kwargs)
-    # Add result to parameter dictionary
-    param_dict["result"] = result
-    # exit_operation
-    _execute_operation(exit_operation, param_dict)
-    return result
-
-
 def _set_param_dict(args, first_arg, is_cls, kwargs):
     """Fill in cls or self """
     param_dict: Dict[str, Any] = {
@@ -116,89 +90,114 @@ SyncWrapper = Callable[..., Any]
 AsyncWrapper = Callable[..., Any]
 
 
-def _sync_func(
-        original_method: Callable,
-        entry_operation: Optional[str],
-        exit_operation: Optional[str],
-        scope_name: Optional[str],
-        scope_class_name: Optional[str],
-        scope_function: Optional[str]
-) -> SyncWrapper:
-    """Create a Synchronization Method Wrapper """
+def _sync_func_multi(original_method: Callable, patch_list: List[Dict[str, Any]]) -> SyncWrapper:
+    """Create a sync wrapper that executes multiple patches based on caller context"""
 
     @functools.wraps(original_method)
     def wrapper(first_arg: Any, *args: Any, **kwargs: Any) -> Any:
-        # Obtain the current call stack
         stack: List[inspect.FrameInfo] = inspect.stack()
-
-        # caller info
-        caller_module: str
-        caller_class: str
-        caller_function: str
         caller_module, caller_class, caller_function = _get_caller_info(stack)
 
-        should_wrap: bool = _should_wrap(
-            scope_name, scope_class_name, scope_function,
-            caller_module, caller_class, caller_function
-        )
+        matched_patches = []
+        for patch_info in patch_list:
+            scope_name = patch_info.get('scope_name')
+            scope_class_name = patch_info.get('scope_class_name')
+            scope_function = patch_info.get('scope_function')
 
-        if not should_wrap:
-            logger.info(
-                f"<<<INFO: Skipping wrapper for {original_method.__qualname__} "
-                f"due to scope {caller_module}.{caller_class}.{caller_function} mismatch")
+            if _should_wrap(scope_name, scope_class_name, scope_function,
+                            caller_module, caller_class, caller_function):
+                matched_patches.append(patch_info)
+                logger.debug(f"<<< Matched patch for caller {caller_module}.{caller_class}.{caller_function}")
+
+        if not matched_patches:
+            # d_12 in while true frantically prints
+            # logger.info(
+            #     f"<<<INFO: No matching patches for {original_method.__qualname__} "
+            #     f"from caller {caller_module}.{caller_class}.{caller_function}")
             return original_method(first_arg, *args, **kwargs)
 
         is_cls = _is_cls_method(original_method)
-
         param_dict = _set_param_dict(args, first_arg, is_cls, kwargs)
 
-        result = _sync_execute(original_method, entry_operation, exit_operation, args, first_arg, kwargs, param_dict)
+        for patch_info in matched_patches:
+            entry_op = patch_info.get('entry_operation')
+            entry_msg = patch_info.get('entry_message')
+            if entry_msg:
+                logger.info(f"<<<{entry_msg}")
+            _execute_operation(entry_op, param_dict)
+
+        result = {}
+        try:
+            result = original_method(first_arg, *args, **kwargs)
+        finally:
+            param_dict["result"] = result
+
+        for patch_info in reversed(matched_patches):
+            exit_op = patch_info.get('exit_operation')
+            exit_msg = patch_info.get('exit_message')
+            if exit_msg:
+                logger.info(f"<<<{exit_msg}")
+            _execute_operation(exit_op, param_dict)
+
         return result
 
     return cast(SyncWrapper, wrapper)
 
 
-def _async_func(
-        original_method: Callable,
-        entry_operation: Optional[str],
-        exit_operation: Optional[str],
-        scope_name: Optional[str],
-        scope_class_name: Optional[str],
-        scope_function: Optional[str]
-) -> AsyncWrapper:
-    """Create an asynchronous method wrapper """
+def _async_func_multi(original_method: Callable, patch_list: List[Dict[str, Any]]) -> AsyncWrapper:
+    """Create an async wrapper that executes multiple patches based on caller context"""
 
     @functools.wraps(original_method)
     async def async_wrapper(first_arg: Any, *args: Any, **kwargs: Any) -> Any:
-        # Obtain the current call stack
         stack: List[inspect.FrameInfo] = inspect.stack()
-
-        # caller info
-        caller_module: str
-        caller_class: str
-        caller_function: str
         caller_module, caller_class, caller_function = _get_caller_info(stack)
 
-        should_wrap: bool = _should_wrap(
-            scope_name, scope_class_name, scope_function,
-            caller_module, caller_class, caller_function
-        )
+        matched_patches = []
+        for patch_info in patch_list:
+            scope_name = patch_info.get('scope_name')
+            scope_class_name = patch_info.get('scope_class_name')
+            scope_function = patch_info.get('scope_function')
+            if _should_wrap(scope_name, scope_class_name, scope_function,
+                            caller_module, caller_class, caller_function):
+                matched_patches.append(patch_info)
+                logger.debug(f"<<< Matched patch for caller {caller_module}.{caller_class}.{caller_function}")
 
-        if not should_wrap:
-            logger.info(
-                f"<<<INFO: Skipping wrapper for {original_method.__qualname__} "
-                f"due to scope {caller_module}.{caller_class}.{caller_function} mismatch")
+        if not matched_patches:
+            # d_12 in while true frantically prints
+            # logger.info(
+            #     f"<<<INFO: No matching patches for {original_method.__qualname__} "
+            #     f"from caller {caller_module}.{caller_class}.{caller_function}")
             return await original_method(first_arg, *args, **kwargs)
 
         is_cls = _is_cls_method(original_method)
-
         param_dict = _set_param_dict(args, first_arg, is_cls, kwargs)
 
-        result = await _async_execute(original_method, entry_operation, exit_operation,
-                                      args, first_arg, kwargs, param_dict)
+        for patch_info in matched_patches:
+            entry_op = patch_info.get('entry_operation')
+            entry_msg = patch_info.get('entry_message')
+            if entry_msg:
+                logger.info(f"<<<{entry_msg}")
+            _execute_operation(entry_op, param_dict)
+
+        result = {}
+        try:
+            result = await original_method(first_arg, *args, **kwargs)
+        finally:
+            param_dict["result"] = result
+
+        for patch_info in reversed(matched_patches):
+            exit_op = patch_info.get('exit_operation')
+            exit_msg = patch_info.get('exit_message')
+            if exit_msg:
+                logger.info(f"<<<{exit_msg}")
+            _execute_operation(exit_op, param_dict)
+
         return result
 
     return cast(AsyncWrapper, async_wrapper)
+
+
+_PATCHES_ATTR_NAME = "__dynamic_patches__"
 
 
 def marker_prof_wrapper(
@@ -206,23 +205,17 @@ def marker_prof_wrapper(
         params: Dict[str, Any]
 ) -> Union[SyncWrapper, AsyncWrapper]:
     """marker_prof_wrapper"""
-    function_name: Optional[str] = params.get("function_name")
-    if function_name is None:
-        return original_method
+    patch_list: List[Dict[str, Any]] = params.get(_PATCHES_ATTR_NAME, [])
 
-    entry_operation: Optional[str] = params.get("entry_operation")
-    exit_operation: Optional[str] = params.get("exit_operation")
-    scope_name: Optional[str] = params.get("scope_name")
-    scope_class_name: Optional[str] = params.get("scope_class_name")
-    scope_function: Optional[str] = params.get("scope_function")
+    if not patch_list:
+        logger.info(f"<<<INFO: No patches provided for {original_method.__qualname__}, returning original.")
+        return original_method
 
     is_async: bool = inspect.iscoroutinefunction(original_method)
 
     if is_async:
         logger.info(f"<<<INFO: {original_method.__qualname__} is async function, use async wrapper")
-        return _async_func(original_method, entry_operation, exit_operation,
-                           scope_name, scope_class_name, scope_function)
+        return _async_func_multi(original_method, patch_list)
     else:
         logger.info(f"<<<INFO: {original_method.__qualname__} is sync function, use sync wrapper")
-        return _sync_func(original_method, entry_operation, exit_operation,
-                          scope_name, scope_class_name, scope_function)
+        return _sync_func_multi(original_method, patch_list)

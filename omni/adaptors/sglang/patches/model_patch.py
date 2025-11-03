@@ -57,12 +57,39 @@ def patch_token_dispatcher():
 
 _patch_done = False
 
+def patch_sglang_distributed():
+    import sglang.srt.distributed.parallel_state as ps
+    import omni.adaptors.sglang.distributed as sgl_dist
+    ps.initialize_add_groups = sgl_dist.initialize_add_groups
+
+    print("+++++++++++++++++++++++++patch_sglang_distributed+++++++++++++++++++++")
+
+def patch_quantization_w8a8_int8():
+    from sglang.srt.layers.quantization import w8a8_int8
+    from sglang.srt.layers import quantization as q
+    from omni.adaptors.sglang.layers.quantization.compressed_tensors.compressed_tensors import AscendCompressedTensorsConfig
+
+    w8a8_int8.W8A8Int8Config = AscendCompressedTensorsConfig
+    q.BASE_QUANTIZATION_METHODS.update(
+        {
+            "w8a8_int8": AscendCompressedTensorsConfig,
+        }
+    )
+    q.QUANTIZATION_METHODS.update(
+        {
+            "w8a8_int8": AscendCompressedTensorsConfig,
+        }
+    )
+    print("+++++++++++++++++++++++++patch_quantization_w8a8_int8+++++++++++++++++++++")
+
 def patch_all():
     global _patch_done
     if _patch_done:
         return
     patch_dp_attention()
     patch_token_dispatcher()
+    patch_sglang_distributed()
+    patch_quantization_w8a8_int8()
     _patch_done = True
 
 patch_all()

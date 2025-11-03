@@ -31,18 +31,18 @@ all:
               graph_model_compile_config:
                 level: 1
                 use_ge_graph_cached: true
-              decode_gear_list: '[64]'
             base-api-port: $API_PORT
             extra-args:
               disable-log-requests: ''
               max-num-seqs: 64
               max-num-batched-tokens: 61440
+              no-enable-prefix-caching: ''
             gpu-util: '0.88'
             kv-transfer-config:
               engine_id: 0
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: 4
+              kv_parallel_size: 8
               kv_rank: $KV_RANK
               kv_role: kv_consumer
             log-dir: $LOG_PATH
@@ -153,12 +153,13 @@ all:
               enforce-eager: ''
               max-num-batched-tokens: 61440
               max-num-seqs: 64
+              no-enable-prefix-caching: ''
             gpu-util: '0.65'
             kv-transfer-config:
               engine_id: 0
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: 4
+              kv_parallel_size: 8
               kv_rank: $KV_RANK
               kv_role: kv_producer
             log-dir: $LOG_PATH
@@ -273,7 +274,7 @@ all:
               engine_id: 1
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: 4
+              kv_parallel_size: 8
               kv_rank: $KV_RANK
               kv_role: kv_producer
             log-dir: $LOG_PATH
@@ -388,7 +389,7 @@ all:
               engine_id: 2
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: 4
+              kv_parallel_size: 8
               kv_rank: $KV_RANK
               kv_role: kv_producer
             log-dir: $LOG_PATH

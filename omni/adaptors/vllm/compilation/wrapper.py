@@ -71,16 +71,19 @@ class TorchNpuCompilerWrapperWithCustomDispatcher:
                 raise ValueError(
                     "If you use the compile cache function, you must input a tensor or directly input the gear size")
 
-            input_ids = 0
+            inputs = 0
             if len(args) > 0:
-                input_ids = args[0]
+                inputs = args[0]
             elif len(kwargs) > 0:
-                input_ids = kwargs["input_ids"]
-            if isinstance(input_ids, torch.Tensor):
-                gear_size = input_ids.shape[0]
+                if kwargs["input_ids"] is not None:
+                    inputs = kwargs["input_ids"]
+                else:
+                    inputs = kwargs["inputs_embeds"]
+            if isinstance(inputs, torch.Tensor):
+                gear_size = inputs.shape[0]
                 return self.cached_compiled_models[gear_size](*args, **kwargs)
-            if isinstance(input_ids, int):
-                gear_size = input_ids
+            if isinstance(inputs, int):
+                gear_size = inputs
                 return self.cached_compiled_models[gear_size](*args, **kwargs)
 
         logger.error(f"encountered a missed scene")

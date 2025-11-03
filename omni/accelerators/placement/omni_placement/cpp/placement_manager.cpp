@@ -517,10 +517,6 @@ void Placement::placement_manager(aclrtContext currentContext) {
             std::this_thread::sleep_for(
                 std::chrono::seconds(1)); // Run every 1 seconds
         }
-        size_t expert_size =
-            moe_weight_->get_expert_size(); // 根据QueueSize 预分配 接受buffs
-
-        dist_ptr->allocate_recv_buffs(expert_size);
         dist_ptr->init_hccl_buffs(moe_weight_->get_expert_itemnum());
     }
 
@@ -686,6 +682,7 @@ PYBIND11_MODULE(omni_placement, m) {
              py::arg("placement_dtype"))
         .def("get_moe_weights", &Placement::get_moe_weights,
              py::return_value_policy::reference)
+        .def("init_recv_buf", &Placement::init_recv_buf, "")
         .def("start_thread", &Placement::start_thread, "");
 
     py::class_<Tensor>(m, "Tensor")

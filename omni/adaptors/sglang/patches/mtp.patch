@@ -1,0 +1,771 @@
+diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
+index d168527b8..213311553 100644
+--- a/python/sglang/srt/managers/schedule_batch.py
++++ b/python/sglang/srt/managers/schedule_batch.py
+@@ -1588,6 +1588,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+                 )
+ 
+         # Allocate memory
++        if self.spec_algorithm.is_mtp():
++                # if mtp is used, the memory is allocated inside
++                # `forward_batch_speculative_generation` after running draft models.
++            return
+         if self.token_to_kv_pool_allocator.page_size == 1:
+             self.out_cache_loc = self.alloc_token_slots(bs)
+         else:
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 4322b78fc..8f0033b2f 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -361,6 +361,18 @@ class Scheduler(
+                 target_worker=self.tp_worker,
+                 dp_rank=dp_rank,
+             )
++        elif self.spec_algorithm.is_mtp():
++            from sglang.srt.speculative.mtp_worker import MTPWorker
++
++            self.draft_worker = MTPWorker(
++                gpu_id=gpu_id,
++                tp_rank=tp_rank,
++                moe_ep_rank=moe_ep_rank,
++                server_args=server_args,
++                nccl_port=port_args.nccl_port,
++                target_worker=self.tp_worker,
++                dp_rank=dp_rank,
++            )
+         else:
+             self.draft_worker = None
+ 
+@@ -1786,7 +1798,7 @@ class Scheduler(
+             # These 2 values are needed for processing the output, but the values can be
+             # modified by overlap schedule. So we have to copy them here so that
+             # we can use the correct values in output processing.
+-            if batch.return_logprob or self.spec_algorithm.is_eagle():
++            if batch.return_logprob or self.spec_algorithm.is_eagle() or self.spec_algorithm.is_mtp():
+                 extend_input_len_per_req = [req.extend_input_len for req in batch.reqs]
+             else:
+                 extend_input_len_per_req = None
+@@ -1993,7 +2005,8 @@ class Scheduler(
+ 
+         tbo_preparer = TboDPAttentionPreparer()
+         if disable_overlap_schedule:
+-            group = tp_group.device_group
++            # group = tp_group.device_group
++            group = tp_group.cpu_group
+             device = tp_group.device
+         else:
+             group = tp_group.cpu_group
+diff --git a/python/sglang/srt/managers/scheduler_output_processor_mixin.py b/python/sglang/srt/managers/scheduler_output_processor_mixin.py
+index 193682dbe..dcb4c4495 100644
+--- a/python/sglang/srt/managers/scheduler_output_processor_mixin.py
++++ b/python/sglang/srt/managers/scheduler_output_processor_mixin.py
+@@ -209,7 +209,7 @@ class SchedulerOutputProcessorMixin:
+                 self.tp_worker.resolve_last_batch_result(launch_done)
+             )
+             next_token_logprobs = logits_output.next_token_logprobs
+-        elif batch.spec_algorithm.is_none():
++        elif batch.spec_algorithm.is_none() or batch.spec_algorithm.is_mtp():
+             # spec decoding handles output logprobs inside verify process.
+             next_token_ids = next_token_ids.tolist()
+             if batch.return_logprob:
+@@ -238,7 +238,7 @@ class SchedulerOutputProcessorMixin:
+                         )
+                 continue
+ 
+-            if batch.spec_algorithm.is_none():
++            if batch.spec_algorithm.is_none() or batch.spec_algorithm.is_mtp():
+                 # speculative worker will solve the output_ids in speculative decoding
+                 req.output_ids.append(next_token_id)
+ 
+diff --git a/python/sglang/srt/managers/tp_worker.py b/python/sglang/srt/managers/tp_worker.py
+index 36fba0881..24b5b374d 100644
+--- a/python/sglang/srt/managers/tp_worker.py
++++ b/python/sglang/srt/managers/tp_worker.py
+@@ -223,6 +223,7 @@ class TpModelWorker:
+         model_worker_batch: ModelWorkerBatch,
+         launch_done: Optional[threading.Event] = None,
+         skip_sample: bool = False,
++        return_forward_batch: bool = False,
+     ) -> Tuple[
+         Union[LogitsProcessorOutput, torch.Tensor], Optional[torch.Tensor], bool
+     ]:
+@@ -249,6 +250,8 @@ class TpModelWorker:
+                 next_token_ids = self.model_runner.sample(
+                     logits_output, model_worker_batch
+                 )
++            if return_forward_batch:
++                return logits_output, next_token_ids, can_run_cuda_graph, forward_batch
+ 
+             return logits_output, next_token_ids, can_run_cuda_graph
+         else:
+@@ -256,6 +259,9 @@ class TpModelWorker:
+                 forward_batch,
+                 pp_proxy_tensors=pp_proxy_tensors,
+             )
++            if return_forward_batch:
++                return pp_proxy_tensors.tensors, None, can_run_cuda_graph, forward_batch
++
+             return pp_proxy_tensors.tensors, None, can_run_cuda_graph
+ 
+     def forward_batch_embedding(self, model_worker_batch: ModelWorkerBatch):
+diff --git a/python/sglang/srt/mem_cache/allocator.py b/python/sglang/srt/mem_cache/allocator.py
+index adc87a5e4..ddaf1bf1d 100644
+--- a/python/sglang/srt/mem_cache/allocator.py
++++ b/python/sglang/srt/mem_cache/allocator.py
+@@ -624,6 +624,84 @@ def alloc_extend_kernel_ascend(
+             ).view(-1)
+     return num_new_pages
+ 
++def alloc_extend_kernel_ascend_vectorized(
++    prefix_lens: torch.Tensor,
++    seq_lens: torch.Tensor,
++    last_loc: torch.Tensor,
++    free_pages: torch.Tensor,
++    out_indices: torch.Tensor,
++    page_size: int,
++    device: torch.device,
++):
++    prefix_lens = prefix_lens.to(device=device, dtype=torch.int32)
++    seq_lens    = seq_lens.to(device=device, dtype=torch.int32)
++
++    B = prefix_lens.numel()
++    page_sz = torch.as_tensor(page_size, device=device, dtype=torch.int32)
++
++    extend_lens = seq_lens - prefix_lens
++    end_pos     = torch.cumsum(extend_lens, dim=0)
++    start_pos   = end_pos - extend_lens
++
++    num_pages_after  = (seq_lens + page_sz - 1) // page_sz
++    num_pages_before = (prefix_lens + page_sz - 1) // page_sz
++    num_new_pages    = num_pages_after - num_pages_before
++
++    end_new_pages   = torch.cumsum(num_new_pages, dim=0)
++    start_new_pages = end_new_pages - num_new_pages
++
++    # -------- Part 1: tail of old page --------
++    ceil_pre_to_page = ((prefix_lens + page_sz - 1) // page_sz) * page_sz
++    num1 = torch.clamp_min(torch.minimum(seq_lens, ceil_pre_to_page) - prefix_lens, 0)
++    tot1 = int(num1.sum().item())
++    if tot1 > 0:
++        flat_pos1 = torch.repeat_interleave(start_pos, num1)
++        intra1 = torch.arange(tot1, device=device, dtype=torch.int32) \
++                 - torch.repeat_interleave(torch.cumsum(num1, 0) - num1, num1)
++        vals1 = torch.repeat_interleave(last_loc + 1, num1) + intra1
++        out_indices[(flat_pos1 + intra1)] = vals1.to(torch.int32)
++
++    # -------- Part 2: full new pages --------
++    full_seq_tokens = (seq_lens // page_sz) * page_sz
++    ceil_pre_tokens = ((prefix_lens + page_sz - 1) // page_sz) * page_sz
++    num2 = torch.clamp_min(full_seq_tokens - ceil_pre_tokens, 0)
++    tot2 = int(num2.sum().item())
++    if tot2 > 0:
++        seg_offsets2 = torch.cumsum(num2, dim=0) - num2
++        t_flat = torch.arange(tot2, device=device, dtype=torch.int32) \
++                 - torch.repeat_interleave(seg_offsets2, num2)
++        seq_ids2 = torch.repeat_interleave(torch.arange(B, device=device, dtype=torch.int32), num2)
++
++        # page indices & gather from free_pages — CAST TO LONG WHEN INDEXING
++        page_idx2 = start_new_pages[seq_ids2.to(torch.int64)] + (t_flat // page_sz)
++        page_ids2 = free_pages[page_idx2.to(torch.int64)]
++        vals2 = page_ids2 * page_sz + (t_flat % page_sz)
++
++        write_base2 = start_pos + num1
++        flat_base2  = torch.repeat_interleave(write_base2, num2)
++        out_indices[(flat_base2 + t_flat).to(torch.int64)] = vals2.to(torch.int32)
++
++    # -------- Part 3: final partial page --------
++    done2 = (prefix_lens + num1 + num2) == seq_lens
++    num3  = seq_lens - (seq_lens // page_sz) * page_sz
++    need3 = (~done2) & (num3 > 0)
++    if need3.any():
++        idx3 = torch.nonzero(need3, as_tuple=False).squeeze(1)
++        idx3 = idx3.to(torch.int64)
++
++        tot3 = int(num3[idx3].sum().item())
++        last_page_ids = free_pages[(start_new_pages[idx3] + num_new_pages[idx3] - 1).to(torch.int64)]
++        base3 = (start_pos + num1 + num2)[idx3.to(torch.int64)].to(torch.int32)
++
++        flat_pos3 = torch.repeat_interleave(base3, num3[idx3].to(torch.int32)) # int32
++        intra3 = torch.arange(tot3, device=device, dtype=torch.int32) \
++                 - torch.repeat_interleave(torch.cumsum(num3[idx3].to(torch.int32), 0) - num3[idx3].to(torch.int32),
++                                           num3[idx3].to(torch.int32))
++        vals3 = torch.repeat_interleave((last_page_ids * page_sz).to(torch.int32),
++                                        num3[idx3].to(torch.int32)) + intra3
++        out_indices[(flat_pos3 + intra3).to(torch.int64)] = vals3.to(torch.int32)
++
++    return num_new_pages
+ 
+ def alloc_decode_kernel_ascend(
+     seq_lens,
+@@ -686,15 +764,28 @@ class AscendPagedTokenToKVPoolAllocator(PagedTokenToKVPoolAllocator):
+             (extend_num_tokens,), dtype=torch.int32, device=self.device
+         )
+ 
+-        self.ret_values = alloc_extend_kernel_ascend(
+-            prefix_lens,
+-            seq_lens,
+-            last_loc,
+-            self.free_pages,
+-            out_indices,
+-            self.page_size,
+-            self.device,
+-        )
++        if torch.all(prefix_lens == 0):
++            # real prefill case
++            self.ret_values = alloc_extend_kernel_ascend(
++                prefix_lens,
++                seq_lens,
++                last_loc,
++                self.free_pages,
++                out_indices,
++                self.page_size,
++                self.device,
++            )
++        else:
++            # speculative decode case
++            self.ret_values = alloc_extend_kernel_ascend_vectorized(
++                prefix_lens,
++                seq_lens,
++                last_loc,
++                self.free_pages,
++                out_indices,
++                self.page_size,
++                self.device,
++            )
+ 
+         if self.debug_mode:
+             assert len(torch.unique(out_indices)) == len(out_indices)
+diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
+index 26814fb90..f1cc2c38e 100644
+--- a/python/sglang/srt/model_executor/forward_batch_info.py
++++ b/python/sglang/srt/model_executor/forward_batch_info.py
+@@ -747,8 +747,9 @@ class ForwardBatch:
+         bs = getattr(self, "raw_bs", self.batch_size)
+ 
+         if self.spec_info is not None:
+-            if self.forward_mode.is_decode():  # draft
+-                num_tokens = self.hidden_states_backup.shape[0]
++            if self.forward_mode.is_decode():  # draft, target decode
++                # num_tokens = self.hidden_states_backup.shape[0]
++                num_tokens = bs
+                 self.positions = self.positions[:num_tokens]
+                 self.seq_lens = self.seq_lens[:bs]
+                 self.req_pool_indices = self.req_pool_indices[:bs]
+diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
+index 65ac2eba9..5038dbf12 100644
+--- a/python/sglang/srt/model_executor/model_runner.py
++++ b/python/sglang/srt/model_executor/model_runner.py
+@@ -1567,6 +1567,10 @@ class ModelRunner:
+         if not self.server_args.enable_torch_compile:
+             return
+ 
++        if self.is_draft_worker:
++            # TODO: Currently, draft worker does not support npu graph
++            return
++
+         tic = time.perf_counter()
+         before_mem = get_available_gpu_memory(self.device, self.gpu_id)
+         logger.info(
+diff --git a/python/sglang/srt/models/registry.py b/python/sglang/srt/models/registry.py
+index 12c1dd2cb..613bb4cbb 100644
+--- a/python/sglang/srt/models/registry.py
++++ b/python/sglang/srt/models/registry.py
+@@ -107,4 +107,6 @@ def import_model_classes():
+ tmp_ = _ModelRegistry(import_model_classes())
+ module = importlib.import_module("omni.adaptors.sglang.models.deepseek_v3")
+ tmp_.models["DeepseekV3ForCausalLM"] = module.EntryClass
++module = importlib.import_module("omni.adaptors.sglang.models.deepseek_mtp")
++tmp_.models["DeepseekV3ForCausalLMNextN"] = module.EntryClass
+ ModelRegistry = tmp_
+diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
+index 65d73f539..464e8a818 100644
+--- a/python/sglang/srt/server_args.py
++++ b/python/sglang/srt/server_args.py
+@@ -623,7 +623,7 @@ class ServerArgs:
+             # NEXTN shares the same implementation of EAGLE
+             self.speculative_algorithm = "EAGLE"
+ 
+-        if self.speculative_algorithm in ("EAGLE", "EAGLE3"):
++        if self.speculative_algorithm in ("EAGLE", "EAGLE3", "MTP"):
+             if self.max_running_requests is None:
+                 self.max_running_requests = 48
+             self.disable_overlap_schedule = True
+@@ -1430,7 +1430,7 @@ class ServerArgs:
+         parser.add_argument(
+             "--speculative-algorithm",
+             type=str,
+-            choices=["EAGLE", "EAGLE3", "NEXTN"],
++            choices=["EAGLE", "EAGLE3", "NEXTN", "MTP"],
+             help="Speculative algorithm.",
+         )
+         parser.add_argument(
+diff --git a/python/sglang/srt/speculative/eagle_utils.py b/python/sglang/srt/speculative/eagle_utils.py
+index aa49e4fc7..972904863 100644
+--- a/python/sglang/srt/speculative/eagle_utils.py
++++ b/python/sglang/srt/speculative/eagle_utils.py
+@@ -24,7 +24,7 @@ from sglang.srt.managers.schedule_batch import (
+ )
+ from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
+ from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, ForwardMode
+-from sglang.srt.utils import is_cuda, is_hip, next_power_of_2
++from sglang.srt.utils import is_cuda, is_npu, is_hip, next_power_of_2
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -38,6 +38,8 @@ if is_cuda():
+     )
+ elif is_hip():
+     from sgl_kernel import fast_topk, verify_tree_greedy
++elif is_npu():
++    from sglang.srt.utils import fast_topk
+ 
+ 
+ logger = logging.getLogger(__name__)
+@@ -234,17 +236,17 @@ class EagleVerifyInput:
+     @classmethod
+     def create_idle_input(cls, topk: int, spec_steps: int, num_verify_tokens: int):
+         return cls(
+-            draft_token=torch.empty((0,), dtype=torch.long, device="cuda"),
+-            custom_mask=torch.full((0,), True, dtype=torch.bool, device="cuda"),
+-            positions=torch.empty((0,), dtype=torch.int64, device="cuda"),
++            draft_token=torch.empty((0,), dtype=torch.long, device="npu"),
++            custom_mask=torch.full((0,), True, dtype=torch.bool, device="npu"),
++            positions=torch.empty((0,), dtype=torch.int64, device="npu"),
+             retrive_index=torch.full(
+-                (0, num_verify_tokens), -1, dtype=torch.long, device="cuda"
++                (0, num_verify_tokens), -1, dtype=torch.long, device="npu"
+             ),
+             retrive_next_token=torch.full(
+-                (0, num_verify_tokens), -1, dtype=torch.long, device="cuda"
++                (0, num_verify_tokens), -1, dtype=torch.long, device="npu"
+             ),
+             retrive_next_sibling=torch.full(
+-                (0, num_verify_tokens), -1, dtype=torch.long, device="cuda"
++                (0, num_verify_tokens), -1, dtype=torch.long, device="npu"
+             ),
+             retrive_cum_len=None,
+             topk=topk,
+diff --git a/python/sglang/srt/speculative/eagle_worker.py b/python/sglang/srt/speculative/eagle_worker.py
+index 376cd029c..9d277def9 100644
+--- a/python/sglang/srt/speculative/eagle_worker.py
++++ b/python/sglang/srt/speculative/eagle_worker.py
+@@ -165,7 +165,10 @@ class EAGLEWorker(TpModelWorker):
+         )
+         with self.draft_tp_context(self.draft_model_runner.tp_group):
+             self.init_attention_backend()
+-            self.init_cuda_graphs()
++            if self.device == "cuda":
++                self.init_cuda_graphs()
++            elif self.device == "npu":
++                self.init_npu_graphs()
+ 
+         # Some dummy tensors
+         self.num_new_pages_per_topk = torch.empty(
+@@ -211,6 +214,12 @@ class EAGLEWorker(TpModelWorker):
+                     skip_prefill=False,
+                 )
+             self.has_prefill_wrapper_verify = True
++        elif self.server_args.attention_backend == "npumla":
++            from omni.adaptors.sglang.layers.attention.npumla_backend import NpuMLABackend
++            self.draft_attn_backend = NpuMLABackend(
++                self.draft_model_runner,
++                skip_prefill=False,
++            )
+         elif self.server_args.attention_backend == "triton":
+             from sglang.srt.layers.attention.triton_backend import (
+                 TritonAttnBackend,
+diff --git a/python/sglang/srt/speculative/mtp_worker.py b/python/sglang/srt/speculative/mtp_worker.py
+new file mode 100644
+index 000000000..85bd91c0a
+--- /dev/null
++++ b/python/sglang/srt/speculative/mtp_worker.py
+@@ -0,0 +1,360 @@
++import logging
++import os
++import time
++from contextlib import contextmanager
++from typing import List, Optional, Tuple
++
++import torch
++
++from sglang.srt.distributed import (
++    GroupCoordinator,
++    patch_tensor_parallel_group,
++)
++from sglang.srt.layers.logits_processor import LogitsProcessorOutput
++from sglang.srt.managers.schedule_batch import (
++    ScheduleBatch,
++    get_last_loc,
++)
++from sglang.srt.managers.tp_worker import TpModelWorker
++from sglang.srt.model_executor.forward_batch_info import (
++    CaptureHiddenMode,
++    ForwardBatch,
++    ForwardMode,
++)
++from sglang.srt.server_args import ServerArgs
++from sglang.srt.speculative.eagle_draft_cuda_graph_runner import (
++    EAGLEDraftCudaGraphRunner,
++)
++from sglang.srt.speculative.eagle_draft_extend_cuda_graph_runner import (
++    EAGLEDraftExtendCudaGraphRunner,
++)
++from sglang.srt.speculative.eagle_utils import (
++    EagleDraftInput,
++    EagleVerifyInput,
++)
++from sglang.srt.utils import (
++    get_available_gpu_memory,
++)
++
++logger = logging.getLogger(__name__)
++
++from .eagle_worker import EAGLEWorker, load_token_map
++
++
++@contextmanager
++def draft_tp_context(tp_group: GroupCoordinator):
++    # Draft model doesn't use dp and has its own tp group.
++    # We disable mscclpp now because it doesn't support 2 comm groups.
++    with patch_tensor_parallel_group(tp_group):
++        yield
++
++
++class MTPWorker(EAGLEWorker):
++
++    def __init__(
++        self,
++        server_args: ServerArgs,
++        gpu_id: int,
++        tp_rank: int,
++        dp_rank: Optional[int],
++        moe_ep_rank: int,
++        nccl_port: int,
++        target_worker: TpModelWorker,
++    ):
++        super().__init__(server_args, gpu_id, tp_rank, dp_rank, moe_ep_rank, nccl_port, target_worker)
++
++    def init_npu_graphs(self):
++        """Enable torch.compile and graph engine with Npu."""
++
++        # current mtp layer do not support npu graph
++        return
++
++        if not self.server_args.enable_torch_compile:
++            return
++
++        if not self.is_generation:
++            # TODO: Currently, npu graph only captures decode steps, which only exists for generation models
++            return
++
++
++        tic = time.perf_counter()
++        before_mem = get_available_gpu_memory(self.device, self.gpu_id)
++        logger.info(
++            f"Compile graph with npu begin. This can take up to several minutes. avail mem={before_mem:.2f} GB"
++        )
++        with torch.get_device_module(self.device).stream(self.forward_stream):
++            self.device_graph_runner = NpuGraphRunner(self)
++        after_mem = get_available_gpu_memory(self.device, self.gpu_id)
++        self.graph_mem_usage = before_mem - after_mem
++        logger.info(
++            f"Compile graph end. Time elapsed: {time.perf_counter() - tic:.2f} s. "
++            f"mem usage={self.graph_mem_usage:.2f} GB. avail mem={after_mem:.2f} GB."
++        )
++
++    def forward_batch_speculative_generation(
++        self, batch: ScheduleBatch
++    ) -> Tuple[LogitsProcessorOutput, torch.Tensor, int, int, bool]:
++        """Run speculative decoding forward.
++
++        NOTE: Many states of batch is modified as you go through. It is not guaranteed that
++        the final output batch have the same state as the input.
++
++        Args:
++            batch: The batch to run forward. The state of the batch is modified as it runs.
++        Returns:
++            A tuple of the final logit output of the target model, next tokens accepted,
++            the batch id (used for overlap schedule), and number of accepted tokens.
++        """
++        if batch.forward_mode.is_extend() or batch.is_extend_in_batch:
++            logits_output, next_token_ids, bid, seq_lens_cpu = (
++                self.forward_target_extend(batch)
++            )
++            with self.draft_tp_context(self.draft_model_runner.tp_group):
++                self.forward_draft_extend(
++                    batch, logits_output.hidden_states, next_token_ids, seq_lens_cpu
++                )
++
++            return logits_output, next_token_ids, bid, 0, False
++
++        else:
++            # turn spec info from EagleDraftInput -> EagleVerifyInput
++            if batch.forward_mode.is_idle():
++                self._target_preprocess_idle(batch)
++            else:
++                self._target_preprocess_decode(batch)
++
++            batch.forward_mode = (
++                ForwardMode.DECODE
++                if not batch.forward_mode.is_idle()
++                else ForwardMode.IDLE
++            )
++
++            # from prepare_for_verify
++            seq_lens = batch.seq_lens.repeat_interleave(self.speculative_num_steps+1, dim=0)
++            seq_lens[1::2] += 1
++            locs = seq_lens.clone() - 1
++            input_ids = torch.cat((batch.input_ids.reshape(-1,1), batch.spec_info.draft_token), dim=-1).flatten()
++            if not batch.forward_mode.is_idle():
++                if self.page_size == 1:
++                    batch.out_cache_loc = batch.alloc_token_slots(len(input_ids))
++                    end_offset = batch.seq_lens + batch.spec_info.draft_token_num
++                else:
++                    prefix_lens = batch.seq_lens - 1
++                    end_offset = prefix_lens + batch.spec_info.draft_token_num
++                    last_loc = get_last_loc(
++                        batch.req_to_token_pool.req_to_token,
++                        batch.req_pool_indices,
++                        prefix_lens,
++                    )
++                    batch.out_cache_loc = batch.alloc_paged_token_slots_extend(
++                        prefix_lens, end_offset, last_loc, len(input_ids)
++                    )
++                    batch.spec_info.last_loc = last_loc
++
++                num_tokens_per_req = batch.spec_info.draft_token_num
++                req_pool_indices = batch.req_pool_indices.repeat_interleave(num_tokens_per_req)
++
++                batch.req_to_token_pool.write(
++                            (req_pool_indices, locs), batch.out_cache_loc.to(torch.int32)
++                )
++            model_worker_batch = batch.get_model_worker_batch()
++
++            num_reqs = len(batch.reqs)
++
++            positions = seq_lens - 1
++            model_worker_batch.input_ids = input_ids
++            model_worker_batch.seq_lens = seq_lens
++            model_worker_batch.spec_info.positions = positions
++            model_worker_batch.seq_lens_cpu = seq_lens.cpu()
++            self.prepare_sampling_info(batch.sampling_info)
++
++            if not batch.forward_mode.is_idle():
++                model_worker_batch.req_pool_indices = req_pool_indices
++
++            ## forward
++            if self.pp_group.is_last_rank:
++                logits_output, next_token_ids, can_run_cuda_graph, forward_batch = (
++                    self.target_worker.forward_batch_generation(model_worker_batch, return_forward_batch=True)
++                )
++            else:
++                pp_hidden_states_proxy_tensors, _, can_run_cuda_graph = (
++                    self.target_worker.forward_batch_generation(model_worker_batch)
++                )
++            bid = model_worker_batch.bid
++
++            ## Verify
++            verified_id, accept_length, last_accepted_index = self.verify(model_worker_batch.input_ids,
++                                                                          next_token_ids,
++                                                                          num_reqs, batch)
++
++
++            # Set inputs for MTP
++            # 1. turn spec_info from EagleVerifyInput to EagleDraftInput
++            if batch.forward_mode.is_idle():
++                draft_input = EagleDraftInput.create_idle_input(
++                    device=self.device,
++                    hidden_size=self.model_config.hidden_size,
++                    dtype=self.model_config.dtype,
++                    topk=self.topk,
++                    capture_hidden_mode=CaptureHiddenMode.LAST,
++                )
++            else:
++                draft_input = EagleDraftInput(
++                                hidden_states=logits_output.hidden_states,
++                                verified_id=verified_id,
++                                accept_length=accept_length,
++                                accept_length_cpu=accept_length.tolist(),
++                                seq_lens_for_draft_extend=batch.seq_lens,
++                                req_pool_indices_for_draft_extend=batch.req_pool_indices,
++                                )
++                forward_batch.token_to_kv_pool = self.draft_model_runner.token_to_kv_pool
++
++            forward_batch.spec_info = draft_input
++            forward_batch.input_ids = next_token_ids
++            forward_batch.can_run_dp_cuda_graph = False
++
++            # Run MTP
++            with self.draft_tp_context(self.draft_model_runner.tp_group):
++                logits_output, _ = self.draft_model_runner.forward(
++                    forward_batch, skip_attn_backend_init=True
++                )
++
++            accept_length_per_req_cpu = accept_length.tolist()
++            probs = torch.softmax(logits_output.next_token_logits, dim=-1)
++            # topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
++            next_tokens = torch.argmax(probs, dim=-1, keepdim=True)
++            forward_batch.spec_info.topk_index = next_tokens[last_accepted_index]
++
++            # post process
++            batch.spec_info = forward_batch.spec_info
++            batch.input_ids = verified_id
++            batch.seq_lens += accept_length
++            self.restore_sampling_info(batch.sampling_info)
++
++            # if not process, EagleDraftInput merge batch will error
++            forward_batch.spec_info.topk_p = torch.ones_like(forward_batch.spec_info.topk_index, device=self.device, dtype=self.model_config.dtype)
++
++            return (
++                logits_output,
++                verified_id,
++                model_worker_batch.bid,
++                sum(accept_length_per_req_cpu),
++                can_run_cuda_graph,
++            )
++
++    def prepare_sampling_info(self, sampling_info):
++
++        self.raw_temperatures = sampling_info.temperatures
++        self.raw_top_ks = sampling_info.top_ks
++        self.raw_top_ps = sampling_info.top_ps
++        self.raw_min_ps = sampling_info.min_ps
++
++        sampling_info.temperatures = self.raw_temperatures.repeat_interleave(self.speculative_num_steps+1, dim=0)
++        sampling_info.top_ks = self.raw_top_ks.repeat_interleave(self.speculative_num_steps+1, dim=0)
++        sampling_info.top_ps = self.raw_top_ps.repeat_interleave(self.speculative_num_steps+1, dim=0)
++        if sampling_info.need_min_p_sampling:
++            sampling_info.min_ps = self.raw_min_ps.repeat_interleave(self.speculative_num_steps+1, dim=0)
++
++    def restore_sampling_info(self, sampling_info):
++
++        sampling_info.temperatures = self.raw_temperatures
++        sampling_info.top_ks = self.raw_top_ks
++        sampling_info.top_ps = self.raw_top_ps
++        if sampling_info.need_min_p_sampling:
++            sampling_info.min_ps = self.raw_min_ps
++
++    def _target_preprocess_decode(self, batch: ScheduleBatch):
++
++
++        # Prepare Input
++        spec_info = batch.spec_info
++        draft_tokens = spec_info.topk_index
++        # position: where each token belongs to
++        position = batch.seq_lens - 1
++
++
++        # change spec_into to EagleVerifyInfo for target model
++        batch.spec_info =EagleVerifyInput(
++                            draft_token=draft_tokens,
++                            custom_mask=None,
++                            positions=position,
++                            retrive_index=None,
++                            retrive_next_token=None,
++                            retrive_next_sibling=None,
++                            retrive_cum_len=None,
++                            spec_steps=self.speculative_num_steps,
++                            topk=self.topk,
++                            draft_token_num=self.server_args.speculative_num_draft_tokens,
++                            capture_hidden_mode=CaptureHiddenMode.FULL,
++                            seq_lens_sum=batch.seq_lens_sum,
++                            seq_lens_cpu=batch.seq_lens.cpu(),
++                        )
++
++        # spec_info: EagleVerifyInput
++        num_seqs = batch.batch_size()
++        spec_info = batch.spec_info
++        batch.seq_lens_sum = torch.sum(batch.seq_lens).item()
++        batch.return_hidden_states = False
++        spec_info.positions = batch.seq_lens.repeat_interleave(self.topk, dim=0)
++
++    def _target_preprocess_idle(self, batch: ScheduleBatch):
++        batch.spec_info = EagleVerifyInput.create_idle_input(
++            self.topk,
++            self.speculative_num_steps,
++            self.speculative_num_draft_tokens,
++        )
++
++
++    def verify(self, input_ids, forward_token_ids, num_reqs, batch):
++
++        num_sampling_tokens_per_req = batch.spec_info.draft_token_num
++        num_valid_tokens = num_reqs * num_sampling_tokens_per_req
++        input_ids = input_ids[:num_valid_tokens]
++        forward_token_ids = forward_token_ids[:num_valid_tokens]
++
++        if batch.forward_mode.is_idle():
++            accepted_num = torch.zeros(num_reqs, device=input_ids.device, dtype=torch.int32)  # (b,)
++            last_accepted_index = torch.arange(num_reqs, device=input_ids.device, dtype=torch.int32) * num_sampling_tokens_per_req + accepted_num
++            output_token_ids = forward_token_ids[::num_sampling_tokens_per_req]
++        else:
++            if not hasattr(self, "minus_one"):
++                self.minus_one = -torch.ones(1, 1, device=input_ids.device, dtype=input_ids.dtype)
++            accepted = input_ids.view(num_reqs, -1)[:, 1:] == forward_token_ids.view(num_reqs, -1)[:, :-1] #(b, n_spec - 1)
++            padding_zero = torch.zeros((num_reqs, 1), dtype=torch.int32, device=input_ids.device)
++            accepted_mask = accepted.to(dtype=torch.int32)
++            accepted_mask = torch.cat((accepted_mask, padding_zero), dim=1)
++            accepted_num = accepted_mask.argmin(dim=1).to(dtype=torch.int32)  #(b,)
++            offset = torch.arange(num_sampling_tokens_per_req, device=accepted_num.device, dtype=torch.int32)
++            last_accepted_index = torch.arange(num_reqs, device=input_ids.device, dtype=torch.int32) * num_sampling_tokens_per_req + accepted_num #(b,)
++
++            # [t1, -1], [t1(bouns), t2]
++            output_token_ids = forward_token_ids[last_accepted_index]
++
++            # offset [1, 2], accepted_num[B, 1]
++            bouns_mask = offset[None, :] <= accepted_num[:, None] - 1
++            bouns_ids_cpu = torch.where(bouns_mask, forward_token_ids.view(num_reqs, -1), self.minus_one).tolist()
++
++            # Iterate every accepted token and check if req has finished after append the token
++            # should be checked BEFORE free kv cache slots
++            for i, (req, bonus_ids_per_reqs) in enumerate(zip(batch.reqs, bouns_ids_cpu)):
++                for token_id in bonus_ids_per_reqs:
++                    if token_id == -1:
++                        break
++                    req.output_ids.append(token_id)
++                    req.check_finished()
++                    if req.finished():
++                        # has_finished = True
++                        break
++
++            # Free the KV cache for unaccepted tokens
++            evict_mask = offset[None, :] > accepted_num[:, None]  # [B, num_tokens], evict unaccpeted tokens
++            page_first_slot_mask = (batch.seq_lens[:, None] + offset[None, :]) % self.page_size == 1 # [num_tokens]
++            evict_mask = evict_mask & page_first_slot_mask
++
++            if self.page_size == 1:
++                # TODO: boolean array index leads to a device sync. Remove it.
++                batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask])
++            else:
++                batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask.view(-1)])
++
++        return output_token_ids, accepted_num, last_accepted_index
+\ No newline at end of file
+diff --git a/python/sglang/srt/speculative/spec_info.py b/python/sglang/srt/speculative/spec_info.py
+index af556b99c..a658902a0 100644
+--- a/python/sglang/srt/speculative/spec_info.py
++++ b/python/sglang/srt/speculative/spec_info.py
+@@ -5,6 +5,7 @@ class SpeculativeAlgorithm(IntEnum):
+     NONE = auto()
+     EAGLE = auto()
+     EAGLE3 = auto()
++    MTP = auto()
+ 
+     def is_none(self):
+         return self == SpeculativeAlgorithm.NONE
+@@ -15,11 +16,15 @@ class SpeculativeAlgorithm(IntEnum):
+     def is_eagle3(self):
+         return self == SpeculativeAlgorithm.EAGLE3
+ 
++    def is_mtp(self):
++        return self == SpeculativeAlgorithm.MTP
++
+     @staticmethod
+     def from_string(name: str):
+         name_map = {
+             "EAGLE": SpeculativeAlgorithm.EAGLE,
+             "EAGLE3": SpeculativeAlgorithm.EAGLE3,
++            "MTP": SpeculativeAlgorithm.MTP,
+             None: SpeculativeAlgorithm.NONE,
+         }
+         if name is not None:

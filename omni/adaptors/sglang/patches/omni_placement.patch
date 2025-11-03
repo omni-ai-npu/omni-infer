@@ -1,0 +1,303 @@
+diff --git a/python/sglang/srt/eplb/eplb_manager.py b/python/sglang/srt/eplb/eplb_manager.py
+index 604e2c464..7b26e0d27 100644
+--- a/python/sglang/srt/eplb/eplb_manager.py
++++ b/python/sglang/srt/eplb/eplb_manager.py
+@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, List
+ import torch.cuda
+ 
+ from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
+-from sglang.srt.eplb.expert_location import ExpertLocationMetadata
++from sglang.srt.eplb.expert_location import ExpertLocationMetadata, get_global_expert_location_metadata
+ 
+ if TYPE_CHECKING:
+     from sglang.srt.model_executor.model_runner import ModelRunner
+@@ -43,6 +43,10 @@ class EPLBManager:
+ 
+     # can be more complex if needed
+     def _entrypoint(self):
++        if self._server_args.enable_omni_placement:
++            while True:
++                get_global_expert_location_metadata().place_experts()
++                yield
+         while True:
+             for _ in range(self._rebalance_num_iterations):
+                 yield
+diff --git a/python/sglang/srt/eplb/expert_distribution.py b/python/sglang/srt/eplb/expert_distribution.py
+index 5c2964842..7a1d89c44 100644
+--- a/python/sglang/srt/eplb/expert_distribution.py
++++ b/python/sglang/srt/eplb/expert_distribution.py
+@@ -30,6 +30,11 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+ from sglang.srt.server_args import ServerArgs
+ from sglang.srt.utils import Withable, get_bool_env_var
+ 
++try:
++    from omni.accelerators.placement.omni_placement import OmniPlanner
++except:
++    print("Warning: omniinfer is not installed!", flush=True)
++
+ logger = logging.getLogger(__name__)
+ 
+ # --------------------------------------- Entrypoint -----------------------------------------
+@@ -278,10 +283,7 @@ _global_expert_distribution_recorder: Optional[ExpertDistributionRecorder] = (
+ 
+ 
+ def get_global_expert_distribution_recorder(is_npu: bool = False):
+-    if is_npu:
+-        return NpuExpertDistributionRecorder()
+-    else:
+-        return _global_expert_distribution_recorder
++    return _global_expert_distribution_recorder
+ 
+ 
+ def set_global_expert_distribution_recorder(value):
+@@ -299,6 +301,9 @@ class _SinglePassGatherer(ABC):
+         expert_location_metadata: "ExpertLocationMetadata",
+         rank: int,
+     ) -> "_SinglePassGatherer":
++        if server_args.enable_omni_placement:
++            return _OmniPlacementSinglePassGatherer(expert_location_metadata, rank)
++        
+         if server_args.expert_distribution_recorder_mode == "per_token":
+             return _DetailSinglePassGatherer(
+                 server_args, expert_location_metadata, rank
+@@ -507,6 +512,22 @@ class _SelectExpertsSinglePassGatherer(_LayerBasedGpuSinglePassGatherer):
+             dim=0, index=topk_ids.masked_fill(~mask, 0).long(), src=mask.int()
+         )
+ 
++class _OmniPlacementSinglePassGatherer(_LayerBasedCpuSinglePassGatherer):
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.planner = OmniPlanner()
++    def on_deepep_dispatch_normal(
++        self,
++        layer_idx: int,
++        local_physical_count_of_layer: List[int],
++        num_tokens_per_rank,
++        num_tokens_per_rdma_rank,
++        num_tokens_per_expert,
++    ):
++        self.planner.record_activation(self.planner.get_moe_layer_idx(layer_idx), num_tokens_per_expert, support_multi_stream=False)
++
++    def collect(self):
++        pass
+ 
+ class _DeepepNormalSinglePassGatherer(_LayerBasedCpuSinglePassGatherer):
+     def __init__(self, *args, **kwargs):
+@@ -592,6 +613,7 @@ class _Accumulator(ABC):
+             "stat_approx": _StatAccumulator,
+             "per_pass": _DetailAccumulator,
+             "per_token": _DetailAccumulator,
++            "omni_placement": _Accumulator,
+         }[server_args.expert_distribution_recorder_mode]
+ 
+     def __init__(
+diff --git a/python/sglang/srt/eplb/expert_location.py b/python/sglang/srt/eplb/expert_location.py
+index be0e23653..cda024018 100644
+--- a/python/sglang/srt/eplb/expert_location.py
++++ b/python/sglang/srt/eplb/expert_location.py
+@@ -27,6 +27,11 @@ from sglang.srt.eplb import eplb_algorithms
+ from sglang.srt.model_loader import get_model_architecture
+ from sglang.srt.server_args import ServerArgs
+ 
++try:
++    from omni.accelerators.placement.omni_placement import OmniPlanner
++except:
++    print("Warning: omniinfer is not installed!", flush=True)
++
+ logger = logging.getLogger(__name__)
+ 
+ 
+@@ -78,6 +83,34 @@ class ExpertLocationMetadata:
+         assert num_physical_experts_0 == num_physical_experts_1
+ 
+     # -------------------------------- construction ------------------------------------
++    
++    @staticmethod
++    def init_omni_placement(server_args: ServerArgs, model_config: ModelConfig):
++        first_k_dense_replace = 0
++        if not hasattr(model_config.hf_config, "first_k_dense_replace"):
++            print("[Placement-Warning]: first_k_dense_replace is not defined on model_config, will be set to 0", flush=True)
++        else:
++            first_k_dense_replace = model_config.hf_config.first_k_dense_replace
++        
++        model_config_for_expert_location = (
++            ModelConfigForExpertLocation.from_model_config(model_config)
++        )
++
++        ep_size = server_args.ep_size
++        num_layers = model_config_for_expert_location.num_layers
++        num_experts = model_config_for_expert_location.num_logical_experts
++        max_redundant_per_rank = server_args.ep_num_redundant_experts // ep_size
++
++        kwargs = {
++            "config_file": server_args.omni_placement_config_path,
++            "rank": torch.distributed.get_rank() % ep_size,
++            "world_size": ep_size,
++            "num_experts": num_experts,
++            "num_layers": num_layers,
++            "first_k_dense_replace": first_k_dense_replace,
++            "max_redundant_per_rank": max_redundant_per_rank,
++        }
++        return OmniPlanner(**kwargs)
+ 
+     @staticmethod
+     def init_trivial(server_args: ServerArgs, model_config: ModelConfig):
+@@ -432,6 +465,10 @@ def compute_initial_expert_location_metadata(
+     server_args: ServerArgs, model_config: ModelConfig
+ ) -> Optional[ExpertLocationMetadata]:
+     data = server_args.init_expert_location
++
++    if server_args.enable_omni_placement:
++        return ExpertLocationMetadata.init_omni_placement(server_args, model_config)
++    
+     if data == "trivial":
+         return ExpertLocationMetadata.init_trivial(server_args, model_config)
+ 
+diff --git a/python/sglang/srt/eplb/expert_location_dispatch.py b/python/sglang/srt/eplb/expert_location_dispatch.py
+index 624dc3fd1..67ac43c3f 100644
+--- a/python/sglang/srt/eplb/expert_location_dispatch.py
++++ b/python/sglang/srt/eplb/expert_location_dispatch.py
+@@ -19,6 +19,7 @@ import torch
+ 
+ from sglang.srt.eplb.expert_location import get_global_expert_location_metadata
+ from sglang.srt.managers.schedule_batch import global_server_args_dict
++from types import SimpleNamespace
+ 
+ 
+ @dataclass
+@@ -34,6 +35,11 @@ class ExpertLocationDispatchInfo:
+ 
+     @classmethod
+     def init_new(cls, layer_id: int):
++        if global_server_args_dict["enable_omni_placement"]:
++            layer_idx_moe = get_global_expert_location_metadata().get_moe_layer_idx(layer_id)
++            expert_mapping = get_global_expert_location_metadata().expert_mapping_on_current_layer(layer_idx_moe)
++            return SimpleNamespace(ep_dispatch_algorithm="omni_placement", layer_idx_moe=layer_idx_moe, expert_mapping=expert_mapping)
++
+         ep_dispatch_algorithm = global_server_args_dict["ep_dispatch_algorithm"]
+         expert_location_metadata = get_global_expert_location_metadata()
+         assert expert_location_metadata is not None
+@@ -79,13 +85,22 @@ def topk_ids_logical_to_physical(
+     if info is None:
+         return topk_ids
+ 
++    if info.ep_dispatch_algorithm == "omni_placement":
++        return _topk_ids_logical_to_physical_omni_placement(topk_ids,info)
+     if info.ep_dispatch_algorithm == "static":
+         return _topk_ids_logical_to_physical_static(topk_ids, info)
+     if info.ep_dispatch_algorithm in ["dynamic", "fake"]:
+         return _topk_ids_logical_to_physical_dynamic(topk_ids, info)
+     raise NotImplementedError(f"Unknown algorithm {info.ep_dispatch_algorithm}")
+ 
+-
++def _topk_ids_logical_to_physical_omni_placement(
++    topk_ids: torch.Tensor, info: Optional[ExpertLocationDispatchInfo]
++) -> torch.Tensor:
++    _, topk_ids, _ = get_global_expert_location_metadata().plan(layer_idx_moe=info.layer_idx_moe,
++                                                                token_expert_ids = topk_ids,
++                                                                expert_mapping=info.expert_mapping)
++    return topk_ids
++    
+ def _topk_ids_logical_to_physical_static(
+     topk_ids: torch.Tensor, info: Optional[ExpertLocationDispatchInfo]
+ ) -> torch.Tensor:
+diff --git a/python/sglang/srt/layers/moe/topk.py b/python/sglang/srt/layers/moe/topk.py
+index 1cfbff498..9d9876565 100644
+--- a/python/sglang/srt/layers/moe/topk.py
++++ b/python/sglang/srt/layers/moe/topk.py
+@@ -245,7 +245,7 @@ class TopK(CustomOp):
+ 
+         # NOTE: now npu_moe_gating_top_k can only support `group_count=256` pattern
+         if global_num_experts == 256:
+-            return torch_npu.npu_moe_gating_top_k(
++            topk_weights, topk_ids, router_logits = torch_npu.npu_moe_gating_top_k(
+                 router_logits,
+                 k=self.top_k,
+                 bias=self.correction_bias.to(router_logits.dtype),
+@@ -257,6 +257,8 @@ class TopK(CustomOp):
+                 routed_scaling_factor=self.routed_scaling_factor,
+                 eps=float(1e-20),
+             )
++            topk_ids = topk_ids_logical_to_physical(topk_ids, expert_location_dispatch_info)
++            return topk_weights, topk_ids, router_logits
+         else:
+             torch_native = True
+             return select_experts(
+diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
+index b57480fa9..02e287b1c 100644
+--- a/python/sglang/srt/managers/schedule_batch.py
++++ b/python/sglang/srt/managers/schedule_batch.py
+@@ -96,6 +96,7 @@ GLOBAL_SERVER_ARGS_KEYS = [
+     "moe_dense_tp_size",
+     "ep_dispatch_algorithm",
+     "deepep_config",
++    "enable_omni_placement",
+     "ep_num_redundant_experts",
+     "enable_nan_detection",
+     "flashinfer_mla_disable_ragged",
+diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
+index 07abff11a..02656ccef 100644
+--- a/python/sglang/srt/model_executor/model_runner.py
++++ b/python/sglang/srt/model_executor/model_runner.py
+@@ -350,6 +350,12 @@ class ModelRunner:
+         else:
+             pass
+ 
++        if server_args.enable_omni_placement:
++            param_dict = dict(self.model.named_parameters())
++            first_k_dense_replace = get_global_expert_location_metadata().first_k_dense_replace
++            get_global_expert_location_metadata().init_dram_weights(param_dict, first_k_dense_replace=first_k_dense_replace)
++            get_global_expert_location_metadata().start_dynamic_optimize_expert_load_balance()
++
+         # auxiliary hidden capture mode. TODO: expose this to server args?
+         if self.spec_algorithm.is_eagle3() and not self.is_draft_worker:
+             # load draft config
+diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
+index 65d73f539..516b69ef7 100644
+--- a/python/sglang/srt/server_args.py
++++ b/python/sglang/srt/server_args.py
+@@ -183,12 +183,14 @@ class ServerArgs:
+     ep_num_redundant_experts: int = 0
+     ep_dispatch_algorithm: Optional[Literal["static", "dynamic", "fake"]] = None
+     init_expert_location: str = "trivial"
++    enable_omni_placement: bool=False
++    omni_placement_config_path: str= ""
+     enable_eplb: bool = False
+     eplb_algorithm: str = "auto"
+     eplb_rebalance_num_iterations: int = 1000
+     eplb_rebalance_layers_per_chunk: Optional[int] = None
+     expert_distribution_recorder_mode: Optional[
+-        Literal["stat", "stat_approx", "per_pass", "per_token"]
++        Literal["stat", "stat_approx", "per_pass", "per_token", "omni_placement"]
+     ] = None
+     expert_distribution_recorder_buffer_size: Optional[int] = None
+     enable_expert_distribution_metrics: bool = False
+@@ -582,6 +584,10 @@ class ServerArgs:
+             logger.warning(
+                 f"DeepEP MoE is enabled. The expert parallel size is adjusted to be the same as the tensor parallel size[{self.tp_size}]."
+             )
++        
++        if self.enable_omni_placement:
++            self.enable_eplb=True
++            self.expert_distribution_recorder_mode = "omni_placement"
+ 
+         if self.enable_eplb and (self.expert_distribution_recorder_mode is None):
+             self.expert_distribution_recorder_mode = "stat"
+@@ -1531,6 +1537,17 @@ class ServerArgs:
+             default=ServerArgs.init_expert_location,
+             help="Initial location of EP experts.",
+         )
++        parser.add_argument(
++            "--enable-omni-placement",
++            action="store_true",
++            help="Enable Omni-Placement EPLB algorithm",
++        )
++        parser.add_argument(
++            "--omni-placement-config-path",
++            type=str,
++            default=ServerArgs.init_expert_location,
++            help="Omni-Placement Config Yaml Path",
++        )
+         parser.add_argument(
+             "--enable-eplb",
+             action="store_true",

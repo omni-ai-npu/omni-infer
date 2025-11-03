@@ -139,7 +139,7 @@
         --ascend-rt-visible-devices "${PREFILL_SERVER_LIST}" \
         --kv-rank ${KV_RANK} \
         --kv-engine-id ${KV_RANK} \
-        --kv-parallel-size ${KV_PARALLEL_SIZE} \
+        --kv-parallel-size ${DECODE_TENSOR_PARALLEL_SIZE} \
         --kv-connector ${KV_CONNECTOR} \
         --model-extra-cfg-path ${MODEL_EXTRA_CFG_PATH} \
         --gpu-util ${GPU_UTIL} \
@@ -207,7 +207,7 @@
         --tp ${DECODE_TENSOR_PARALLEL_SIZE} \
         --kv-rank ${PREFILL_POD_NUM} \
         --kv-engine-id ${PREFILL_POD_NUM} \
-        --kv-parallel-size ${KV_PARALLEL_SIZE} \
+        --kv-parallel-size ${DECODE_TENSOR_PARALLEL_SIZE} \
         --kv-connector ${KV_CONNECTOR} \
         --model-extra-cfg-path ${MODEL_EXTRA_CFG_PATH} \
         --gpu-util ${GPU_UTIL} \
@@ -316,6 +316,7 @@
       -e MODEL_LEN_MAX_PREFILL=$MODEL_LEN_MAX_PREFILL
       -e PREFILL_SERVER_LIST=$PREFILL_SERVER_LIST
       -e PREFILL_TENSOR_PARALLEL_SIZE=$PREFILL_TENSOR_PARALLEL_SIZE
+      -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE
       -e IP=$IP
       -e HOST_IP=$HOST_IP
       -e MASTER_PORT=$NODE_PORT

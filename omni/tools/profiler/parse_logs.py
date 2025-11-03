@@ -39,7 +39,7 @@ def parse_trace_logs(root_dir):
                                         decode_engine_step_lines.append(line)
                                     continue
                                 # for time analysis
-                                if "<<<Action" in line: 
+                                if "<<<Action" in line:
                                     st_idx = line.find("<<<Action")
                                     line = line[st_idx:] # skip prefix if any
                                     match = re.match(pattern, line.strip())
@@ -57,26 +57,66 @@ def parse_trace_logs(root_dir):
 
         # process time analysis
         if data_by_request:
-            # Sort actions by the earliest timestamp
-            sorted_actions = sorted(action_timestamps.keys(), key=lambda x: action_timestamps[x])
-            fieldnames = ['RequestID', 'P_NODE', "D_NODE"] + sorted_actions
-
+            action_map = {
+                'PD api server get request': 'prefill api server收到请求',
+                'Get prefill engine request and start pickle': '触发engine处理请求',
+                'Finish process request in prefill engine': 'engine结束tokennizer',
+                'Start process request in prefill engine': 'engine准备开始处理输入请求',
+                'Prefill add waiting queue': 'prefill 请求添加到waiting队列',
+                'try to schedule in waiting queue': '首次尝试加入running队列',
+                'fail to add result of kv insufficient': '首次kv不足加入失败',
+                'Prefill get new_blocks': 'P侧申请完成KV',
+                'success add to seq groups': '成功加入running队列',
+                'Prefill start execute_model': 'P开始execute model',
+                'Prefill done execute_model': 'P完成execute model',
+                'Start to send output in prefill stage': 'engine异步发送输出',
+                'Client get prefill output': 'client收到输出并入队',
+                'Pop output queues': 'client出队',
+                'Finish prefill pickle and start response': 'api server收到请求准备返回',
+                'Enter decode to generate': 'decode api server收到请求准备处理',
+                'Start to dispatch decode request': '进入engine分发请求',
+                'Add need pulling sequence': '添加到need pulling队列',
+                'Start pull kv': '开始pull kv',
+                'Finish pull kv': '结束pull kv',
+                'Prefill free kv blocks': 'P侧释放KV(和前后列时间戳可能存在时钟误差)',
+                'Start append running sequece for decode': 'pull kv结束添加到running队列',
+                'Start to send output': '触发首个decode token执行',
+                'First decode output token': 'decoder返回第一个token',
+                'Second decode output token': 'decoder返回第二个token',
+                'Finish decode pickle and start response': 'api server收到推理结果'
+            }
+            fieldnames = ['RequestID', 'P_NODE', "D_NODE"] + list(action_map.keys())
             data = []
             for request_id, actions in data_by_request.items():
+                decode = request_role[request_id].get("decode")
+                prefill = request_role[request_id].get("prefill")
+                if decode is None or prefill is None:
+                    print(
+                        f'request_id: {request_role[request_id].get("request_id")} decode or prefill is None')
+                    continue
                 row = {
-                    'RequestID': request_id, 
-                    'P_NODE':request_role[request_id]["prefill"], 
-                    'D_NODE':request_role[request_id]["decode"]
+                    'RequestID': request_id,
+                    'P_NODE': prefill,
+                    'D_NODE': decode
                 }
                 # Add timestamps for each action, "-" for missing actions
-                for action in sorted_actions:
+                for action in action_map.keys():
                     row[action] = actions.get(action, '-')
                 data.append(row)
 
             df = pd.DataFrame(data, columns=fieldnames)
-            with pd.ExcelWriter(time_analysis_path, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='time_analysis', index=False)
+            # chinese_row
+            chinese_row = {
+                'RequestID': '',
+                'P_NODE': '',
+                'D_NODE': ''
+            }
+            chinese_row.update(action_map)
+            df_cn = pd.DataFrame([chinese_row], columns=fieldnames)
+            df_final = pd.concat([df.iloc[:0], df_cn, df.iloc[0:]], ignore_index=True)
 
+            with pd.ExcelWriter(time_analysis_path, engine='openpyxl') as writer:
+                df_final.to_excel(writer, sheet_name='time_analysis', index=False)
                 summary_data = {
                     'RequestID': list(data_by_request.keys()),
                     'ActionCount': [len(actions) for actions in data_by_request.values()]
@@ -162,8 +202,8 @@ def parse_trace_logs(root_dir):
         print(f"Error occurred: {str(e)}")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2: 
+    if len(sys.argv) < 2:
         print("Please input log directory. e.g.: python parse_logs.py path/to/all_pd_logs_direcotry")
         exit()
-    root_dir = sys.argv[1] 
+    root_dir = sys.argv[1]
     parse_trace_logs(root_dir)

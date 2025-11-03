@@ -39,6 +39,7 @@ class InternLMDecoderLayer(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+        self.layer_name = f"{prefix}.self_attn.attn"
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
@@ -53,7 +54,7 @@ class InternLMDecoderLayer(nn.Module):
             max_position_embeddings=max_position_embeddings,
             cache_config=cache_config,
             quant_config=quant_config,
-            prefix=f"{prefix}.attention",
+            prefix=f"{prefix}.self_attn",
         )
         self.feed_forward = InternLM2MLP(
             hidden_size=self.hidden_size,

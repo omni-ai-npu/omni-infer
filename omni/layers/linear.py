@@ -917,6 +917,8 @@ class UnquantizedFlashCommLinearMethod(FlashCommLinearMethodBase):
             x = get_tp_group().all_to_all(x)
 
         if bias is not None:
+            if x.ndim == 3:
+                return torch.matmul(x, layer.weight) + bias
             # return F.linear(x, layer.weight, bias)
             return torch.addmm(bias, x, layer.weight)
         else:
@@ -1196,6 +1198,22 @@ class QKVParallelFlashCommLinear(ColumnParallelFlashCommLinear):
             param.data = param.data.t_()
         param_data = param.data
         output_dim = getattr(param, "output_dim", None)
+        
+        if loaded_shard_id is None:
+            shard_offsets = [
+                # (shard_id, shard_offset, shard_size)
+                ("q", 0, self.total_num_heads * self.head_size),
+                ("k", self.total_num_heads * self.head_size,
+                 self.total_num_kv_heads * self.head_size),
+                ("v", (self.total_num_heads + self.total_num_kv_heads) *
+                 self.head_size, self.total_num_kv_heads * self.head_size),
+            ]
+            for shard_id, shard_offset, shard_size in shard_offsets:
+                loaded_weight_shard = loaded_weight.narrow(
+                    output_dim, shard_offset, shard_size)
+                self.weight_loader(param, loaded_weight_shard, shard_id)
+            return
+
         assert loaded_shard_id in ["q", "k", "v"]
 
         # If output dim is defined, use the default loading process.

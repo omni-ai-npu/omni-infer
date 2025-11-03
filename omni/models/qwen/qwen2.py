@@ -792,7 +792,7 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         attn_metadata: AttentionMetadata = None,
         selected_indices: Optional[torch.Tensor] = None,
         intermediate_tensors: Optional[IntermediateTensors] = None,
-        inputs_embeds = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Union[torch.Tensor, IntermediateTensors]:
         hidden_states = self.model(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors, None)

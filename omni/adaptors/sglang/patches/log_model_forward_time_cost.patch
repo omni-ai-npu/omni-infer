@@ -1,0 +1,36 @@
+diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
+index a6aae6bc..a857c11f 100644
+--- a/python/sglang/srt/model_executor/model_runner.py
++++ b/python/sglang/srt/model_executor/model_runner.py
+@@ -1712,9 +1712,13 @@ class ModelRunner:
+             with self.device_graph_runner.get_runner_context(
+                 forward_batch, skip_attn_backend_init
+             ) as runner_fn:
++                start_time = time.time()
+                 ret = runner_fn(
+                     pp_proxy_tensors,
+                 )
++                end_model = time.time()
++                cost_model = end_model - start_time
++                logger.info(f" ***** graph model forward: {cost_model:.6f}, bs: {forward_batch.orig_seq_lens.shape[0]}")
+ 
+             if _is_npu and forward_batch.global_num_tokens_cpu is not None:
+                 forward_batch.post_forward_mlp_sync_batch(ret)
+@@ -1725,6 +1729,7 @@ class ModelRunner:
+             if forward_batch.global_num_tokens_cpu is not None:
+                 forward_batch.prepare_mlp_sync_batch(self)
+ 
++        start_time = time.time()
+         if forward_batch.forward_mode.is_decode_or_idle() and not forward_batch.is_prefill_idle:
+             ret = self.forward_decode(
+                 forward_batch,
+@@ -1747,6 +1752,9 @@ class ModelRunner:
+             ret = self.forward_idle(forward_batch, pp_proxy_tensors=pp_proxy_tensors)
+         else:
+             raise ValueError(f"Invalid forward mode: {forward_batch.forward_mode}")
++        end_model = time.time()
++        cost_model = end_model - start_time
++        logger.info(f" ***** eager model forward: {cost_model:.6f}, bs: {forward_batch.orig_seq_lens.shape[0]}")
+ 
+         if forward_batch.global_num_tokens_cpu is not None:
+             forward_batch.post_forward_mlp_sync_batch(ret)

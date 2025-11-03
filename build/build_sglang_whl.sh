@@ -2,31 +2,20 @@
 # Configure project name
 PROJECT_NAME="sglang"
 
-# Parse command line arguments (supports --build-path to specify project directory)
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" # default project directory
+echo "Patching NPU adaptation..."
+cd "$(dirname "${BASH_SOURCE[0]}")"/../infer_engines
+bash bash_install_sglang.sh
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --build-path)
-            if [[ -n "$2" ]]; then
-                PROJECT_DIR="$2"
-                PROJECT_DIR="$(cd "${PROJECT_DIR}" && pwd)" # Convert to absolute path
-                shift 2
-            else
-                echo "Error: --build-path requires a directory path"
-                exit 1
-            fi
-            ;;
-        *)
-            echo "Error: Unknow option '$1'"
-            echo "Usage: $0 [--build-path /path/to/project]"
-            exit 1
-            ;;
-    esac
-done
+if [ $? -ne 0 ]; then
+    echo "Error: Patching NPU adaptation failed."
+    exit 1
+fi
+cd -
+
+PROJECT_DIR="$(dirname "${BASH_SOURCE[0]}")"/../infer_engines/sglang/python # default project directory
 
 # define output directory
-DIST_DIR="${PROJECT_DIR}/dist"
+DIST_DIR="$(dirname "${BASH_SOURCE[0]}")"/sglang_dist
 
 # Check if pyproject.toml exists the project directory
 if [ ! -f "${PROJECT_DIR}/pyproject.toml" ]; then
@@ -89,11 +78,6 @@ else
     echo "Build failed. Check error messages above"
     exit 1
 fi
-
-echo "Patching NPU adaptation..."
-cd "$(dirname "${BASH_SOURCE[0]}")"/../infer_engines
-bash bash_install_sglang.sh
-cd -
 
 echo "============================================="
 exit 0

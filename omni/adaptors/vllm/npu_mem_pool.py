@@ -22,7 +22,6 @@ from contextlib import contextmanager
 from typing import Any, Callable, Optional, Union
 
 import torch
-from acl.rt import memcpy
 from vllm.logger import logger
 
 from omni.adaptors.vllm.platform import NPUPlatform
@@ -57,7 +56,7 @@ def find_loaded_library(lib_name) -> Optional[str]:
 npu_mem_available = False
 try:
     from omni.adaptors.vllm.npu_mem_allocator import (init_module, python_create_and_map,
-                                              python_unmap_and_release)
+                                              python_unmap_and_release, memcpy)
     lib_name = find_loaded_library("npu_mem_allocator")
     npu_mem_available = True
 except ImportError as e:

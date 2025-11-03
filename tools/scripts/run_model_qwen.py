@@ -126,6 +126,13 @@ def run_default_mode(args):
     env['VLLM_WORKER_MULTIPROC_METHOD'] = 'fork'   # Process spawning method
     env['OMNI_USE_QWEN'] = '1'  # Enable custom model support
     env['VLLM_USE_V1'] = '1'
+    env['ASCEND_GLOBAL_LOG_LEVEL'] = '3'
+    env['VLLM_LOGGING_LEVEL'] = 'INFO'
+
+    env['HCCL_OP_EXPANSION_MODE'] = 'AIV'
+    env['TNG_HOST_COPY'] = '1'
+    env['TASK_QUEUE_ENABLE'] = '2'
+    env['CPU_AFFINITY_CONF'] = '2'
 
     if args.graph_true.lower() == 'false':
           # Base command for API server
@@ -149,7 +156,7 @@ def run_default_mode(args):
     elif args.graph_true.lower() == 'true':
         # Base command for API server
         additional_config = args.additional_config if args.additional_config else \
-                '{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":false, "block_num_floating_range":50}, "enable_hybrid_graph_mode": true}'
+                '{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":false, "block_num_floating_range":50}, "enable_hybrid_graph_mode": false}'
         cmd = [
             'python',  os.path.join(args.code_path,'omniinfer/tools/scripts/start_api_servers.py'),
             '--num-servers', '1',
@@ -161,6 +168,8 @@ def run_default_mode(args):
             '--base-api-port', args.https_port,        # HTTP service port
             '--log-dir', args.log_path,  # Log directory
             '--gpu-util', '0.9',  # Target NPU utilization
+            '--max-model-len', args.max_model_len,
+            '--extra-args', f'--max-num-batched-tokens {args.max_num_batched_tokens} --max-num-seqs {args.max_num_seqs} ',
             '--additional-config', additional_config
         ]
     
@@ -185,6 +194,7 @@ def set_common_env_vars(intf, env):
     env['VLLM_USE_V1'] = '1'                       # Use vLLM v1 API
     env['VLLM_WORKER_MULTIPROC_METHOD'] = 'fork'    # Process spawning method
     env['VLLM_LOGGING_LEVEL'] = 'INFO'             # Log verbosity level
+    env['ASCEND_GLOBAL_LOG_LEVEL'] = '3'
     
     # Custom model support
     env['OMNI_USE_QWEN'] = '1'  # Enable QWEN model optimizations
@@ -220,7 +230,10 @@ def start_perfill_api_servers(intf, args):
     env['HCCL_INTRA_PCIE_ENABLE'] = '0'  # Disable PCIe communication
     env['HCCL_DETERMINISTIC'] = 'true'  # Enable deterministic behavior
     env['CLOSE_MATMUL_K_SHIFT'] = '1'  # Optimization flag
+    env['HCCL_OP_EXPANSION_MODE'] = 'AIV'
 
+    # Prefill-specific optimizations
+    env['ENABLE_PREFILL_TND'] = '1'
 
     # KV transfer configuration for attention
     kv_transfer_config = {
@@ -246,7 +259,7 @@ def start_perfill_api_servers(intf, args):
         '--log-dir', args.log_path + '/prefill/',  # Log directory
         '--no-enable-prefix-caching',  # Disable caching
         '--gpu-util', '0.9',        # Target NPU utilization
-        '--extra-args', f'--max-num-batched-tokens {args.max_model_len} --enforce-eager ',  # Perf mance flags
+        '--extra-args', f'--max-num-batched-tokens {args.max_num_batched_tokens} --max-num-seqs {args.max_num_seqs} --enforce-eager',  # Perf mance flags
         '--kv-transfer-config', json.dumps(kv_transfer_config)  # KV transfer settings
     ]
 
@@ -275,7 +288,7 @@ def start_decoder_api_servers(intf, args):
     # Advanced HCCL settings
     env['HCCL_INTRA_ROCE_ENABLE'] = '1'  # Enable RoCE communication
     env['HCCL_INTRA_PCIE_ENABLE'] = '0'  # Disable PCIe communication
-    env['HCCL_BUFFSIZE'] = '2000'       # Communication buffer size
+    env['HCCL_BUFFSIZE'] = '1000'       # Communication buffer size
     env['HCCL_OP_EXPANSION_MODE'] = 'AIV'  # Operation expansion mode
     env['VLLM_ENABLE_MC2'] = '1'        # Memory optimization
 
@@ -320,10 +333,10 @@ def start_decoder_api_servers(intf, args):
             '--base-api-port', str(int(args.service_port) + 100),      # API service port
             '--tp', str(len(args.decode_server_list.split(','))),                    # 8-way tensor parallelism
             '--served-model-name', args.model_name,
-            '--max-model-len',  args.max_model_len,    # Max context length
+            '--max-model-len', args.max_model_len,    # Max context length
             '--log-dir', args.log_path + '/decode/',  # Log directory
             '--no-enable-prefix-caching',  # Disable caching
-            '--extra-args', f'--max-num-batched-tokens {args.max_model_len} ',  # Performance flag
+            '--extra-args', f'--max-num-batched-tokens {args.max_num_batched_tokens} --max-num-seqs {args.max_num_seqs}',  # Performance flag
             '--kv-transfer-config', json.dumps(kv_transfer_config)  # KV transfer settings
         ]
 
@@ -346,10 +359,10 @@ def start_decoder_api_servers(intf, args):
             '--base-api-port', str(int(args.service_port) + 100),      # API service port
             '--tp', str(len(args.decode_server_list.split(','))),           # 8-way tensor parallelism
             '--served-model-name', args.model_name,
-            '--max-model-len',  args.max_model_len,    # Max context length
+            '--max-model-len', args.max_model_len,    # Max context length
             '--log-dir', args.log_path + '/decode/',  # Log directory
             '--no-enable-prefix-caching',  # Disable caching
-            '--extra-args', f'--max-num-batched-tokens {args.max_model_len} ',  # Performance flag
+            '--extra-args', f'--max-num-batched-tokens {args.max_num_batched_tokens} --max-num-seqs {args.max_num_seqs} ',  # Performance flag
             '--additional-config', additional_config,  # Graph mode config
             '--kv-transfer-config', json.dumps(kv_transfer_config)  # KV transfer settings
         ]
@@ -359,7 +372,7 @@ def start_decoder_api_servers(intf, args):
 def start_global_proxy(intf, args):
     """Start global proxy for routing requests"""
     env = os.environ.copy()
-    env['PATH'] = '/user/local/nginx:' + env.get('PATH', '')  # Ensure nginx in PATH
+    env['PATH'] = '/usr/local/nginx:' + env.get('PATH', '')  # Ensure nginx in PATH
 
     # Start proxy script
     cmd = [
@@ -503,8 +516,12 @@ if __name__ == "__main__":
                         help="Local machine's IP address for service binding (default: auto-detect from network interface)")
     parser.add_argument('--model-name', type=str, default='default_model',
                         help="Model identifier used for API endpoints (default: default_model)")
-    parser.add_argument('--max-model-len', type=str, default='20960',
-                        help="Maximum context length supported by the model in tokens (default: 20960)")
+    parser.add_argument('--max-model-len', type=str, default='65536',
+                        help="Maximum context length supported by the model in tokens (default: 65536)")
+    parser.add_argument('--max-num-batched-tokens', type=str, default='32768',
+                        help="Maximum context length supported by the model in tokens (default: 32768)")
+    parser.add_argument('--max-num-seqs', type=str, default='64',
+                        help="Maximum number of sequences supported by the model in tokens (default: 64)")
     parser.add_argument('--log-path', type=str, default='./apiserverlog',
                         help="Directory path for storing service logs (default: ./apiserverlog)")
 

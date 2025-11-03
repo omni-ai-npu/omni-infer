@@ -1,0 +1,126 @@
+Subject: [PATCH] operator change to improve profiler
+---
+Index: python/sglang/srt/layers/quantization/w8a8_int8.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/python/sglang/srt/layers/quantization/w8a8_int8.py b/python/sglang/srt/layers/quantization/w8a8_int8.py
+--- a/python/sglang/srt/layers/quantization/w8a8_int8.py	(revision 5c2f75c10f5ae5ab139f1f9746920a0a6a7938c3)
++++ b/python/sglang/srt/layers/quantization/w8a8_int8.py	(revision 21d4a8afaa693fac71835563a94c0d2299cc31fc)
+@@ -320,6 +320,7 @@
+ 
+     def __init__(self, quantization_config: W8A8Int8Config):
+         self.quantization_config = quantization_config
++        self.enable_weight_nz = _is_npu
+ 
+     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+         if _is_cpu:
+@@ -331,6 +332,10 @@
+ 
+         layer.weight = Parameter(layer.weight.t(), requires_grad=False)
+         layer.weight_scale = Parameter(layer.weight_scale.data, requires_grad=False)
++        if self.enable_weight_nz:
++            layer.weight.data = torch_npu.npu_format_cast(
++                layer.weight.data.contiguous(), 29
++            )
+ 
+     def create_weights(
+         self,
+@@ -378,12 +383,27 @@
+                 x.dtype,
+                 True,  # is_vnni
+             )
+-
+-        x_q, x_scale = per_token_quant_int8(x)
+-
+-        return int8_scaled_mm(
+-            x_q, layer.weight, x_scale, layer.weight_scale, out_dtype=x.dtype, bias=bias
+-        )
++        if _is_cpu:
++            x_q, x_scale = torch_npu.npu_dynamic_quant(x)
++            out = torch_npu.npu_quant_matmul(
++                x_q,
++                layer.weight,
++                layer.weight_scale.view(-1),
++                pretoken_scale=x_scale.view(-1),
++                bias=bias,
++                output_dtype=x.dtype,
++            )
++        else:
++            x_q, x_scale = per_token_quant_int8(x)
++            out = int8_scaled_mm(
++                x_q,
++                layer.weight,
++                x_scale,
++                layer.weight_scale,
++                out_dtype=x.dtype,
++                bias=bias
++            )
++        return out
+ 
+ 
+ class W8A8Int8MoEMethod(FusedMoEMethodBase):
+@@ -399,6 +419,7 @@
+ 
+     def __init__(self, quant_config: W8A8Int8Config):
+         self.quant_config = quant_config
++        self.enable_weight_nz = _is_npu
+ 
+     def create_weights(
+         self,
+@@ -470,6 +491,15 @@
+         layer.w2_weight_scale = Parameter(
+             layer.w2_weight_scale.data, requires_grad=False
+         )
++        if self.enable_weight_nz:
++            layer.w13_weight_nz = layer.w13_weight.npu()
++            layer.w2_weight = layer.w2_weight.npu()
++            layer.w13_weight.data = torch_npu.npu_format_cast(
++                layer.w13_weight.data, 29
++            )
++            layer.w2_weight.data = torch_npu.npu_format_cast(
++                layer.w2_weight.data, 29
++            )
+ 
+     def apply(
+         self,
+Index: python/sglang/srt/managers/scheduler_profiler_mixin.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/python/sglang/srt/managers/scheduler_profiler_mixin.py b/python/sglang/srt/managers/scheduler_profiler_mixin.py
+--- a/python/sglang/srt/managers/scheduler_profiler_mixin.py	(revision 5c2f75c10f5ae5ab139f1f9746920a0a6a7938c3)
++++ b/python/sglang/srt/managers/scheduler_profiler_mixin.py	(revision 21d4a8afaa693fac71835563a94c0d2299cc31fc)
+@@ -141,14 +141,6 @@
+             self.rpd_profiler.start()
+             self.rpd_profiler.rangePush("", "rpd profile range", "")
+             self.profile_in_progress = True
+-        elif torchprof_activities:
+-            self.torch_profiler = torch.profiler.profile(
+-                activities=torchprof_activities,
+-                with_stack=with_stack if with_stack is not None else True,
+-                record_shapes=record_shapes if record_shapes is not None else False,
+-            )
+-            self.torch_profiler.start()
+-            self.profile_in_progress = True
+         elif _is_npu:
+             experimental_config = torch_npu.profiler._ExperimentalConfig(
+                 profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+@@ -168,7 +160,14 @@
+             )
+             self.torch_profiler.start()
+             self.profile_in_progress = True
+-
++        elif torchprof_activities:
++            self.torch_profiler = torch.profiler.profile(
++                activities=torchprof_activities,
++                with_stack=with_stack if with_stack is not None else True,
++                record_shapes=record_shapes if record_shapes is not None else False,
++            )
++            self.torch_profiler.start()
++            self.profile_in_progress = True
+         if "MEM" in activities:
+             torch.cuda.memory._record_memory_history(max_entries=100000)
+             self.profile_in_progress = True

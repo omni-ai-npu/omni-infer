@@ -1,4 +1,4 @@
-# Runs QwQ-32B model in default combined deployment mode 
+# Runs Qwen model in default combined deployment mode 
 # Uses standard execution (no graph optimization) with full NPU utilization
 python run_model_qwen.py \
     --model-path /data/models/QwQ-32B \
@@ -10,7 +10,7 @@ python run_model_qwen.py \
     --host-ip 7.150.12.75 \
     --https-port 8001
 
-# Runs QwQ-32B model in default deployment with graph optimization
+# Runs Qwen model in default deployment with graph optimization
 # Maximizes throughput using all NPUs (0-7) with accelerated execution
 # python run_model_qwen.py \
 #     --model-path /data/models/QwQ-32B \
@@ -22,7 +22,7 @@ python run_model_qwen.py \
 #     --host-ip 7.150.12.75 \
 #     --https-port 8001
 
-# Runs QwQ-32B in split deployment mode (Prefill and Decoder on separate devices)
+# Runs Qwen in split deployment mode (Prefill and Decoder on separate devices)
 # Uses standard execution and custom service port 
 # python run_model_qwen.py \
 #     --model-path /data/models/QwQ-32B \
@@ -37,7 +37,7 @@ python run_model_qwen.py \
 #     --service-port 6660
 
 
-# Runs QwQ-32B in split deployment mode (Prefill and Decoder on separate devices)
+# Runs Qwen in split deployment mode (Prefill and Decoder on separate devices)
 # Uses standard execution and custom service port 
 # python run_model_qwen.py \
 #     --model-path /data/models/QwQ-32B \
