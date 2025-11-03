@@ -35,3 +35,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/overwrite_request_id_chat.patch
 git apply --whitespace=nowarn $PATCH_ROOT/adapt_dsv32_prefix_continuation_feature.patch
 git apply --whitespace=nowarn $PATCH_ROOT/overload_control.patch
 git apply --whitespace=nowarn $PATCH_ROOT/enable_max_tokens_exclude_reasoning.patch
+git apply --whitespace=nowarn $PATCH_ROOT/guided_decoding_v3.2_adaption.patch
