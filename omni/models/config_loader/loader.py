@@ -8,7 +8,7 @@ import torch.distributed
 
 from vllm.logger import logger
 import omni.adaptors.vllm.envs as envs
-from omni.models.config_loader.features import apply_eager_mode_config
+from omni.models.config_loader.features import apply_eager_mode_config, apply_fusion_pass
 
 default_config_path = os.path.normpath(os.path.join(os.path.abspath(__file__), '../../configs'))
 
@@ -318,6 +318,7 @@ def _validate_config():
         logger.warning(
             f"[WARNING] Eager mode disables all these optimization configurations by default."
         )
+    apply_fusion_pass(model_extra_config)
 
 
 @register_config_updaters('update_task_config')
