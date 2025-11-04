@@ -11,7 +11,6 @@ import vllm.envs as envs
 from vllm.utils import supports_dynamo
 
 from omni.adaptors.vllm.compilation.compile_config import get_torchair_config
-from omni.models.config_loader.loader import model_extra_config
 
 logger = init_logger(__name__)
 torch._dynamo.config.inline_inbuilt_nn_modules=False
@@ -51,12 +50,9 @@ class TorchNpuCompilerWrapperWithCustomDispatcher:
                                               name=new_forward_proxy_name,
                                               argdefs=self.forward.__defaults__)
                 self.__dict__[new_forward_proxy_name] = new_func.__get__(self, nn.Module)
-                config = get_torchair_config()
-                if model_extra_config.operator_opt_config.inplace_add_rms_norm_fustion_pass:
-                    config.ge_config.optimization_switch = "InplaceAddRmsNormFusionPass:off"
                 self.cached_compiled_models[gear_size] = torchair.inference.cache_compile(
                     self.__dict__[new_forward_proxy_name],
-                    config=config,
+                    config=get_torchair_config(),
                     dynamic=False,
                     ge_cache=True,
                     fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,
