@@ -115,6 +115,9 @@ class PanguReasoningParser(ReasoningParser):
             else:
                 # [unused16] in delta, no [unused17] in delta,
                 # reasoning content continues
+                start_index = delta_text.find(self.start_token)
+                delta_text = delta_text[start_index +
+                                               len(self.start_token):]
                 return DeltaMessage(reasoning_content=delta_text)
         else:
             # No [unused16] in previous or delta, also need to check for [unused17].
