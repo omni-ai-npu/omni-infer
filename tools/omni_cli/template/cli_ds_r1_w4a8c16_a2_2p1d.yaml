@@ -49,6 +49,7 @@ all:
               enable-expert-parallel: ''
               max-num-seqs: 92
               no-enable-prefix-caching: ''
+              preemption-mode: swap
             gpu-util: '0.965'
             kv-transfer-config:
               engine_id: 2
@@ -180,6 +181,7 @@ all:
               enable-expert-parallel: ''
               max-num-seqs: 92
               no-enable-prefix-caching: ''
+              preemption-mode: swap
             gpu-util: '0.965'
             kv-transfer-config:
               engine_id: 2
@@ -311,6 +313,7 @@ all:
               enable-expert-parallel: ''
               max-num-seqs: 92
               no-enable-prefix-caching: ''
+              preemption-mode: swap
             gpu-util: '0.965'
             kv-transfer-config:
               engine_id: 2
@@ -442,6 +445,7 @@ all:
               enable-expert-parallel: ''
               max-num-seqs: 92
               no-enable-prefix-caching: ''
+              preemption-mode: swap
             gpu-util: '0.965'
             kv-transfer-config:
               engine_id: 2
