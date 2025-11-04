@@ -221,7 +221,6 @@ class Qwen3DecoderLayer(nn.Module):
         prefix: str = "",
         kv_stream = None,
         micro_stream = None,
-        prefetch_stream = None
     ) -> None:
         super().__init__()
         self.tp_size = get_tensor_model_parallel_world_size()
@@ -229,7 +228,6 @@ class Qwen3DecoderLayer(nn.Module):
         self.layer_name = f"{prefix}.self_attn.attn"
         self.layer_idx = int(prefix.split('.')[-1])
         self.micro_stream = micro_stream
-        self.prefetch_stream = prefetch_stream
         # Requires transformers > 4.32.0
         rope_theta = getattr(config, "rope_theta", DEFAULT_ROPE_THETA)
         rope_scaling = getattr(config, "rope_scaling", None)
@@ -300,9 +298,8 @@ class Qwen3DecoderLayer(nn.Module):
             sin=sin
         )
 
-        with torch.npu.stream(self.prefetch_stream):
-            torch_npu.npu_prefetch(self.mlp.gate_up_proj.weight, hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
-            torch_npu.npu_prefetch(self.mlp.down_proj.weight, hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
+        torch_npu.npu_prefetch(self.mlp.gate_up_proj.weight, hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
+        torch_npu.npu_prefetch(self.mlp.down_proj.weight, hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
         
         if self.tp_size > 1:
             hidden_states = tensor_model_parallel_all_reduce(hidden_states)
@@ -315,9 +312,8 @@ class Qwen3DecoderLayer(nn.Module):
         hidden_states = self.mlp(hidden_states, x_transform=None, reduce_type=None)
 
         if next_attn_weights is not None:
-            with torch.npu.stream(self.prefetch_stream):
-                torch_npu.npu_prefetch(next_attn_weights['qkv_proj_weight'], hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
-                torch_npu.npu_prefetch(next_attn_weights['o_proj_weight'], hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
+            torch_npu.npu_prefetch(next_attn_weights['qkv_proj_weight'], hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
+            torch_npu.npu_prefetch(next_attn_weights['o_proj_weight'], hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
         
         if self.tp_size > 1:
             hidden_states = tensor_model_parallel_all_reduce(hidden_states)
@@ -372,7 +368,6 @@ class Qwen3Model(nn.Module):
         self.register_buffer("full_sin", full_sin, persistent=False)
         self.kv_stream = torch.npu.Stream()
         self.micro_stream = torch.npu.Stream()
-        self.prefetch_stream = torch.npu.Stream()
 
         # Use the provided decoder layer type or default to Qwen3DecoderLayer
         decoder_layer_type = decoder_layer_type or Qwen3DecoderLayer
@@ -383,8 +378,7 @@ class Qwen3Model(nn.Module):
                                               quant_config,
                                               prefix,
                                               kv_stream=self.kv_stream,
-                                              micro_stream=self.micro_stream,
-                                              prefetch_stream=self.prefetch_stream),
+                                              micro_stream=self.micro_stream),
             prefix=f"{prefix}.layers",
         )   
 
