@@ -127,7 +127,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a3_5p1d_d.json
-            MODEL_LEN_MAX_DECODE: 44000
+            MODEL_LEN_MAX_DECODE: 16384
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -262,7 +262,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a3_5p1d_d.json
-            MODEL_LEN_MAX_DECODE: 44000
+            MODEL_LEN_MAX_DECODE: 16384
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -397,7 +397,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a3_5p1d_d.json
-            MODEL_LEN_MAX_DECODE: 44000
+            MODEL_LEN_MAX_DECODE: 16384
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -532,7 +532,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a3_5p1d_d.json
-            MODEL_LEN_MAX_DECODE: 44000
+            MODEL_LEN_MAX_DECODE: 16384
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -588,7 +588,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              max-num-batched-tokens: 44000
+              max-num-batched-tokens: 30000
               max-num-seqs: 16
               no-enable-prefix-caching: ''
             gpu-util: '0.92'
@@ -667,7 +667,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a3_5p1d_p.json
-            MODEL_LEN_MAX_PREFILL: 44000
+            MODEL_LEN_MAX_PREFILL: 32000
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -725,7 +725,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              max-num-batched-tokens: 44000
+              max-num-batched-tokens: 30000
               max-num-seqs: 16
               no-enable-prefix-caching: ''
             gpu-util: '0.92'
@@ -804,7 +804,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a3_5p1d_p.json
-            MODEL_LEN_MAX_PREFILL: 44000
+            MODEL_LEN_MAX_PREFILL: 32000
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -862,7 +862,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              max-num-batched-tokens: 44000
+              max-num-batched-tokens: 30000
               max-num-seqs: 16
               no-enable-prefix-caching: ''
             gpu-util: '0.92'
@@ -941,7 +941,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a3_5p1d_p.json
-            MODEL_LEN_MAX_PREFILL: 44000
+            MODEL_LEN_MAX_PREFILL: 32000
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -999,7 +999,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              max-num-batched-tokens: 44000
+              max-num-batched-tokens: 30000
               max-num-seqs: 16
               no-enable-prefix-caching: ''
             gpu-util: '0.92'
@@ -1078,7 +1078,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a3_5p1d_p.json
-            MODEL_LEN_MAX_PREFILL: 44000
+            MODEL_LEN_MAX_PREFILL: 32000
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -1136,7 +1136,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              max-num-batched-tokens: 44000
+              max-num-batched-tokens: 30000
               max-num-seqs: 16
               no-enable-prefix-caching: ''
             gpu-util: '0.92'
@@ -1215,7 +1215,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a3_5p1d_p.json
-            MODEL_LEN_MAX_PREFILL: 44000
+            MODEL_LEN_MAX_PREFILL: 32000
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
