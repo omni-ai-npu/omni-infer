@@ -12,6 +12,6 @@
       "gmm_nz": true,
       "control_accept_rate": -1,
       "enable_prefill_micro_batch": false,
-      "experts_pruning": false
+      "experts_pruning": true
     }
   }
