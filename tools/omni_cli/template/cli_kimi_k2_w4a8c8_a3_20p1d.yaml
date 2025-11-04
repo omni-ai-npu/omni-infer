@@ -132,7 +132,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_d.json
             MODEL_LEN_MAX_DECODE: 65600
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -269,7 +268,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_d.json
             MODEL_LEN_MAX_DECODE: 65600
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -405,7 +403,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -542,7 +539,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -679,7 +675,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -816,7 +811,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -953,7 +947,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -1090,7 +1083,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -1227,7 +1219,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -1364,7 +1355,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -1501,7 +1491,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -1638,7 +1627,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -1775,7 +1763,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -1912,7 +1899,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -2049,7 +2035,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -2186,7 +2171,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -2323,7 +2307,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -2460,7 +2443,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -2597,7 +2579,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -2734,7 +2715,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -2871,7 +2851,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1
@@ -3008,7 +2987,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/kimi_k2_w4a8c8_a3_20p1d_p.json
             MODEL_LEN_MAX_PREFILL: 111072
             MODEL_PATH: /data/model/kimi-k2-w4a8c8-mtp
             OMNI_USE_DSV3: 1

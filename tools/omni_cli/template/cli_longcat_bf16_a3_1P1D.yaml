@@ -83,7 +83,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8007
-            MODEL_EXTRA_CFG_PATH: /workspace/omniinfer/tests/test_config/test_config_decode.json
             MODEL_LEN_MAX_DECODE: 16384
             MODEL_PATH: /data/models/LongCat-Flash
             OMNI_USE_DSV3: 1
@@ -170,7 +169,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8007
-            MODEL_EXTRA_CFG_PATH: /workspace/omniinfer/tests/test_config/test_config_decode.json
             MODEL_LEN_MAX_DECODE: 16384
             MODEL_PATH: /data/models/LongCat-Flash
             OMNI_USE_DSV3: 1
@@ -257,7 +255,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8007
-            MODEL_EXTRA_CFG_PATH: /workspace/tests/test_config/test_config_decode.json
             MODEL_LEN_MAX_DECODE: 16384
             MODEL_PATH: /data/models/LongCat-Flash
             OMNI_USE_DSV3: 1
@@ -344,7 +341,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8007
-            MODEL_EXTRA_CFG_PATH: /workspace/tests/test_config/test_config_decode.json
             MODEL_LEN_MAX_DECODE: 16384
             MODEL_PATH: /data/models/LongCat-Flash
             OMNI_USE_DSV3: 1
@@ -435,7 +431,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8007
-            MODEL_EXTRA_CFG_PATH: /workspace/omniinfer/tests/test_config/test_config_prefill.json
             MODEL_LEN_MAX_PREFILL: 32768
             MODEL_PATH: /data/models/LongCat-Flash
             OMNI_USE_DSV3: 1
@@ -526,7 +521,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8007
-            MODEL_EXTRA_CFG_PATH: /workspace/omniinfer/tests/test_config/test_config_prefill.json
             MODEL_LEN_MAX_PREFILL: 32768
             MODEL_PATH: /data/models/LongCat-Flash
             OMNI_USE_DSV3: 1

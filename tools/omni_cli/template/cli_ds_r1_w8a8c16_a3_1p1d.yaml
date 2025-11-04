@@ -128,7 +128,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: /workspace/omniinfer/tests/test_config/ds_r1_w8a8c16_a3_1p1d_d.json
             MODEL_LEN_MAX_DECODE: 55120
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1
@@ -265,7 +264,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: /workspace/omniinfer/tests/test_config/ds_r1_w8a8c16_a3_1p1d_d.json
             MODEL_LEN_MAX_DECODE: 55120
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1
@@ -402,7 +400,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: /workspace/omniinfer/tests/test_config/ds_r1_w8a8c16_a3_1p1d_p.json
             MODEL_LEN_MAX_PREFILL: 51024
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1
@@ -539,7 +536,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: /workspace/omniinfer/tests/test_config/ds_r1_w8a8c16_a3_1p1d_p.json
             MODEL_LEN_MAX_PREFILL: 51024
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_REUSE_PREFILLED_TOKENS: 1

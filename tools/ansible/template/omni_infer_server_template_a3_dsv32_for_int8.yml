@@ -184,7 +184,6 @@
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
       KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
-      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_dsv32_prefill.json"
       EXTRA_ARGS='--max-num-batched-tokens 32768 --enforce-eager --no-enable-prefix-caching --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --long-prefill-token-threshold 32768'
       if [ ${USE_OMNI_PROXY} = "1" ]; then
         EXTRA_ARGS="--max-num-batched-tokens 32768 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --long-prefill-token-threshold 32768 --kv-events-config ${KV_EVENTS_CONFIG}"
@@ -235,7 +234,6 @@
         --kv-rank ${KV_RANK} \
         --kv-engine-id ${KV_RANK} \
         --kv-parallel-size ${KV_PARALLEL_SIZE} \
-        --model-extra-cfg-path ${MODEL_EXTRA_CFG_PATH} \
         --gpu-util ${GPU_UTIL} \
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
         --extra-args "${EXTRA_ARGS}" \
@@ -266,7 +264,6 @@
           [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
           {% endfor %}
       )
-      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_dsv32_decode.json"
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 8 --no-enable-prefix-caching'
       GPU_UTIL=0.95
       ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}}'
@@ -298,7 +295,6 @@
         --kv-rank ${PREFILL_POD_NUM} \
         --kv-engine-id ${PREFILL_POD_NUM} \
         --kv-parallel-size ${KV_PARALLEL_SIZE} \
-        --model-extra-cfg-path ${MODEL_EXTRA_CFG_PATH} \
         --gpu-util ${GPU_UTIL} \
         --additional-config "$ADDITIONAL_CONFIG" \
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \

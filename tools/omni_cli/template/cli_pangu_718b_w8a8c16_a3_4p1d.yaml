@@ -116,7 +116,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_d.json
             MODEL_LEN_MAX_DECODE: 16384
             MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
@@ -237,7 +236,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_d.json
             MODEL_LEN_MAX_DECODE: 16384
             MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
@@ -358,7 +356,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_d.json
             MODEL_LEN_MAX_DECODE: 16384
             MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
@@ -479,7 +476,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_d.json
             MODEL_LEN_MAX_DECODE: 16384
             MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
@@ -600,7 +596,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_p.json
             MODEL_LEN_MAX_PREFILL: 32000
             MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
@@ -722,7 +717,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_p.json
             MODEL_LEN_MAX_PREFILL: 32000
             MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
@@ -844,7 +838,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_p.json
             MODEL_LEN_MAX_PREFILL: 32000
             MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1
@@ -966,7 +959,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/pangu_718b_w4a8c16_a3_4p1d_p.json
             MODEL_LEN_MAX_PREFILL: 32000
             MODEL_PATH: /data/model/ascend_vllm_w8a8_mtp_1010
             OMNI_USE_DSV3: 1

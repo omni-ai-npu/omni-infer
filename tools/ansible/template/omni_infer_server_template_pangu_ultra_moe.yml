@@ -176,7 +176,6 @@
       export ASCEND_GLOBAL_LOG_LEVEL=3
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
-      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill_pangu_ultra_moe.json"
       EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --no-enable-prefix-caching'
       GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
@@ -226,7 +225,6 @@
         --kv-rank ${KV_RANK} \
         --kv-engine-id ${KV_RANK} \
         --kv-parallel-size ${DECODE_TENSOR_PARALLEL_SIZE} \
-        --model-extra-cfg-path ${MODEL_EXTRA_CFG_PATH} \
         --gpu-util ${GPU_UTIL} \
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
         --extra-args "${EXTRA_ARGS}" \
@@ -257,7 +255,6 @@
           [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
           {% endfor %}
       )
-      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode_pangu_ultra_moe.json"
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching'
       GPU_UTIL=0.92
       ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1}}'
@@ -296,7 +293,6 @@
         --kv-rank ${PREFILL_POD_NUM} \
         --kv-engine-id ${PREFILL_POD_NUM} \
         --kv-parallel-size ${DECODE_TENSOR_PARALLEL_SIZE} \
-        --model-extra-cfg-path ${MODEL_EXTRA_CFG_PATH} \
         --gpu-util ${GPU_UTIL} \
         --additional-config "$ADDITIONAL_CONFIG" \
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \

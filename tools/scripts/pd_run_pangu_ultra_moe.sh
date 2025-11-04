@@ -46,7 +46,6 @@ KV_RANK=0
 KV_ENGINE_ID=0
 KV_PARALLEL_SIZE=2
 
-MODEL_EXTRA_CFG_PATH="/workspace/omni_infer/test/test_config/test_config_prefill.json"
 GPU_UTIL=0.9
 EXTRA_ARGS=""
 ADDITIONAL_CONFIG=""
@@ -225,9 +224,6 @@ parse_long_option() {
         --extra-args)
             EXTRA_ARGS="$2"
             ;;
-        --model-extra-cfg-path)
-            MODEL_EXTRA_CFG_PATH="$2"
-            ;;
         --gpu-util)
             GPU_UTIL="$2"
             ;;
@@ -314,7 +310,6 @@ export VLLM_LOGGING_LEVEL
 export VLLM_USE_V1
 export VLLM_WORKER_MULTIPROC_METHOD
 export SERVER_OFFSET
-export MODEL_EXTRA_CFG_PATH
 export PYTHONPATH=/usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
 export VLLM_USE_V1=1
 export VLLM_WORKER_MULTIPROC_METHOD=fork
@@ -381,7 +376,6 @@ echo "SERVED_MODEL_NAME: $SERVED_MODEL_NAME"
 echo "LOG_DIR: $LOG_DIR"
 echo "KV_TRANSFER_CONFIG: $KV_TRANSFER_CONFIG"
 echo "EXTRA_ARGS: $EXTRA_ARGS"
-echo "MODEL_EXTRA_CFG_PATH: $MODEL_EXTRA_CFG_PATH"
 echo "GPU_UTIL: $GPU_UTIL"
 echo "ADDITIONAL_CONFIG: $ADDITIONAL_CONFIG"
 echo "VLLM_ENABLE_MC2: $VLLM_ENABLE_MC2"

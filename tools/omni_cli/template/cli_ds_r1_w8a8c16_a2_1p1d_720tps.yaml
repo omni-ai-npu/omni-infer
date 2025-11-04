@@ -118,7 +118,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a2_1p1d_720tps_d.json
             MODEL_LEN_MAX_DECODE: 4096
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_USE_DSV3: 1
@@ -240,7 +239,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a2_1p1d_720tps_d.json
             MODEL_LEN_MAX_DECODE: 4096
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_USE_DSV3: 1
@@ -362,7 +360,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a2_1p1d_720tps_d.json
             MODEL_LEN_MAX_DECODE: 4096
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_USE_DSV3: 1
@@ -484,7 +481,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a2_1p1d_720tps_d.json
             MODEL_LEN_MAX_DECODE: 4096
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_USE_DSV3: 1
@@ -603,7 +599,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a2_1p1d_720tps_p.json
             MODEL_LEN_MAX_PREFILL: 2064
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_USE_DSV3: 1
@@ -722,7 +717,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/ds_r1_w8a8c16_a2_1p1d_720tps_p.json
             MODEL_LEN_MAX_PREFILL: 2064
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_USE_DSV3: 1

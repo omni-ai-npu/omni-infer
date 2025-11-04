@@ -118,7 +118,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/qwen3_235b_w8a8c16_a3_2p1d_d.json
             MODEL_LEN_MAX_DECODE: 40960
             MODEL_PATH: /data/models/Qwen3_235B_w8a8
             OMNI_USE_DSV3: 1
@@ -241,7 +240,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/qwen3_235b_w8a8c16_a3_2p1d_d.json
             MODEL_LEN_MAX_DECODE: 40960
             MODEL_PATH: /data/models/Qwen3_235B_w8a8
             OMNI_USE_DSV3: 1
@@ -364,7 +362,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/qwen3_235b_w8a8c16_a3_2p1d_d.json
             MODEL_LEN_MAX_DECODE: 40960
             MODEL_PATH: /data/models/Qwen3_235B_w8a8
             OMNI_USE_DSV3: 1
@@ -487,7 +484,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/qwen3_235b_w8a8c16_a3_2p1d_d.json
             MODEL_LEN_MAX_DECODE: 40960
             MODEL_PATH: /data/models/Qwen3_235B_w8a8
             OMNI_USE_DSV3: 1
@@ -609,7 +605,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/qwen3_235b_w8a8c16_a3_2p1d_p.json
             MODEL_LEN_MAX_PREFILL: 40960
             MODEL_PATH: /data/models/Qwen3_235B_w8a8
             OMNI_USE_DSV3: 1
@@ -732,7 +727,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/qwen3_235b_w8a8c16_a3_2p1d_p.json
             MODEL_LEN_MAX_PREFILL: 40960
             MODEL_PATH: /data/models/Qwen3_235B_w8a8
             OMNI_USE_DSV3: 1
@@ -855,7 +849,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/qwen3_235b_w8a8c16_a3_2p1d_p.json
             MODEL_LEN_MAX_PREFILL: 40960
             MODEL_PATH: /data/models/Qwen3_235B_w8a8
             OMNI_USE_DSV3: 1
@@ -978,7 +971,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/qwen3_235b_w8a8c16_a3_2p1d_p.json
             MODEL_LEN_MAX_PREFILL: 40960
             MODEL_PATH: /data/models/Qwen3_235B_w8a8
             OMNI_USE_DSV3: 1
@@ -1101,7 +1093,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/qwen3_235b_w8a8c16_a3_2p1d_p.json
             MODEL_LEN_MAX_PREFILL: 40960
             MODEL_PATH: /data/models/Qwen3_235B_w8a8
             OMNI_USE_DSV3: 1
@@ -1224,7 +1215,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/qwen3_235b_w8a8c16_a3_2p1d_p.json
             MODEL_LEN_MAX_PREFILL: 40960
             MODEL_PATH: /data/models/Qwen3_235B_w8a8
             OMNI_USE_DSV3: 1
@@ -1347,7 +1337,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/qwen3_235b_w8a8c16_a3_2p1d_p.json
             MODEL_LEN_MAX_PREFILL: 40960
             MODEL_PATH: /data/models/Qwen3_235B_w8a8
             OMNI_USE_DSV3: 1
@@ -1470,7 +1459,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/qwen3_235b_w8a8c16_a3_2p1d_p.json
             MODEL_LEN_MAX_PREFILL: 40960
             MODEL_PATH: /data/models/Qwen3_235B_w8a8
             OMNI_USE_DSV3: 1
