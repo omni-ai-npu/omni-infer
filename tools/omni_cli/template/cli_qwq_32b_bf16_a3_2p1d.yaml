@@ -11,7 +11,7 @@ all:
           args:
             decode-lb-sdk: pd_score_balance
             prefill-lb-sdk: pd_score_balance
-          container_name: qwq2p2d_c0
+          container_name: qwq2p1d_c0
           env:
             API_PORT: 7000
             CODE_PATH: /workspace/omniinfer
@@ -41,7 +41,7 @@ all:
               max-num-seqs: 12
               max-num-batched-tokens: 61440
               no-enable-prefix-caching: ''
-              speculative-config: '{"method":"eagle","num_speculative_tokens":1,"model":"/data/log/qwq-32b-eagle"}'   
+              speculative-config: '{"method":"eagle","num_speculative_tokens":1,"model":"/tmp/qwq-32b-eagle"}'   
             gpu-util: '0.8'
             kv-transfer-config:
               engine_id: 0
@@ -67,7 +67,7 @@ all:
             server-offset: $SERVER_OFFSET
             tp: 8
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
-          container_name: qwq2p2d_d0
+          container_name: qwq2p1d_d0
           env:
             API_PORT: 9100
             ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
@@ -107,10 +107,11 @@ all:
             CODE_PATH: /workspace/omniinfer
             DECODE_POD_NUM: 1
             DECODE_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+            DEVICE_ID_STR: $(echo "$ASCEND_RT_VISIBLE_DEVICES" | tr -d ',')
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
-            LOCAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_ranktable_${HOST_IP}_${ASCEND_RT_VISIBLE_DEVICES}.json
+            LOCAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_ranktable_${HOST_IP}_*$(echo $DECODE_SERVER_LIST | tr -d ",").json
             GLOO_SOCKET_IFNAME: enp23s0f3
             HCCL_CONNECT_TIMEOUT: 1800
             HCCL_EXEC_TIMEOUT: 1800
@@ -130,9 +131,7 @@ all:
             MODEL_LEN_MAX_DECODE: 61240
             MODEL_PATH: /data/models/QwQ-32B
             PREFILL_POD_NUM: 2
-            DEVICE_ID_STR: $(echo "$ASCEND_RT_VISIBLE_DEVICES" | tr -d ',')
             RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/decode_config/local_ranktable_${HOST_IP}_*$(echo $DECODE_SERVER_LIST | tr -d ",").json)
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/test_config_decode_qwen32b.json
             ROLE: decode
             SERVER_IP_LIST: 127.0.0.2
             SERVER_OFFSET: 0
@@ -174,7 +173,7 @@ all:
               max-num-batched-tokens: 61440
               max-num-seqs: 12
               no-enable-prefix-caching: ''
-              speculative-config: '{"method":"eagle","num_speculative_tokens":1,"model":"/data/log/qwq-32b-eagle"}'   
+              speculative-config: '{"method":"eagle","num_speculative_tokens":1,"model":"/tmp/qwq-32b-eagle"}' 
             gpu-util: '0.65'
             kv-transfer-config:
               engine_id: 0
@@ -199,7 +198,7 @@ all:
             server-offset: $SERVER_OFFSET
             tp: 8
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7
-          container_name: qwq2p2d_p0
+          container_name: qwq2p1d_p0
           env:
             ASCEND_GLOBAL_LOG_LEVEL: 3
             API_PORT: 9000
@@ -208,6 +207,7 @@ all:
             ASCEND_LAUNCH_BLOCKING: 0
             ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
             ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
+            DEVICE_ID_STR: $(echo "$ASCEND_RT_VISIBLE_DEVICES" | tr -d ',')
             ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
             ASDOPS_LOG_LEVEL: ERROR
             ASDOPS_LOG_PATH: /root
@@ -242,7 +242,8 @@ all:
             DECODE_POD_NUM: 1
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
-            LOCAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/collect_files_p/local_ranktable_${HOST_IP}_${ASCEND_RT_VISIBLE_DEVICES}.json
+            LOCAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/collect_files_p/local_ranktable_${HOST_IP}_*$(echo
+              $PREFILL_SERVER_LIST | tr -d ",").json
             GLOO_SOCKET_IFNAME: enp23s0f3
             HCCL_CONNECT_TIMEOUT: 1800
             HCCL_EXEC_TIMEOUT: 1800
@@ -258,7 +259,6 @@ all:
             KV_PORT: $(( MASTER_PORT + 5000 ))
             MODEL_LEN_MAX_PREFILL: 61240
             MODEL_PATH: /data/models/QwQ-32B
-            DEVICE_ID_STR: $(echo "$ASCEND_RT_VISIBLE_DEVICES" | tr -d ',')
             PREFILL_POD_NUM: 2
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7
             PREFILL_TENSOR_PARALLEL_SIZE: 8
@@ -303,7 +303,7 @@ all:
               max-num-batched-tokens: 61440
               max-num-seqs: 12
               no-enable-prefix-caching: ''
-              speculative-config: '{"method":"eagle","num_speculative_tokens":1,"model":"/data/log/qwq-32b-eagle"}'
+              speculative-config: '{"method":"eagle","num_speculative_tokens":1,"model":"/tmp/qwq-32b-eagle"}'
             gpu-util: '0.65'
             kv-transfer-config:
               engine_id: 1
@@ -328,7 +328,7 @@ all:
             server-offset: $SERVER_OFFSET
             tp: 8
           ascend_rt_visible_devices: 8,9,10,11,12,13,14,15
-          container_name: qwq2p2d_p1
+          container_name: qwq2p1d_p1
           env:
             ASCEND_GLOBAL_LOG_LEVEL: 3
             API_PORT: 9001
@@ -337,6 +337,7 @@ all:
             ASCEND_LAUNCH_BLOCKING: 0
             ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
             ASCEND_RT_VISIBLE_DEVICES: 8,9,10,11,12,13,14,15
+            DEVICE_ID_STR: $(echo "$ASCEND_RT_VISIBLE_DEVICES" | tr -d ',')
             ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
             ASDOPS_LOG_LEVEL: ERROR
             ASDOPS_LOG_PATH: /root
@@ -371,7 +372,8 @@ all:
             DECODE_POD_NUM: 1
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
-            LOCAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/collect_files_p/local_ranktable_${HOST_IP}_${ASCEND_RT_VISIBLE_DEVICES}.json
+            LOCAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/collect_files_p/local_ranktable_${HOST_IP}_*$(echo
+              $PREFILL_SERVER_LIST | tr -d ",").json
             GLOO_SOCKET_IFNAME: enp23s0f3
             HCCL_CONNECT_TIMEOUT: 1800
             HCCL_EXEC_TIMEOUT: 1800
@@ -387,7 +389,6 @@ all:
             KV_PORT: $(( MASTER_PORT + 5000 ))
             MODEL_LEN_MAX_PREFILL: 61240
             MODEL_PATH: /data/models/QwQ-32B
-            DEVICE_ID_STR: $(echo "$ASCEND_RT_VISIBLE_DEVICES" | tr -d ',')
             PREFILL_POD_NUM: 2
             PREFILL_SERVER_LIST: 8,9,10,11,12,13,14,15
             PREFILL_TENSOR_PARALLEL_SIZE: 8
