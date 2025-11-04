@@ -71,7 +71,7 @@ mv dist/omni_i* $BUILD_ROOT/build/dist
 cd $BUILD_ROOT/omni/accelerators/sched/global_proxy/build/
 bash build.sh
 
-cd $BUILD_ROOT/omni/accelerators/sched/omni_proxy/
+cd $BUILD_ROOT/omni/accelerators/sched/omni_proxy/build/
 bash build.sh
 
 if [ "$USE_LMCACHE" = "1" ]; then

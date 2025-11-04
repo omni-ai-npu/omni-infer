@@ -1,4 +1,4 @@
-Name:           omni-proxy
+Name:           global-proxy
 Version:        1.0
 Release:        1%{?dist}
 Summary:        Nginx custom global proxy modules

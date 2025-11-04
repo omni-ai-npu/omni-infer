@@ -14,7 +14,7 @@ ARG HTTP_PROXY
 # Install tools for build python
 RUN export http_proxy=${HTTP_PROXY} && \
     export https_proxy=${HTTP_PROXY} && \
-    yum -y install gcc g++ make wget libffi-devel zlib-devel bzip2-devel openssl-devel ncurses-devel sqlite-devel readline-devel tk-devel findutils cronie crontabs logrotate
+    yum -y install gcc g++ make wget libffi-devel zlib-devel bzip2-devel openssl-devel ncurses-devel sqlite-devel readline-devel tk-devel findutils cronie crontabs logrotate zeromq zeromq-devel boost-devel
 
 COPY install_python.sh /tmp/install_python.sh
 RUN chmod +x /tmp/install_python.sh && \
