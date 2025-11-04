@@ -172,6 +172,7 @@ class AscendMLAPrefillMetadata:
     sp_reverse_index: Optional[list[int]] = None
     sp_reverse_split_list: Optional[list[int]] = None
     actual_query_lens: Optional[torch.Tensor] = None
+    computed_seq_lens: Optional[torch.Tensor] = None
 
     prefix_meta: Optional[list[PrefixCopyMeta]] = None
 
@@ -462,7 +463,8 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                           seq_lens_list,
                           slot_mapping,
                           query_lens):
-        sp_seq_lens_list = [math.ceil(kv_len / model_extra_config.parall_config.attn_sp_size / 2) for kv_len in seq_lens_list]
+        computed_seq_lens_list = [seq_len - query_len for seq_len, query_len in zip(seq_lens_list, query_lens_list)]
+        sp_seq_lens_list = [computed_seq_len + math.ceil(query_len / model_extra_config.parall_config.attn_sp_size / 2) for computed_seq_len, query_len in zip(computed_seq_lens_list, query_lens_list)]
         sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list = self.prepare_sp_split_indices(torch.tensor(query_lens_list))
 
         # prepare sp positions
@@ -474,11 +476,12 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         positions = torch.cat([position_id_list[i] for i in sp_zigzag_index], dim=0)
 
         sp_seq_lens = torch.tensor(sp_seq_lens_list, dtype=torch.int64).npu()
+        computed_seq_lens = torch.tensor(computed_seq_lens_list, dtype=torch.int64).npu()
         query_lens = torch.cumsum(torch.ceil(query_lens / sp_size / 2).to(torch.int64), dim=0)
         # prepare sp slotmapping
         slot_mapping = self.pad_inputs(slot_mapping, query_lens_list, sp_size * 2, PAD_SLOT_ID)
 
-        return sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list, positions, sp_seq_lens, cos, sin, slot_mapping, query_lens
+        return sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list, positions, sp_seq_lens, computed_seq_lens, cos, sin, slot_mapping, query_lens
 
     def build(self,
               num_reqs: int,
@@ -555,7 +558,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                         query_lens = torch.cumsum(actual_query_lens, dim=0)
                     seq_lens = torch.tensor(seq_lens_list, dtype=torch.int64).npu()
                 if model_extra_config.parall_config.attn_sp_size > 1:
-                    sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list, positions, seq_lens, cos, sin, slot_mapping, query_lens  = \
+                    sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list, positions, seq_lens, computed_seq_lens, cos, sin, slot_mapping, query_lens  = \
                         self.prepare_sp_inputs(positions=input_positions[tokens_start:],
                                             query_lens_list=query_lens_list[reqs_start:],
                                             seq_lens_list=seq_lens_list,
@@ -600,6 +603,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 sp_reverse_index=sp_reverse_index if model_extra_config.parall_config.attn_sp_size > 1 else None,
                 sp_reverse_split_list=sp_reverse_split_list if model_extra_config.parall_config.attn_sp_size > 1 else None,
                 actual_query_lens=actual_query_lens if model_extra_config.parall_config.attn_sp_size > 1 else None,
+                computed_seq_lens=computed_seq_lens if model_extra_config.parall_config.attn_sp_size > 1 else None,
                 prefix_meta=prefix_meta if model_extra_config.operator_opt_config.use_omni_cache else None,
             )
 

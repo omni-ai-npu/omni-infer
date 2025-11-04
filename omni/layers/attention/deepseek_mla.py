@@ -130,10 +130,11 @@ class Indexer(nn.Module):
             if model_extra_config.parall_config.attn_sp_size > 1:
                 sp_size = model_extra_config.parall_config.attn_sp_size
                 sp_rank = get_tensor_model_parallel_rank()
+                computed_seq_len = attn_metadata.prefill.computed_seq_lens
                 if is_second:
-                    actual_seq_kvlen = actual_seq_kvlen * (sp_size * 2 - sp_rank)
+                    actual_seq_kvlen = computed_seq_len + (actual_seq_kvlen - computed_seq_len) * (sp_size * 2 - sp_rank)
                 else:
-                    actual_seq_kvlen = actual_seq_kvlen * (sp_rank + 1)
+                    actual_seq_kvlen = computed_seq_len + (actual_seq_kvlen - computed_seq_len) * (sp_rank + 1)
             actual_seq_lengths_query = attn_metadata.prefill.query_lens.to(torch.int32)
             actual_seq_lengths_key = actual_seq_kvlen.to(torch.int32)
             block_table = attn_metadata.prefill.block_table
@@ -515,13 +516,14 @@ class DeepseekMLA(nn.Module):
             prefill_metadata = attn_metadata.prefill
             actual_seq_kvlen = prefill_metadata.seq_lens
             actual_seq_qlen = prefill_metadata.query_lens
+            computed_seq_len = prefill_metadata.computed_seq_lens
             if model_extra_config.parall_config.attn_sp_size > 1:
                 sp_size = model_extra_config.parall_config.attn_sp_size
                 sp_rank = get_tensor_model_parallel_rank()
                 if is_second_attn:
-                    actual_seq_kvlen = actual_seq_kvlen * (sp_size * 2 - sp_rank)
+                    actual_seq_kvlen = computed_seq_len + (actual_seq_kvlen - computed_seq_len) * (sp_size * 2 - sp_rank)
                 else:
-                    actual_seq_kvlen = actual_seq_kvlen * (sp_rank + 1)
+                    actual_seq_kvlen = computed_seq_len + (actual_seq_kvlen - computed_seq_len) * (sp_rank + 1)
 
             attn_output = torch.ops.custom.npu_sparse_flash_attention(
                 query=q_nope,
