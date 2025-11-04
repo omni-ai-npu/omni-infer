@@ -1,0 +1,19 @@
+diff --git a/vllm/model_executor/models/utils.py b/vllm/model_executor/models/utils.py
+index 3d821d3dc..1e67c2608 100644
+--- a/vllm/model_executor/models/utils.py
++++ b/vllm/model_executor/models/utils.py
+@@ -706,9 +706,11 @@ def extract_layer_index(layer_name: str) -> int:
+             int_vals.append(int(subname))
+         except ValueError:
+             continue
+-    assert len(int_vals) == 1, (f"layer name {layer_name} should"
+-                                " only contain one integer")
+-    return int_vals[0]
++
++    if len(int_vals) == 1:
++        return int_vals[0]
++    else:
++        return int_vals[0] * 2 + int_vals[1]
+ 
+ 
+ def cast_overflow_tensors(

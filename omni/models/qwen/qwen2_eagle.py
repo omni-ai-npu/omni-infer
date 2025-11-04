@@ -34,7 +34,12 @@ from transformers import PretrainedConfig
 from vllm.attention import Attention, AttentionType, AttentionMetadata
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
-from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
+from vllm.distributed import (
+    get_pp_group,
+    get_tensor_model_parallel_world_size,
+    get_tensor_model_parallel_rank,
+    tensor_model_parallel_all_gather,
+)
 from vllm.forward_context import get_forward_context, set_forward_context
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
@@ -49,6 +54,12 @@ from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
 from omni.layers.attention.backend.attention import AscendAttentionState
 from omni.models.qwen.qwen2 import Qwen2DecoderLayer, Qwen2Model, Qwen2ForCausalLM
 
+from omni.layers.linear import (
+    RowParallelFlashCommLinear,
+    QKVParallelFlashCommLinear,
+    ColumnParallelFlashCommLinear,
+    MergedColumnParallelFlashCommLinear
+)
 class EagleQwen2DecoderLayer(Qwen2DecoderLayer):
     def __init__(
         self,
@@ -75,13 +86,16 @@ class EagleQwen2Model(Qwen2Model):
                  start_layer_id: int = 0):
         super(Qwen2Model, self).__init__()
         self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_rank = get_tensor_model_parallel_rank()
         self.config = config
         self.cache_config = cache_config
         self.quant_config = quant_config
 
         self.vocab_size = self.config.vocab_size
+        self.first_run = 0
 
         self.share_embed = True
+        self.micro_stream = torch.npu.Stream()
         self.embed_tokens = None # get from main model
         self.layers = nn.ModuleList([
             EagleQwen2DecoderLayer(
@@ -95,9 +109,15 @@ class EagleQwen2Model(Qwen2Model):
         self.start_layer = 0
         self.end_layer = self.config.num_hidden_layers
 
-        self.fc = torch.nn.Linear(self.config.hidden_size * 2,
-                                  self.config.hidden_size,
-                                  bias=False)
+        self.fc = ColumnParallelFlashCommLinear(
+            self.config.hidden_size * 2,
+            self.config.hidden_size,
+            tp_size=self.tp_size,
+            tp_rank=self.tp_rank,
+            bias=False,
+            quant_config=self.quant_config,
+            prefix=f"{prefix}.fc"
+        )
 
         self.full_cos = None # get from main model
         self.full_sin = None # get from main model
@@ -113,8 +133,9 @@ class EagleQwen2Model(Qwen2Model):
         attn_metadata: AttentionMetadata,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         input_embeds = self.embed_tokens(input_ids)
-        hidden_states = self.fc(
+        hidden_states, _ = self.fc(
             torch.cat((input_embeds, hidden_states), dim=-1))
+        hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=1)
         residual = None
 
         cos = torch.index_select(self.full_cos, dim=0, index=positions)  # cos.shape [num_tokens, head_size]
@@ -122,7 +143,11 @@ class EagleQwen2Model(Qwen2Model):
 
         attn_metadata = get_forward_context().attn_metadata
         if attn_metadata is not None and attn_metadata[next(iter(attn_metadata))].attn_state == AscendAttentionState.PrefillNoCache and self.tp_size > 1:
-            hidden_states, residual, _ = self.forward_layers_prefill_microbatch_tp8_allreduce(positions, hidden_states, residual, kv_caches, cos, sin)
+            n_tokens = hidden_states.shape[0]
+            if n_tokens <= 4096:
+                hidden_states, residual, _ = self.forward_layers_prefill_microbatch_tp8_all_reduce(positions, hidden_states, residual, kv_caches, cos, sin)
+            else:
+                hidden_states, residual, _ = self.forward_layers_prefill_microbatch_tp8_all_to_all(positions, hidden_states, residual, kv_caches, cos, sin)
         else:
             hidden_states, residual, _ = self.forward_layers(positions, hidden_states, residual, kv_caches, cos, sin)
 

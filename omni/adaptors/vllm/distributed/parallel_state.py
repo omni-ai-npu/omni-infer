@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Union
 
 import torch
 import torch.distributed
+from torch.distributed import Backend
 from vllm.distributed import GroupCoordinator as GroupCoordinatorGPU
 from vllm.logger import logger
 from vllm.distributed import (
@@ -26,8 +27,10 @@ from vllm.distributed import (
     get_ep_group
 )
 from vllm.logger import logger
-from omni.models.common.config.model_config import model_extra_config
+from vllm.config import get_current_vllm_config
+from omni.models.config_loader.loader import model_extra_config
 import os
+import torch_npu
 
 initialize_model_parallel_default = parallel_state.initialize_model_parallel
 
@@ -45,6 +48,80 @@ def get_npu_device_count():
 
 
 class GroupCoordinator(GroupCoordinatorGPU):
+
+    def __init__(
+        self,
+        group_ranks: list[list[int]],
+        local_rank: int,
+        torch_distributed_backend: Union[str, Backend],
+        use_device_communicator: bool,  # whether to use device communicator
+        use_message_queue_broadcaster: bool = False,
+        group_name: Optional[str] = None,
+    ):
+        group_name = group_name or "anonymous"
+        self.unique_name = parallel_state._get_unique_name(group_name)
+        parallel_state._register_group(self)
+
+        self.rank = torch.distributed.get_rank()
+        self.local_rank = local_rank
+        self.device_group = None
+        self.cpu_group = None
+
+        torch_distributed_options = torch_npu._C._distributed_c10d.ProcessGroupHCCL.Options()
+        if group_name != "world":
+            hccl_buffer_size = os.getenv('HCCL_BASIC_BUFFSIZE', os.getenv('HCCL_BUFFSIZE', 200))
+            torch_distributed_options.hccl_config = {"hccl_buffer_size":int(hccl_buffer_size)}
+
+        for ranks in group_ranks:
+            device_group = torch.distributed.new_group(
+                ranks, backend=torch_distributed_backend, pg_options=torch_distributed_options)
+            # a group with `gloo` backend, to allow direct coordination between
+            # processes through the CPU.
+            cpu_group = torch.distributed.new_group(ranks, backend="gloo")
+            if self.rank in ranks:
+                self.ranks = ranks
+                self.world_size = len(ranks)
+                self.rank_in_group = ranks.index(self.rank)
+                self.device_group = device_group
+                self.cpu_group = cpu_group
+
+        assert self.cpu_group is not None
+        assert self.device_group is not None
+
+        from vllm.platforms import current_platform
+
+        if current_platform.is_cuda_alike():
+            self.device = torch.device(f"cuda:{local_rank}")
+        elif current_platform.is_out_of_tree():
+            self.device = torch.device(
+                f"{current_platform.device_name}:{local_rank}")
+        else:
+            self.device = torch.device("cpu")
+
+        self.use_device_communicator = use_device_communicator
+
+        self.device_communicator = None
+        if use_device_communicator and self.world_size > 1:
+            from vllm.utils import resolve_obj_by_qualname
+            device_comm_cls = resolve_obj_by_qualname(
+                current_platform.get_device_communicator_cls())
+            self.device_communicator = device_comm_cls(
+                cpu_group=self.cpu_group,
+                device=self.device,
+                device_group=self.device_group,
+                unique_name=self.unique_name,
+            )
+
+        from vllm.distributed.device_communicators.shm_broadcast import (
+            MessageQueue)
+        self.mq_broadcaster: Optional[MessageQueue] = None
+        if use_message_queue_broadcaster and self.world_size > 1:
+            self.mq_broadcaster = MessageQueue.create_from_process_group(
+                self.cpu_group, 1 << 22, 6)
+
+        from vllm.platforms import current_platform
+        self.use_custom_op_call = (current_platform.is_cuda_alike()
+                                   or current_platform.is_tpu())
 
     def all_to_all(
         self,
@@ -138,6 +215,7 @@ _MLP_TP: Optional[GroupCoordinator] = None
 _STREAM1_ATTN_GROUP: Optional[GroupCoordinator] = None
 _STREAM1_MLP_GROUP: Optional[GroupCoordinator] = None
 _STREAM1_MOE_GROUP: Optional[GroupCoordinator] = None
+_SCALE_PARALLEL_GROUP: Optional[GroupCoordinator] = None
 GROUP_STREAM1_ATTN = "stream1_attn" # p侧使能双micro batch为第二个流创建 attention 层通信域
 GROUP_STREAM1_MLP = "stream1_mlp" # p侧使能双micro batch为第二个流创建 mlp 层通信域
 GROUP_STREAM1_MOE = "stream1_moe" # p侧使能双micro batch为第二个流创建 moe 层通信域
@@ -170,26 +248,44 @@ def initialize_model_parallel(
         initialize_o_proj_dp_group(backend)
 
     if is_device_a2 or not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
-        if model_extra_config.operator_opt_config.two_stage_comm:
-            initialize_cross_comm_group_list(backend)
-            initialize_local_comm_group_list(backend)
-        else:
+
+        if not model_extra_config.operator_opt_config.two_stage_comm:
             initialize_world_comm_group_list(backend)
-            initialize_local_comm_group_list(backend)
-            initialize_cross_comm_group_list(backend)
+        
+        initialize_cross_comm_group_list(backend)
+        initialize_local_comm_group_list(backend)
 
-        if model_extra_config.operator_opt_config.enable_round_pipeline_comm:
-            num_nodes = torch.distributed.get_world_size() // get_npu_device_count()
-            if num_nodes == 4:
-                initialize_round_cross_comm_group_list(backend)
-                model_extra_config.operator_opt_config.enable_pipeline_comm = 0
-            else:
-                model_extra_config.operator_opt_config.enable_pipeline_comm = 1
-                model_extra_config.operator_opt_config.enable_round_pipeline_comm = 0
+        num_nodes = torch.distributed.get_world_size() // get_npu_device_count()
+        if num_nodes == 4 and model_extra_config.operator_opt_config.enable_round_pipeline_comm:
+            initialize_round_cross_comm_group_list(backend)
 
-            if model_extra_config.operator_opt_config.enable_pipeline_comm:
-                initialize_far_cross_comm_group_list(backend)
-                initialize_near_cross_comm_group_list(backend)
+        if model_extra_config.operator_opt_config.enable_pipeline_comm:
+            initialize_far_cross_comm_group_list(backend)
+            initialize_near_cross_comm_group_list(backend)
+
+    scale_parallel = model_extra_config.operator_opt_config.enable_scale_parallel
+    if scale_parallel:
+        initial_scale_parallel_group(backend)
+
+
+def initial_scale_parallel_group(backend: Optional[str] = None):
+    config = get_current_vllm_config()
+    world_size = torch.distributed.get_world_size()
+    rank = torch.distributed.get_rank()
+    data_parallel_size = config.parallel_config.data_parallel_size
+    pipeline_model_parallel_size = config.parallel_config.pipeline_parallel_size
+    tensor_model_parallel_size = config.parallel_config.tensor_parallel_size
+
+    all_ranks = torch.arange(world_size).reshape(-1, data_parallel_size, pipeline_model_parallel_size,
+                tensor_model_parallel_size)
+    group_ranks = all_ranks.view(-1, tensor_model_parallel_size).unbind(0)
+    group_ranks = [x.tolist() for x in group_ranks]
+    global _SCALE_PARALLEL_GROUP
+    _SCALE_PARALLEL_GROUP = init_model_parallel_group(group_ranks,
+                                    parallel_state.get_world_group().local_rank,
+                                    backend,
+                                    use_message_queue_broadcaster=False,
+                                    group_name="scale_parallel")
 
 
 def _init_parallel_group_factory(
@@ -517,6 +613,9 @@ def get_o_proj_dp_group() -> GroupCoordinator:
 
 def get_local_world_group() -> GroupCoordinator:
     return _LOCAL_WORLD
+
+def get_scale_parallel_group() -> GroupCoordinator:
+    return _SCALE_PARALLEL_GROUP
 
 
 def get_local_group_from_list(idx: int) -> GroupCoordinator:

@@ -1,0 +1,96 @@
+diff --git a/vllm/v1/core/sched/utils.py b/vllm/v1/core/sched/utils.py
+index 814c87762..33f1bdd6e 100644
+--- a/vllm/v1/core/sched/utils.py
++++ b/vllm/v1/core/sched/utils.py
+@@ -1,6 +1,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ from vllm.v1.request import Request, RequestStatus
+-
++import os
+ 
+ def check_stop(request: Request, max_model_len: int) -> bool:
+     if (request.num_tokens >= max_model_len
+@@ -20,8 +20,34 @@ def check_stop(request: Request, max_model_len: int) -> bool:
+         request.stop_reason = last_token_id
+         return True
+     return False
++ENABLE_MAX_TOKENS_EXCLUDE_REASONING = (
++    os.environ.get("ENABLE_MAX_TOKENS_EXCLUDE_REASONING", "0") == "1"
++)
++ENABLE_REASONING_MAX_TOKENS = os.environ.get("ENABLE_REASONING_MAX_TOKENS", "0") == "1"
++REASONING_MAX_TOKENS = int(os.environ.get("REASONING_MAX_TOKENS", "32768"))
++THINK_START_TOKEN_ID: int = int(os.environ.get("THINK_START_TOKEN_ID", "0"))
++THINK_END_TOKEN_ID: int = int(os.environ.get("THINK_END_TOKEN_ID", "0"))
++AFTER_THINK_TOKEN_IDS: list[int] = list(
++    map(int, os.environ.get("AFTER_THINK_TOKEN_IDS", "0").split(","))
++)
+ 
+ def add_token_and_check_stop(token_ids: list[int], request: Request, max_model_len: int):
++    global ENABLE_MAX_TOKENS_EXCLUDE_REASONING, ENABLE_REASONING_MAX_TOKENS, REASONING_MAX_TOKENS, COT_TOKEN_IDS, THINK_START_TOKEN_ID, THINK_END_TOKEN_ID, AFTER_THINK_TOKEN_IDS
++    if ENABLE_REASONING_MAX_TOKENS and not request.is_cot_end() and request.num_output_tokens >= REASONING_MAX_TOKENS:
++        request.status = RequestStatus.FINISHED_LENGTH_CAPPED
++        return True, 0
++    if ENABLE_MAX_TOKENS_EXCLUDE_REASONING and not request.is_cot_end():
++        end_index = -1
++        for token_id in token_ids:
++            if token_id in AFTER_THINK_TOKEN_IDS:
++                end_index = token_ids.index(token_id)
++                break
++        prompt_len = request.num_prompt_tokens
++        if prompt_len + request.max_tokens < max_model_len:
++            request.max_tokens = request.max_tokens + len(token_ids)
++            if end_index != -1 and end_index != len(token_ids) - 1:
++                request.max_tokens = request.max_tokens - (len(token_ids) - 1 - end_index)
++
+     remain_len = min(max_model_len - request.num_tokens, request.max_tokens - request.num_output_tokens)
+     if remain_len <= 0:
+         request.status = RequestStatus.FINISHED_LENGTH_CAPPED
+diff --git a/vllm/v1/request.py b/vllm/v1/request.py
+index eeb928ac3..03f6802c1 100755
+--- a/vllm/v1/request.py
++++ b/vllm/v1/request.py
+@@ -14,6 +14,11 @@ from vllm.v1.utils import ConstantList
+ if TYPE_CHECKING:
+     from vllm.lora.request import LoRARequest
+ 
++import os
++THINK_END_TOKEN_ID: int = int(os.environ.get("THINK_END_TOKEN_ID", "0"))
++AFTER_THINK_TOKEN_IDS: list[int] = list(
++    map(int, os.environ.get("AFTER_THINK_TOKEN_IDS", "0").split(","))
++)
+ 
+ class Request:
+ 
+@@ -85,7 +90,31 @@ class Request:
+         # P/D: Decode will get num_cached_tokens from kv_tranfer_params, passed by Prefill.
+         if self.kv_transfer_params is not None:
+             self.num_cached_tokens = self.kv_transfer_params.get("num_cached_tokens", -1)
+-
++        self._cot_end_symbol = False
++    def is_cot_end(self):
++        global THINK_END_TOKEN_ID, AFTER_THINK_TOKEN_IDS
++        SLIDING_WINDOW_SIZE = -16
++        if self._cot_end_symbol:
++            return True
++
++        if len(self.output_token_ids) <= 1:
++            return False
++
++        cot_end = False
++        check_token_ids = self.output_token_ids[SLIDING_WINDOW_SIZE:]
++
++        if THINK_END_TOKEN_ID in check_token_ids:
++            check_index = check_token_ids.index(THINK_END_TOKEN_ID) + 1
++            if (
++                check_index < len(check_token_ids)
++                and check_token_ids[check_index] in AFTER_THINK_TOKEN_IDS
++            ):
++                cot_end = True
++
++        if cot_end:
++            self._cot_end_symbol = True
++
++        return self._cot_end_symbol
+     @classmethod
+     def from_engine_core_request(cls, request: EngineCoreRequest) -> "Request":
+         if request.mm_inputs is not None:

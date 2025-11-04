@@ -1,0 +1,84 @@
+# NFS 共享存储配置
+nfs:
+  server: "7.150.8.27"
+  path: "/data/shared"
+  mountPoint: "/mnt/nfs_shared" # 宿主机 NFS 共享存储路径
+  # 在安装前，清理上一次的共享存储ranktable目录
+  cleanupOnInstall: true
+  pvcStorage: "1Gi"      # NFS PV容量逻辑大小，NFS 实际不限制
+  pvcAccessMode: ["ReadWriteMany"] # NFS 支持多读多写
+
+# 镜像配置
+# 当前用的单体部署的镜像包，没有针对组件分别构建镜像，以下组件部署都用的这个镜像
+image:
+  repository: registry-cbu.huawei.com/omniai_omniinfer/omni_infer-a3-arm
+  tag: release_v0.5.0_20250924
+
+# Prefill/Decode configuration
+servingEngineSpec:
+  modelSpec:
+  - name: "prefill_qwq_32b"        # 自定义的实例别名
+    # modelURL: "Qwen/QwQ-32B"  # HuggingFace 模型 id # 模型类型标识，用于匹配helm开箱即用最佳模型部署配置默认值
+    modelPath: "/data/models/QwQ-32B" # 容器内模型数据路径
+    role: "prefill"         # 约束：prefill/decode role对应的deployment只能有1个
+    replicaCount: 1         # p/d分离，角色的实例数
+    resources:
+      limits:
+        cpu: "100"
+        memory: 200G
+        huawei.com/Ascend910: "16"
+      requests:
+        cpu: "100"
+        memory: 200G
+        huawei.com/Ascend910: "16"
+    apiPort: 9010
+    servicePort: 9010
+    vllmConfig: {}
+    env: {}
+  - name: "decode_qwq_32b"
+    # modelURL: "Qwen/QwQ-32B"
+    modelPath: "/data/models/QwQ-32B"
+    role: "decode"
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: "100"
+        memory: 200G
+        huawei.com/Ascend910: "16"
+      requests:
+        cpu: "100"
+        memory: 200G
+        huawei.com/Ascend910: "16"
+    apiPort: 9100
+    servicePort: 9100
+    vllmConfig: {}
+    env: {}
+
+# Global Proxy configuration
+routerSpec: 
+  enableRouter: true      # 是否启用路由，非单体部署启用
+  replicaCount: 1         # 路由的副本数
+  proxyPort: 8888
+  servicePort: 80
+  routingLogic: "pd_score_balance" # omniinfer的路由逻辑
+  extraArgs: [] # 路由参数，如global proxy的LB SDK
+
+# 挂载配置：模型、日志等存储
+mount:
+  data:
+    hostPath: /data # 宿主机路径, 对应挂载到容器内/data。模型数据放在子目录models下，日志会写出到子目录log_path下，根据组件名创建目录
+  model:
+    path: "/data/models" # 容器内的模型数据读取路径
+  log:
+    path: "/data/log_path" # 容器内的日志写路径
+
+# Node selectors and tolerations for NPU nodes
+nodeSelector:
+  accelerator: huawei-Ascend910
+  accelerator-type: module-910c-16 # A3
+
+# 安全上下文配置
+securityContext:
+  privileged: true # 需要特权访问NPU设备
+  runAsUser: 0
+  runAsGroup: 0

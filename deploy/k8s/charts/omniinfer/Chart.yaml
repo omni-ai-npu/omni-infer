@@ -1,0 +1,19 @@
+apiVersion: v2
+name: omniinfer
+version: 0.5.0
+description: A Helm chart for deploying Omni-Infer, a powerful inference acceleration toolkit for Huawei Ascend NPU platform
+keywords:
+  - omniinfer
+  - inference
+  - ai
+  - ml
+  - npu
+  - ascend
+  - vllm
+home: https://gitee.com/omniai/omniinfer
+sources:
+  - https://gitee.com/omniai/omniinfer
+maintainers:
+  - name: Huawei
+    email: omni-ai@huawei.com
+type: application

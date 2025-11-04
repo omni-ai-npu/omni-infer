@@ -236,9 +236,30 @@ index adc87a5e4..ddaf1bf1d 100644
          if self.debug_mode:
              assert len(torch.unique(out_indices)) == len(out_indices)
 diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
-index 26814fb90..f1cc2c38e 100644
+index 26814fb90..af849b1af 100644
 --- a/python/sglang/srt/model_executor/forward_batch_info.py
 +++ b/python/sglang/srt/model_executor/forward_batch_info.py
+@@ -711,13 +711,13 @@ class ForwardBatch:
+         if self.encoder_lens is not None:
+             self.encoder_lens = self._pad_tensor_to_size(self.encoder_lens, bs)
+         self.positions = self._pad_tensor_to_size(self.positions, num_tokens)
+-        self.global_num_tokens_cpu = global_num_tokens
+-        self.global_num_tokens_gpu = self.global_num_tokens_gpu.new_tensor(
+-            global_num_tokens
+-        )
+-        self.global_num_tokens_for_logprob_cpu = global_num_tokens.copy()
+-        self.global_num_tokens_for_logprob_gpu = self.global_num_tokens_gpu.clone()
+-
++        if not model_runner.is_draft_worker:
++            self.global_num_tokens_cpu = global_num_tokens
++            self.global_num_tokens_gpu = self.global_num_tokens_gpu.new_tensor(
++                global_num_tokens
++            )
++            self.global_num_tokens_for_logprob_cpu = global_num_tokens.copy()
++            self.global_num_tokens_for_logprob_gpu = self.global_num_tokens_gpu.clone()
+         if self.mrope_positions is not None:
+             self.mrope_positions = self._pad_tensor_to_size(self.mrope_positions, bs)
+ 
 @@ -747,8 +747,9 @@ class ForwardBatch:
          bs = getattr(self, "raw_bs", self.batch_size)
  
@@ -272,9 +293,9 @@ index 12c1dd2cb..613bb4cbb 100644
 +++ b/python/sglang/srt/models/registry.py
 @@ -107,4 +107,6 @@ def import_model_classes():
  tmp_ = _ModelRegistry(import_model_classes())
- module = importlib.import_module("omni.adaptors.sglang.models.deepseek_v3")
+ module = importlib.import_module("omni.adaptors.sglang.models.deepseek.deepseek_v3")
  tmp_.models["DeepseekV3ForCausalLM"] = module.EntryClass
-+module = importlib.import_module("omni.adaptors.sglang.models.deepseek_mtp")
++module = importlib.import_module("omni.adaptors.sglang.models.deepseek.deepseek_mtp")
 +tmp_.models["DeepseekV3ForCausalLMNextN"] = module.EntryClass
  ModelRegistry = tmp_
 diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
@@ -346,10 +367,30 @@ index aa49e4fc7..972904863 100644
              retrive_cum_len=None,
              topk=topk,
 diff --git a/python/sglang/srt/speculative/eagle_worker.py b/python/sglang/srt/speculative/eagle_worker.py
-index 376cd029c..9d277def9 100644
+index 376cd029c..02f74fabd 100644
 --- a/python/sglang/srt/speculative/eagle_worker.py
 +++ b/python/sglang/srt/speculative/eagle_worker.py
-@@ -165,7 +165,10 @@ class EAGLEWorker(TpModelWorker):
+@@ -99,6 +99,8 @@ class EAGLEWorker(TpModelWorker):
+         # It will be captured later.
+         backup_disable_cuda_graph = server_args.disable_cuda_graph
+         server_args.disable_cuda_graph = True
++        backup_enable_torch_compile = server_args.enable_torch_compile
++        server_args.enable_torch_compile = False
+         # Share the allocator with a target worker.
+         # Draft and target worker own their own KV cache pools.
+         self.req_to_token_pool, self.token_to_kv_pool_allocator = (
+@@ -160,12 +162,21 @@ class EAGLEWorker(TpModelWorker):
+         self.draft_model_runner.server_args.disable_cuda_graph = (
+             backup_disable_cuda_graph
+         )
++        self.draft_model_runner.server_args.enable_torch_compile = (
++            backup_enable_torch_compile
++        )
++        self.draft_model_runner.enable_torch_compile = (
++            backup_enable_torch_compile
++        )
+         self.draft_tp_context = (
+             draft_tp_context if server_args.enable_dp_attention else empty_context
          )
          with self.draft_tp_context(self.draft_model_runner.tp_group):
              self.init_attention_backend()
@@ -361,13 +402,13 @@ index 376cd029c..9d277def9 100644
  
          # Some dummy tensors
          self.num_new_pages_per_topk = torch.empty(
-@@ -211,6 +214,12 @@ class EAGLEWorker(TpModelWorker):
+@@ -211,6 +222,12 @@ class EAGLEWorker(TpModelWorker):
                      skip_prefill=False,
                  )
              self.has_prefill_wrapper_verify = True
 +        elif self.server_args.attention_backend == "npumla":
-+            from omni.adaptors.sglang.layers.attention.npumla_backend import NpuMLABackend
-+            self.draft_attn_backend = NpuMLABackend(
++            from omni.adaptors.sglang.layers.attention.backend.mla import AscendMLABackend
++            self.draft_attn_backend = AscendMLABackend(
 +                self.draft_model_runner,
 +                skip_prefill=False,
 +            )
@@ -376,10 +417,10 @@ index 376cd029c..9d277def9 100644
                  TritonAttnBackend,
 diff --git a/python/sglang/srt/speculative/mtp_worker.py b/python/sglang/srt/speculative/mtp_worker.py
 new file mode 100644
-index 000000000..85bd91c0a
+index 000000000..9228c0f77
 --- /dev/null
 +++ b/python/sglang/srt/speculative/mtp_worker.py
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,359 @@
 +import logging
 +import os
 +import time
@@ -404,12 +445,7 @@ index 000000000..85bd91c0a
 +    ForwardMode,
 +)
 +from sglang.srt.server_args import ServerArgs
-+from sglang.srt.speculative.eagle_draft_cuda_graph_runner import (
-+    EAGLEDraftCudaGraphRunner,
-+)
-+from sglang.srt.speculative.eagle_draft_extend_cuda_graph_runner import (
-+    EAGLEDraftExtendCudaGraphRunner,
-+)
++from omni.adaptors.sglang.model_executor.npu_graph_runner import NpuGraphRunner
 +from sglang.srt.speculative.eagle_utils import (
 +    EagleDraftInput,
 +    EagleVerifyInput,
@@ -448,24 +484,18 @@ index 000000000..85bd91c0a
 +    def init_npu_graphs(self):
 +        """Enable torch.compile and graph engine with Npu."""
 +
-+        # current mtp layer do not support npu graph
-+        return
-+
 +        if not self.server_args.enable_torch_compile:
 +            return
 +
-+        if not self.is_generation:
-+            # TODO: Currently, npu graph only captures decode steps, which only exists for generation models
-+            return
-+
++        self.cuda_graph_runner = None
 +
 +        tic = time.perf_counter()
 +        before_mem = get_available_gpu_memory(self.device, self.gpu_id)
 +        logger.info(
-+            f"Compile graph with npu begin. This can take up to several minutes. avail mem={before_mem:.2f} GB"
++            f"Compile draft npu graph begin. This can take up to several minutes. avail mem={before_mem:.2f} GB"
 +        )
-+        with torch.get_device_module(self.device).stream(self.forward_stream):
-+            self.device_graph_runner = NpuGraphRunner(self)
++        with torch.get_device_module(self.device).stream(self.draft_model_runner.forward_stream):
++            self.draft_model_runner.device_graph_runner = NpuGraphRunner(self.draft_model_runner)
 +        after_mem = get_available_gpu_memory(self.device, self.gpu_id)
 +        self.graph_mem_usage = before_mem - after_mem
 +        logger.info(
@@ -565,9 +595,11 @@ index 000000000..85bd91c0a
 +            bid = model_worker_batch.bid
 +
 +            ## Verify
-+            verified_id, accept_length, last_accepted_index = self.verify(model_worker_batch.input_ids,
-+                                                                          next_token_ids,
-+                                                                          num_reqs, batch)
++            verified_id, accept_length, last_accepted_index, bouns_ids, evict_mask = (
++                self.verify(model_worker_batch.input_ids,
++                            next_token_ids,
++                            num_reqs, batch)
++            )
 +
 +
 +            # Set inputs for MTP
@@ -585,15 +617,15 @@ index 000000000..85bd91c0a
 +                                hidden_states=logits_output.hidden_states,
 +                                verified_id=verified_id,
 +                                accept_length=accept_length,
-+                                accept_length_cpu=accept_length.tolist(),
++                                accept_length_cpu=[],
 +                                seq_lens_for_draft_extend=batch.seq_lens,
 +                                req_pool_indices_for_draft_extend=batch.req_pool_indices,
++                                capture_hidden_mode=CaptureHiddenMode.LAST
 +                                )
-+                forward_batch.token_to_kv_pool = self.draft_model_runner.token_to_kv_pool
 +
++            forward_batch.token_to_kv_pool = self.draft_model_runner.token_to_kv_pool
 +            forward_batch.spec_info = draft_input
-+            forward_batch.input_ids = next_token_ids
-+            forward_batch.can_run_dp_cuda_graph = False
++            forward_batch.input_ids = next_token_ids.to(torch.int64)
 +
 +            # Run MTP
 +            with self.draft_tp_context(self.draft_model_runner.tp_group):
@@ -611,6 +643,9 @@ index 000000000..85bd91c0a
 +            batch.spec_info = forward_batch.spec_info
 +            batch.input_ids = verified_id
 +            batch.seq_lens += accept_length
++            if not batch.forward_mode.is_idle():
++                self.free_unaccepted_slot(batch, bouns_ids, evict_mask)
++            accept_length_per_req_cpu = accept_length.tolist()
 +            self.restore_sampling_info(batch.sampling_info)
 +
 +            # if not process, EagleDraftInput merge batch will error
@@ -686,6 +721,27 @@ index 000000000..85bd91c0a
 +            self.speculative_num_draft_tokens,
 +        )
 +
++    def free_unaccepted_slot(self, batch, bouns_ids, evict_mask):
++
++        # Iterate every accepted token and check if req has finished after append the token
++        # should be checked BEFORE free kv cache slots
++        bouns_ids_cpu = bouns_ids.tolist()
++        for i, (req, bonus_ids_per_reqs) in enumerate(zip(batch.reqs, bouns_ids_cpu)):
++            for token_id in bonus_ids_per_reqs:
++                if token_id == -1:
++                    break
++                req.output_ids.append(token_id)
++                req.check_finished()
++                if req.finished():
++                    # has_finished = True
++                    break
++
++        # Free the KV cache for unaccepted tokens in new pages
++        if self.page_size == 1:
++            # TODO: boolean array index leads to a device sync. Remove it.
++            batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask])
++        else:
++            batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask.view(-1)])
 +
 +    def verify(self, input_ids, forward_token_ids, num_reqs, batch):
 +
@@ -693,6 +749,8 @@ index 000000000..85bd91c0a
 +        num_valid_tokens = num_reqs * num_sampling_tokens_per_req
 +        input_ids = input_ids[:num_valid_tokens]
 +        forward_token_ids = forward_token_ids[:num_valid_tokens]
++        bouns_ids = None
++        evict_mask = None
 +
 +        if batch.forward_mode.is_idle():
 +            accepted_num = torch.zeros(num_reqs, device=input_ids.device, dtype=torch.int32)  # (b,)
@@ -714,32 +772,14 @@ index 000000000..85bd91c0a
 +
 +            # offset [1, 2], accepted_num[B, 1]
 +            bouns_mask = offset[None, :] <= accepted_num[:, None] - 1
-+            bouns_ids_cpu = torch.where(bouns_mask, forward_token_ids.view(num_reqs, -1), self.minus_one).tolist()
++            bouns_ids = torch.where(bouns_mask, forward_token_ids.view(num_reqs, -1), self.minus_one)
 +
-+            # Iterate every accepted token and check if req has finished after append the token
-+            # should be checked BEFORE free kv cache slots
-+            for i, (req, bonus_ids_per_reqs) in enumerate(zip(batch.reqs, bouns_ids_cpu)):
-+                for token_id in bonus_ids_per_reqs:
-+                    if token_id == -1:
-+                        break
-+                    req.output_ids.append(token_id)
-+                    req.check_finished()
-+                    if req.finished():
-+                        # has_finished = True
-+                        break
-+
-+            # Free the KV cache for unaccepted tokens
++            # Calculate evict mask for unaccepted tokens in new pages
 +            evict_mask = offset[None, :] > accepted_num[:, None]  # [B, num_tokens], evict unaccpeted tokens
 +            page_first_slot_mask = (batch.seq_lens[:, None] + offset[None, :]) % self.page_size == 1 # [num_tokens]
 +            evict_mask = evict_mask & page_first_slot_mask
 +
-+            if self.page_size == 1:
-+                # TODO: boolean array index leads to a device sync. Remove it.
-+                batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask])
-+            else:
-+                batch.token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask.view(-1)])
-+
-+        return output_token_ids, accepted_num, last_accepted_index
++        return output_token_ids, accepted_num, last_accepted_index, bouns_ids, evict_mask
 \ No newline at end of file
 diff --git a/python/sglang/srt/speculative/spec_info.py b/python/sglang/srt/speculative/spec_info.py
 index af556b99c..a658902a0 100644

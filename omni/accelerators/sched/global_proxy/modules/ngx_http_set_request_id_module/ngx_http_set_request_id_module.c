@@ -116,6 +116,11 @@ static ngx_int_t ngx_http_set_request_id_handler(ngx_http_request_t *r)
     unsigned char uuid[UUID_STR_LEN];
     gen_uuid(uuid);
 
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    ngx_log_error(
+        NGX_LOG_NOTICE, r->connection->log, 0, "<<<Action: Start to schedule; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, uuid);
+
     // Set the key and value of the header
     p = ngx_palloc(r->pool, sizeof(x_request_id));
     if (p == NULL) {

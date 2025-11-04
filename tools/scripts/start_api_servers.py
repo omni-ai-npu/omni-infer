@@ -16,9 +16,12 @@
 # limitations under the License.
 # ============================================================================
 
+import glob
 import os
+import re
 import subprocess
 import argparse
+import tempfile
 import weakref
 import time
 import signal
@@ -59,6 +62,16 @@ class ProcessManager:
     """Class to hold processes and enable weakref.finalize."""
     def __init__(self, processes):
         self.processes = processes
+
+def use_vllm_logging_config_path():
+    config_path = os.getenv("VLLM_LOGGING_CONFIG_PATH")
+    return int(os.getenv("VLLM_CONFIGURE_LOGGING", "1")) and config_path and os.path.exists(config_path)
+
+def replace_logger_file(config_json, logger_file_path):
+    for handler_name, handler_config in config_json.get("handlers", {}).items():
+        if "filename" in handler_config:
+            handler_config["filename"] = logger_file_path
+    return config_json
 
 
 def start_single_node_api_servers(
@@ -152,19 +165,45 @@ def start_single_node_api_servers(
         if no_enable_chunked_prefill:
             cmd.extend(["--no-enable-chunked-prefill"])
 
-        # Open a single log file for combined stdout and stderr
-        log_file = open(os.path.join(log_dir, f"server_{rank}.log"), "w")
+        logger_path = os.path.join(log_dir, f"server_{rank}.log")
+        existed_logger_files = [f for f in glob.glob(logger_path + "*") if re.search(f"server_{rank}\.log(\.\d+)?$", f)]
+        for existed_file in existed_logger_files:
+            print(f"The historical log {existed_file} that already exists will be removed.")
+            os.remove(existed_file)
+
+        if use_vllm_logging_config_path():
+            with open(os.getenv("VLLM_LOGGING_CONFIG_PATH"), "r") as f:
+                config_json = json.load(f)
+            config_json = replace_logger_file(config_json, logger_path)
+            print(f"Use VLLM_LOGGING_CONFIG: {config_json}")
+
+            tmp_file_name = tempfile.mkstemp()[1]
+            tmp_file = open(tmp_file_name, "w")
+            json.dump(config_json, tmp_file)
+            tmp_file.close()
+
+            env["VLLM_LOGGING_CONFIG_PATH"] = tmp_file_name
+            stdout = subprocess.DEVNULL
+            stderr = subprocess.DEVNULL
+            # occupy space
+            log_file = tmp_file
+        else:
+            # Open a single log file for combined stdout and stderr
+            log_file = open(logger_path, "w")
+
+            stdout = log_file
+            stderr = subprocess.STDOUT  # Redirect stderr to stdout (same log file)
 
         # Start the server process in the background with combined log redirection
         print('=' * terminal_width)
-        print(f"Starting API server {rank} on port {port}, logging to {log_dir}/server_{rank}.log")
+        print(f"Starting API server {rank} on port {port}, logging to {logger_path}")
         print('=' * terminal_width)
         print(f"Server {rank} on port {port}>>>{' '.join(cmd)}")
         process = subprocess.Popen(
             cmd,
             env=env,
-            stdout=log_file,
-            stderr=subprocess.STDOUT  # Redirect stderr to stdout (same log file)
+            stdout=stdout,
+            stderr=stderr  # Redirect stderr to stdout (same log file)
         )
         processes.append((process, log_file))
 

@@ -16,7 +16,7 @@ from vllm.model_executor.layers.fused_moe.layer import FusedMoeWeightScaleSuppor
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig, QuantizeMethodBase)
 from omni.adaptors.vllm.distributed.parallel_state import GroupCoordinator
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 from omni.layers.moe.fused_moe.fused_moe import (
     fused_topk,
     grouped_topk
@@ -45,7 +45,8 @@ class UnquantizedFusedMoEMethod(GPUUnquantizedFusedMoEMethod):
             attn_metadata: AttentionMetadata,
             comm_group: Optional[GroupCoordinator]
     ) -> torch.Tensor:
-        is_prefill = attn_metadata is None or attn_metadata.prefill is not None
+        is_prefill = attn_metadata is None or (hasattr(attn_metadata, "prefill") and attn_metadata.prefill is not None) or \
+                    (hasattr(attn_metadata, "is_pd_seperate_d") and not attn_metadata.is_pd_seperate_d)
         out = self.moe_infer_fusion(layer,
                                     x,
                                     topk_ids,
@@ -72,7 +73,7 @@ class UnquantizedFusedMoEMethod(GPUUnquantizedFusedMoEMethod):
         else:
             topk_ids = topk_ids.int()
         max_num_deployed_expert = 256
-        if model_extra_config.operator_opt_config.use_omni_placement and layer.moe_layer_idx < 58:
+        if model_extra_config.task_config.enable_omni_placement and layer.moe_layer_idx < 58:
             max_num_deployed_expert = layer.planner.get_max_num_deployed_expert_per_rank() * get_world_group().world_size
         expert_range = [0, max_num_deployed_expert]
         expanded_x, expanded_row_idx, tokens_per_expert, pertoken_scale = torch_npu.npu_moe_init_routing_v2(
@@ -116,7 +117,7 @@ class UnquantizedFusedMoEMethod(GPUUnquantizedFusedMoEMethod):
             per_token_scales=None
         )
         group_list = tokens_per_local_expert.to(torch.int64)
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.task_config.enable_omni_placement:
             layer.planner.record_activation(layer.moe_layer_idx, group_list,
                                             support_multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune and (
                                                 not is_prefill))
@@ -192,6 +193,8 @@ class FusedMoE(torch.nn.Module):
         self.expert_mapping = kwargs.get("expert_mapping", None)
         ep_size = get_ep_group().world_size
         if ep_size > 1:
+            if model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+                ep_size = ep_size - model_extra_config.parall_config.attn_dies
             ep_size = ep_size - model_extra_config.parall_config.redundancy_shared_expert_num
             num_experts = int(num_experts / ep_size)
             tp_size = 1
@@ -226,7 +229,7 @@ class FusedMoE(torch.nn.Module):
 
         # ENABLE_OMNI_PLANNER
         num_of_redundant_experts = 0
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.task_config.enable_omni_placement:
             num_of_redundant_experts = self.planner.get_num_of_redundant_experts(moe_layer_idx=self.moe_layer_idx,
                                                                                  num_expert_per_device_origin=num_experts,
                                                                                  rank_device=get_ep_group().rank_in_group - model_extra_config.parall_config.redundancy_shared_expert_num)
@@ -307,7 +310,6 @@ class FusedMoE(torch.nn.Module):
         attn_metadata = get_forward_context().attn_metadata
         if isinstance(attn_metadata, dict):
             attn_metadata = attn_metadata[next(iter(attn_metadata))]
-        is_prefill = attn_metadata is None or attn_metadata.prefill is not None
         # DeekSeekv2 uses grouped_top_k
         # adapt: When num_expert_group=1, it degenerates to fused_topk.
         if use_grouped_topk:  # and num_expert_group != 1:
@@ -317,17 +319,29 @@ class FusedMoE(torch.nn.Module):
             if num_expert_group is None:
                 raise ValueError(f"Unsupported num_expert_group is None")
 
-            topk_weights, topk_ids, _ = torch_npu.npu_moe_gating_top_k(
-                router_logits.float(),
-                k=top_k,  # topk is currently 8
-                bias=e_score_correction_bias,  # float32
-                k_group=topk_group,  # fix: 4
-                group_count=num_expert_group,  # fix 8
-                group_select_mode=1,  # 0: maximum in group; 1: topk2.sum(fix)
-                renorm=0,  # 0: softmax->topk(fix); 1: topk->softmax
-                norm_type=1,  # 0: softmax; 1: sigmoid(fix)
-                routed_scaling_factor=routed_scaling_factor,
-                eps=float(1e-20))
+            if e_score_correction_bias is None and attn_metadata is None:
+                topk_weights, topk_ids, row_idx = grouped_topk(
+                    hidden_states=hidden_states,
+                    gating_output=router_logits,
+                    topk=top_k,
+                    renormalize=renormalize,
+                    num_expert_group=num_expert_group,
+                    topk_group=topk_group,
+                    scoring_func=scoring_func,
+                    e_score_correction_bias=e_score_correction_bias)
+                topk_weights = topk_weights * routed_scaling_factor
+            else:
+                topk_weights, topk_ids, _ = torch_npu.npu_moe_gating_top_k(
+                    router_logits.float(),
+                    k=top_k,  # topk is currently 8
+                    bias=e_score_correction_bias,  # float32
+                    k_group=topk_group,  # fix: 4
+                    group_count=num_expert_group,  # fix 8
+                    group_select_mode=1,  # 0: maximum in group; 1: topk2.sum(fix)
+                    renorm=0,  # 0: softmax->topk(fix); 1: topk->softmax
+                    norm_type=1,  # 0: softmax; 1: sigmoid(fix)
+                    routed_scaling_factor=routed_scaling_factor,
+                    eps=float(1e-20))
             row_idx = torch.arange(topk_ids.numel(), device=current_platform.device_type, dtype=torch.int32).view(
                 -1, router_logits.shape[
                     0]).transpose(0, 1)
@@ -394,7 +408,7 @@ class FusedMoE(torch.nn.Module):
         if get_ep_group().world_size > 1:
             ep_rank = get_ep_group().rank_in_group - model_extra_config.parall_config.redundancy_shared_expert_num
             # ENABLE_OMNI_PLANNER
-            if model_extra_config.operator_opt_config.use_omni_placement:
+            if model_extra_config.task_config.enable_omni_placement:
                 # OMNI_PLANNER: determine the expert deployment based on the pattern
                 exists_locally, local_pos = self.planner.is_expert_on_current_rank(self.moe_layer_idx, expert_id,
                                                                                    ep_rank, self.num_experts)
@@ -515,3 +529,31 @@ class FusedMoE(torch.nn.Module):
                 expert_data=expert_data,
                 tp_rank=tp_rank)
             return
+
+class FakeMoe():
+    def __init__(
+        self,
+        num_experts: int,
+        top_k: int,
+        hidden_size: int,
+        quant_config: Optional[QuantizationConfig] = None,
+    ):
+        if quant_config is None:
+            self.quant_mode = UNQUANT_MODE
+        else:
+            self.quant_mode = DYNAMIC_QUANT_MODE
+        
+        self.tp_size = 1
+        self.num_experts = num_experts
+        self.top_k = top_k
+        
+        if model.extra_config.operator_opt_config.decode_moe_dispatch_combine:
+            # 适配dispatch combine算子
+            self.ep_size = get_ep_group().world_size
+            self.global_rank = get_world_group().rank_in_group
+            self.world_size = get_world_group().world_size
+            self.moe_all_to_all_group = get_world_group().device_group
+            self.moe_all_to_all_group_name = self.moe_all_to_all_group._get_backend(torch.device("npu")).get_hccl_comm_name(self.global_rank)
+            self.moe_rs_group = get_pp_group().device_group
+            self.moe_rs_group_rank = get_pp_group().rank_in_group
+            self.moe_rs_group_name = self.moe_rs_group._get_backend(torch.device("npu")).get_hccl_comm_name(self.moe_rs_group_rank)

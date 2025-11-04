@@ -48,7 +48,9 @@ def parse_trace_logs(root_dir):
                                         role, ip = role.split("_")
                                         action = action.strip()
                                         timestamp = float(timestamp)
-                                        data_by_request[request_id][action] = timestamp
+                                        # min value
+                                        if (action not in data_by_request[request_id] or timestamp < data_by_request[request_id][action]):
+                                            data_by_request[request_id][action] = timestamp                                        
                                         request_role[request_id][role] = ip
                                         if action not in action_timestamps or timestamp < action_timestamps[action]:
                                             action_timestamps[action] = timestamp
@@ -83,6 +85,7 @@ def parse_trace_logs(root_dir):
                 'Start to send output': '触发首个decode token执行',
                 'First decode output token': 'decoder返回第一个token',
                 'Second decode output token': 'decoder返回第二个token',
+                'Third decode output token': 'decoder返回第三个token',
                 'Finish decode pickle and start response': 'api server收到推理结果'
             }
             fieldnames = ['RequestID', 'P_NODE', "D_NODE"] + list(action_map.keys())

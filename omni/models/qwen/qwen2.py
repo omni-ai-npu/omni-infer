@@ -29,19 +29,25 @@ from typing import Any, Optional, Union, List
 import torch
 from torch import nn
 from transformers import Qwen2Config
-
+import torchair as tng
 from vllm.forward_context import get_forward_context
 from vllm.attention import Attention, AttentionType, AttentionMetadata
 from vllm.config import CacheConfig, VllmConfig
 from vllm.compilation.decorators import support_torch_compile
+from omni.models.config_loader.loader import model_extra_config
 from vllm.distributed import (
     get_pp_group,
     get_tp_group,
+    get_dp_group,
+    get_world_group,
     get_tensor_model_parallel_world_size,
     get_tensor_model_parallel_rank,
     tensor_model_parallel_all_reduce,
     tensor_model_parallel_all_gather,
     tensor_model_parallel_reduce_scatter,
+)
+from omni.adaptors.vllm.distributed import (
+    get_mlp_tp_group
 )
 from vllm.logger import init_logger
 from omni.layers.activation import SiluAndMul
@@ -67,7 +73,7 @@ from omni.layers.linear import (
     MergedColumnParallelFlashCommLinear,
 )
 from omni.layers.rotary_embedding import get_rope, QwenRotaryEmbedding, QwenMRotaryEmbedding
-from omni.layers.fused_mlp import FusedMLP
+from omni.layers.fused_mlp import FusedMLP, UnquantizedFusedMLPMethod, FusedMLPMethodBase
 from omni.layers.attention.backend.attention import AscendAttentionState
 
 
@@ -77,8 +83,56 @@ torch.npu.config.allow_internal_format = True
 logger = init_logger(__name__)
 
 class Qwen2MLP(FusedMLP):
-    pass
+    def __init__(
+        self,
+        hidden_size: int,
+        intermediate_size: int,
+        hidden_act: str,
+        quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
+    ) -> None:
+        super().__init__(hidden_size, intermediate_size, hidden_act, quant_config, prefix)
+        # We use mlp_tp_group instead of tp to support different tp sizes for attention & mlp
+        if model_extra_config.parall_config.dense_mlp_tp_size > get_tp_group().world_size:
+            tp_size = get_mlp_tp_group().world_size
+            tp_rank = get_mlp_tp_group().rank_in_group
+        else:
+            tp_size = get_tp_group().world_size
+            tp_rank = get_tp_group().rank_in_group
+        self.intermediate_size = intermediate_size
+        self.gate_up_proj = MergedColumnParallelFlashCommLinear(
+            hidden_size,
+            [intermediate_size] * 2,
+            tp_size=tp_size,
+            tp_rank=tp_rank,
+            bias=False,
+            quant_config=quant_config,
+            prefix=f"{prefix}.gate_up_proj",
+        )
+        self.down_proj = RowParallelFlashCommLinear(
+            intermediate_size,
+            hidden_size,
+            tp_size=tp_size,
+            tp_rank=tp_rank,
+            bias=False,
+            quant_config=quant_config,
+            prefix=f"{prefix}.down_proj",
+        )
+        if hidden_act != "silu":
+            raise ValueError(f"Unsupported activation: {hidden_act}. "
+                             "Only silu is supported for now.")
+        self.act_fn = SiluAndMul()
 
+        quant_method: Optional[QuantizeMethodBase] = None
+
+        if quant_config is None:
+            quant_method = UnquantizedFusedMLPMethod()
+        else:
+            quant_method = quant_config.get_quant_method(self, prefix)
+
+        assert quant_method is not None
+        assert isinstance(quant_method, FusedMLPMethodBase)
+        self.quant_method = quant_method
 
 class Qwen2Attention(nn.Module):
 
@@ -89,6 +143,7 @@ class Qwen2Attention(nn.Module):
         num_kv_heads: int,
         max_position: int = 4096 * 32,
         rope_theta: float = 10000,
+        head_dim: Optional[int] = None,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         rope_scaling: Optional[tuple] = None,
@@ -100,7 +155,7 @@ class Qwen2Attention(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         tp_size = get_tensor_model_parallel_world_size()
-        tp_rank=get_tensor_model_parallel_rank()
+        tp_rank = get_tensor_model_parallel_rank()
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
@@ -114,7 +169,7 @@ class Qwen2Attention(nn.Module):
             # the KV heads across multiple tensor parallel GPUs.
             assert tp_size % self.total_num_kv_heads == 0
         self.num_kv_heads = max(1, self.total_num_kv_heads // tp_size)
-        self.head_dim = hidden_size // self.total_num_heads
+        self.head_dim = head_dim or hidden_size // self.total_num_heads
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
         self.scaling = self.head_dim**-0.5
@@ -244,6 +299,7 @@ class Qwen2DecoderLayer(nn.Module):
             attn_type=attn_type,
             dual_chunk_attention_config=dual_chunk_attention_config,
             kv_stream=kv_stream,
+            head_dim=getattr(config, "head_dim", None),
         )
         self.mlp = Qwen2MLP(
             hidden_size=self.hidden_size,
@@ -265,33 +321,92 @@ class Qwen2DecoderLayer(nn.Module):
         kv_cache: Optional[torch.Tensor],
         cos: Optional[torch.Tensor],
         sin: Optional[torch.Tensor],
+        use_mlp_tp: bool,
+        small_batch: bool,
+        compile_mode: bool,
+        hidden_states_buffer: Optional[torch.Tensor],
+        hidden_states_world_buffer: Optional[torch.Tensor],
+        is_first_layer: bool
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # Self Attention
-        if residual is None:
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
-        else:
-            hidden_states, residual = self.input_layernorm(
-                hidden_states, residual)
-        hidden_states = self.self_attn(
-            positions=positions,
-            hidden_states=hidden_states,
-            kv_cache=kv_cache,
-            cos=cos,
-            sin=sin
-        )
-
-        # Fully Connected
         attn_metadata = get_forward_context().attn_metadata
         if attn_metadata is not None and attn_metadata[next(iter(attn_metadata))].attn_state == AscendAttentionState.PrefillNoCache:
             is_prefill = True
         else:
             is_prefill = False
-        hidden_states, residual = self.post_attention_layernorm(
-            hidden_states, residual)
-        hidden_states = self.mlp(hidden_states, x_transform=None, reduce_type="AR", is_prefill=is_prefill)
-        return hidden_states, residual
+        if not use_mlp_tp:
+            if residual is None:
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
+            else:
+                hidden_states, residual = self.input_layernorm(hidden_states, residual)
+            hidden_states = self.self_attn(
+                positions=positions,
+                hidden_states=hidden_states,
+                kv_cache=kv_cache,
+                cos=cos,
+                sin=sin
+            )
 
+            # Fully Connected
+            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+            hidden_states = self.mlp(hidden_states, x_transform=None, reduce_type="AR", is_prefill=is_prefill)
+            return hidden_states, residual
+        else:
+            if small_batch:
+                if is_first_layer:
+                    n_tokens_dp = hidden_states.shape[0]
+                    if residual is None:
+                        residual = hidden_states
+                        hidden_states = self.input_layernorm(hidden_states)
+                    else:
+                        hidden_states, residual = self.input_layernorm(hidden_states, residual)
+                else:
+                    n_tokens_dp = hidden_states.shape[0] // get_dp_group().world_size
+                    bg = get_dp_group().rank_in_group * n_tokens_dp
+                    ed = (get_dp_group().rank_in_group + 1) * n_tokens_dp
+                    hidden_states, residual = self.input_layernorm(hidden_states[bg:ed], residual[bg:ed])
+                if compile_mode:
+                    with tng.scope.npu_stream_switch('qwen2_decode_small_batch_stream'):
+                        residual = get_dp_group().all_gather(residual, dim=0)
+                else:
+                    residual = get_dp_group().all_gather(residual, dim=0)
+                qkv, _ = self.self_attn.qkv_proj(hidden_states, is_prefill=is_prefill)
+                q, k, v = qkv.split([self.self_attn.q_size, self.self_attn.kv_size, self.self_attn.kv_size], dim=-1)
+                q, k = self.self_attn.rotary_emb(positions, q, k, cos, sin)
+                attn_output = self.self_attn.attn(q, k, v)
+                hidden_states = torch.matmul(attn_output, self.self_attn.o_proj.weight, out=hidden_states_buffer)
+                hidden_states_world_buffer[(1 - get_dp_group().rank_in_group) * n_tokens_dp:(1 - get_dp_group().rank_in_group + 1) * n_tokens_dp] = 0
+                hidden_states = get_mlp_tp_group().all_reduce(hidden_states_world_buffer)
+                if compile_mode:
+                    residual = tng.scope.npu_wait_tensor(residual, residual)
+                hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+                hidden_states = self.mlp(hidden_states, x_transform=None, reduce_type=None, is_prefill=is_prefill)
+                hidden_states = get_mlp_tp_group().all_reduce(hidden_states)
+                return hidden_states, residual
+            else:
+                if is_first_layer:
+                    n_tokens_dp = hidden_states.shape[0]
+                    if residual is None:
+                        residual = hidden_states
+                        hidden_states = self.input_layernorm(hidden_states)
+                    else:
+                        hidden_states, residual = self.input_layernorm(hidden_states, residual)
+                else:
+                    n_tokens_dp = hidden_states.shape[0]
+                    hidden_states, residual = self.input_layernorm(hidden_states, residual)
+                qkv, _ = self.self_attn.qkv_proj(hidden_states, is_prefill=is_prefill)
+                q, k, v = qkv.split([self.self_attn.q_size, self.self_attn.kv_size, self.self_attn.kv_size], dim=-1)
+                q, k = self.self_attn.rotary_emb(positions, q, k, cos, sin)
+                attn_output = self.self_attn.attn(q, k, v)
+                hidden_states = torch.matmul(attn_output, self.self_attn.o_proj.weight)
+                hidden_states = get_tp_group().all_reduce(hidden_states)
+                hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+                hidden_states = get_dp_group().all_gather(hidden_states, dim=0)
+                hidden_states = self.mlp(hidden_states, x_transform=None, reduce_type=None, is_prefill=is_prefill)
+                hidden_states = get_tp_group().all_reduce(hidden_states)
+                hidden_states = get_dp_group().reduce_scatter(hidden_states)
+                return hidden_states, residual
 
 class Qwen2Model(nn.Module):
 
@@ -320,7 +435,7 @@ class Qwen2Model(nn.Module):
         self.config = config
         self.quant_config = quant_config
         self.vocab_size = config.vocab_size
-
+        self.first_run = 0
         if get_pp_group().is_first_rank or (config.tie_word_embeddings
                                             and get_pp_group().is_last_rank):
             self.embed_tokens = VocabParallelEmbedding(
@@ -412,13 +527,18 @@ class Qwen2Model(nn.Module):
         if len(aux_hidden_states) > 0:
             return aux_hidden_states, hidden_states # to meet order of raw_hidden_states and hidden_states
         return hidden_states
-
+    def get_first_batch_fraction(self, n_tokens):
+        p = 20 if n_tokens <= 5000 else 22 if n_tokens <= 10000 else 23 if n_tokens <= 40000 else 24 if n_tokens <= 50000 else 25
+        q = 40
+        return p, q
     def forward_layers_prefill_microbatch_tp8_all_to_all(self, positions, hidden_states, residual, kv_caches, cos, sin):
         n_tokens =  hidden_states.shape[0]
         hidden_size = hidden_states.shape[1]
         tp_rank = get_tensor_model_parallel_rank()
         tp_world_size = get_tensor_model_parallel_world_size()
-        split_sizes_scatter = [n_tokens // tp_world_size // 2, n_tokens // tp_world_size - n_tokens // tp_world_size // 2]
+        first_batch_size_p, first_batch_size_q = self.get_first_batch_fraction(n_tokens)
+        split_sizes_scatter = [n_tokens // tp_world_size * first_batch_size_p // first_batch_size_q, 0]
+        split_sizes_scatter[1] = n_tokens // tp_world_size - split_sizes_scatter[0]
         split_sizes = split_sizes_scatter.copy()
         n_splits = len(split_sizes)
         for i in range(n_splits):
@@ -480,7 +600,7 @@ class Qwen2Model(nn.Module):
                 hidden_states_mb0_handle.wait()
                 hidden_states_mb1_handle.wait()
                 residual_mb0_handle.wait()
-                residual_mb0_handle.wait()
+                residual_mb1_handle.wait()
                 aux_hidden_states.append(torch.cat([hidden_states_mb0_gathered + residual_mb0_gathered, hidden_states_mb1_gathered + residual_mb1_gathered], dim=0))
             if layer_idx == self.start_layer:
                 if isinstance(layer.input_layernorm, nn.Identity):
@@ -520,25 +640,25 @@ class Qwen2Model(nn.Module):
                                                        output=attn_output_buffer)
             attn_output_mb0, attn_output_mb1 = torch.split(attn_output, split_sizes)
 
-            attn_output_mb0 = get_tp_group().all_to_all(attn_output[:split_sizes[0]])
+            attn_output_mb1 = get_tp_group().all_to_all(attn_output[split_sizes[0]:])
             with torch.npu.stream(self.micro_stream):
                 torch.npu.current_stream().wait_stream(main_stream)
-                attn_output_mb1 = get_tp_group().all_to_all(attn_output[split_sizes[0]:])
-            hidden_states_mb0, _ = layer.self_attn.a2a_o_proj(attn_output_mb0)
-            hidden_states_mb0, residual_mb0 = layer.post_attention_layernorm(hidden_states_mb0, residual_mb0)
-            hidden_states_mb0, hidden_states_mb0_handle = get_tp_group().all_gather_async(hidden_states_mb0, dim=0, output_tensor=hidden_states_mb0_buffer)
-            torch.npu.current_stream().wait_stream(self.micro_stream)
+                attn_output_mb0 = get_tp_group().all_to_all(attn_output[:split_sizes[0]])
             hidden_states_mb1, _ = layer.self_attn.a2a_o_proj(attn_output_mb1)
             hidden_states_mb1, residual_mb1 = layer.post_attention_layernorm(hidden_states_mb1, residual_mb1)
             hidden_states_mb1, hidden_states_mb1_handle = get_tp_group().all_gather_async(hidden_states_mb1, dim=0, output_tensor=hidden_states_mb1_buffer)
+            torch.npu.current_stream().wait_stream(self.micro_stream)
+            hidden_states_mb0, _ = layer.self_attn.a2a_o_proj(attn_output_mb0)
+            hidden_states_mb0, residual_mb0 = layer.post_attention_layernorm(hidden_states_mb0, residual_mb0)
+            hidden_states_mb0, hidden_states_mb0_handle = get_tp_group().all_gather_async(hidden_states_mb0, dim=0, output_tensor=hidden_states_mb0_buffer)
 
+            hidden_states_mb1_handle.wait()
+            hidden_states_mb1 = torch.matmul(hidden_states_mb1, layer.mlp.gate_up_proj.weight, out=intermediate_states_up_mb1_buffer)
             hidden_states_mb0_handle.wait()
             hidden_states_mb0 = torch.matmul(hidden_states_mb0, layer.mlp.gate_up_proj.weight, out=intermediate_states_up_mb0_buffer)
             hidden_states_mb0 = layer.mlp.act_fn(hidden_states_mb0)
             hidden_states_mb0 = torch.matmul(hidden_states_mb0, layer.mlp.down_proj.weight, out=intermediate_states_down_mb0_buffer)
             hidden_states_mb0, hidden_states_mb0_handle = get_tp_group().reduce_scatter_async(hidden_states_mb0, output_tensor=hidden_states_mb0_scatter_buffer)
-            hidden_states_mb1_handle.wait()
-            hidden_states_mb1 = torch.matmul(hidden_states_mb1, layer.mlp.gate_up_proj.weight, out=intermediate_states_up_mb1_buffer)
             hidden_states_mb1 = layer.mlp.act_fn(hidden_states_mb1)
             if layer_idx != self.end_layer - 1:
                 with torch.npu.stream(self.micro_stream):
@@ -640,6 +760,25 @@ class Qwen2Model(nn.Module):
 
     def forward_layers(self, positions, hidden_states, residual, kv_caches, cos, sin):
         aux_hidden_states = [] # for eagle 3
+        use_mlp_tp = model_extra_config.parall_config.dense_mlp_tp_size > get_tp_group().world_size
+        hidden_states_buffer = None
+        hidden_states_world_buffer = None
+        compile_mode = False
+        small_batch = False
+        if use_mlp_tp:
+            dp_world_size = get_dp_group().world_size
+            dp_rank = get_dp_group().rank_in_group
+            n_tokens_local = hidden_states.shape[0]
+            hidden_states_world_buffer = torch.zeros(size=(n_tokens_local * dp_world_size, hidden_states.shape[1]), device=hidden_states.device, dtype=hidden_states.dtype)
+            bg = dp_rank * n_tokens_local
+            ed = (dp_rank + 1) * n_tokens_local
+            hidden_states_buffer = hidden_states_world_buffer[bg:ed]
+            small_batch = n_tokens_local <= 12
+            if self.first_run == 0:
+                self.first_run = 1
+                compile_mode = False
+            else:
+                compile_mode = True
         for layer_idx in range(self.start_layer, self.end_layer):
             if layer_idx in self.aux_hidden_state_layers:
                 aux_hidden_states.append(hidden_states + residual)
@@ -649,8 +788,17 @@ class Qwen2Model(nn.Module):
                 hidden_states,
                 residual,
                 kv_caches[layer_idx] if kv_caches is not None else None,
-                cos, sin
+                cos, sin,
+                use_mlp_tp,
+                small_batch,
+                compile_mode,
+                hidden_states_buffer,
+                hidden_states_world_buffer,
+                layer_idx == self.start_layer
             )
+        if use_mlp_tp and small_batch:
+            hidden_states = hidden_states[bg:ed]
+            residual = residual[bg:ed]
         return hidden_states, residual, aux_hidden_states
 
     def load_weights(self, weights: Iterable[tuple[str,

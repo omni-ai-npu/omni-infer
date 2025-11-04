@@ -17,3 +17,7 @@ __pycache__
 +.vscode/
 +apiserverlog
 .idea/
+tools/docker/driver/
+tools/docker/A*-*.run
+tools/docker/python*.tar.gz
+tools/docker/ascend_install.info

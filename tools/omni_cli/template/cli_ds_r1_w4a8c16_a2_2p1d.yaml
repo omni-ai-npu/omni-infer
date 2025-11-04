@@ -32,6 +32,16 @@ all:
                 level: 1
                 use_ge_graph_cached: true
                 block_num_floating_range: 50
+              enable_omni_placement: false
+              omni_placement_config:
+                pattern_path: "../../tests/test_config/ep_ds_r1_w4a8c16_a2_2p1d_d.npy"
+                max_moe_layer_num: 58
+                enable_dynamic: false
+                max_redundant_per_expert: 1
+                max_redundant_per_rank: 0
+                enable_rank_round_robin: true
+                enable_dump: false
+                dump_dir: "../dump_data"
             base-api-port: $API_PORT
             enable-mtp: ''
             extra-args:
@@ -152,7 +162,17 @@ all:
               graph_model_compile_config:
                 level: 1
                 use_ge_graph_cached: true
-                block_num_floating_range: 50
+                block_num_floating_range: 50              
+              enable_omni_placement: false
+              omni_placement_config:
+                pattern_path: "../../tests/test_config/ep_ds_r1_w4a8c16_a2_2p1d_d.npy"
+                max_moe_layer_num: 58
+                enable_dynamic: false
+                max_redundant_per_expert: 1
+                max_redundant_per_rank: 0
+                enable_rank_round_robin: true
+                enable_dump: false
+                dump_dir: "../dump_data"
             base-api-port: $API_PORT
             enable-mtp: ''
             extra-args:
@@ -274,6 +294,16 @@ all:
                 level: 1
                 use_ge_graph_cached: true
                 block_num_floating_range: 50
+              enable_omni_placement: false
+              omni_placement_config:
+                pattern_path: "../../tests/test_config/ep_ds_r1_w4a8c16_a2_2p1d_d.npy"
+                max_moe_layer_num: 58
+                enable_dynamic: false
+                max_redundant_per_expert: 1
+                max_redundant_per_rank: 0
+                enable_rank_round_robin: true
+                enable_dump: false
+                dump_dir: "../dump_data"
             base-api-port: $API_PORT
             enable-mtp: ''
             extra-args:
@@ -395,6 +425,16 @@ all:
                 level: 1
                 use_ge_graph_cached: true
                 block_num_floating_range: 50
+              enable_omni_placement: false
+              omni_placement_config:
+                pattern_path: "../../tests/test_config/ep_ds_r1_w4a8c16_a2_2p1d_d.npy"
+                max_moe_layer_num: 58
+                enable_dynamic: false
+                max_redundant_per_expert: 1
+                max_redundant_per_rank: 0
+                enable_rank_round_robin: true
+                enable_dump: false
+                dump_dir: "../dump_data"
             base-api-port: $API_PORT
             enable-mtp: ''
             extra-args:
@@ -514,6 +554,16 @@ all:
           args:
             additional-config:
               enable_omni_attn: true
+              enable_omni_placement: true
+              omni_placement_config:
+                pattern_path: "../../tests/test_config/ep_ds_r1_w4a8c16_a2_2p1d_p.npy"
+                max_moe_layer_num: 58
+                enable_dynamic: false
+                max_redundant_per_expert: 1
+                max_redundant_per_rank: 0
+                enable_rank_round_robin: false
+                enable_dump: false
+                dump_dir: "../dump_data"
             base-api-port: $API_PORT
             enable-mtp: ''
             extra-args:
@@ -636,6 +686,16 @@ all:
           args:
             additional-config:
               enable_omni_attn: true
+              enable_omni_placement: true
+              omni_placement_config:
+                pattern_path: "../../tests/test_config/ep_ds_r1_w4a8c16_a2_2p1d_p.npy"
+                max_moe_layer_num: 58
+                enable_dynamic: false
+                max_redundant_per_expert: 1
+                max_redundant_per_rank: 0
+                enable_rank_round_robin: false
+                enable_dump: false
+                dump_dir: "../dump_data"
             base-api-port: $API_PORT
             enable-mtp: ''
             extra-args:

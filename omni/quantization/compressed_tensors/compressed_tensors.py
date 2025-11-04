@@ -31,6 +31,7 @@ from vllm.model_executor.layers.quantization.compressed_tensors.utils import (
 from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import CompressedTensorsLinearMethod, CompressedTensorsKVCacheMethod
 from vllm.model_executor.layers.quantization.compressed_tensors.schemes import CompressedTensorsScheme
 from omni.layers.moe.fused_moe.layer import FusedMoE
+from omni.layers.linear import AscendUnquantizedLinearMethod
 from omni.layers.fused_mlp import FusedMLP, W8A8DynamicFusedMLPMethod
 from omni.adaptors.vllm.utils import ASCEND_COMPRESSED_TENSORS
 from .schemes.compressed_tensors_w8a8_int8 import AscendCompressedTensorsW8A8Int8LinearMethod
@@ -128,7 +129,8 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
                 return AscendCompressedTensorsW8A8Int8LinearMethod(
                 strategy=weight_quant.strategy,
                 is_static_input_scheme=False,
-                input_symmetric=input_quant.symmetric)
+                input_symmetric=input_quant.symmetric,
+                layer_name=layer_name)
     
             if self._is_dynamic_token_w4a8(weight_quant, input_quant, weight_num_bits):
                 return AscendCompressedTensorsW4A8Int8LinearMethod(
@@ -140,6 +142,15 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
         raise NotImplementedError(
             "No compressed-tensors compatible scheme was found.")
 
+    def get_weights_bits(self, layer, layer_name):
+        matched_target = find_matched_target(
+            layer_name=layer_name,
+            module=layer,
+            targets=self.target_scheme_map.keys())
+    
+        # Find the quant_scheme
+        scheme_dict = self.target_scheme_map[matched_target]
+        return self._get_weight_num_bits(layer_name, scheme_dict["weights"])
 
     def get_scheme(
             self,
@@ -248,6 +259,8 @@ class AscendCompressedTensorsConfig(CompressedTensorsConfig):
     def get_quant_method(self, layer: torch.nn.Module,
                          prefix: str) -> Optional["QuantizeMethodBase"]:
         if isinstance(layer, LinearBase):
+            if self.get_weights_bits(layer=layer, layer_name=prefix) == 16:
+                return AscendUnquantizedLinearMethod()
             scheme = self.get_scheme(layer=layer, layer_name=prefix)
             layer.scheme = scheme
             return AscendCompressedTensorsLinearMethod(self)

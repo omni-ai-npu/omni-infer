@@ -23,6 +23,7 @@ from .kv_cache_manager import (
 )
 from .pd import OmniBiGroupDataDistManager
 from .utils import compute_omni_attn_metadata, to_bool_or_raise
+from .hd_kv_manager import HostDeviceKVCacheManager
 
 
 def check_omni_attn_cmd_arg(additional_config: dict) -> bool:
@@ -75,7 +76,20 @@ def apply_omni_attn_patch(enable=False, is_kv_consumer=True, config=None):
         scheduler.KVCacheManager = OmniKVCacheManager
 
 
+def apply_omni_cache_patch(enable=False, is_kv_consumer=True):
+    if not enable:
+        return
+    if is_kv_consumer:
+        block_table.MultiGroupBlockTable = OmniMultiGroupBlockTable
+        gpu_input_batch.MultiGroupBlockTable = OmniMultiGroupBlockTable
+    orig_manager.KVCacheBlocks = OmniKVCacheBlocks
+    scheduler.KVCacheBlocks = OmniKVCacheBlocks
+    orig_manager.KVCacheManager = HostDeviceKVCacheManager
+    scheduler.KVCacheManager = HostDeviceKVCacheManager
+
+
 __all__ = [
     "apply_omni_attn_patch",
+    "apply_omni_cache_patch",
     "check_omni_attn_cmd_arg",
 ]

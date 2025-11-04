@@ -20,19 +20,17 @@
 from collections.abc import Iterable
 from typing import Any, Optional, Union, List
 
+import os
 import torch
 from torch import nn
+import torch_npu
 from transformers import PretrainedConfig
 
+from vllm.forward_context import get_forward_context
 from vllm.attention import Attention, AttentionType, AttentionMetadata
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
-from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
-from vllm.model_executor.layers.activation import SiluAndMul
-from vllm.model_executor.layers.layernorm import RMSNorm
-from vllm.model_executor.layers.linear import (MergedColumnParallelLinear,
-                                               QKVParallelLinear,
-                                               RowParallelLinear)
+from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.rotary_embedding import get_rope
@@ -49,46 +47,22 @@ from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
 from omni.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.activation import SiluAndMul
+from omni.layers.layernorm import RMSNormFlashComm
+from omni.layers.fused_mlp import FusedMLP
+from omni.layers.linear import (
+    RowParallelFlashCommLinear,
+    QKVParallelFlashCommLinear
+)
+from omni.layers.rotary_embedding import get_rope, QwenRotaryEmbedding
+
+DEFAULT_ROPE_THETA = 1000000
+# if use weight nz, this config must be True
+torch.npu.config.allow_internal_format = True
 
 
-class PanguEmbeddedMLP(nn.Module):
-
-    def __init__(
-        self,
-        hidden_size: int,
-        intermediate_size: int,
-        hidden_act: str,
-        quant_config: Optional[QuantizationConfig] = None,
-        bias: bool = False,
-        prefix: str = "",
-        reduce_results: bool = True,
-    ) -> None:
-        super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear(
-            input_size=hidden_size,
-            output_sizes=[intermediate_size] * 2,
-            bias=bias,
-            quant_config=quant_config,
-            prefix=f"{prefix}.gate_up_proj",
-        )
-        self.down_proj = RowParallelLinear(
-            input_size=intermediate_size,
-            output_size=hidden_size,
-            bias=bias,
-            quant_config=quant_config,
-            reduce_results=reduce_results,
-            prefix=f"{prefix}.down_proj",
-        )
-        if hidden_act != "silu":
-            raise ValueError(f"Unsupported activation: {hidden_act}. "
-                             "Only silu is supported for now.")
-        self.act_fn = SiluAndMul()
-
-    def forward(self, x):
-        x, _ = self.gate_up_proj(x)
-        x = self.act_fn(x)
-        x, _ = self.down_proj(x)
-        return x
+class PanguEmbeddedMLP(FusedMLP):
+    pass
 
 
 class PanguEmbeddedAttention(nn.Module):
@@ -113,6 +87,7 @@ class PanguEmbeddedAttention(nn.Module):
         layer_idx = extract_layer_index(prefix)
         self.hidden_size = hidden_size
         tp_size = get_tensor_model_parallel_world_size()
+        tp_rank = get_tensor_model_parallel_rank()
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
@@ -140,19 +115,23 @@ class PanguEmbeddedAttention(nn.Module):
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 
-        self.qkv_proj = QKVParallelLinear(
+        self.qkv_proj = QKVParallelFlashCommLinear(
             hidden_size=hidden_size,
             head_size=self.head_dim,
             total_num_heads=self.total_num_heads,
             total_num_kv_heads=self.total_num_kv_heads,
+            tp_size=tp_size,
+            tp_rank=tp_rank,
             bias=bias,
             quant_config=quant_config,
             prefix=f"{prefix}.qkv_proj",
         )
 
-        self.o_proj = RowParallelLinear(
+        self.o_proj = RowParallelFlashCommLinear(
             input_size=self.total_num_heads * self.head_dim,
             output_size=hidden_size,
+            tp_size=tp_size,
+            tp_rank=tp_rank,
             bias=bias_o_proj,
             quant_config=quant_config,
             prefix=f"{prefix}.o_proj",
@@ -191,12 +170,16 @@ class PanguEmbeddedAttention(nn.Module):
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        x_transform: Optional[str] = None,
+        next_layer: List[torch.nn.Module] = None,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
+        qkv, _ = self.qkv_proj(hidden_states, x_transform=x_transform)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, k = self.rotary_emb(positions, q, k, self.attn.layer_name)
+        q, k = self.rotary_emb(positions, q, k, cos, sin)
         attn_output = self.attn(q, k, v)
-        output, _ = self.o_proj(attn_output)
+        output, _ = self.o_proj(attn_output, reduce_type="RS", next_layer=next_layer)
         return output
 
     def _init_rotary_emb(self, config: PretrainedConfig,
@@ -207,6 +190,9 @@ class PanguEmbeddedAttention(nn.Module):
         if is_gguf and config.model_type == "Pangu":
             is_neox_style = False
 
+        if rope_scaling is None:
+            rope_scaling = {'factor': '0'}
+        rope_scaling["rope_type"] = 'qwen'
         self.rotary_emb = get_rope(
             self.head_dim,
             rotary_dim=self.head_dim,
@@ -275,12 +261,11 @@ class PanguEmbeddedDecoderLayer(nn.Module):
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
             quant_config=quant_config,
-            bias=getattr(config, "mlp_bias", False),
             prefix=f"{prefix}.mlp",
         )
-        self.input_layernorm = RMSNorm(config.hidden_size,
+        self.input_layernorm = RMSNormFlashComm(config.hidden_size,
                                        eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size,
+        self.post_attention_layernorm = RMSNormFlashComm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
         self.layer_name = f"{prefix}.self_attn.attn"
 
@@ -289,21 +274,47 @@ class PanguEmbeddedDecoderLayer(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         residual: Optional[torch.Tensor],
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        next_layer: torch.nn.Module = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        use_prefetch = int(os.environ.get('USE_WEIGHT_PREFETCH',"1"))
+        
+        if use_prefetch:
+            mlp_layer = [self.mlp.gate_up_proj, self.mlp.down_proj]
+            attn_layer = [next_layer.self_attn.qkv_proj, next_layer.self_attn.o_proj] if next_layer else None
+        else:
+            mlp_layer = None
+            attn_layer = None
         # Self Attention
         if residual is None:
-            residual = hidden_states
+            tp_size = get_tensor_model_parallel_world_size()
+            tp_rank = get_tensor_model_parallel_rank()
+            residual = hidden_states.chunk(tp_size,dim=0)[tp_rank]
             hidden_states = self.input_layernorm(hidden_states)
+            x_transform = None
         else:
             hidden_states, residual = self.input_layernorm(
                 hidden_states, residual)
+            x_transform = "AG"
+        
+        if use_prefetch and attn_layer:
+            MAX_PREFETCH_SIZE = 90000000
+            for layer in attn_layer:
+                torch_npu.npu_prefetch(layer.weight, hidden_states, MAX_PREFETCH_SIZE)
+
         hidden_states = self.self_attn(positions=positions,
-                                       hidden_states=hidden_states)
+                                    hidden_states=hidden_states, cos=cos, sin=sin, x_transform=x_transform, next_layer=mlp_layer)
 
         # Fully Connected
+        attn_metadata = get_forward_context().attn_metadata
+        if attn_metadata is not None and attn_metadata[next(iter(attn_metadata))].attn_state == AscendAttentionState.PrefillNoCache:
+            is_prefill = True
+        else:
+            is_prefill = False
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, x_transform="AG", reduce_type="RS", is_prefill=is_prefill)
         return hidden_states, residual
 
 
@@ -346,7 +357,7 @@ class PanguEmbeddedModel(nn.Module):
             prefix=f"{prefix}.layers",
         )
         if get_pp_group().is_last_rank:
-            self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.norm = RMSNormFlashComm(config.hidden_size, eps=config.rms_norm_eps)
         else:
             self.norm = PPMissingLayer()
 
@@ -355,6 +366,13 @@ class PanguEmbeddedModel(nn.Module):
         self.make_empty_intermediate_tensors = (
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
+        
+        base = getattr(config, "rope_theta", DEFAULT_ROPE_THETA)
+        rotary_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+        max_len = config.max_position_embeddings
+        full_cos, full_sin = QwenRotaryEmbedding.compute_full_cos_sin(base, rotary_dim, max_len)
+        self.register_buffer("full_cos", full_cos, persistent=False)
+        self.register_buffer("full_sin", full_sin, persistent=False)
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -378,12 +396,18 @@ class PanguEmbeddedModel(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
+        cos = torch.index_select(self.full_cos, dim=0, index=positions)  # cos.shape [num_tokens, head_size]
+        sin = torch.index_select(self.full_sin, dim=0, index=positions)
+
         aux_hidden_states = []
         for idx, layer in enumerate(
                 self.layers[self.start_layer:self.end_layer]):
             if idx in self.aux_hidden_state_layers:
                 aux_hidden_states.append(hidden_states + residual)
-            hidden_states, residual = layer(positions, hidden_states, residual)
+            if idx == self.end_layer - self.start_layer - 1:
+                hidden_states, residual = layer(positions, hidden_states, residual, cos, sin)
+            else:
+                hidden_states, residual = layer(positions, hidden_states, residual, cos, sin, self.layers[idx+1])
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
@@ -391,7 +415,7 @@ class PanguEmbeddedModel(nn.Module):
                 "residual": residual
             })
 
-        hidden_states, _ = self.norm(hidden_states, residual)
+        hidden_states, _ = self.norm(hidden_states, residual, y_transform="AG")
 
         if len(aux_hidden_states) > 0:
             return hidden_states, aux_hidden_states

@@ -1,0 +1,126 @@
+# The Dockerfile is used to construct omni-infer image.
+
+ARG BASE_IMAGE
+####################### whl BUILD IMAGE ######################
+FROM ${BASE_IMAGE} AS whl_builder
+
+ARG HTTP_PROXY
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+ARG OMNI_VERSION_NUM=0.5.0
+
+WORKDIR /workspace
+
+# Install packages for build whl
+RUN export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --no-cache-dir \
+        regex==2025.7.31 pybind11==3.0.0 pyproject_hooks==1.2.0 setuptools-scm==8.3.1 build==1.2.2.post1 pyyaml==6.0.2 Cython numpy && \
+    yum install -y git gcc g++ make cmake zlib-devel pcre-devel openssl-devel wget tar rpm-build etcd libuuid-devel python3-devel
+
+# Download source code and build whl
+COPY build_whl.sh /workspace/
+RUN source ~/.bashrc && bash build_whl.sh && \
+    mkdir -p /workspace/omniinfer/build/lib
+####################### whl BUILD IMAGE ######################
+
+######################### Develop IMAGE ######################
+FROM whl_builder AS develop_image
+
+ARG HTTP_PROXY
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+
+# requirements/develop.txt for developer
+COPY requirements /workspace/requirements/
+
+# Install tools for developer
+RUN export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    yum -y groupinstall "Development Tools" && \
+    pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} \
+        -r /workspace/requirements/develop.txt && \
+    pip cache purge && \
+    yum -y install vim wget iputils zeromq-devel gmock-devel && \
+    yum clean all && \
+    rm -rf /var/cache/yum
+
+ENTRYPOINT ["bash"]
+######################### Develop IMAGE ######################
+
+######################### USER IMAGE #########################
+FROM ${BASE_IMAGE} AS user_image
+COPY --from=whl_builder /workspace/omniinfer/build/dist /workspace/dist
+COPY --from=whl_builder /workspace/omniinfer/build/lib /workspace/dist/lib
+COPY --from=whl_builder /workspace/omniinfer/tools/scripts /workspace/omniinfer/tools/scripts/
+COPY --from=whl_builder /workspace/omniinfer/omni /workspace/omniinfer/omni/
+COPY --from=whl_builder /workspace/omniinfer/infer_engines /workspace/omniinfer/infer_engines/
+COPY --from=whl_builder /workspace/omniinfer/tests/test_config /workspace/omniinfer/tests/test_config/
+#TODO: Temporarily added source code
+#COPY --from=whl_builder /workspace/omniinfer /workspace/omniinfer/
+ARG HTTP_PROXY
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+
+# Install nessary pip packages for runtime
+RUN export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} \
+        -r /workspace/requirements/develop.txt && \
+    yum -y install glibc-devel gcc-c++ git gmock-devel vim wget iputils zeromq-devel && \
+    yum install -y /workspace/dist/omni-proxy*.rpm && \
+    pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} \
+        decorator==5.2.1 absl-py==2.3.1 ml-dtypes==0.5.1 \
+        scipy==1.16.0 tornado==6.5.1 dataflow==0.11.1 sympy==1.13.1 pytz && \
+    pip uninstall -y vllm omni_infer omni_placement && \
+    pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} /workspace/dist/vllm*.whl /workspace/dist/omni_infer*.whl && \
+    pip cache purge && \
+    if [ -f /workspace/dist/mooncake*.whl ]; then \
+        pip install /workspace/dist/mooncake*.whl; \
+    fi && \
+    if [ -f /workspace/dist/lmcache*.whl ]; then \
+        pip install /workspace/dist/lmcache*.whl; \
+    fi && \
+    if [ -f /workspace/dist/ascend*.whl ]; then \
+        pip install /workspace/dist/ascend*.whl; \
+    fi && \
+    echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib64:/usr/local/lib:/workspace/dist/lib' >> ~/.bashrc;
+
+ENTRYPOINT ["bash"]
+######################### USER IMAGE #########################
+
+###################### OPENAI API SERVER #####################
+# base openai image with additional requirements, for any subsequent openai-style images
+FROM user_image AS omininfer_openai
+
+USER root
+
+ARG HTTP_PROXY
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+
+RUN export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} numba && \
+    pip install -U hf_xet && \
+    pip cache purge
+    # Install high version of hf_xet 1.1.10 to solve the problem of downloading the HF model.
+
+# Example config to run api_server
+ENV GLOO_SOCKET_IFNAME=lo \
+    VLLM_USE_V1=1 \
+    VLLM_WORKER_MULTIPROC_METHOD=fork \
+    VLLM_ENABLE_MC2=0 \
+    USING_LCCL_COM=0 \
+    VLLM_LOGGING_LEVEL=DEBUG \
+    HOST=0.0.0.0 \
+    PORT=8301 \
+    TZ=Asia/Shanghai
+
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+COPY start_server.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/start_server.sh
+
+ENTRYPOINT ["start_server.sh"]
+###################### OPENAI API SERVER #####################

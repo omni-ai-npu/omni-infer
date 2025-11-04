@@ -35,6 +35,16 @@ all:
               graph_model_compile_config:
                 level: 1
                 use_ge_graph_cached: true
+              enable_omni_placement: true
+              omni_placement_config:
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_1p1d_d.npy"
+                max_moe_layer_num: 58
+                enable_dynamic: false
+                max_redundant_per_expert: 10
+                max_redundant_per_rank: 1
+                enable_rank_round_robin: true
+                enable_dump: false
+                dump_dir: "../dump_data"
             base-api-port: $API_PORT
             enable-mtp: ''
             extra-args:
@@ -162,6 +172,16 @@ all:
               graph_model_compile_config:
                 level: 1
                 use_ge_graph_cached: true
+              enable_omni_placement: true
+              omni_placement_config:
+                pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_1p1d_d.npy"
+                max_moe_layer_num: 58
+                enable_dynamic: false
+                max_redundant_per_expert: 10
+                max_redundant_per_rank: 1
+                enable_rank_round_robin: true
+                enable_dump: false
+                dump_dir: "../dump_data"            
             base-api-port: $API_PORT
             enable-mtp: ''
             extra-args:
@@ -287,6 +307,15 @@ all:
             additional-config:
               enable_omni_attn: true
               multi_rank_pull_kv: true
+              enable_omni_placement: true
+              omni_placement_config:
+                max_moe_layer_num: 58
+                enable_dynamic: true
+                max_redundant_per_expert: 10
+                max_redundant_per_rank: 1
+                enable_rank_round_robin: false
+                enable_dump: false
+                dump_dir: "../dump_data"    
             base-api-port: $API_PORT
             enable-mtp: ''
             extra-args:
@@ -386,7 +415,7 @@ all:
             PYTHONPATH: /usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
-            RANK_TABLE_FILE_PATH: $(ls /tmp/ranktable_save_path/global/collect_files_p/127.0.0.1/local_*merge.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_p/${HOST_IP}/local_*merge.json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.3,127.0.0.4
             SERVER_OFFSET: 0
@@ -415,6 +444,15 @@ all:
             additional-config:
               enable_omni_attn: true
               multi_rank_pull_kv: true
+              enable_omni_placement: true
+              omni_placement_config:
+                max_moe_layer_num: 58
+                enable_dynamic: true
+                max_redundant_per_expert: 10
+                max_redundant_per_rank: 1
+                enable_rank_round_robin: false
+                enable_dump: false
+                dump_dir: "../dump_data"  
             base-api-port: $API_PORT
             enable-mtp: ''
             extra-args:
@@ -514,7 +552,7 @@ all:
             PYTHONPATH: /usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
-            RANK_TABLE_FILE_PATH: $(ls /tmp/ranktable_save_path/global/collect_files_p/127.0.0.1/local_*merge.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_p/${HOST_IP}/local_*merge.json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.3,127.0.0.4
             SERVER_OFFSET: 0

@@ -16,7 +16,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_mlp_tp_group,
     GroupCoordinator,
 )
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 
 def reduce_scatter_two_stage(input_: torch.Tensor, idx: int, reverse=False) -> torch.Tensor:

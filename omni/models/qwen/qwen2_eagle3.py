@@ -34,7 +34,7 @@ from transformers import PretrainedConfig
 from vllm.attention import Attention, AttentionType, AttentionMetadata
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
-from vllm.distributed import get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
+from vllm.distributed import get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank, get_tp_group
 from vllm.forward_context import get_forward_context, set_forward_context
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
@@ -174,6 +174,7 @@ class Eagle3Qwen2Model(Qwen2Model):
         
         self.full_cos = None # get from main model
         self.full_sin = None # get from main model
+        self.attn_layer_name = f"model.layers.{start_layer_id}.self_attn.attn"
 
     def forward(
         self,
@@ -184,12 +185,19 @@ class Eagle3Qwen2Model(Qwen2Model):
         attn_metadata: AttentionMetadata,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         input_embeds = self.embed_tokens(input_ids)
-        hidden_states = self.fc(torch.cat(hidden_states, dim=-1))
-        assert hidden_states.shape[-1] == input_embeds.shape[-1]
+
         residual = None
 
-        cos = torch.index_select(self.full_cos, dim=0, index=positions)  # cos.shape [num_tokens, head_size]
-        sin = torch.index_select(self.full_sin, dim=0, index=positions)
+        if self.full_cos is not None:
+            cos = torch.index_select(self.full_cos, dim=0, index=positions)  # cos.shape [num_tokens, head_size]
+            sin = torch.index_select(self.full_sin, dim=0, index=positions)
+        elif attn_metadata is None:
+            cos, sin = self.layers[0].self_attn.rotary_emb.get_cos_sin(positions)
+        else:
+            if isinstance(attn_metadata, dict):
+                attn_metadata = attn_metadata[self.attn_layer_name]
+            cos = attn_metadata.cos
+            sin = attn_metadata.sin
 
         hidden_states, residual = self.layers[0](
             positions,
@@ -250,8 +258,9 @@ class Eagle3Qwen2ForCausalLM(Qwen2ForCausalLM, GraphCompileConfiguration):
         return self.model(input_ids, positions, previous_hidden_states, kv_caches, attn_metadata)
 
     def set_share_weight(self, target_model):
-        self.model.full_cos = target_model.model.full_cos
-        self.model.full_sin = target_model.model.full_sin
+        if hasattr(target_model.model, "full_cos"):
+            self.model.full_cos = target_model.model.full_cos
+            self.model.full_sin = target_model.model.full_sin
         self.model.embed_tokens = target_model.model.embed_tokens
         if not self.draft_id_to_target_id is None:
             base = torch.arange(self.config.draft_vocab_size, device=self.draft_id_to_target_id.device)
@@ -279,6 +288,13 @@ class Eagle3Qwen2ForCausalLM(Qwen2ForCausalLM, GraphCompileConfiguration):
         ), float('-inf'))
         logits_new[:, self.draft_id_to_target_id] = logits
         return logits_new
+
+    def combine_hidden_states(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor:
+        # combine multiple auxiliary hidden states returned by eagle3
+        return self.model.fc(torch.cat(hidden_states, dim=-1))
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
         model_weights = {}
@@ -314,5 +330,6 @@ class Eagle3Qwen2ForCausalLM(Qwen2ForCausalLM, GraphCompileConfiguration):
         return attn_metadata.attn_state != AscendAttentionState.DecodeOnly
 
     def mark_static_for_graph(self, *args, **kwargs):
-        torch._dynamo.mark_static(self.model.full_cos)
-        torch._dynamo.mark_static(self.model.full_sin)
+        if self.model.full_cos is not None:
+            torch._dynamo.mark_static(self.model.full_cos)
+            torch._dynamo.mark_static(self.model.full_sin)

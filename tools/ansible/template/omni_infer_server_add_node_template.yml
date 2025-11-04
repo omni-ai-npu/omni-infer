@@ -85,6 +85,7 @@
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
       EXTRA_ARGS='--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --no-enable-prefix-caching'
       GPU_UTIL=0.92
+      ADDITIONAL_CONFIG='{"enable_omni_placement":true,"omni_placement_config":{"pattern_path":"../../omni/accelerators/placement/patterns/placement_pattern_20250626_221356_58_rearrange_layers_58_layers_16_ranks_prefill_step0to100000.npy","max_moe_layer_num":58,"enable_dynamic":false,"max_redundant_per_expert":1,"max_redundant_per_rank":0,"enable_rank_round_robin":false,"enable_dump":false,"dump_dir":"/home/profiling/dump_data"}}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
@@ -93,8 +94,6 @@
       unset proxy
       
       # ems env adapter
-      # export ENABLE_VLLM_EMS=0
-      # export EMS_STORE_LOCAL=1
       # export MODEL_ID=cc_kvstore@_@ds_default_ns_001
       # export ACCELERATE_ID=cc_kvstore@_@ds_default_ns_001
 
@@ -143,6 +142,7 @@
         --kv-connector ${KV_CONNECTOR} \
         --model-extra-cfg-path ${MODEL_EXTRA_CFG_PATH} \
         --gpu-util ${GPU_UTIL} \
+        --additional-config "$ADDITIONAL_CONFIG" \
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
@@ -169,7 +169,7 @@
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode.json"
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching'
       GPU_UTIL=0.92
-      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1}}'
+      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1},"enable_omni_placement":true,"omni_placement_config":{"pattern_path":"../../omni/accelerators/placement/patterns/base_patterns/DSV3_baseline_32_devices_58_MoE_Layers.npy","max_moe_layer_num":58,"enable_dynamic":true,"max_redundant_per_expert":1,"max_redundant_per_rank":0,"enable_rank_round_robin":true,"enable_dump":false,"dump_dir":"/home/profiling/dump_data"}}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True

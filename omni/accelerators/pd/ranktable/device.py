@@ -45,13 +45,17 @@ class Server:
 
 
 class ServerGroup:
-    def __init__(self, group_info):
+    def __init__(self, group_info, need_sort=False):
         self.group_id = int(group_info["group_id"])
         self.server_count = int(group_info.get("server_count", "0"))
         self.server_list = self.init_server_list(group_info)
 
+        # Due to the scheduling initiated by Ray, the non-first nodes of prefill mast be sorted in lexicographical order.
+        if need_sort:
+            self.server_list = self.server_list[:1] + sorted(self.server_list[1:], key=lambda server: server.server_ip)
+
     def __eq__(self, other):
-        return self.server_list == other.server_list
+        return sorted(self.server_list, key=lambda x: x.server_ip) == sorted(other.server_list, key=lambda x: x.server_ip)
 
     @property
     def cluster_id_start(self) -> int:

@@ -5,10 +5,10 @@ set -e
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
 echo "$WORKDIR"
 
-NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
+NGINX_VERSION="${NGINX_VERSION:-1.28.0}"
 echo "NGINX_VERSION is $NGINX_VERSION"
 
-NGINX_SBIN_PATH="${NGINX_SBIN_PATH:-/usr/local/nginx}"
+NGINX_SBIN_PATH="${NGINX_SBIN_PATH:-/usr/sbin}"
 echo "NGINX_SBIN_PATH is $NGINX_SBIN_PATH"
 
 if [ ! -d nginx-${NGINX_VERSION} ]; then

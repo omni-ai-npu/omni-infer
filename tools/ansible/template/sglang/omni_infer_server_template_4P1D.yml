@@ -34,7 +34,6 @@
     SCRIPTS_PATH: "/tmp/scripts_path"
     GLOO_SOCKET_IFNAME: "network_interface"
 
-
   vars:
     
     docker_run_cmd: |
@@ -68,7 +67,7 @@
         -v $MODEL_PATH:$MODEL_PATH \
         -v /data:/data \
         -v $SCRIPTS_PATH:$SCRIPTS_PATH \
-        -v $CODE_PATH:$CODE_PATH \
+        -v /dev/shm:/dev/shm \
         -v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime \
 
     docker_exec_cmd: |
@@ -80,10 +79,17 @@
       . ~/.bashrc
       export HCCL_INTRA_ROCE_ENABLE=1
       export HCCL_DETERMINISTIC=false
+      export HCCL_OP_EXPANSION_MODE="AIV"
       export GLOO_SOCKET_IFNAME={{ansible_env.GLOO_SOCKET_IFNAME}}
-      export SGLANG_ENABLE_TORCH_COMPILE=true
+      export MLP_TP_SIZE=4
+      # export PYTHONPATH=${CODE_PATH}/omniinfer/infer_engines/sglang/python:${CODE_PATH}/omniinfer:$PYTHONPATH
+      export IS_PREFILL=1
 
+      rm -rf .torchair_cache/
       python3 -m sglang.launch_server \
+        --enable-omni-placement \
+        --omni-placement-config-path ${CODE_PATH}/omniinfer/tests/test_config/config_sglang.yaml \
+        --ep-num-redundant-experts 0 \
         --model-path ${MODEL_PATH} \
         --device npu \
         --trust-remote-code \
@@ -96,26 +102,41 @@
         --port $API_PORT \
         --trust-remote-code \
         --tp-size 16 \
-        --mem-fraction-static 0.95 \
+        --mem-fraction-static 0.90 \
         --disaggregation-transfer-backend mooncake \
         --disable-radix-cache \
-        --max-prefill-tokens 16384 \
-        --max-total-tokens 102400 \
+        --max-prefill-tokens 30000 \
+        --max-total-tokens 30000 \
+        --speculative-algorithm MTP \
+        --speculative-num-steps 1 \
+        --speculative-num-draft-tokens 1 \
+        --speculative-eagle-topk 1 \
+        --chunked-prefill-size -128 \
         --max-running-requests 32 > ${LOG_PATH}/run_prefill_sglang.log 2>&1 &
 
     run_sglang_server_decode_cmd: |
       #!/bin/bash
 
       . ~/.bashrc
+
       export HCCL_INTRA_ROCE_ENABLE=1
       export HCCL_DETERMINISTIC=false
+      export HCCL_OP_EXPANSION_MODE="AIV"
+      export HCCL_BUFFSIZE=700
+      export USE_MLA_PROLOG=1
       export GLOO_SOCKET_IFNAME={{ansible_env.GLOO_SOCKET_IFNAME}}
-      export SGLANG_ENABLE_TORCH_COMPILE=true
+      # export PYTHONPATH=${CODE_PATH}/omniinfer/infer_engines/sglang/python:${CODE_PATH}/omniinfer:$PYTHONPATH
+      export MLP_TP_SIZE=4
+      # export USE_SUPER_KERNEL=1
 
       dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
       ((dp++))
 
-      python3 /workspace/omniinfer/tools/scripts/start_api_servers_sgl.py \
+      rm -rf .torchair_cache/
+      python3 ${CODE_PATH}/omniinfer/tools/scripts/start_api_servers_sgl.py \
+        --enable-omni-placement \
+        --omni-placement-config-path ${CODE_PATH}/omniinfer/tests/test_config/config_sglang.yaml \
+        --ep-num-redundant-experts ${dp} \
         --model-path ${MODEL_PATH} \
         --device npu \
         --trust-remote-code \
@@ -132,18 +153,24 @@
         --dp-size ${dp} \
         --nnodes $NNODES \
         --node-rank $NODE_RANK \
-        --mem-fraction-static 0.95 \
+        --mem-fraction-static 0.85 \
         --disaggregation-transfer-backend mooncake \
         --disable-radix-cache \
         --dist-init-addr $HOST_IP:16732 \
         --skip-server-warmup \
-        --max-prefill-tokens 16384 \
+        --max-prefill-tokens 30000 \
         --max-total-tokens 204800 \
+        --speculative-algorithm MTP \
+        --speculative-num-steps 1 \
+        --speculative-num-draft-tokens 1 \
+        --speculative-eagle-topk 1 \
+        --enable-torch-compile \
+        --cuda-graph-bs 64 \
+        --torch-compile-max-bs 64 \
         --ep-size ${dp} \
         --pp-size 1 \
         --enable-multi-api-server \
-        --enable-dp-attention \
-        --max-running-requests 768 > ${LOG_PATH}/run_decode_sglang.log 2>&1 &
+        --max-running-requests 2048 > ${LOG_PATH}/run_decode_sglang.log 2>&1 &
 
     run_proxy_cmd: |
       #!/bin/bash
@@ -170,7 +197,54 @@
         done
       done
 
-      bash /workspace/omniinfer/omni/accelerators/sched/global_proxy/global_proxy.sh \
+      export http_proxy="http://p_atlas:proxy%40123@172.18.100.92:8080"
+      export https_proxy="http://p_atlas:proxy%40123@172.18.100.92:8080"
+      export GIT_SSL_NO_VERIFY=true
+      mkdir /tmp/omnipath
+      cd /tmp/omnipath
+      git config --global http.sslVerify "false"
+      # git clone https://gitee.com/wuhang1991/omniinfer.git -b forsglang
+      git clone -b gproxy_sgl https://gitee.com/august_ust/omniinfer_sgl.git 
+      mv /tmp/omnipath/omniinfer_sgl /tmp/omnipath/omniinfer
+      cd /tmp/omnipath/omniinfer/omni/accelerators/sched/global_proxy
+
+      unset http_proxy
+      unset https_proxy
+      export http_proxy="http://p_atlas:proxy%40123@172.18.100.92:8080"
+      export https_proxy="http://p_atlas:proxy%40123@172.18.100.92:8080"
+      export no_proxy=127.0.0.1,.huawei.com,localhost,local,.local
+
+      NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
+      if [ ! -f "nginx-${NGINX_VERSION}.tar.gz" ]; then
+        wget --no-check-certificate "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" > ${LOG_PATH}/install_nginx.log 2>&1
+      fi
+
+      tar -zxf "nginx-${NGINX_VERSION}.tar.gz"
+      
+      rm  -ivf /etc/yum.repos.d/*
+
+      echo "[openEuler-everything]
+      name=openEuler-everything
+      baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/everything/aarch64/
+      enabled=1
+      gpgcheck=0
+      gpgkey=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/everything/aarch64/RPM-GPG-KEY-openEuler
+      [openEuler-EPOL]
+      name=openEuler-epol
+      baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/EPOL/main/aarch64/
+      enabled=1
+      gpgcheck=0
+      [openEuler-update]
+      name=openEuler-update
+      baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/update/aarch64/
+      enabled=1
+      gpgcheck=0" > /etc/yum.repos.d/openeuler.repo
+
+      unset http_proxy
+      unset https_proxy
+      bash build.sh >> ${LOG_PATH}/install_nginx.log 2>&1
+
+      bash global_proxy.sh \
         --listen-port "$PROXY_NODE_PORT" \
         --prefill-servers-list "$prefill_result" \
         --decode-servers-list "$decode_result" \
@@ -236,11 +310,11 @@
 
     docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/"
     docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/"
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/sglang && cd sglang && git checkout -f && cd .. && bash bash_install_sglang.sh && pip uninstall sglang -y && pip uninstall omniinfer -y && cd sglang/python && pip install -e . --no-deps --no-build-isolation && cd ../../../ && pip install -e . --no-deps --no-build-isolation > ${LOG_PATH}/{{ inventory_hostname }}_pip.log'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/sglang && cd sglang && git checkout -f && cd .. && bash bash_install_sglang.sh && pip uninstall sglang -y && pip uninstall omniinfer -y && cd sglang/python && pip install -e . --no-deps --no-build-isolation && cd ../../../ && pip install -e . --no-deps --no-build-isolation > ${LOG_PATH}/{{ inventory_hostname }}_pip.log'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/sglang && pip uninstall sglang -y && pip uninstall omni_infer -y && cd sglang/python && pip install -e . --no-deps --no-build-isolation && cd ../../../ && pip install -e . --no-deps --no-build-isolation > ${LOG_PATH}/{{ inventory_hostname }}_pip.log'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/sglang && pip uninstall sglang -y && pip uninstall omni_infer -y && cd sglang/python && pip install -e . --no-deps --no-build-isolation && cd ../../../ && pip install -e . --no-deps --no-build-isolation > ${LOG_PATH}/{{ inventory_hostname }}_pip.log'"
 
   tasks:
-    - name: generate container name.
+    - name: generate container name. #1、生成容器名称
       set_fact:
         ACTUAL_DOCKER_NAME_P: "{{ ansible_env.DOCKER_NAME_P }}_{{ inventory_hostname }}"
         ACTUAL_DOCKER_NAME_D: "{{ ansible_env.DOCKER_NAME_D }}_{{ inventory_hostname }}"
@@ -249,9 +323,9 @@
       tags: 
         - always
       
-    - name: Check and delete Prefill group Docker containers.
+    - name: Check and delete Prefill group Docker containers. #2、删除P节点上的同名容器
       block:
-        - name: Check whether the container exists.
+        - name: Check whether the container exists.  
           shell: |
             docker inspect --format='{{"{{.Name}}"}}' \
             $DOCKER_NAME_P \
@@ -262,16 +336,16 @@
           failed_when: false
           changed_when: false
 
-        - name: Show generated container name.
+        - name: Show generated container name. 
           debug:
             msg: "Generated container name: {{ existing_containers.stdout_lines }}"
 
-        - name: Stop containers.
+        - name: Stop containers.  
           command: |
             /bin/bash -c "docker stop {{ existing_containers.stdout_lines | join(' ') }}"
           when: existing_containers.stdout != ""
 
-        - name: Delete containers.
+        - name: Delete containers.  
           command: |
             /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
           when: existing_containers.stdout != ""
@@ -281,7 +355,7 @@
         - clean_up
         - run_p
 
-    - name: Check and delete Decode group Docker containers.
+    - name: Check and delete Decode group Docker containers. #3、删除D节点上的同名容器
       block:
         - name: Check whether the container exists.  
           shell: |
@@ -294,16 +368,16 @@
           failed_when: false
           changed_when: false
 
-        - name: Show generated container name.
+        - name: Show generated container name. 
           debug:
             msg: "Generated container name: {{ existing_containers.stdout_lines }}"
 
-        - name: Stop containers.
+        - name: Stop containers.  
           command: |
             /bin/bash -c "docker stop {{ existing_containers.stdout_lines | join(' ') }}"
           when: existing_containers.stdout != ""
 
-        - name: Delete containers.
+        - name: Delete containers.  
           command: |
             /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
           when: existing_containers.stdout != ""
@@ -313,9 +387,9 @@
         - clean_up
         - run_d
 
-    - name: Check and delete containers used for global proxy server.
+    - name: Check and delete containers used for global proxy server. #4、删除C节点上的同名容器
       block:
-        - name: Check whether the container exists.
+        - name: Check whether the container exists.  
           shell: |
             docker inspect --format='{{"{{.Name}}"}}' \
             $DOCKER_NAME_C \
@@ -326,16 +400,16 @@
           failed_when: false
           changed_when: false
 
-        - name: Show generated container name.
+        - name: Show generated container name. 
           debug:
             msg: "Generated container name: {{ existing_containers.stdout_lines }}"
 
-        - name: Stop containers.
+        - name: Stop containers.  
           command: |
             /bin/bash -c "docker stop {{ existing_containers.stdout_lines | join(' ') }}"
           when: existing_containers.stdout != ""
 
-        - name: Delete containers.
+        - name: Delete containers.  
           command: |
             /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
           when: existing_containers.stdout != ""
@@ -345,7 +419,7 @@
         - clean_up
         - run_c
 
-    - name: Run container for prefill instances.
+    - name: Run container for prefill instances. #5、启动P节点容器：$DOCKER_NAME_P $DOCKER_IMAGE_ID
       command: bash -c "{{ start_docker_cmd_p }}"
       environment:
         DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
@@ -354,7 +428,7 @@
         - run_docker
         - run_p
     
-    - name: Run container for decode instances.
+    - name: Run container for decode instances. #6、启动D节点容器：$DOCKER_NAME_D $DOCKER_IMAGE_ID
       command: bash -c "{{ start_docker_cmd_d }}"
       environment:
         DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
@@ -363,7 +437,7 @@
         - run_docker
         - run_d
 
-    - name: Run container for global proxy server.
+    - name: Run container for global proxy server. #7、启动C节点容器：$DOCKER_NAME_C $DOCKER_IMAGE_ID node_port
       command: bash -c "{{ start_docker_cmd_c }}"
       environment:
         NODE_PORT: "{{ node_port }}"
@@ -373,7 +447,7 @@
         - run_docker
         - run_c
 
-    - name: Use system commands to obtain the IP address of the executor.
+    - name: Use system commands to obtain the IP address of the executor. #8、在执行机上执行命令获取该机器的IP，并保存在ip_output变量中
       command: hostname -I
       register: ip_output
       run_once: yes
@@ -381,7 +455,7 @@
       tags: 
         - sync_code
 
-    - name: Extract the first valid IP address.
+    - name: Extract the first valid IP address. #9、从ip_output中获取第一个有效ip，并保存在executor_ip
       set_fact:
         executor_ip: "{{ ip_output.stdout.split() | first }}"
       run_once: yes
@@ -389,29 +463,31 @@
       tags: 
         - sync_code
 
-    - name: Delete the old code on the target machine.
-      command: /bin/bash -c "rm -rf {{ ansible_env.CODE_PATH }}/sglang/*"
+    - name: Delete the old code on the target machine. #10、删除非执行机上CODE_PATH/sglang路径下的所有文件
+      command: /bin/bash -c "rm -rf {{ ansible_env.CODE_PATH }}/*"
       when: hostvars[inventory_hostname].ansible_host != executor_ip
       tags:
         - sync_code
 
-    - name: Delete the old log on the target machine.
+    - name: Delete the old log on the target machine. #11、删除所有机器上LOG_PATH路径下的所有文件
       command: /bin/bash -c "rm -rf {{ ansible_env.LOG_PATH }}/*"
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags:
         - sync_code
+        - clean_up
 
-    - name: Create a directory to store the code.
+    - name: Create a directory to store the code. #12、若不存在CODE_PATH目录，则创建
       ansible.builtin.file:
         path: "{{ ansible_env.CODE_PATH }}"
         state: directory
       tags: 
         - sync_code
+        - always
 
-    - name: The executor synchronizes code to all instances.
+    - name: The executor synchronizes code to all instances. #13、仅在非执行节点上，且属于 P/D 组或 C 组但不在 P/D 组中的主机上，将代码从执行节点同步到目标主机的 CODE_PATH 目录中
       synchronize:
         src: "{{ ansible_env.CODE_PATH }}/omniinfer"
-        dest: "{{ ansible_env.CODE_PATH }}/"
+        dest: "{{ ansible_env.CODE_PATH }}"
       when: >
         hostvars[inventory_hostname].ansible_host != executor_ip and 
         (
@@ -456,7 +532,7 @@
       when: "'D' in group_names"
       tags: install
 
-    - name: Delete temporary script files.
+    - name: Delete temporary script files. #14、删除P、D、C节点下SCRIPTS_PATH目录的所有文件
       command: /bin/bash -c "rm -rf ${SCRIPTS_PATH}/*"
       register: cmd_result
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
@@ -465,9 +541,9 @@
         - clean_up
         - always
 
-    - name: Register all values.
+    - name: Register all values. 
       set_fact:  
-        PREFILL_API_SERVER_LIST: >-
+        PREFILL_API_SERVER_LIST: >- #15.1、生成 Prefill 节点的 API 服务地址列表
           {% set result=[] %}
           {% for host in groups['P']|default([]) %}
             {% set h=hostvars.get(host,{}) %}
@@ -482,7 +558,7 @@
             {% endif %}
           {% endfor %}
           {{ result|join(',') }}
-        DECODE_API_SERVER_LIST: >-
+        DECODE_API_SERVER_LIST: >- #15.2、生成 Decode 节点的 API 服务地址列表
           {% set result=[] %}
           {% for host in groups['D']|default([]) %}
             {% set h=hostvars.get(host,{}) %}
@@ -497,7 +573,7 @@
             {% endif %}
           {% endfor %}
           {{ result | join(',') }}
-        PREFILL_POD_NUM: >-
+        PREFILL_POD_NUM: >- #15.3、统计 Prefill 节点的唯一 IP 数量
           {{
             groups['P'] | 
             map('extract', hostvars) | 
@@ -505,8 +581,8 @@
             unique | 
             length 
           }}
-        DECODE_POD_NUM: "{{ groups['D'] | length }}"
-        DECODE_SERVER_IP_LIST: >-
+        DECODE_POD_NUM: "{{ groups['D'] | length }}" #15.4、统计 Decode 节点数量
+        DECODE_SERVER_IP_LIST: >- #15.5、生成 Decode 节点的 IP 列表，按某种顺序排列
           {% set host_list = [] %}
           {% for host in groups['D'] %}
             {% if hostvars[host].host_ip == hostvars[host].ansible_host %}
@@ -516,8 +592,8 @@
             {% endif %}
           {% endfor %}         
           {{ host_list | join(',') }}
-        DECODE_SERVER_ALL: "{{ groups['D'] | map('extract', hostvars) | map(attribute='ascend_rt_visible_devices') | select('defined') | join(',') }}"
-        DECODE_SERVER_OFFSET: "{% set offsets = {} %}{% set ns = namespace(cnt=0) %}{% for host in groups['D']|default([]) %}{% set _ = offsets.update({host: ns.cnt}) %}{% set num=hostvars[host].ascend_rt_visible_devices.count(',')|default('0')|int %}{% set ns.cnt = ns.cnt + num + 1 %}{% endfor %}{{ offsets }}"
+        DECODE_SERVER_ALL: "{{ groups['D'] | map('extract', hostvars) | map(attribute='ascend_rt_visible_devices') | select('defined') | join(',') }}" #15.6、获取 Decode 节点的 ascend_rt_visible_devices 设备信息
+        DECODE_SERVER_OFFSET: "{% set offsets = {} %}{% set ns = namespace(cnt=0) %}{% for host in groups['D']|default([]) %}{% set _ = offsets.update({host: ns.cnt}) %}{% set num=hostvars[host].ascend_rt_visible_devices.count(',')|default('0')|int %}{% set ns.cnt = ns.cnt + num + 1 %}{% endfor %}{{ offsets }}" #15.9、为 Decode 节点分配偏移量（用于多卡任务）
       run_once: yes
       delegate_to: localhost
       tags: 
@@ -527,7 +603,7 @@
     
     - name: Register values for prefill.
       set_fact:
-        NODE_IP_LIST: >-
+        NODE_IP_LIST: >- #16.1、找出P节点中与当前主机host_ip相同的主机的ansible_ip，并生成列表
           {{
             groups['P'] | 
             map('extract', hostvars) | 
@@ -536,7 +612,7 @@
             unique | 
             join(',')
           }}
-        NNODES: >-
+        NNODES: >- #16.2、生成上述主机数量
           {{
             groups['P'] | 
             map('extract', hostvars) | 
@@ -550,7 +626,7 @@
         - run_proxy
         - always
 
-    - name: Display all values.
+    - name: Display all values. #17、显示变量信息，用于调试
       debug:
         msg: |
          PREFILL_API_SERVER_LIST: {{ PREFILL_API_SERVER_LIST }}
@@ -564,7 +640,7 @@
       tags:
         - always
 
-    - name: Generate a script to kill all Python processes in P container.
+    - name: Generate a script to kill all Python processes in P container. #18、在P节点的SCRIPTS_PATH/kill_python_processes.sh路径上复制杀死python进程的脚本
       copy:
         content: "{{ kill_python_processes_cmd }}"
         dest: "$SCRIPTS_PATH/kill_python_processes.sh"
@@ -574,7 +650,7 @@
         - run_server
         - run_p
 
-    - name: Generate a script to kill all Python processes in D container.
+    - name: Generate a script to kill all Python processes in D container. #18、在D节点的SCRIPTS_PATH/kill_python_processes.sh路径上复制杀死python进程的脚本
       copy:
         content: "{{ kill_python_processes_cmd }}"
         dest: "$SCRIPTS_PATH/kill_python_processes.sh"
@@ -584,7 +660,7 @@
         - run_server
         - run_d
 
-    - name: Kill all Python processes in the container of prefill.
+    - name: Kill all Python processes in the container of prefill. #19、在P节点的容器上执行杀死python进程的脚本
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
       environment:
         DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
@@ -595,7 +671,7 @@
         - run_server
         - run_p
 
-    - name: Kill all Python processes in the container of decode.
+    - name: Kill all Python processes in the container of decode. #20、在D节点的容器上执行杀死python进程的脚本
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
       environment:
         DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
@@ -607,7 +683,7 @@
         - run_d
 
 
-    - name: Generate a script to run the sglang server for the prefill instances.
+    - name: Generate a script to run the sglang server for the prefill instances. #21、将run_sglang_server_prefill_cmd脚本的内容复制到P节点上的SCRIPTS_PATH/sglang_run_for_p.sh文件中
       copy:
         content: "{{ run_sglang_server_prefill_cmd }}"
         dest: "$SCRIPTS_PATH/sglang_run_for_p.sh"
@@ -617,7 +693,7 @@
         - run_server
         - run_p
 
-    - name: Generate a script to run the sglang server for the decode instances.
+    - name: Generate a script to run the sglang server for the decode instances. #22、将run_sglang_server_decode_cmd脚本的内容复制到D节点上的SCRIPTS_PATH/sglang_run_for_d.sh文件中
       copy:
         content: "{{ run_sglang_server_decode_cmd }}"
         dest: "$SCRIPTS_PATH/sglang_run_for_d.sh"
@@ -630,7 +706,7 @@
         - run_d
 
 
-    - name: Get socket name for communication between prefill instances and decode instances.
+    - name: Get socket name for communication between prefill instances and decode instances. #23、获取当前主机的默认网络接口，用于P、D节点间的通信
       shell: |
         ip -4 route list 0/0 | awk '{print $5}' | head -1
       register: default_interface_result
@@ -639,7 +715,7 @@
         - run_server
         - always
 
-    - name: Use a variable to store the socket name.
+    - name: Use a variable to store the socket name. #24、将网络接口名称保存在变量中
       set_fact:
         default_interface: "{{ default_interface_result.stdout }}"
       when: default_interface_result.stdout != ""
@@ -647,7 +723,7 @@
         - run_server
         - always
 
-    - name: Run the Omniai service for prefill instances.
+    - name: Run the Omniai service for prefill instances. #25、当P节点数量不小于1时，执行docker_start_sglang_cmd_p脚本，在P节点容器内启动server服务
       command: bash -c "{{ docker_start_sglang_cmd_p }}"
       environment:
         ROLE: "P"
@@ -656,7 +732,7 @@
         API_PORT: "{{ api_port }}"
         SERVER_IP_LIST: "{{ DECODE_SERVER_IP_LIST | replace(' ', '') | trim }}"
         PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
-        SOCKET_IFNAME: "{{ default_interface }}"
+        SOCKET_IFNAME: "{{ default_interface }}"  # TODO 验证是否可删除
         IP: "{{ ansible_host }}"
         HOST_IP: "{{ host_ip }}"
         NODE_RANK: "{{ node_rank }}"
@@ -668,7 +744,7 @@
         - run_server
         - run_p
 
-    - name: Run the Omniai service for decode instances.
+    - name: Run the Omniai service for decode instances. #26、执行docker_start_sglang_cmd_d脚本，在D节点容器内启动server服务
       command: bash -c "{{ docker_start_sglang_cmd_d }}"
       environment:
         ROLE: "D"
@@ -678,7 +754,7 @@
         SERVER_IP_LIST: "{{ DECODE_SERVER_IP_LIST | replace(' ', '') | trim }}"
         PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
         DECODE_POD_NUM: "{{ DECODE_POD_NUM }}"
-        SOCKET_IFNAME: "{{ default_interface }}"
+        SOCKET_IFNAME: "{{ default_interface }}"   # TODO 验证是否可删除
         NUM_SERVERS: "{{ ascend_rt_visible_devices.split(',') | length }}"
         NODE_RANK: "{{ node_rank }}"
         IP: "{{ ansible_host }}"
@@ -691,7 +767,7 @@
         - run_server
         - run_d
 
-    - name: Run the Omniai service for prefill instances.
+    - name: Run the Omniai service for prefill instances. #27、当P节点数量为1时，执行docker_start_sglang_cmd_p脚本，在P节点容器内启动server服务
       command: bash -c "{{ docker_start_sglang_cmd_p }}"
       environment:
         ROLE: "P"
@@ -712,7 +788,7 @@
         - run_server
         - run_p
 
-    - name: Generate a script to kill all nginx processes in the container.
+    - name: Generate a script to kill all nginx processes in the container. #28、将杀死nginx进程的脚本复制到执行机的SCRIPTS_PATH/kill_nginx_processes.sh文件下
       copy:
         content: "{{ kill_nginx_processes_cmd }}"
         dest: "$SCRIPTS_PATH/kill_nginx_processes.sh"
@@ -722,7 +798,7 @@
         - run_proxy
         - run_c
 
-    - name: Kill all Python processes in the container of prefill.
+    - name: Kill all Python processes in the container of prefill. #29、在执行机的容器中执行杀死nginx进程的脚本
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/kill_nginx_processes.sh"
       environment:
         DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
@@ -733,7 +809,7 @@
         - run_proxy
         - run_c
 
-    - name: Generate a script to run the global proxy server.
+    - name: Generate a script to run the global proxy server. #30、将run_proxy_cmd的内容复制到C的SCRIPTS_PATH/run_proxy_server.sh的文件中
       copy:
         content: "{{ run_proxy_cmd }}"
         dest: "$SCRIPTS_PATH/run_proxy_server.sh"
@@ -743,7 +819,7 @@
         - run_proxy
         - run_c
 
-    - name: Run the global proxy server.
+    - name: Run the global proxy server. #31、在C的容器中执行开启proxy服务的脚本
       command: bash -c "{{ docker_start_proxy_cmd_c }}"
       environment:
         DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
@@ -752,7 +828,7 @@
         - run_proxy
         - run_c
 
-    - name: Create a directory on the executor to store the log.
+    - name: Create a directory on the executor to store the log. #32、在执行机上创建目录以存放日志文件
       ansible.builtin.file:
         path: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}"
         state: directory
@@ -761,7 +837,7 @@
       tags: 
         - fetch_log
 
-    - name: Forward logs from all machines to the executor.
+    - name: Forward logs from all machines to the executor. #33、将P、D节点上的日志文件复制到执行机上
       ansible.builtin.synchronize:
         mode: pull
         src: "{{ ansible_env.LOG_PATH }}"

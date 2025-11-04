@@ -1,0 +1,14 @@
+---
+# Service for Prefill Pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: prefill-service
+  labels: {{- include "omniinfer.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: prefill
+  ports:
+    - protocol: TCP
+      port: {{ include "omniinfer.servicePortByRole" (dict "role" "prefill" "values" .Values) }}
+      targetPort: {{ include "omniinfer.apiPortByRole" (dict "role" "prefill" "values" .Values) }}

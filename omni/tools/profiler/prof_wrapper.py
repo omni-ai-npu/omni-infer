@@ -12,12 +12,12 @@ import logging
 import uuid
 from vllm.v1.engine import EngineCoreOutputs
 
-def execute_operation(operation_str, param_dict):
+def execute_operation(operation_str, param_dict, func_name: str=""):
     if operation_str:
         try:
             exec(operation_str, param_dict)
         except Exception as e:
-            logging.error(f"Error executing exit code: {e}")
+            logging.error(f"Error executing exit code: {e} func_name: {func_name}")
 
 # Helper to wrap methods with tracing
 def torchnpu_prof_wrapper(original_method, params):
@@ -190,12 +190,12 @@ def marker_prof_wrapper(original_method, params):
             entry_args = args
             entry_kwargs = kwargs
             param_dict = {"self": self, "args": entry_args, "kwargs": entry_kwargs}
-            execute_operation(entry_operation, param_dict)
+            execute_operation(entry_operation, param_dict, original_method.__name__)
 
             result = await original_method(self, *args, **kwargs)
 
             param_dict["result"]=result
-            execute_operation(exit_operation, param_dict)
+            execute_operation(exit_operation, param_dict, original_method.__name__)
             return result
         return async_wrapper
     else:
@@ -205,10 +205,10 @@ def marker_prof_wrapper(original_method, params):
             entry_args = args
             entry_kwargs = kwargs
             param_dict = {"self": self, "args": entry_args, "kwargs": entry_kwargs}
-            execute_operation(entry_operation, param_dict)
+            execute_operation(entry_operation, param_dict, original_method.__name__)
             result = original_method(self, *args, **kwargs)
             param_dict["result"]=result
-            execute_operation(exit_operation, param_dict)
+            execute_operation(exit_operation, param_dict, original_method.__name__)
             
             return result
         return wrapper

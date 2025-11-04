@@ -24,17 +24,19 @@ class PenaltyCache:
         self.cached_req_ids = None
         self.prompt_mask = torch.zeros((num_req + 1, vocab_size),
                                         dtype=torch.bool,
-                                        device=device,
-                                        pin_memory=is_pin_memory_available())
+                                        device=device,)
         self.output_mask = torch.zeros((num_req + 1, vocab_size),
                                         dtype=torch.bool,
-                                        device=device,
-                                        pin_memory=is_pin_memory_available())
-        self.output_bin_counts = torch.zeros((num_req + 1, vocab_size),
-                                        dtype=torch.int64,
-                                        device=device,
-                                        pin_memory=is_pin_memory_available())
-        self.ones_cpu = torch.ones(vocab_size, dtype=torch.bool, device="cpu")
+                                        device=device,)
+        self.output_bin_counts = torch.zeros(
+            (num_req + 1, vocab_size), dtype=torch.int64, device=device,)
+        self.ones_cpu = torch.ones(
+            vocab_size,
+            dtype=torch.bool,
+            device="cpu",
+            pin_memory=is_pin_memory_available(),
+        )
+        self.start_indices = torch.arange(num_req, device=device) * vocab_size
     
     def permute_cached_reqs(self, new_req_ids):
         if self.cached_req_ids == None:
@@ -86,35 +88,57 @@ class PenaltyCache:
     def save_token_ids(self, sampled_token_ids):
         if not self.do_penalties:
             return
-        sampled_token_ids = sampled_token_ids.view(-1)
-        self.output_bin_counts.scatter_add_(1, sampled_token_ids.unsqueeze(0).to(dtype=torch.int64),
-            torch.ones_like(sampled_token_ids.unsqueeze(0), dtype=torch.int64))
-        self.output_mask = self.output_bin_counts > 0
+        indices = self.start_indices[:sampled_token_ids.numel()] + sampled_token_ids.view(-1)
+        self.output_bin_counts.view(-1)[indices] += 1
+        self.output_mask.view(-1)[indices] = True
     
     def revert_rejected_tokens(self, accepted_mask, token_ids):
         if not self.do_penalties:
             return
+        indices = (self.start_indices[:token_ids.shape[0]].view(-1) + token_ids).view(-1)
         rejected_mask = -(~accepted_mask).to(dtype=torch.int64)
-        token_ids = torch.clone(token_ids).masked_fill_(accepted_mask, 0).to(dtype=torch.int64)
-        self.output_bin_counts.scatter_add_(1, token_ids, rejected_mask)
-        self.output_mask = self.output_bin_counts > 0
+        self.output_bin_counts.view(-1)[indices] += rejected_mask
+        self.output_mask.view(-1)[indices] = self.output_bin_counts.view(-1)[indices] > 0
 
 class ProbCache:
-    def __init__(self, num_req, num_tokens, topk, device):
+    def __init__(self, num_req, num_tokens, topk, vocab_size, device):
         self.cached_req_ids = None
-        self.topk_spec_token_ids = torch.zeros((num_req + 1, num_tokens, topk),
-                                        dtype=torch.int32,
-                                        device=device,
-                                        pin_memory=is_pin_memory_available())
-        self.topk_spec_token_probs = torch.zeros((num_req + 1, num_tokens, topk),
-                                        dtype=torch.bfloat16,
-                                        device=device,
-                                        pin_memory=is_pin_memory_available())
-        self.computed = torch.zeros(num_req + 1,
-                                        dtype=torch.bool,
-                                        device=device,
-                                        pin_memory=is_pin_memory_available())
-    
+        self.topk = topk
+        if self.topk > 0:
+            self.topk_spec_token_ids = torch.zeros((num_req + 1, num_tokens, topk),
+                                            dtype=torch.int32,
+                                            device=device,
+                                            pin_memory=is_pin_memory_available())
+            self.topk_spec_token_probs = torch.zeros((num_req + 1, num_tokens, topk),
+                                            dtype=torch.float32,
+                                            device=device,
+                                            pin_memory=is_pin_memory_available())
+            self.selected_indices = torch.zeros((num_req + 1, num_tokens),
+                                            dtype=torch.int32,
+                                            device=device,
+                                            pin_memory=is_pin_memory_available())
+            self.computed = torch.zeros(num_req + 1,
+                                            dtype=torch.bool,
+                                            device=device,
+                                            pin_memory=is_pin_memory_available())
+        else:
+            self.topk_spec_token_ids = torch.zeros((num_req + 1, num_tokens, 1),
+                                            dtype=torch.int32,
+                                            device=device,
+                                            pin_memory=is_pin_memory_available())
+            self.topk_spec_token_probs = torch.zeros((num_req + 1, num_tokens, vocab_size),
+                                            dtype=torch.float32,
+                                            device=device,
+                                            pin_memory=is_pin_memory_available())
+            self.selected_indices = torch.zeros((num_req + 1, num_tokens),
+                                            dtype=torch.int32,
+                                            device=device,
+                                            pin_memory=is_pin_memory_available())
+            self.computed = torch.zeros(num_req + 1,
+                                            dtype=torch.bool,
+                                            device=device,
+                                            pin_memory=is_pin_memory_available())
+        
     def permute_cached_reqs(self, new_req_ids):
         if self.cached_req_ids == None:
             self.cached_req_ids = new_req_ids
@@ -127,7 +151,7 @@ class ProbCache:
                 src[index] = i
             except ValueError:
                 pass
-        move_cached_tensors([self.topk_spec_token_ids, self.topk_spec_token_probs, self.computed], src)
+        move_cached_tensors([self.topk_spec_token_ids, self.topk_spec_token_probs, self.selected_indices, self.computed], src)
         self.cached_req_ids = new_req_ids
     
     def prepare_new_reqs(self, scheduled_new_reqs):
@@ -138,12 +162,17 @@ class ProbCache:
                 raise RuntimeError("penalty cache: a scheduled new req is not in req id list")
             self.topk_spec_token_ids[index] = torch.zeros_like(self.topk_spec_token_ids[index])
             self.topk_spec_token_probs[index] = torch.zeros_like(self.topk_spec_token_probs[index])
+            self.selected_indices[index] = torch.zeros_like(self.selected_indices[index])
             self.computed[index] = False
     
-    def update_sparse_rejection_sampler(self, topk_spec_token_ids, topk_spec_token_probs, idx):
-        batch_size = topk_spec_token_ids.shape[0]
-        self.topk_spec_token_ids[:batch_size, idx, :] = topk_spec_token_ids
-        self.topk_spec_token_probs[:batch_size, idx, :] = topk_spec_token_probs
+    def update_sparse_rejection_sampler(self, topk_spec_token_ids, topk_spec_token_probs, selected_indices, idx):
+        batch_size = topk_spec_token_probs.shape[0]
+        if self.topk > 0:
+            self.topk_spec_token_ids[:batch_size, idx, :] = topk_spec_token_ids
+            self.topk_spec_token_probs[:batch_size, idx, :] = topk_spec_token_probs
+            self.selected_indices[:batch_size, idx] = selected_indices
+        else:
+            self.topk_spec_token_probs[:batch_size, idx, :] = topk_spec_token_probs
         self.computed[:batch_size] = True
     
     def prepare_cache(self, scheduled_new_reqs, req_ids, sampling_metadata, input_batch):

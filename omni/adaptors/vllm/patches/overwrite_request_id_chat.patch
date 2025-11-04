@@ -1,0 +1,99 @@
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+index 60d7097290..241105c221 100644
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -43,11 +43,14 @@ from vllm.transformers_utils.tokenizers import (maybe_serialize_tool_calls,
+                                                 truncate_tool_call_ids,
+                                                 validate_request_params)
+ 
++from vllm.utils import random_uuid
++
+ logger = init_logger(__name__)
+ 
+ import os
+ reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
+ skip_decode_tokenize = os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "0") == "1"
++overwrite_req_id = os.getenv("ENABLE_OVERWRITE_REQ_IDS", "0") == "1"
+ 
+ class OpenAIServingChat(OpenAIServing):
+ 
+@@ -201,9 +204,24 @@ class OpenAIServingChat(OpenAIServing):
+                 jinja2.TemplateError) as e:
+             logger.exception("Error in preprocessing prompt inputs")
+             return self.create_error_response(f"{e} {e.__cause__}")
++        
++        if overwrite_req_id:
++            request_id = self._add_prefix(getattr(request, "request_id", None))
++        else:
++            request_id = (
++                f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
++            )
++
++        if request.kv_transfer_params:
++            request_id = self._add_prefix(request.kv_transfer_params.get("p_side_request_id", request_id))
+ 
+-        request_id = "chatcmpl-" \
+-                     f"{self._base_request_id(raw_request, request.request_id)}"
++        default = request.request_id or request_id
++        if raw_request is None:
++            req_id_head = default
++        else:
++            req_id_head = raw_request.headers.get("X-Request-ID")
++
++        raw_request_id = self._add_prefix(req_id_head) if req_id_head else request_id
+ 
+         request_metadata = RequestResponseMetadata(request_id=request_id)
+         if raw_request:
+@@ -273,16 +291,29 @@ class OpenAIServingChat(OpenAIServing):
+         # Streaming response
+         if request.stream:
+             return self.chat_completion_stream_generator(
+-                request, result_generator, request_id, model_name,
++                request, result_generator,
++                raw_request_id, # the real request ID to return to user
++                model_name,
+                 conversation, tokenizer, request_metadata)
+ 
+         try:
++            # P side in P/D seperate always call the full generator, no need to pass internal request id to streaming generator
+             return await self.chat_completion_full_generator(
+-                request, result_generator, request_id, model_name,
++                request, result_generator,
++                raw_request_id, # the real request ID to return to user
++                request_id, # the internal vLLM request ID, pass it to D side in kv_transfer_params
++                model_name,
+                 conversation, tokenizer, request_metadata)
+         except ValueError as e:
+             # TODO: Use a vllm-specific Validation Error
+             return self.create_error_response(str(e))
++        
++    def _add_prefix(self, request_id, prefix="chatcmpl-"):
++        if request_id and not request_id.startswith(prefix):
++            return prefix + request_id
++        elif not request_id:
++            return prefix + random_uuid()
++        return request_id
+ 
+     def get_chat_request_role(self, request: ChatCompletionRequest) -> str:
+         if request.add_generation_prompt:
+@@ -905,7 +936,8 @@ class OpenAIServingChat(OpenAIServing):
+         self,
+         request: ChatCompletionRequest,
+         result_generator: AsyncIterator[RequestOutput],
+-        request_id: str,
++        request_id: str, # the real request ID to return to user
++        vllm_request_id: str, # the internal vLLM request ID, pass it to D side in kv_transfer_params
+         model_name: str,
+         conversation: list[ConversationMessage],
+         tokenizer: AnyTokenizer,
+@@ -926,6 +958,10 @@ class OpenAIServingChat(OpenAIServing):
+ 
+         assert final_res is not None
+ 
++        # Pass the internal request id in P side to D side in kv_transfer_params
++        if final_res.kv_transfer_params:
++            final_res.kv_transfer_params["p_side_request_id"] = vllm_request_id
++
+         turn_id = 0
+         if self.tool_parser_name == "ascend_kimi_k2" or self.tool_parser_name == "kimi_k2":
+             turn_id = get_turn_id(conversation)

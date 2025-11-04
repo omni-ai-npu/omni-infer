@@ -1,0 +1,320 @@
+diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
+index 12445ac43..5c522eb2f 100644
+--- a/vllm/entrypoints/openai/api_server.py
++++ b/vllm/entrypoints/openai/api_server.py
+@@ -14,6 +14,7 @@ import uuid
+ from argparse import Namespace
+ from collections.abc import AsyncIterator
+ from contextlib import asynccontextmanager
++from enum import Enum
+ from functools import partial
+ from http import HTTPStatus
+ from json import JSONDecodeError
+@@ -99,6 +100,7 @@ from vllm.transformers_utils.tokenizer import MistralTokenizer
+ from vllm.usage.usage_lib import UsageContext
+ from vllm.utils import (Device, FlexibleArgumentParser, get_open_zmq_ipc_path,
+                         is_valid_ipv6_address, set_ulimit)
++from vllm.v1.engine.exceptions import EngineDeadError
+ from vllm.version import __version__ as VLLM_VERSION
+ 
+ TIMEOUT_KEEP_ALIVE = 120  # seconds
+@@ -412,9 +414,88 @@ def engine_client(request: Request) -> EngineClient:
+ 
+ @router.get("/health", response_class=Response)
+ async def health(raw_request: Request) -> Response:
+-    """Health check."""
+-    await engine_client(raw_request).check_health()
+-    return Response(status_code=200)
++    """
++    Health check.
++    Returns:
++        - 200: All checks passed.
++        - 500:
++            - {"fault message": "unhealthy"} if engine is dead.
++            - {"fault message": "npu error"} if npu errLevel is L3/L4/L5.
++            - {"fault message": "L1-1520 err"} if L1-1520 errLevelName is PreSeparate/Separate.
++    """
++    try:
++        # Step 1: Check engine health
++        await engine_client(raw_request).check_health()
++        
++        # Step 2: Check npu_status.yaml
++        npu_status = check_npu_status()
++        if npu_status == NPUStatusInfo.NPU_ERROR:
++            return JSONResponse(
++                content={"fault message": "npu error"},
++                status_code=500
++            )
++        if npu_status == NPUStatusInfo.SWITCH_ERROR:
++            return JSONResponse(
++                content={"fault message": "L1-1520 err"},
++                status_code=500
++            )
++
++        return JSONResponse(
++            content={"status": "healthy"},
++            status_code=200
++        )
++    except EngineDeadError:
++        return JSONResponse(
++            content={"status": "unhealthy"},
++            status_code=500
++        )
++
++class NPUStatusInfo(Enum):
++    """ NPU 状态信息枚举"""
++    HEALTH = 0       # 健康状态
++    UNKONWN = 1      # 未知状态
++    NPU_ERROR = 2    # NPU 错误
++    SWITCH_ERROR = 3 # 交换机错误
++
++def get_npu_status_path() -> str:
++    return os.getenv("NPU_STATUS_FILE_PATH", "/opt/cloud/node/npu_status.yaml")
++
++def check_npu_status() -> int:
++    file_path = get_npu_status_path()
++    if not os.path.exists(file_path):
++        return NPUStatusInfo.HEALTH
++    health_level = ['L0', 'L1']
++    try:
++        with open(file_path, 'r', encoding='utf-8') as file:
++            import yaml
++            npu_status = yaml.safe_load(file)
++            if "resources" not in npu_status:
++                logger.warning(f"[resources] does not exist in npu_status.yaml")
++                return NPUStatusInfo.UNKONWN
++            resources = npu_status["resources"]
++            if len(resources) < 2:
++                logger.warning("content is incorrect in npu_status.yaml")
++                return NPUStatusInfo.UNKONWN
++            if "status" not in resources[0]:
++                logger.warning(f"[resources.status] does not exist in npu_status.yaml")
++                return NPUStatusInfo.UNKONWN
++            status = resources[0]["status"]
++            for npu in status:
++                if "errLevel" not in npu:
++                    logger.warning(f"[resources.status.errLevel] does not exist in npu_status.yaml")
++                    return NPUStatusInfo.UNKONWN
++                if npu["errLevel"] not in health_level:
++                    logger.error(f"npu fault occurs, errLevel: {npu['errLevel']}")
++                    return NPUStatusInfo.NPU_ERROR
++            if "errLevelName" not in resources[1]:
++                return NPUStatusInfo.UNKONWN
++            if  resources[1]["errLevelName"] != "NotHandle":
++                logger.error(f"L1-1520 fault occurs, errLevelName: {resources[1]['errLevelName']}")
++                return NPUStatusInfo.SWITCH_ERROR
++            return NPUStatusInfo.HEALTH
++    except Exception as e:
++        logger.warning(f"check npu_status.yaml failed: {e}")
++        return NPUStatusInfo.UNKONWN
+ 
+ 
+ @router.get("/load")
+diff --git a/vllm/v1/engine/async_llm.py b/vllm/v1/engine/async_llm.py
+index a9e9369c0..9e697a43f 100644
+--- a/vllm/v1/engine/async_llm.py
++++ b/vllm/v1/engine/async_llm.py
+@@ -485,6 +485,8 @@ class AsyncLLM(EngineClient):
+ 
+     async def check_health(self) -> None:
+         logger.debug("Called check_health.")
++        if self.errored:
++            raise self.dead_error
+ 
+     async def start_profile(self) -> None:
+         await self.engine_core.profile_async(True)
+diff --git a/vllm/v1/engine/core_client.py b/vllm/v1/engine/core_client.py
+index ad44c75ab..00d8d7a9b 100644
+--- a/vllm/v1/engine/core_client.py
++++ b/vllm/v1/engine/core_client.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ import asyncio
+ import contextlib
++import multiprocessing
+ import queue
+ import uuid
+ import weakref
+@@ -430,6 +431,9 @@ class MPClient(EngineCoreClient):
+             # underlying data.
+             self.pending_messages = deque[tuple[zmq.MessageTracker, Any]]()
+ 
++            # Start monitoring engine core processes for unexpected failures
++            self.start_engine_core_monitor()
++
+             success = True
+         finally:
+             if not success:
+@@ -566,6 +570,43 @@ class MPClient(EngineCoreClient):
+     def free_pending_messages(self):
+         while self.pending_messages and self.pending_messages[-1][0].done:
+             self.pending_messages.pop()
++    
++    def start_engine_core_monitor(self):
++        """Start a monitor thread for engine core processes."""
++        engine_manager = self.resources.local_engine_manager
++        if (engine_manager is None or not hasattr(engine_manager, "processes")
++            or not engine_manager.processes
++        ):
++            # No engine processes to monitor
++            return
++
++        engine_processes = engine_manager.processes
++        self_ref = weakref.ref(self)
++
++        # Monitor engine core process liveness. If any die unexpectedly,
++        # logs an error, shuts down the client and invokes the failure
++        # callback to inform the engine.
++        def monitor_engine_cores():
++            sentinels = [proc.sentinel for proc in engine_processes]
++            died = multiprocessing.connection.wait(sentinels)
++            _self = self_ref()
++            if not _self or _self.resources.engine_dead:
++                return
++            _self.resources.engine_dead = True
++            proc_name = next(
++                proc.name for proc in engine_processes if proc.sentinel == died[0])
++            logger.error(
++                "Engine core proc %s died unexpectedly, "
++                "shutting down client.", proc_name)
++            _self.shutdown()
++            # Note: For MPClient, we don't have a failure callback mechanism
++            # like MultiprocExecutor, but we set engine_dead flag which will
++            # cause subsequent operations to raise EngineDeadError
++
++        Thread(
++            target=monitor_engine_cores, 
++            daemon=True, 
++            name="MPClientEngineMonitor").start()
+ 
+ 
+ def _process_utility_output(output: UtilityOutput,
+@@ -797,6 +838,8 @@ class AsyncMPClient(MPClient):
+                         outputs_queue.put_nowait(outputs)
+             except Exception as e:
+                 outputs_queue.put_nowait(e)
++            except asyncio.CancelledError:
++                outputs_queue.put_nowait(EngineDeadError())
+ 
+         resources.output_queue_task = asyncio.create_task(
+             process_outputs_socket(), name="EngineCoreOutputQueueTask")
+diff --git a/vllm/v1/executor/multiproc_executor.py b/vllm/v1/executor/multiproc_executor.py
+index ac02a0905..ada790414 100644
+--- a/vllm/v1/executor/multiproc_executor.py
++++ b/vllm/v1/executor/multiproc_executor.py
+@@ -103,8 +103,12 @@ class MultiprocExecutor(Executor):
+         finally:
+             if not success:
+                 # Clean up the worker procs if there was a failure.
++                # Close death_writers first to signal workers to exit
++                for uw in unready_workers:
++                    if uw.death_writer is not None:
++                        uw.death_writer.close()
+                 self._ensure_worker_termination(
+-                    [w.proc for w in unready_workers])
++                    [uw.proc for uw in unready_workers])
+ 
+         # For pipeline parallel, we use a thread pool for asynchronous
+         # execute_model.
+@@ -260,6 +264,10 @@ class MultiprocExecutor(Executor):
+ 
+             if workers := getattr(self, 'workers', None):
+                 for w in workers:
++                    # Close death_writer to signal child processes to exit
++                    if w.death_writer is not None:
++                        w.death_writer.close()
++                        w.death_writer = None
+                     w.worker_response_mq = None
+                 self._ensure_worker_termination([w.proc for w in workers])
+ 
+@@ -292,6 +300,7 @@ class UnreadyWorkerProcHandle:
+     proc: BaseProcess
+     rank: int
+     ready_pipe: Connection
++    death_writer: Connection | None = None
+ 
+ 
+ @dataclass
+@@ -299,6 +308,7 @@ class WorkerProcHandle:
+     proc: BaseProcess
+     rank: int
+     worker_response_mq: MessageQueue  # The worker process writes to this MQ
++    death_writer: Connection | None = None
+ 
+     @classmethod
+     def from_unready_handle(
+@@ -308,6 +318,7 @@ class WorkerProcHandle:
+             proc=unready_handle.proc,
+             rank=unready_handle.rank,
+             worker_response_mq=worker_response_mq,
++            death_writer=unready_handle.death_writer,
+         )
+ 
+ 
+@@ -369,6 +380,9 @@ class WorkerProc:
+         # (reader, writer)
+         reader, writer = context.Pipe(duplex=False)
+ 
++        # Create death pipe to detect parent process exit
++        death_reader, death_writer = context.Pipe(duplex=False)
++
+         process_kwargs = {
+             "vllm_config": vllm_config,
+             "local_rank": local_rank,
+@@ -376,6 +390,7 @@ class WorkerProc:
+             "distributed_init_method": distributed_init_method,
+             "input_shm_handle": input_shm_handle,
+             "ready_pipe": (reader, writer),
++            "death_pipe": death_reader,
+         }
+         # Run EngineCore busy loop in background process.
+         proc = context.Process(target=WorkerProc.worker_main,
+@@ -385,7 +400,9 @@ class WorkerProc:
+ 
+         proc.start()
+         writer.close()
+-        return UnreadyWorkerProcHandle(proc, rank, reader)
++        # Keep death_writer open in parent - when parent exits,
++        # death_reader in child will get EOFError
++        return UnreadyWorkerProcHandle(proc, rank, reader, death_writer)
+ 
+     @staticmethod
+     def wait_for_ready(
+@@ -456,6 +473,28 @@ class WorkerProc:
+         worker = None
+         # tuple[Connection, Connection]
+         reader, ready_writer = kwargs.pop("ready_pipe")
++        death_pipe = kwargs.pop("death_pipe", None)
++
++        # Start death monitoring thread if death_pipe is provided
++        if death_pipe is not None:
++
++            def monitor_parent_death():
++                try:
++                    # This will block until parent process exits (pipe closes)
++                    death_pipe.recv()
++                except EOFError:
++                    # Parent process has exited, terminate this worker
++                    logger.info("Parent process exited, terminating worker")
++                    # Send signal to self to trigger clean shutdown
++                    os.kill(os.getpid(), signal.SIGTERM)
++                except Exception as e:
++                    logger.warning("Death monitoring error: %s", e)
++
++            death_monitor = Thread(
++                target=monitor_parent_death, daemon=True, name="WorkerDeathMonitor"
++            )
++            death_monitor.start()
++
+         try:
+             reader.close()
+             worker = WorkerProc(*args, **kwargs)
+@@ -496,6 +535,8 @@ class WorkerProc:
+         finally:
+             if ready_writer is not None:
+                 ready_writer.close()
++            if death_pipe is not None:
++                death_pipe.close()
+             # Clean up once worker exits busy loop
+             if worker is not None:
+                 worker.shutdown()

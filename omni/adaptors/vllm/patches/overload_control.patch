@@ -1,0 +1,238 @@
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+old mode 100644
+new mode 100755
+index 617815d1a..9ddfae074
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -6,6 +6,7 @@ import time
+ from collections.abc import AsyncGenerator, AsyncIterator
+ from collections.abc import Sequence as GenericSequence
+ from typing import Callable, Final, Optional, Union, List
++from http import HTTPStatus
+ 
+ import jinja2
+ import partial_json_parser
+@@ -51,6 +52,7 @@ import os
+ reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
+ skip_decode_tokenize = os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "0") == "1"
+ overwrite_req_id = os.getenv("ENABLE_OVERWRITE_REQ_IDS", "0") == "1"
++llm_waiting_out = float(os.environ.get("LLM_WAITING_OUT", "86400"))
+ 
+ class OpenAIServingChat(OpenAIServing):
+ 
+@@ -1012,6 +1014,12 @@ class OpenAIServingChat(OpenAIServing):
+ 
+         role = self.get_chat_request_role(request)
+         for output in final_res.outputs:
++            if output.finish_reason == "overload":
++                return self.create_error_response(
++                    message=f"Server overloaded, request (request_id={request_id}) aborted after waiting more than "
++                            f"{llm_waiting_out}s",
++                    err_type="OverloadError",
++                    status_code=HTTPStatus.TOO_MANY_REQUESTS)
+             token_ids = output.token_ids
+             out_logprobs = output.logprobs
+ 
+diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
+old mode 100644
+new mode 100755
+index a162a01ee..ed047c288
+--- a/vllm/entrypoints/openai/serving_completion.py
++++ b/vllm/entrypoints/openai/serving_completion.py
+@@ -5,6 +5,7 @@ import time
+ from collections.abc import AsyncGenerator, AsyncIterator
+ from collections.abc import Sequence as GenericSequence
+ from typing import Optional, Union, cast
++from http import HTTPStatus
+ 
+ import jinja2
+ from fastapi import Request
+@@ -40,6 +41,8 @@ from vllm.utils import merge_async_iterators
+ 
+ logger = init_logger(__name__)
+ 
++import os
++llm_waiting_out = float(os.environ.get("LLM_WAITING_OUT", "86400"))
+ 
+ class OpenAIServingCompletion(OpenAIServing):
+ 
+@@ -464,6 +467,12 @@ class OpenAIServingCompletion(OpenAIServing):
+ 
+             for output in final_res.outputs:
+                 assert request.max_tokens is not None
++                if output.finish_reason == "overload":
++                    return self.create_error_response(
++                        message=f"Server overloaded, request (request_id={request_id}) aborted after waiting more than "
++                                f"{llm_waiting_out}s",
++                        err_type="OverloadError",
++                        status_code=HTTPStatus.TOO_MANY_REQUESTS)
+                 if request.echo:
+                     assert prompt_text is not None
+                     if request.max_tokens == 0:
+diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
+old mode 100644
+new mode 100755
+index 5ae56f98f..04dc331a1
+--- a/vllm/v1/core/kv_cache_manager.py
++++ b/vllm/v1/core/kv_cache_manager.py
+@@ -463,3 +463,7 @@ class CpuNpuKVCacheManager:
+ 
+     def free(self, request: Request, device: Device) -> None:
+         self.allocators[device].free(request)
++
++    def exist_swap(self) -> bool:
++        return (self.allocators[Device.CPU].single_type_manager.block_pool.get_num_free_blocks() <
++                self.allocators[Device.CPU].single_type_manager.block_pool.num_gpu_blocks - 1)
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+old mode 100644
+new mode 100755
+index 82c12b565..9159a8870
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -79,6 +79,7 @@ class Scheduler(SchedulerInterface):
+             self.async_schedule = additional_config.get(
+                     "async_schedule", False)
+             self.enable_omni_attn = to_bool_or_raise(additional_config.get("enable_omni_attn", False))
++        self.llm_waiting_out = float(os.environ.get("LLM_WAITING_OUT", "86400"))
+ 
+         # include_finished_set controls whether a separate set of finished
+         # request ids should be included in the EngineCoreOutputs returned
+@@ -394,6 +395,21 @@ class Scheduler(SchedulerInterface):
+                 if req.lora_request and req.lora_request.lora_int_id > 0)
+             assert len(scheduled_loras) <= self.lora_config.max_loras
+ 
++        # Overload Control
++        if self.vllm_config.kv_transfer_config is not None:
++            if self.vllm_config.kv_transfer_config.kv_role != 'kv_consumer' and self.llm_waiting_out > 0:
++                filter_waiting: deque[Request] = deque()
++                while self.waiting:
++                    request = self.waiting.popleft()
++                    if time.time() - request.arrival_time > self.llm_waiting_out:
++                        logger.warning(f"Request (request_id={request.request_id}) timed out: "
++                                       f"waiting duration exceeded the limit of {self.llm_waiting_out}s")
++                        request.status = RequestStatus.FINISHED_OVERLOAD
++                        self.finished_req_ids.add(request.request_id)
++                        continue
++                    filter_waiting.append(request)
++                self.waiting = filter_waiting
++
+         # Use a temporary deque to collect requests that need to be skipped
+         # and put back at the head of the waiting queue later
+         skipped_waiting_requests: deque[Request] = deque()
+@@ -970,6 +986,9 @@ class Scheduler(SchedulerInterface):
+         # P/D: update state for finished KV Transfers.
+         self._update_from_kv_xfer_finished(model_runner_output)
+ 
++        # Overload: abort waiting time out reqs
++        self._abort_overload_reqs(scheduler_output, outputs)
++
+         # Return the cached request data to the queue so they can be reused.
+         for req_data in scheduler_output.scheduled_cached_reqs:
+             # NOTE(rob): since we free stopped reqs above, adding stopped reqs
+@@ -1017,7 +1036,8 @@ class Scheduler(SchedulerInterface):
+             if request is None:
+                 # Invalid request ID.
+                 continue
+-
++            if request.status == RequestStatus.FINISHED_OVERLOAD:
++                continue
+             if request.status == RequestStatus.RUNNING:
+                 self.running.remove(request)
+             elif request.status != RequestStatus.FINISHED_LENGTH_CAPPED:
+@@ -1200,3 +1220,25 @@ class Scheduler(SchedulerInterface):
+                 )
+             )
+ 
++    def _abort_overload_reqs(self, scheduler_output: SchedulerOutput, outputs: list[EngineCoreOutput]):
++        """
++        get waiting time out request ids from the scheduler_output
++        if waiting time out: abort the requests
++        """
++        for req_id in (scheduler_output.finished_req_ids or ()):
++            request = self.requests.get(req_id)
++            if request is None:
++                # Invalid request ID.
++                continue
++            if request.status != RequestStatus.FINISHED_OVERLOAD:
++                continue
++            request.stop_reason = "Abort for waiting time out"
++            self._free_request(request)
++            outputs.append(
++                EngineCoreOutput(
++                    request_id=req_id,
++                    new_token_ids=[0],
++                    finish_reason=request.get_finished_reason(),
++                    stop_reason=request.stop_reason,
++                )
++            )
+\ No newline at end of file
+diff --git a/vllm/v1/engine/__init__.py b/vllm/v1/engine/__init__.py
+old mode 100644
+new mode 100755
+index 41db99bea..e98ec66f7
+--- a/vllm/v1/engine/__init__.py
++++ b/vllm/v1/engine/__init__.py
+@@ -16,7 +16,7 @@ from vllm.v1.outputs import LogprobsLists, LogprobsTensors
+ 
+ # These are possible values of RequestOutput.finish_reason,
+ # so form part of the external API.
+-FINISH_REASON_STRINGS = ("stop", "length", "abort")
++FINISH_REASON_STRINGS = ("stop", "length", "abort", "overload")
+ 
+ 
+ class FinishReason(enum.IntEnum):
+@@ -33,6 +33,7 @@ class FinishReason(enum.IntEnum):
+     STOP = 0
+     LENGTH = 1
+     ABORT = 2
++    OVERLOAD = 3
+ 
+     def __str__(self):
+         return FINISH_REASON_STRINGS[self.value]
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+old mode 100644
+new mode 100755
+index 4f3eb9428..5bd55fd96
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -41,6 +41,7 @@ from vllm.version import __version__ as VLLM_VERSION
+ from concurrent.futures import ThreadPoolExecutor
+ 
+ from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
++from vllm.v1.core.sched.scheduler import PreemptionMode
+ 
+ logger = init_logger(__name__)
+ 
+@@ -754,6 +755,12 @@ class EngineCoreProc(EngineCore):
+             req.kv_transfer_params["fast_path"] = False
+ 
+             with self.pull_kv_lock:
++                if self.scheduler.preemption_mode == PreemptionMode.SWAP:
++                    if self.scheduler.cpu_npu_kv_cache_manager is not None:
++                        if self.scheduler.cpu_npu_kv_cache_manager.exist_swap():
++                            logger.warning("try async pull kv failed, because swap is occurred")
++                            return
++
+                 connector = self.scheduler.connector
+                 num_external_computed_tokens, load_kv_async = (
+                         (0, False) if connector is None else
+diff --git a/vllm/v1/request.py b/vllm/v1/request.py
+old mode 100644
+new mode 100755
+index 9c0621137..eeb928ac3
+--- a/vllm/v1/request.py
++++ b/vllm/v1/request.py
+@@ -173,6 +173,7 @@ class RequestStatus(enum.IntEnum):
+     FINISHED_LENGTH_CAPPED = enum.auto()
+     FINISHED_ABORTED = enum.auto()
+     FINISHED_IGNORED = enum.auto()
++    FINISHED_OVERLOAD = enum.auto()
+ 
+     @staticmethod
+     def is_finished(status: "RequestStatus") -> bool:
+@@ -193,4 +194,5 @@ _FINISHED_REASON_MAP = {
+     RequestStatus.FINISHED_LENGTH_CAPPED: FinishReason.LENGTH,
+     RequestStatus.FINISHED_ABORTED: FinishReason.ABORT,
+     RequestStatus.FINISHED_IGNORED: FinishReason.LENGTH,
++    RequestStatus.FINISHED_OVERLOAD: FinishReason.OVERLOAD,
+ }

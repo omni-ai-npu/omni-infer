@@ -17,7 +17,7 @@ from vllm.distributed import (
 )
 from omni.layers.activation import SiluAndMul
 from omni.layers.linear import MergedColumnParallelFlashCommLinear, RowParallelFlashCommLinear
-
+from omni.models.config_loader.loader import model_extra_config
 class FusedMLPMethodBase(QuantizeMethodBase):
     """Base method for FusedMLP
 
@@ -141,31 +141,13 @@ class W8A8DynamicFusedMLPMethod(FusedMLPMethodBase):
         layer.gate_up_proj.weight_scale = torch.nn.Parameter(
             layer.gate_up_proj.weight_scale.data.float(), requires_grad=False)
 
-    def apply(
+    def _apply(
             self,
             layer: torch.nn.Module,
             x: torch.Tensor,
-            x_transform: str = None,
-            is_prefill: bool = True,
+            x_scale: torch.Tensor
     ) -> torch.Tensor:
         bias = layer.gate_up_proj.bias if not layer.gate_up_proj.skip_bias_add else None
-        x, x_scale = torch_npu.npu_dynamic_quant(x, smooth_scales=None)
-        scale_parallel = os.environ.get('SCALE_PARALLEL', '0') == '1'
-        if x_transform is not None:
-            if x_transform == 'AG':
-                if is_prefill or (not scale_parallel):
-                    x_scale = get_tp_group().all_gather(x_scale, dim=0)
-                else:
-                    with torchair.ops.NpuStreamSwitch('scale'):  # CANN包多流接口
-                        x_scale = get_tp_group().all_gather(x_scale, dim=0)
-                x = get_tp_group().all_gather(x, dim=0)
-            elif x_transform == 'A2A':
-                if is_prefill or (not scale_parallel):
-                    x_scale = get_tp_group().all_to_all(x_scale, transpose=False)
-                else:
-                    with torchair.ops.NpuStreamSwitch('scale'):  # CANN包多流接口
-                        x_scale = get_tp_group().all_to_all(x_scale, transpose=False)
-                x = get_tp_group().all_to_all(x)
         y_int32 = torch_npu.npu_quant_matmul(
             x1=x,
             x2=layer.gate_up_proj.weight,
@@ -192,5 +174,37 @@ class W8A8DynamicFusedMLPMethod(FusedMLPMethodBase):
             bias=bias,
             output_dtype=layer.down_proj.orig_dtype
         )
-
         return output
+    
+    
+    
+    def apply(
+            self,
+            layer: torch.nn.Module,
+            x: torch.Tensor,
+            x_transform: str = None,
+            is_prefill: bool = True,
+    ) -> torch.Tensor:
+        x, x_scale = torch_npu.npu_dynamic_quant(x, smooth_scales=None)
+        scale_parallel = model_extra_config.operator_opt_config.enable_scale_parallel
+        if x_transform is not None:
+            if x_transform == 'AG':
+                if is_prefill or (not scale_parallel):
+                    x_scale = get_tp_group().all_gather(x_scale, dim=0)
+                else:
+                    with torchair.ops.NpuStreamSwitch('scale'):  # CANN包多流接口
+                        x_scale = get_tp_group().all_gather(x_scale, dim=0)
+                x = get_tp_group().all_gather(x, dim=0)
+            elif x_transform == 'A2A':
+                if is_prefill or (not scale_parallel):
+                    x_scale = get_tp_group().all_to_all(x_scale, transpose=False)
+                else:
+                    with torchair.ops.NpuStreamSwitch('scale'):  # CANN包多流接口
+                        x_scale = get_tp_group().all_to_all(x_scale, transpose=False)
+                x = get_tp_group().all_to_all(x)
+        use_super_kernel = int(os.environ.get('USE_SUPER_KERNEL',"1"))
+        if not is_prefill and use_super_kernel and os.getenv("ASCEND_PLATFORM", "A2")=="A3":
+            with torchair.scope.super_kernel("quant_mlp", 'stream-fusion=1'):
+                return self._apply(layer, x, x_scale)
+        else:
+            return self._apply(layer, x, x_scale)

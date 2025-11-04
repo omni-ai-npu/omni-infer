@@ -1,0 +1,10 @@
+---
+# 用于协调的ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coordination-config
+  labels: {{- include "omniinfer.labels" . | nindent 4 }}
+data: # Volume 挂载方式会更新，但有延迟，具体取决于 kubelet 的同步周期
+  decode-replicas: {{ include "omniinfer.replicaCountByRole" (dict "role" "decode" "values" .Values) | quote }}
+  prefill-replicas: {{ include "omniinfer.replicaCountByRole" (dict "role" "prefill" "values" .Values) | quote }}

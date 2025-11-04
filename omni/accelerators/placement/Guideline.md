@@ -84,6 +84,10 @@
 ## 2. How to Enable OmniPlacement
    ### 2.1 Enabling Process
    - **Option 1: D侧配置omni infer Configuration File**
+   - Omniinfer V0.6.0以及之后的代码版本请参考：
+`omni_infer/docs/model_config_loader_usage.md`和`omni_infer/docs/omniplacement_config_transfer.md`omniplacement相关部分。
+
+   - Omniinfer V0.6.0之前的代码版本请参考：
       - Locate and edit omni infer configuration file (e.g., `omni_infer/tests/test_config/test_config_decode.json`)
       - Set `use_omni_placement: true`
       - Set `omni_placement_config_path: "/workspace/omni_infer/tests/test_config/config_d.yaml"`
@@ -106,6 +110,10 @@
        不设置pattern_path，或设置pattern_path: null，将自动匹配模型结构和物理部署形态，生成默认的base_pattern。
       ```
    - **Option 2: P侧配置omni infer Configuration File**
+   - Omniinfer V0.6.0以及之后的代码版本请参考：
+`omni_infer/docs/model_config_loader_usage.md`和`omni_infer/docs/omniplacement_config_transfer.md`omniplacement相关部分。
+
+   - Omniinfer V0.6.0之前的代码版本请参考：
       - Locate and edit omni infer configuration file (e.g., `omni_infer/tests/test_config/test_config_prefill.json`)
       - Set `use_omni_placement: true`
       - Set `omni_placement_config_path: "/workspace/omni_infer/tests/test_config/config_p.yaml"`
@@ -143,14 +151,14 @@
       - 把Prefill节点服务器的prefill文件夹取出，把每个prefill文件夹修改名字，并排放到某个文件夹下面，地址我们记录为P0_path，P1_path,…
    - **Step 3: 生成静态部署文件**
       - 切换到pattern工具目录 (e.g., omni_infer/omni/accelerators/placement/utils/omni_pattern_tool/)
-      - run_pipeline.sh提供了从统计数据到生成pattern到分析pattern收益的流水线脚本，具体设置请参考 https://gitee.com/omniai/omniinfer/blob/master/omni/accelerators/placement/utils/omni_pattern_tool/Readme.md
+      - pattern_generation_pipeline.sh提供了从统计数据到生成pattern到分析pattern收益的流水线脚本，具体设置请参考 https://gitee.com/omniai/omniinfer/blob/master/omni/accelerators/placement/utils/omni_pattern_tool/Readme.md
       - 一个简单的运行模式为：
       ```
-         ./run_pipeline.sh --input_txt_folders "/data/expert_activation/decode_data"  --num_ranks_target_pattern 256 --collecting_modes decode
+         ./pattern_generation_pipeline.sh --input_txt_folders "/data/expert_activation/decode_data"  --num_ranks_target_pattern 256 --collecting_modes decode
       ``` 
       ```           
          参数介绍：
-         --input_txt_folders：dump数据存放的文件夹，支持多个文件夹，每个用空格分隔：“path/prfill0/prefill” “path/prfill1/prefill” 。
+         --input_txt_folders：dump数据存放的文件夹，支持多个文件夹，每个文件夹是直接包含 activation_counts_recordstep_*.txt 文件的文件夹路径。所有文件夹在input_txt_folders中用空格分隔：“path/prfill0/prefill” “path/prfill1/prefill” 。
          --num_ranks_target_pattern:加载pattern服务器的die数，例如pattern运行在256 die的实例上，则设置为256。
          --collecting_modes：decode或者prefill。
       ```

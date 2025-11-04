@@ -130,10 +130,8 @@ all:
             VLLM_LLMDATADIST_ZMQ_PORT: 5671
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
-            OMNI_USE_QWEN: 1
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
-            MOE_DISPATCH_COMBINE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_PREFILL_TND: 1
           host_ip: 127.0.0.2
@@ -247,11 +245,11 @@ all:
             VLLM_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
-            OMNI_USE_QWEN: 1
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_PREFILL_TND: 1
+            PREFILL_FLASHCOMM: 1
           host_ip: 127.0.0.1
           master_node: p0
         p1:
@@ -267,7 +265,6 @@ all:
               enforce-eager: ''
               max-num-batched-tokens: 61440
               max-num-seqs: 64
-              no-enable-prefix-caching: ''
             gpu-util: '0.65'
             kv-transfer-config:
               engine_id: 1
@@ -362,11 +359,11 @@ all:
             VLLM_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
-            OMNI_USE_QWEN: 1
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_PREFILL_TND: 1
+            PREFILL_FLASHCOMM: 1
           host_ip: 127.0.0.1
           master_node: p1
         p2:
@@ -382,7 +379,6 @@ all:
               enforce-eager: ''
               max-num-batched-tokens: 61440
               max-num-seqs: 64
-              no-enable-prefix-caching: ''
             gpu-util: '0.65'
             kv-transfer-config:
               engine_id: 2
@@ -477,10 +473,10 @@ all:
             VLLM_LLMDATADIST_ZMQ_PORT: 5570
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
-            OMNI_USE_QWEN: 1
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_PREFILL_TND: 1
+            PREFILL_FLASHCOMM: 1
           host_ip: 127.0.0.2
           master_node: p2

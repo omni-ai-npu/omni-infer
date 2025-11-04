@@ -46,8 +46,12 @@ from omni.layers.linear import (
 )
 from omni.models.qwen.fused_moe import FusedMoE, FusedMoEMethodBase
 from omni.adaptors.vllm.utils import NPU_W8A8_DYNAMIC
+from omni.adaptors.vllm.distributed.parallel_state import(
+    GroupCoordinator,
+    get_scale_parallel_group
+)
 
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 logger = init_logger(__name__)
 
@@ -182,13 +186,13 @@ class NpuW8A8DynamicLinearMethod(FlashCommLinearMethodBase):
         else:
             x, x_scale = torch_npu.npu_dynamic_quant(x, smooth_scales=None)
 
-        scale_parallel = os.environ.get('SCALE_PARALLEL', '0') == '1'
+        scale_parallel = model_extra_config.operator_opt_config.enable_scale_parallel
         if x_transform == 'AG':
             if is_prefill or (not scale_parallel):
                 x_scale = get_tp_group().all_gather(x_scale, dim=0)
             else:
-                with torchair.ops.NpuStreamSwitch('11'):  # CANN包多流接口
-                    x_scale = get_tp_group().all_gather(x_scale, dim=0)
+                with torchair.scope.npu_stream_switch('scale'):  # CANN包多流接口
+                    x_scale = get_scale_parallel_group().all_gather(x_scale, dim=0)
             x = get_tp_group().all_gather(x, dim=0)
         elif x_transform == 'A2A':
             if is_prefill or (not scale_parallel):
@@ -219,6 +223,9 @@ class NpuW8A8DynamicFusedMoEMethod(FusedMoEMethodBase):
 
     def __init__(self, quant_config: NpuW8A8DynamicConfig):
         self.quant_config = quant_config
+        if model_extra_config.operator_opt_config.use_prefetch:
+            self.w13_prefetch_size = model_extra_config.operator_opt_config.expert_gate_up_prefetch * 1024 * 1024
+            self.w2_prefetch_size = model_extra_config.operator_opt_config.expert_down_prefetch * 1024 * 1024
 
     def create_weights(
         self,
@@ -267,6 +274,7 @@ class NpuW8A8DynamicFusedMoEMethod(FusedMoEMethodBase):
             NpuW8A8DynamicFusedMoEMethod.ONES_SCALE = torch.ones(
                 (layer.local_num_experts, layer.intermediate_size_per_partition), dtype=torch.float32, device='npu'
             )
+            torch._dynamo.mark_static(NpuW8A8DynamicFusedMoEMethod.ONES_SCALE)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         super().process_weights_after_loading(layer)
@@ -498,6 +506,13 @@ class NpuW8A8DynamicFusedMoEMethod(FusedMoEMethodBase):
             )
             topk_ids = topk_ids.int()
 
+            if model_extra_config.operator_opt_config.use_prefetch:
+                flag_expert_prefetch = topk_ids
+                if self.w13_prefetch_size > 0:
+                    torch_npu.npu_prefetch(layer.w13_weight, flag_expert_prefetch, self.w13_prefetch_size)
+                if self.w2_prefetch_size > 0:
+                    torch_npu.npu_prefetch(layer.w2_weight, flag_expert_prefetch, self.w2_prefetch_size)
+
             tp_world_size = 1
             expand_x, dynamic_scales, expand_idx, expert_token_nums, ep_recv_counts, tp_recv_counts, expand_scales = torch_npu.npu_moe_distribute_dispatch_v2(
                 x=x,
@@ -527,6 +542,7 @@ class NpuW8A8DynamicFusedMoEMethod(FusedMoEMethodBase):
                 group_type=0,
                 group_list_type=1
             )[0]
+
             inter_states, inter_states_scale = torch_npu.npu_dequant_swiglu_quant(
                 gate_up_proj,
                 weight_scale=layer.w13_weight_scale,

@@ -1,0 +1,9 @@
+{
+    "model_parallel_config": {
+        "dense_mlp_tp_size": 4
+    },
+    "operator_optimization_config": {
+        "prefill_moe_all_to_all": true,
+        "decode_moe_dispatch_combine": false
+    }
+}

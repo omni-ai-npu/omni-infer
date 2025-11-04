@@ -1,0 +1,14 @@
+---
+# Service for Decode Pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: decode-service
+  labels: {{- include "omniinfer.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: decode
+  ports:
+    - protocol: TCP
+      port: {{ include "omniinfer.servicePortByRole" (dict "role" "decode" "values" .Values) }}
+      targetPort: {{ include "omniinfer.apiPortByRole" (dict "role" "decode" "values" .Values) }}

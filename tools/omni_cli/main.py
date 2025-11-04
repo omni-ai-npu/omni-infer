@@ -38,6 +38,7 @@ from omni_cli.omni_cfg import parse_remaining_args
 from omni_cli.omni_cfg import cfg_set_process
 from omni_cli.omni_cfg import cfg_delete_process
 from omni_cli.omni_inspect import print_node_config
+from omni_cli.omni_run import create_run_parser
 
 INFO    = "\033[92m[INFO]\033[0m"      # green
 WARNING = "\033[93m[WARNING]\033[0m"   # yellow
@@ -136,8 +137,6 @@ def execute_command(command):
     )
 
     return_code = process.wait()
-    if return_code != 0:
-        print(f"{ERROR} Deployment failed with return code {return_code}")
 
     return return_code
 
@@ -193,10 +192,14 @@ def _build_string_args(extra_args: dict) -> str:
     """Convert extra-args dict to CLI string"""
     parts = []
     for k, v in extra_args.items():
-        if v == "":
-            parts.append(f"--{k}")
+        if k == "kv-events-config" and isinstance(v, dict):
+            v_str = json.dumps(v, separators=(',', ':'))
+            parts.append(f"--{k} {v_str}")
         else:
-            parts.append(f"--{k} {v}")
+            if v == "":
+                parts.append(f"--{k}")
+            else:
+                parts.append(f"--{k} {v}")
     return " ".join(parts)
 
 def _build_args_line(args: Dict[str, Any]) -> str:
@@ -535,6 +538,7 @@ def omni_cli_start(
         start_server_cmd = f"""
 # Exec the command
 cd {_double_quotes(code_path)}/tools/scripts
+if [[ -e "/usr/local/Ascend/ascend-toolkit" ]]; then python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json; else python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json; fi 
 echo "cd {_double_quotes(code_path)}/tools/scripts" >> {log_path}/omni_cli.log
 {python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &
 echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> {log_path}/omni_cli.log
@@ -560,6 +564,12 @@ echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> 
             tf.write("# Export environment variables\n")
             tf.write(export_block + "\n\n")
             tf.write(f'echo "{export_block}\n" > {log_path}/omni_cli.log\n\n')
+
+            tf.write(f'test ! -e /usr/local/Ascend/latest && mkdir -p /usr/local/Ascend/latest && ln -sf /usr/local/Ascend/ascend-toolkit/latest/* /usr/local/Ascend/latest || echo "Link already exists or target missing"')
+
+            tf.write(f'test ! -e /usr/local/Ascend/latest && mkdir -p /usr/local/Ascend/latest '
+                     f'&& ln -sf /usr/local/Ascend/ascend-toolkit/latest/* /usr/local/Ascend/latest '
+                     f'|| echo "Link already exists or target missing"')
 
             if need_start_ray:
                 tf.write(f"{ray_cmd}\n")
@@ -1074,6 +1084,7 @@ def run_docker_containers(
 
     # Base Docker command template without LOG_PATH or MODEL_PATH
     base_docker_run_cmd = """docker run -it --shm-size=500g \\
+        -e PYTHONHASHSEED=123 \\
         --net=host \\
         --privileged=true \\
         -u root \\
@@ -1083,6 +1094,7 @@ def run_docker_containers(
         --device=/dev/devmm_svm \\
         --entrypoint=bash \\
         -v /tmp:/tmp \\
+        -v /tmp/scripts_path:/tmp/scripts_path \\
         -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \\
         -v /usr/local/dcmi:/usr/local/dcmi \\
         -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \\
@@ -1153,8 +1165,8 @@ def run_docker_containers(
             # Add LOG_PATH mount with actual path
             tf.write(f"docker_cmd+=\" -v {shlex.quote(log_path)}:{shlex.quote(log_path)}\"\n")
 
-            # Add MODEL_PATH mount for P and D roles
-            if role in ['P', 'D'] and model_path:
+            # Add MODEL_PATH
+            if model_path:
                 tf.write(f"docker_cmd+=\" -v {shlex.quote(model_path)}:{shlex.quote(model_path)}\"\n")
 
             tf.write(f"docker_cmd+=\" -d --name {shlex.quote(container_name)} {shlex.quote(docker_image_id)}\"\n")
@@ -1189,7 +1201,10 @@ def run_docker_containers(
                 )
 
                 print(f"Executing script on host {host}:")
-                execute_command(cmd)
+                return_code = execute_command(cmd)
+                if return_code != 0:
+                    print(f"{ERROR} Deployment failed with return code {return_code}")
+                    raise Exception("Deployment failed")
             finally:
                 # Clean up temporary file
                 try:
@@ -1216,6 +1231,8 @@ def main():
     parser = argparse.ArgumentParser(description="Omni Inference Service Management")
     subparsers = parser.add_subparsers(dest="command", required=True)
     default_deploy_path = ''
+
+    create_run_parser(subparsers)
 
     # START command configuration
     start_parser = subparsers.add_parser("start", help="Start the omni services")
@@ -1356,6 +1373,9 @@ def main():
     args = parser.parse_args()
 
     if hasattr(args, 'func'):
+        if args.command == 'run':
+            args.func(args)
+            return
         if  hasattr(args, 'config_path') and args.config_path is not None:
             default_deploy_path = args.config_path
         else:

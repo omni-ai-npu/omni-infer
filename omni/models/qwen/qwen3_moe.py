@@ -25,6 +25,7 @@ from collections.abc import Iterable
 from typing import Any, Optional, Union, List, Tuple
 
 import torch
+import torch_npu
 from torch import nn
 from transformers import PretrainedConfig
 from vllm.attention import Attention, AttentionMetadata
@@ -46,6 +47,14 @@ from vllm.model_executor.models.interfaces import SupportsPP
 from vllm.model_executor.models.utils import (AutoWeightsLoader, PPMissingLayer, is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
+from vllm.platforms import current_platform
+from vllm.distributed.parallel_state import get_tensor_model_parallel_world_size
+from vllm.distributed import (
+    get_ep_group,
+    get_pp_group,
+    get_dp_group,
+    get_world_group,
+)
 
 from omni.models.qwen.fused_moe import FusedMoE
 from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
@@ -55,6 +64,12 @@ from omni.layers.linear import (RowParallelFlashCommLinear,
 from omni.layers.rotary_embedding import get_rope
 from omni.layers.attention.backend.attention import AscendAttentionState
 
+from omni.layers.utils import ConditionalTNGScope
+from omni.models.config_loader.loader import model_extra_config
+from omni.adaptors.vllm.utils import get_attr_by_names
+
+if model_extra_config.task_config.enable_omni_placement:
+    from omni_placement.omni_planner import OmniPlanner
 
 logger = init_logger(__name__)
 SEQ_SPLIT_LENGTH = 4096
@@ -69,16 +84,35 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
     ):
         super().__init__()
 
-        self.experts = FusedMoE(num_experts=config.num_experts,
+        self.n_routed_experts = config.num_experts
+        self.moe_prefix = f"{prefix}.experts"
+        self.planner = None
+        self.moe_layer_idx = None
+        self.expert_mapping = None
+        self.first_k_dense_replace = 0
+        self.redundancy_shared_expert_num = model_extra_config.parall_config.redundancy_shared_expert_num
+        if model_extra_config.task_config.enable_omni_placement:
+            self.planner = OmniPlanner(device="npu",
+                                       rank=get_world_group().rank_in_group,
+                                       world_size=get_world_group().world_size,
+                                       num_experts=self.n_routed_experts,
+                                       num_redundancy_shared_expert_rank=self.redundancy_shared_expert_num)
+            self.moe_layer_idx = OmniPlanner.get_deepseek_v3_moe_layer_idx(self.moe_prefix, first_k_dense_replace=self.first_k_dense_replace)
+            self.expert_mapping = self.planner.expert_mapping_on_current_layer(self.moe_layer_idx)
+        self.experts = FusedMoE(num_experts=self.n_routed_experts,
                                 top_k=config.num_experts_per_tok,
                                 hidden_size=config.hidden_size,
                                 intermediate_size=config.moe_intermediate_size,
                                 renormalize=config.norm_topk_prob,
                                 quant_config=quant_config,
-                                prefix=f"{prefix}.experts")
+                                prefix=f"{prefix}.experts",
+                                planner=self.planner,
+                                moe_layer_idx=self.moe_layer_idx,
+                                expert_mapping=self.expert_mapping,
+                                first_k_dense_replace=self.first_k_dense_replace)
 
         self.gate = ReplicatedLinear(config.hidden_size,
-                                     config.num_experts,
+                                     self.n_routed_experts,
                                      bias=False,
                                      quant_config=None,
                                      prefix=f"{prefix}.gate")
@@ -150,15 +184,22 @@ class Qwen3MoeAttention(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.qkv_proj"
         )
-        self.o_proj = RowParallelFlashCommLinear(
-            self.total_num_heads * self.head_dim,
-            hidden_size,
-            tp_size=tp_size,
-            tp_rank=tp_rank,
-            bias=False,
-            quant_config=quant_config,
-            prefix=f"{prefix}.o_proj"
-        )
+        if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
+            self.o_proj = ReplicatedLinear(self.total_num_heads * self.head_dim,
+                                           hidden_size,
+                                           bias=False,
+                                           quant_config=quant_config,
+                                           prefix=f"{prefix}.o_proj")
+        else:
+            self.o_proj = RowParallelFlashCommLinear(
+                self.total_num_heads * self.head_dim,
+                hidden_size,
+                tp_size=tp_size,
+                tp_rank=tp_rank,
+                bias=False,
+                quant_config=quant_config,
+                prefix=f"{prefix}.o_proj"
+            )
 
         if rope_scaling is None:
             rope_scaling = {'factor': '0'}
@@ -189,18 +230,23 @@ class Qwen3MoeAttention(nn.Module):
         kv_cache: Tuple[torch.Tensor, torch.Tensor],
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states, x_transform='AG')
+        is_prefill = attn_metadata is None or not attn_metadata.is_pd_seperate_d
+        qkv, _ = self.qkv_proj(hidden_states, x_transform='AG', is_prefill = is_prefill)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
         q_by_head = q.view(*q.shape[:-1], q.shape[-1] // self.head_dim,
                            self.head_dim)
-        q_by_head = self.q_norm(q_by_head)
-        q = q_by_head.view(q.shape)
+        with ConditionalTNGScope(super_kernel=model_extra_config.operator_opt_config.use_super_kernel,
+                                        scope="superkernel_Qwen_attn1"):
+            # 这里开始做 rmsnorm
+            q_by_head = self.q_norm(q_by_head)
+            q = q_by_head.view(q.shape)
 
-        k_by_head = k.view(*k.shape[:-1], k.shape[-1] // self.head_dim,
-                            self.head_dim)
-        k_by_head = self.k_norm(k_by_head)
-        k = k_by_head.view(k.shape)
+            k_by_head = k.view(*k.shape[:-1], k.shape[-1] // self.head_dim,
+                                self.head_dim)
+            # 第二个 rmsnorm
+            k_by_head = self.k_norm(k_by_head)
+            k = k_by_head.view(k.shape)
 
         if attn_metadata is None:
             cos, sin = self.rotary_emb.get_cos_sin(positions)
@@ -208,9 +254,27 @@ class Qwen3MoeAttention(nn.Module):
             cos = attn_metadata.cos
             sin = attn_metadata.sin
 
+        # 这里做ApplyRotaryPosEmb 和 自注意力
         q, k = self.rotary_emb(positions, q, k, cos, sin)
         attn_output = self.attn(q, k, v)
-        output, _ = self.o_proj(attn_output, reduce_type="RS")
+        if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall:
+            attn_output = attn_output.reshape(-1)
+            local_s = attn_output.shape[0] // (self.total_num_heads * self.head_dim)
+            all_to_all_attn_output = torch.empty(
+                [attn_output.shape[0]],
+                dtype=attn_output.dtype,
+                device=current_platform.device_type
+            )
+            device_group = get_tp_group().device_group
+            dist.all_to_all_single(all_to_all_attn_output, attn_output, group=device_group)
+            attn_output = all_to_all_attn_output.view(
+                get_tensor_model_parallel_world_size(),
+                local_s,
+                self.num_heads * self.head_dim
+            ).transpose(0, 1).contiguous().view(local_s, -1)
+            output,_ = self.o_proj.forward(attn_output)
+        else:
+            output, _ = self.o_proj(attn_output, reduce_type="RS")
         return output
 
 
@@ -275,6 +339,9 @@ class Qwen3MoeDecoderLayer(nn.Module):
         # Self Attention
         if residual is None:
             residual = hidden_states
+            if model_extra_config.operator_opt_config.use_prefetch:
+                QKV_PREFETCH_SIZE = model_extra_config.operator_opt_config.attn_prefetch * 1024 * 1024
+                torch_npu.npu_prefetch(self.self_attn.qkv_proj.weight, residual , QKV_PREFETCH_SIZE)
             hidden_states = self.input_layernorm(hidden_states)
         else:
             hidden_states, residual = self.input_layernorm(
@@ -340,6 +407,7 @@ class Qwen3MoeModel(nn.Module):
         self.make_empty_intermediate_tensors = (
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
+        self.aux_hidden_state_layers: tuple[int] = tuple()
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -379,9 +447,12 @@ class Qwen3MoeModel(nn.Module):
             residual = intermediate_tensors["residual"]
 
         # 采用FlashComm1.0, 通过slice使用hidden_states转为DP
+        aux_hidden_states = []
         hidden_states = self.get_tp_slice(hidden_states)
 
         for i in range(self.start_layer, self.end_layer):
+            if i in self.aux_hidden_state_layers:
+                aux_hidden_states.append(hidden_states + residual)
             layer = self.layers[i]
             hidden_states, residual = layer(positions,
                                             hidden_states,
@@ -395,6 +466,8 @@ class Qwen3MoeModel(nn.Module):
                 "residual": residual
             })
         hidden_states, _ = self.norm(hidden_states, residual, y_transform='AG')
+        if len(aux_hidden_states) > 0:
+            return aux_hidden_states, hidden_states
         return hidden_states
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
@@ -558,3 +631,10 @@ class Qwen3MoeForCausalLM(nn.Module, SupportsPP, GraphCompileConfiguration):
             attn_metadata = attn_metadata[self.model.layers[self.model.start_layer].layer_name]
 
         return attn_metadata.attn_state != AscendAttentionState.DecodeOnly
+    
+    def set_aux_hidden_state_layers(self, layers: tuple[int]) -> None:
+        self.model.aux_hidden_state_layers = layers
+    
+    def get_eagle3_aux_hidden_state_layers(self) -> tuple[int]:
+        num_layers = len(self.model.layers)
+        return (2, num_layers // 2, num_layers - 3)

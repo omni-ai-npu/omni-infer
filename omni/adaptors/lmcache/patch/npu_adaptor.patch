@@ -252,7 +252,7 @@ index ef7a1b7..057861d 100644
      "setuptools>=77.0.3,<81.0.0",
      "setuptools_scm>=8",
 -    "torch==2.7.0",
-+    "torch==2.5.1",
++    "torch<=2.7.0",
      "wheel",
      "xxhash==3.5.0",
  ]
@@ -265,7 +265,7 @@ index 880130b..bbb8acd 100644
  setuptools>=77.0.3,<81.0.0
  setuptools_scm>=8
 -torch==2.7.0 # Corresponds to the version used by vLLM main branch
-+torch==2.5.1 # Corresponds to the version used by vLLM main branch
++torch<=2.7.0 # Corresponds to the version used by vLLM main branch
  wheel
  xxhash==3.5.0
 diff --git a/requirements/common.txt b/requirements/common.txt
@@ -285,6 +285,6 @@ index 34e30c2..db2e1c0 100644
  setuptools_scm>=8
  sortedcontainers
 -torch==2.7.0  # Should correspond to the version used by vLLM main branch
-+torch==2.5.1  # Should correspond to the version used by vLLM main branch
++torch<=2.7.0  # Should correspond to the version used by vLLM main branch
  transformers >= 4.51.1
  xxhash==3.5.0

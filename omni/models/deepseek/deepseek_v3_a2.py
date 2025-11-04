@@ -74,7 +74,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
 from omni.layers.moe.fused_moe.layer import FusedMoE
 from omni.layers.attention.deepseek_mla import DeepseekMLA
 from omni.layers.moe.deepseek_moe import DeepseekMoE
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 """MLP 模块激活拆分长度，按64G显存拆分，需要根据序列长度以及性能确认最佳拆分长度"""
 SEQ_SPLIT_LENGTH = 4096
@@ -161,7 +161,7 @@ class ParallelDeepseekMLP(nn.Module):
     def forward_local_tp(self, x, residual, attn_metadata):
         pad_size = 0
         is_prefill = (attn_metadata is None or attn_metadata.prefill)
-        if is_prefill and model_extra_config.parall_config.dp_size > 1:
+        if is_prefill and get_dp_group().world_size > 1:
             local_length = x.shape[0]
             reduce_length = torch.tensor(x.shape[0], dtype=torch.int64, device="npu")
             dist.all_reduce(reduce_length, op=dist.ReduceOp.MAX, async_op=False)
@@ -205,7 +205,7 @@ class ParallelDeepseekMLP(nn.Module):
                     .transpose(0, 1).reshape(-1)
         else:
             pad_size = 0
-            if model_extra_config.parall_config.dp_size > 1:
+            if get_dp_group().world_size > 1:
                 local_length = x.shape[0]
                 reduce_length = torch.tensor(x.shape[0], dtype=torch.int64, device="npu")
                 dist.all_reduce(reduce_length, op=dist.ReduceOp.MAX, async_op=False)
@@ -348,7 +348,7 @@ class DeepseekDecoderLayer(nn.Module):
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
         is_prefill = (attn_metadata is None or attn_metadata.prefill is not None)
-        if (model_extra_config.operator_opt_config.prefill_moe_all_to_all or model_extra_config.parall_config.dp_size > 1) and is_prefill:
+        if (model_extra_config.operator_opt_config.prefill_moe_all_to_all or get_dp_group().world_size > 1) and is_prefill:
             reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device="npu")
             local_length = hidden_states.shape[0]
             dist.all_reduce(reduce_length, op=dist.ReduceOp.MAX, async_op=False)
@@ -423,7 +423,7 @@ class DeepseekV3Model(nn.Module):
             self.embed_tokens = VocabParallelEmbedding(
                 config.vocab_size,
                 config.hidden_size,
-                parallel_lmhead=(model_extra_config.parall_config.dp_size > 1),
+                parallel_lmhead=(get_dp_group().world_size > 1),
             )
         else:
             self.embed_tokens = PPMissingLayer()
@@ -527,7 +527,7 @@ class DeepseekV3ForCausalLM(nn.Module):
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
                                       quant_config=self.quant_config,
-                                      parallel_lmhead=(model_extra_config.parall_config.dp_size > 1))
+                                      parallel_lmhead=(get_dp_group().world_size > 1))
         self.logits_processor = LogitsProcessor(self.config.vocab_size,
                                                 logits_as_input=True)
         self.sampler = Sampler()

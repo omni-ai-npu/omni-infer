@@ -1,0 +1,310 @@
+diff --git a/python/sglang/srt/disaggregation/decode.py b/python/sglang/srt/disaggregation/decode.py
+index c0a813433..f7de06220 100644
+--- a/python/sglang/srt/disaggregation/decode.py
++++ b/python/sglang/srt/disaggregation/decode.py
+@@ -202,9 +202,29 @@ class DecodePreallocQueue:
+             draft_kv_data_ptrs, draft_kv_data_lens, draft_kv_item_lens = (
+                 self.draft_token_to_kv_pool.get_contiguous_buf_infos()
+             )
++            kv_data_len = len(kv_data_ptrs)
+             kv_data_ptrs += draft_kv_data_ptrs
+             kv_data_lens += draft_kv_data_lens
+             kv_item_lens += draft_kv_item_lens
++            draft_kv_data_len = len(draft_kv_data_ptrs)
++            order = (
++                list(range(kv_data_len // 2))
++                + list(range(kv_data_len, kv_data_len + draft_kv_data_len // 2))
++                + list(range(kv_data_len // 2, kv_data_len))
++                + list(
++                    range(
++                        kv_data_len + draft_kv_data_len // 2,
++                        kv_data_len + draft_kv_data_len,
++                    )
++                )
++            )
++
++            def _sort(data):
++                return [data[idx] for idx in order]
++
++            kv_data_ptrs = _sort(kv_data_ptrs)
++            kv_data_lens = _sort(kv_data_lens)
++            kv_item_lens = _sort(kv_item_lens)
+ 
+         kv_args.kv_data_ptrs = kv_data_ptrs
+         kv_args.kv_data_lens = kv_data_lens
+diff --git a/python/sglang/srt/disaggregation/mooncake/conn.py b/python/sglang/srt/disaggregation/mooncake/conn.py
+index 4f312fc82..210c998b0 100644
+--- a/python/sglang/srt/disaggregation/mooncake/conn.py
++++ b/python/sglang/srt/disaggregation/mooncake/conn.py
+@@ -315,49 +315,36 @@ class MooncakeKVManager(BaseKVManager):
+         layers_params = None
+ 
+         # pp is not supported on the decode side yet
++        num_kv_layers = len(self.kv_args.kv_data_ptrs) // 2
++        src_k_ptrs = self.kv_args.kv_data_ptrs[:num_kv_layers]
++        src_v_ptrs = self.kv_args.kv_data_ptrs[num_kv_layers:]
++        layers_per_pp_stage = len(src_k_ptrs)
++        start_layer = self.pp_rank * layers_per_pp_stage
++        end_layer = start_layer + layers_per_pp_stage
++        dst_k_ptrs = dst_kv_ptrs[start_layer:end_layer]
++        dst_v_ptrs = dst_kv_ptrs[
++            num_kv_layers + start_layer : num_kv_layers + end_layer
++        ]
++        kv_item_len_k = self.kv_args.kv_item_lens[0]
+         if self.is_mla_backend:
+-            src_kv_ptrs = self.kv_args.kv_data_ptrs
+-            layers_per_pp_stage = len(src_kv_ptrs)
+-            start_layer = self.pp_rank * layers_per_pp_stage
+-            end_layer = start_layer + layers_per_pp_stage
+-            dst_kv_ptrs = dst_kv_ptrs[start_layer:end_layer]
+-            kv_item_len = self.kv_args.kv_item_lens[0]
+-            layers_params = [
+-                (
+-                    src_kv_ptrs[layer_id],
+-                    dst_kv_ptrs[layer_id],
+-                    kv_item_len,
+-                )
+-                for layer_id in range(layers_per_pp_stage)
+-            ]
++            kv_item_len_v = self.kv_args.kv_item_lens[num_kv_layers]
+         else:
+-            num_kv_layers = len(self.kv_args.kv_data_ptrs) // 2
+-            src_k_ptrs = self.kv_args.kv_data_ptrs[:num_kv_layers]
+-            src_v_ptrs = self.kv_args.kv_data_ptrs[num_kv_layers:]
+-            layers_per_pp_stage = len(src_k_ptrs)
+-            start_layer = self.pp_rank * layers_per_pp_stage
+-            end_layer = start_layer + layers_per_pp_stage
+-            dst_k_ptrs = dst_kv_ptrs[start_layer:end_layer]
+-            dst_v_ptrs = dst_kv_ptrs[
+-                num_kv_layers + start_layer : num_kv_layers + end_layer
+-            ]
+-            kv_item_len = self.kv_args.kv_item_lens[0]
+-
+-            layers_params = [
+-                (
+-                    src_k_ptrs[layer_id],
+-                    dst_k_ptrs[layer_id],
+-                    kv_item_len,
+-                )
+-                for layer_id in range(layers_per_pp_stage)
+-            ] + [
+-                (
+-                    src_v_ptrs[layer_id],
+-                    dst_v_ptrs[layer_id],
+-                    kv_item_len,
+-                )
+-                for layer_id in range(layers_per_pp_stage)
+-            ]
++            kv_item_len_v = self.kv_args.kv_item_lens[0]
++        layers_params = [
++            (
++                src_k_ptrs[layer_id],
++                dst_k_ptrs[layer_id],
++                kv_item_len_k,
++            )
++            for layer_id in range(layers_per_pp_stage)
++        ] + [
++            (
++                src_v_ptrs[layer_id],
++                dst_v_ptrs[layer_id],
++                kv_item_len_v,
++            )
++            for layer_id in range(layers_per_pp_stage)
++        ]
+         assert layers_params is not None
+ 
+         # Worker function for processing a single layer
+diff --git a/python/sglang/srt/disaggregation/prefill.py b/python/sglang/srt/disaggregation/prefill.py
+index 72cf9d3f9..4edf3ee07 100644
+--- a/python/sglang/srt/disaggregation/prefill.py
++++ b/python/sglang/srt/disaggregation/prefill.py
+@@ -117,9 +117,29 @@ class PrefillBootstrapQueue:
+             draft_kv_data_ptrs, draft_kv_data_lens, draft_kv_item_lens = (
+                 self.draft_token_to_kv_pool.get_contiguous_buf_infos()
+             )
++            kv_data_len = len(kv_data_ptrs)
+             kv_data_ptrs += draft_kv_data_ptrs
+             kv_data_lens += draft_kv_data_lens
+             kv_item_lens += draft_kv_item_lens
++            draft_kv_data_len = len(draft_kv_data_ptrs)
++            order = (
++                list(range(kv_data_len // 2))
++                + list(range(kv_data_len, kv_data_len + draft_kv_data_len // 2))
++                + list(range(kv_data_len // 2, kv_data_len))
++                + list(
++                    range(
++                        kv_data_len + draft_kv_data_len // 2,
++                        kv_data_len + draft_kv_data_len,
++                    )
++                )
++            )
++
++            def _sort(data):
++                return [data[idx] for idx in order]
++
++            kv_data_ptrs = _sort(kv_data_ptrs)
++            kv_data_lens = _sort(kv_data_lens)
++            kv_item_lens = _sort(kv_item_lens)
+ 
+         kv_args.kv_data_ptrs = kv_data_ptrs
+         kv_args.kv_data_lens = kv_data_lens
+diff --git a/python/sglang/srt/mem_cache/memory_pool.py b/python/sglang/srt/mem_cache/memory_pool.py
+index 059aff3ca..21ae9e798 100644
+--- a/python/sglang/srt/mem_cache/memory_pool.py
++++ b/python/sglang/srt/mem_cache/memory_pool.py
+@@ -719,10 +719,8 @@ def set_mla_kv_buffer_triton(
+ def set_mla_kv_buffer_npu(
+     kv_buffer: torch.Tensor,
+     loc_tensor: torch.Tensor,
+-    cache_k_nope: torch.Tensor,
+-    cache_k_rope: torch.Tensor,
++    key_states: torch.Tensor,
+ ):
+-    key_states = torch.cat([cache_k_nope, cache_k_rope], dim=-1)
+     torch_npu.npu_scatter_nd_update_(kv_buffer, loc_tensor.view(-1, 1), key_states)
+ 
+ class MLATokenToKVPool(KVCache):
+@@ -778,9 +776,17 @@ class MLATokenToKVPool(KVCache):
+                     size_align = (size + page_size) // 128 * 128
+                 else:
+                     size_align = size + page_size
+-                self.kv_buffer = [
++                self.k_buffer = [
+                     torch.zeros(
+-                        (size_align, 1, kv_lora_rank + qk_rope_head_dim),
++                        (size_align, 1, kv_lora_rank),
++                        dtype=self.store_dtype,
++                        device=device,
++                    )
++                    for _ in range(layer_num)
++                ]
++                self.v_buffer = [
++                    torch.zeros(
++                        (size_align, 1, qk_rope_head_dim),
+                         dtype=self.store_dtype,
+                         device=device,
+                     )
+@@ -788,7 +794,7 @@ class MLATokenToKVPool(KVCache):
+                 ]
+ 
+         self.data_ptrs = torch.tensor(
+-            [x.data_ptr() for x in self.kv_buffer],
++            [x.data_ptr() for x in self.k_buffer + self.v_buffer],
+             dtype=torch.uint64,
+             device=self.device,
+         )
+@@ -801,19 +807,35 @@ class MLATokenToKVPool(KVCache):
+         self.mem_usage = kv_size / GB
+ 
+     def get_kv_size_bytes(self):
+-        assert hasattr(self, "kv_buffer")
+         kv_size_bytes = 0
+-        for kv_cache in self.kv_buffer:
+-            kv_size_bytes += np.prod(kv_cache.shape) * kv_cache.dtype.itemsize
++        for k_cache in self.k_buffer:
++            kv_size_bytes += np.prod(k_cache.shape) * k_cache.dtype.itemsize
++        for v_cache in self.v_buffer:
++            kv_size_bytes += np.prod(v_cache.shape) * v_cache.dtype.itemsize
+         return kv_size_bytes
+ 
+     # for disagg
+     def get_contiguous_buf_infos(self):
+-        # MLA has only one kv_buffer, so only the information of this buffer needs to be returned.
+-        kv_data_ptrs = [self.kv_buffer[i].data_ptr() for i in range(self.layer_num)]
+-        kv_data_lens = [self.kv_buffer[i].nbytes for i in range(self.layer_num)]
++        kv_data_ptrs = [
++            self.get_key_buffer(i).data_ptr()
++            for i in range(self.start_layer, self.start_layer + self.layer_num)
++        ] + [
++            self.get_value_buffer(i).data_ptr()
++            for i in range(self.start_layer, self.start_layer + self.layer_num)
++        ]
++        kv_data_lens = [
++            self.get_key_buffer(i).nbytes
++            for i in range(self.start_layer, self.start_layer + self.layer_num)
++        ] + [
++            self.get_value_buffer(i).nbytes
++            for i in range(self.start_layer, self.start_layer + self.layer_num)
++        ]
+         kv_item_lens = [
+-            self.kv_buffer[i][0].nbytes * self.page_size for i in range(self.layer_num)
++            self.get_key_buffer(i)[0].nbytes * self.page_size
++            for i in range(self.start_layer, self.start_layer + self.layer_num)
++        ] + [
++            self.get_value_buffer(i)[0].nbytes * self.page_size
++            for i in range(self.start_layer, self.start_layer + self.layer_num)
+         ]
+         return kv_data_ptrs, kv_data_lens, kv_item_lens
+ 
+@@ -825,18 +847,16 @@ class MLATokenToKVPool(KVCache):
+             self.layer_transfer_counter.wait_until(layer_id - self.start_layer)
+ 
+         if self.store_dtype != self.dtype:
+-            return self.kv_buffer[layer_id - self.start_layer].view(self.dtype)
+-        return self.kv_buffer[layer_id - self.start_layer]
++            return self.k_buffer[layer_id - self.start_layer].view(self.dtype)
++        return self.k_buffer[layer_id - self.start_layer]
+ 
+     def get_value_buffer(self, layer_id: int):
+         if self.layer_transfer_counter is not None:
+             self.layer_transfer_counter.wait_until(layer_id - self.start_layer)
+ 
+         if self.store_dtype != self.dtype:
+-            return self.kv_buffer[layer_id - self.start_layer][
+-                ..., : self.kv_lora_rank
+-            ].view(self.dtype)
+-        return self.kv_buffer[layer_id - self.start_layer][..., : self.kv_lora_rank]
++            return self.v_buffer[layer_id - self.start_layer].view(self.dtype)
++        return self.v_buffer[layer_id - self.start_layer]
+ 
+     def get_kv_buffer(self, layer_id: int):
+         return self.get_key_buffer(layer_id), self.get_value_buffer(layer_id)
+@@ -851,19 +871,26 @@ class MLATokenToKVPool(KVCache):
+         layer_id = layer.layer_id
+         if cache_k.dtype != self.dtype:
+             cache_k = cache_k.to(self.dtype)
++        if cache_v.dtype != self.dtype:
++            cache_v = cache_v.to(self.dtype)
+         if self.store_dtype != self.dtype:
+-            self.kv_buffer[layer_id - self.start_layer][loc] = cache_k.view(
+-                self.store_dtype
+-            )
++            self.k_buffer[layer_id - self.start_layer][loc] = cache_k.view(self.store_dtype)
++            self.v_buffer[layer_id - self.start_layer][loc] = cache_v.view(self.store_dtype)
+         else:
+             if _is_npu and loc.ndim == 1:
+                 torch_npu.npu_scatter_nd_update_(
+-                    self.kv_buffer[layer_id - self.start_layer],
++                    self.k_buffer[layer_id - self.start_layer],
+                     loc.view(-1, 1),
+                     cache_k,
+                 )
++                torch_npu.npu_scatter_nd_update_(
++                    self.v_buffer[layer_id - self.start_layer],
++                    loc.view(-1, 1),
++                    cache_v,
++                )
+             else:
+-                self.kv_buffer[layer_id - self.start_layer][loc] = cache_k
++                self.k_buffer[layer_id - self.start_layer][loc] = cache_k
++                self.v_buffer[layer_id - self.start_layer][loc] = cache_v
+ 
+     def set_mla_kv_buffer(
+         self,
+@@ -881,13 +908,10 @@ class MLATokenToKVPool(KVCache):
+             cache_k_rope = cache_k_rope.view(self.store_dtype)
+ 
+         if _is_npu:
+-            set_mla_kv_buffer_npu(
+-                self.kv_buffer[layer_id], loc, cache_k_nope, cache_k_rope
+-            )
++            set_mla_kv_buffer_npu(self.k_buffer[layer_id], loc, cache_k_nope)
++            set_mla_kv_buffer_npu(self.v_buffer[layer_id], loc, cache_k_rope)
+         else:
+-            set_mla_kv_buffer_triton(
+-                self.kv_buffer[layer_id], loc, cache_k_nope, cache_k_rope
+-            )
++            raise RuntimeError("Only NPU backend is supported for MLA KV cache now.")
+ 
+     def get_cpu_copy(self, indices):
+         torch.cuda.synchronize()

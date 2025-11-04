@@ -16,14 +16,22 @@ class Config:
         try:
             # 获取文件的绝对路径
             config_yaml_path = Path(config_yaml_path).absolute()
+            print(f"Attempting to read YAML file: {config_yaml_path}")
             # 打开文件并读取内容
             with open(config_yaml_path, mode='r', encoding='utf-8') as fh:
                 omni_config = yaml.safe_load(fh)
+                print(f"Successfully loaded YAML file content:\n{yaml.dump(omni_config, allow_unicode=True, sort_keys=False)}")
             return omni_config
         except FileNotFoundError:
-            print(f"文件 {config_yaml_path} 未找到。")
+            print(f"File not found: {config_yaml_path}")
         except yaml.YAMLError as e:
-            print(f"YAML 解析错误: {e}")
+            print(f"YAML parsing error: {e}")
+            try:
+                with open(config_yaml_path, mode='r', encoding='utf-8') as fh:
+                    raw_content = fh.read()
+                    print(f"Raw YAML file content:\n{raw_content}")
+            except Exception as inner_e:
+                print(f"Unable to read raw YAML content: {inner_e}")
         return None
 
     def _convert_dict_to_obj(self, data):

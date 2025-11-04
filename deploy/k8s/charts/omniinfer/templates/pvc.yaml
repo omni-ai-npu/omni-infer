@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-pv
+  labels: {{- include "omniinfer.labels" . | nindent 4 }}
+spec:
+  capacity:
+    storage: {{ .Values.nfs.pvcStorage }}
+  accessModes: {{ .Values.nfs.pvcAccessMode }}
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: {{ .Values.nfs.server }}
+    path: {{ .Values.nfs.path }}
+    readOnly: false
+
+---
+# 共享PVC用于存储ranktable文件
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ranktable-pvc
+spec:
+  accessModes: {{ .Values.nfs.pvcAccessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.nfs.pvcStorage }} # 应 <= PV 的 capacity
+  # 注意：不指定 storageClassName，使用静态绑定

@@ -3,11 +3,11 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 import torch
-from sglang.srt.distributed import divide
+from sglang.srt.distributed import divide, tensor_model_parallel_all_gather
 from sglang.srt.distributed.device_communicators.pynccl_allocator import (
     use_symmetric_memory,
 )
-from sglang.srt.layers.dp_attention import get_attention_tp_rank, get_attention_tp_size
+from sglang.srt.layers.dp_attention import get_attention_tp_rank, get_attention_tp_size, get_attention_dp_size
 from sglang.srt.layers.quantization.base_config import (
     QuantizationConfig,
     QuantizeMethodBase,
@@ -173,7 +173,7 @@ class VocabParallelEmbedding(VocabParallelEmbeddingGPU):
         if self.tp_size > 1:
             output_parallel.masked_fill_(input_mask.unsqueeze(-1), 0)
             # Reduce across all the model parallel GPUs.
-            output = tensor_model_local_world_parallel_all_reduce(output_parallel)
+            output = get_local_world_group().reduce_scatter_(output_parallel)
         else:
             output = output_parallel
         return output
@@ -221,7 +221,7 @@ class ParallelLMHead(VocabParallelEmbedding):
             use_presharded_weights=use_presharded_weights,
         )
         self.quant_config = quant_config
-
+        self.attn_dp_size = get_attention_dp_size()
         if bias:
             self.bias = Parameter(
                 torch.empty(self.num_embeddings_per_partition, dtype=params_dtype)
@@ -245,6 +245,19 @@ class ParallelLMHead(VocabParallelEmbedding):
             self.weight = embed_tokens.weight
             return self
 
-    def forward(self, input_):
-        del input_
-        raise RuntimeError("LMHead's weights should be used in the sampler.")
+    def forward(self, hidden_states, embedding_bias):
+        if self.attn_dp_size > 1:
+            hidden_states = get_local_world_group().all_gather(hidden_states, dim=0)
+
+        logits = self.quant_method.apply(self,
+                                         hidden_states,
+                                         bias=embedding_bias)
+
+        if self.attn_dp_size > 1:
+            logits = get_local_world_group().all_to_all(logits)
+        else:
+            logits = tensor_model_parallel_all_gather(logits)
+
+        if logits is not None:
+            logits = logits[..., :self.org_vocab_size]
+        return logits

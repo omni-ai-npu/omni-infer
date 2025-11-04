@@ -54,6 +54,7 @@ VLLM_ENABLE_MC2=0
 HCCL_BUFFSIZE=0
 HCCL_OP_EXPANSION_MODE=""
 NUM_SPECULATIVE_TOKENS=1
+LLM_WAITING_OUT=3600
 
 # Help information
 print_help() {
@@ -96,6 +97,7 @@ print_help() {
     echo "  --kv-rank                        vLLM framework: PD separation parameter, kv rank (p_num/d_num-1) (default: $KV_RANK)"
     echo "  --kv-engine-id                   vLLM framework: PD separation parameter, kv engine ID (default: $KV_ENGINE_ID)"
     echo "  --kv-parallel-size               vLLM framework: PD separation parameter, kv parallel size (equal to num_p + num_d) (default: $KV_PARALLEL_SIZE)"
+    echo "  --llm-waiting-out                vLLM framework: PD separation parameter, P instance requests waiting time out (default: $LLM_WAITING_OUT)"
     echo "  --extra-args                     vLLM framework: Additional VLLM arguments (space-separated, e.g., '--enable-expert-parallel') (default: $EXTRA_ARGS)"
     echo "  --additional-args                vLLM framework: Additional VLLM arguments"
     echo "  --vllm-enable-mc2                vLLM framework: GRAPH parameter (default: $VLLM_ENABLE_MC2)"
@@ -217,6 +219,9 @@ parse_long_option() {
         --kv-parallel-size)
             KV_PARALLEL_SIZE="$2"
             ;;
+        --llm-waiting-out)
+            LLM_WAITING_OUT="$2"
+            ;;
         --extra-args)
             EXTRA_ARGS="$2"
             ;;
@@ -316,6 +321,7 @@ export VLLM_WORKER_MULTIPROC_METHOD=fork
 export USING_LCCL_COM=0
 export OMNI_USE_DSV3=1
 export VLLM_ENABLE_MC2
+export LLM_WAITING_OUT
 
 # Turn on these two variables to enable proc_bind
 # export CPU_AFFINITY_CONF=2
@@ -332,6 +338,7 @@ fi
 
 export HCCL_CONNECT_TIMEOUT=1800
 export HCCL_EXEC_TIMEOUT=120
+export HCCL_RDMA_TIMEOUT=20
 # 随路拷贝
 export TNG_HOST_COPY=1
 # 使能双页表 pd 分离
@@ -384,6 +391,7 @@ echo "AUTO_USE_UC_MEMORY: $AUTO_USE_UC_MEMORY"
 echo "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: $RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"
 echo "RAY_CGRAPH_get_timeout: $RAY_CGRAPH_get_timeout"
 echo "TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
+echo "LLM_WAITING_OUT: $LLM_WAITING_OUT"
 echo "=================="
 
 EXTRA_ARGS="$EXTRA_ARGS"

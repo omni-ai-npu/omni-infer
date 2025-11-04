@@ -4,10 +4,17 @@
 import torch
 import torch_npu
 import time
+import yaml
+import os
 from functools import wraps
 import ctypes
 from . import omni_placement
 from collections import defaultdict
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_YAML_PATH = BASE_DIR / "config.yaml"
+DEFAULT_YAML_PATH = str(DEFAULT_YAML_PATH)
 
 def get_expert_ids(local_rank_pattern):
     """
@@ -177,3 +184,36 @@ def calculate_time(func):
             print(f"rank: {rank}:, {prefix}Function '{func.__name__}' took {elapsed_time:.6f} seconds to execute",flush=True)
         return result  # 返回原函数的结果
     return wrapper
+        
+def apply_omni_placement_attributes(additional_config: dict, yaml_file_path: str = DEFAULT_YAML_PATH):
+    try:
+        try:
+            print(f"Attempting to read YAML file: {yaml_file_path}")
+            with open(yaml_file_path, 'r', encoding='utf-8') as file:
+                existing_data = yaml.safe_load(file) or {}
+            print(f"Current YAML file content before update:\n{yaml.dump(existing_data, allow_unicode=True, sort_keys=False)}")
+        except FileNotFoundError:
+            existing_data = {}
+            print(f"YAML file not found. Starting with empty data.")
+
+        if additional_config is None or "enable_omni_placement" not in additional_config:
+            return
+    
+        if additional_config["enable_omni_placement"]:
+            config_dict = additional_config.get("omni_placement_config", {})
+            
+            if "pattern_path" in config_dict:
+                pattern_path = config_dict["pattern_path"]
+                if pattern_path is None or (isinstance(pattern_path, str) and pattern_path.strip().lower() == "null") or pattern_path == "":
+                    config_dict["pattern_path"] = None
+
+            for key, value in config_dict.items():
+                existing_data[key] = value
+
+            with open(yaml_file_path, 'w', encoding='utf-8') as file:
+                yaml.safe_dump(existing_data, file, allow_unicode=True, sort_keys=False)
+                print(f"Successfully updated YAML file: {yaml_file_path}")
+                print(f"Updated YAML file content:\n{yaml.dump(existing_data, allow_unicode=True, sort_keys=False)}")
+            
+    except Exception as e:
+        print(f"Error updating YAML file: {str(e)}")

@@ -39,22 +39,6 @@ profiles:
           VLLM_LOGGING_LEVEL: INFO
           KV_RANK: ""
           OMNI_USE_DSV3: 1
-
-          ATB_STREAM_SYNC_EVERY_RUNNER_ENABLE: 0
-          ATB_OPSRUNNER_KERNEL_CACHE_LOCAL_COUNT: 1
-          ATB_WORKSPACE_MEM_ALLOC_GLOBAL: 0
-          ATB_DEVICE_TILING_BUFFER_BLOCK_NUM: 32
-          ATB_HOME_PATH: /usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1
-          ATB_COMPARE_TILING_EVERY_KERNEL: 0
-          ATB_STREAM_SYNC_EVERY_OPERATION_ENABLE: 0
-          ATB_MATMUL_SHUFFLE_K_ENABLE: 1
-          ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE: 1
-          ATB_HOST_TILING_BUFFER_BLOCK_NUM: 128
-          ATB_SHARE_MEMORY_NAME_SUFFIX: ""
-          ATB_OPSRUNNER_SETUP_CACHE_ENABLE: 1
-          ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE: 0
-          ATB_OPSRUNNER_KERNEL_CACHE_GLOABL_COUNT: 5
-
           HCCL_INTRA_PCIE_ENABLE: 0
           HCCL_EXEC_TIMEOUT: 120
           HCCL_BUFFSIZE: 1000
@@ -63,33 +47,12 @@ profiles:
           USING_LCCL_COM: 0
           LCCL_PARALLEL: 0
           LCCL_DETERMINISTIC: 0
-
-          ASDOPS_LOG_TO_FILE: 1
-          ASDOPS_LOG_LEVEL: ERROR
-          ASDOPS_LOG_TO_BOOST_TYPE: atb
-          ASDOPS_LOG_TO_FILE_FLUSH: 0
-          ASDOPS_LOG_TO_STDOUT: 0
-          ASDOPS_LOG_PATH: /root
-
-          ASDSIP_LOG_LEVEL: INFO
-          ASDSIP_LOG_PATH: /root
-          ASDSIP_LOG_TO_STDOUT: 0
-          ASDSIP_LOG_TO_BOOST_TYPE: asdsip
-          ASDSIP_HOME_PATH: /usr/local/Ascend/nnal/asdsip/latest/
-          ASDSIP_LOG_TO_FILE_FLUSH: 0
-          ASDSIP_LOG_TO_FILE: 0
-
           TOOLCHAIN_HOME: /usr/local/Ascend/ascend-toolkit/latest/toolkit
           ASCEND_TOOLKIT_HOME: /usr/local/Ascend/ascend-toolkit/latest
           ASCEND_OPP_PATH: /usr/local/Ascend/ascend-toolkit/latest/opp
           ASCEND_AICPU_PATH: /usr/local/Ascend/ascend-toolkit/latest
           ASCEND_HOME_PATH: /usr/local/Ascend/ascend-toolkit/latest
           ASCEND_LAUNCH_BLOCKING: 0
-
-          # HCCL_OP_EXPANSION_MODE: "AIV"
-          # PYTHONPATH: /usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
-          # CPU_AFFINITY_CONF: 1,npu0:0-1,npu1:40-41,npu2:80-81,npu3:120-121,npu4:160-161,npu5:200-201,npu6:240-241,npu7:280-281
-
         args:
           num-servers: 1
           num-dp: 1
@@ -118,8 +81,6 @@ profiles:
             disable-log-requests: ""
             max-num-seqs: 16
             no-enable-prefix-caching: ""
-
-
       D:
         env:
           MODEL_EXTRA_CFG_PATH: "${CODE_PATH}/tests/test_config/test_config_decode.json"
@@ -133,11 +94,9 @@ profiles:
           VLLM_LLMDATADIST_ZMQ_PORT: 5568
           TNG_HOST_COPY: 1
           MODEL_LEN_MAX_DECODE: 16384
-
           LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
           MODEL_PATH: ""
           AUTO_USE_UC_MEMORY: 1
-
           SERVER_IP_LIST: ""  # decode server ip list
           SERVER_OFFSET: 0
           DECODE_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
@@ -158,22 +117,6 @@ profiles:
           VLLM_LOGGING_LEVEL: INFO
           KV_RANK: ""
           OMNI_USE_DSV3: 1
-
-          ATB_STREAM_SYNC_EVERY_RUNNER_ENABLE: 0
-          ATB_OPSRUNNER_KERNEL_CACHE_LOCAL_COUNT: 1
-          ATB_WORKSPACE_MEM_ALLOC_GLOBAL: 0
-          ATB_DEVICE_TILING_BUFFER_BLOCK_NUM: 32
-          ATB_HOME_PATH: /usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1
-          ATB_COMPARE_TILING_EVERY_KERNEL: 0
-          ATB_STREAM_SYNC_EVERY_OPERATION_ENABLE: 0
-          ATB_MATMUL_SHUFFLE_K_ENABLE: 1
-          ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE: 1
-          ATB_HOST_TILING_BUFFER_BLOCK_NUM: 128
-          ATB_SHARE_MEMORY_NAME_SUFFIX: ""
-          ATB_OPSRUNNER_SETUP_CACHE_ENABLE: 1
-          ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE: 0
-          ATB_OPSRUNNER_KERNEL_CACHE_GLOABL_COUNT: 5
-
           HCCL_INTRA_PCIE_ENABLE: 0
           HCCL_EXEC_TIMEOUT: 120
           HCCL_BUFFSIZE: 1000
@@ -182,34 +125,12 @@ profiles:
           USING_LCCL_COM: 0
           LCCL_PARALLEL: 0
           LCCL_DETERMINISTIC: 0
-
-          ASDOPS_LOG_TO_FILE: 1
-          ASDOPS_LOG_LEVEL: ERROR
-          ASDOPS_LOG_TO_BOOST_TYPE: atb
-          ASDOPS_LOG_TO_FILE_FLUSH: 0
-          ASDOPS_LOG_TO_STDOUT: 0
-          ASDOPS_LOG_PATH: /root
-
-          ASDSIP_LOG_LEVEL: INFO
-          ASDSIP_LOG_PATH: /root
-          ASDSIP_LOG_TO_STDOUT: 0
-          ASDSIP_LOG_TO_BOOST_TYPE: asdsip
-          ASDSIP_HOME_PATH: /usr/local/Ascend/nnal/asdsip/latest/
-          ASDSIP_LOG_TO_FILE_FLUSH: 0
-          ASDSIP_LOG_TO_FILE: 0
-
           TOOLCHAIN_HOME: /usr/local/Ascend/ascend-toolkit/latest/toolkit
-
           ASCEND_TOOLKIT_HOME: /usr/local/Ascend/ascend-toolkit/latest
           ASCEND_OPP_PATH: /usr/local/Ascend/ascend-toolkit/latest/opp
           ASCEND_AICPU_PATH: /usr/local/Ascend/ascend-toolkit/latest
           ASCEND_HOME_PATH: /usr/local/Ascend/ascend-toolkit/latest
           ASCEND_LAUNCH_BLOCKING: 0
-
-          # HCCL_OP_EXPANSION_MODE: "AIV"
-          # PYTHONPATH: /usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
-          # CPU_AFFINITY_CONF: 1,npu0:0-1,npu1:40-41,npu2:80-81,npu3:120-121,npu4:160-161,npu5:200-201,npu6:240-241,npu7:280-281
-
         args:
           num-servers: 16
           num-dp: 32
@@ -238,7 +159,6 @@ profiles:
             disable-log-requests: ""
             max-num-seqs: 32
             no-enable-prefix-caching: ""
-
       C:
        env:
         LOG_PATH: "/tmp/omni_logs"
@@ -248,228 +168,3 @@ profiles:
        args:
          prefill-lb-sdk: pd_score_balance
          decode-lb-sdk: pd_score_balance
-
-    qwen:
-      D:
-        env:
-          API_PORT: 9000
-          ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
-          ASCEND_AICPU_PATH: /usr/local/Ascend/latest
-          ASCEND_HOME_PATH: /usr/local/Ascend/latest
-          ASCEND_LAUNCH_BLOCKING: 0
-          ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
-          ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
-          ASCEND_GLOBAL_LOG_LEVEL: 3
-          ASDOPS_LOG_LEVEL: ERROR
-          ASDOPS_LOG_PATH: /root
-          ASDOPS_LOG_TO_BOOST_TYPE: atb
-          ASDOPS_LOG_TO_FILE: 1
-          ASDOPS_LOG_TO_FILE_FLUSH: 0
-          ASDOPS_LOG_TO_STDOUT: 0
-          ASDSIP_HOME_PATH: /usr/local/Ascend/nnal/asdsip/latest/
-          ASDSIP_LOG_LEVEL: INFO
-          ASDSIP_LOG_PATH: /root
-          ASDSIP_LOG_TO_BOOST_TYPE: asdsip
-          ASDSIP_LOG_TO_FILE: 0
-          ASDSIP_LOG_TO_FILE_FLUSH: 0
-          ASDSIP_LOG_TO_STDOUT: 0
-          ATB_COMPARE_TILING_EVERY_KERNEL: 0
-          ATB_DEVICE_TILING_BUFFER_BLOCK_NUM: 32
-          ATB_HOME_PATH: /usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1
-          ATB_HOST_TILING_BUFFER_BLOCK_NUM: 128
-          ATB_MATMUL_SHUFFLE_K_ENABLE: 1
-          ATB_OPSRUNNER_KERNEL_CACHE_GLOABL_COUNT: 5
-          ATB_OPSRUNNER_KERNEL_CACHE_LOCAL_COUNT: 1
-          ATB_OPSRUNNER_SETUP_CACHE_ENABLE: 1
-          ATB_SHARE_MEMORY_NAME_SUFFIX: ''
-          ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE: 0
-          ATB_STREAM_SYNC_EVERY_OPERATION_ENABLE: 0
-          ATB_STREAM_SYNC_EVERY_RUNNER_ENABLE: 0
-          ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE: 1
-          ATB_WORKSPACE_MEM_ALLOC_GLOBAL: 0
-          CODE_PATH: /workspace/omniinfer
-          DECODE_POD_NUM: 1
-          DECODE_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
-          GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
-          GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
-          GLOO_SOCKET_IFNAME: enp23s0f3
-          HCCL_CONNECT_TIMEOUT: 1800
-          HCCL_EXEC_TIMEOUT: 1800
-          HCCL_BUFFSIZE: 1000
-          HCCL_INTRA_PCIE_ENABLE: 0
-          HCCL_INTRA_ROCE_ENABLE: 1
-          HCCL_OP_EXPANSION_MODE: AIV
-          HOST_IP: ""
-          KV_RANK: ""
-          LCCL_DETERMINISTIC: 0
-          LCCL_PARALLEL: 0
-          LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
-          LOG_PATH: "/tmp/omni_logs"
-          MASTER_PORT: 8000
-          MODEL_LEN_MAX_DECODE: 62144
-          MODEL_PATH: ""
-          PREFILL_POD_NUM: ""
-          RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
-          RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/decode_config/local_*.json)
-          ROLE: decode
-          SERVER_IP_LIST: ''
-          SERVER_OFFSET: 0
-          SHLVL: 1
-          SOCKET_IFNAME: enp23s0f3
-          TNG_HOST_COPY: 1
-          TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
-          TP_SOCKET_IFNAME: enp23s0f3
-          USING_LCCL_COM: 0
-          VLLM_ENABLE_MC2: 1
-          VLLM_LLMDATADIST_ZMQ_PORT: 5568
-          VLLM_LOGGING_LEVEL: INFO
-          VLLM_USE_V1: 1
-          OMNI_USE_QWEN: 1
-          OMNI_REUSE_PREFILLED_TOKENS: 1
-          OMNI_SKIP_DECODE_TOKENIZE: 1
-          MOE_DISPATCH_COMBINE: 1
-          VLLM_WORKER_MULTIPROC_METHOD: fork
-          ENABLE_PREFILL_TND: 1
-        args:
-          additional-config:
-            graph_model_compile_config:
-              level: 1
-              use_ge_graph_cached: true
-          base-api-port: $API_PORT
-          extra-args:
-            disable-log-requests: ''
-            max-num-seqs: 64
-            max-num-batched-tokens: 61440
-          gpu-util: '0.88'
-          kv-transfer-config:
-            engine_id: 0
-            kv_buffer_device: npu
-            kv_connector: AscendHcclConnectorV1
-            kv_parallel_size: 8
-            kv_rank: $KV_RANK
-            kv_role: kv_consumer
-          log-dir: $LOG_PATH
-          master-ip: $HOST_IP
-          master-port: $MASTER_PORT
-          max-model-len: $MODEL_LEN_MAX_DECODE
-          model-path: $MODEL_PATH
-          num-dp: 2
-          num-servers: 2
-          served-model-name: qwen
-          server-offset: $SERVER_OFFSET
-          tp: 8
-      P:
-        env:
-          ASCEND_GLOBAL_LOG_LEVEL: 3
-          API_PORT: 9000
-          ASCEND_AICPU_PATH: /usr/local/Ascend/latest
-          ASCEND_HOME_PATH: /usr/local/Ascend/latest
-          ASCEND_LAUNCH_BLOCKING: 0
-          ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
-          ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
-          ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
-          ASDOPS_LOG_LEVEL: ERROR
-          ASDOPS_LOG_PATH: /root
-          ASDOPS_LOG_TO_BOOST_TYPE: atb
-          ASDOPS_LOG_TO_FILE: 1
-          ASDOPS_LOG_TO_FILE_FLUSH: 0
-          ASDOPS_LOG_TO_STDOUT: 0
-          ASDSIP_HOME_PATH: /usr/local/Ascend/nnal/asdsip/latest/
-          ASDSIP_LOG_LEVEL: INFO
-          ASDSIP_LOG_PATH: /root
-          ASDSIP_LOG_TO_BOOST_TYPE: asdsip
-          ASDSIP_LOG_TO_FILE: 0
-          ASDSIP_LOG_TO_FILE_FLUSH: 0
-          ASDSIP_LOG_TO_STDOUT: 0
-          ATB_COMPARE_TILING_EVERY_KERNEL: 0
-          ATB_DEVICE_TILING_BUFFER_BLOCK_NUM: 32
-          ATB_HOME_PATH: /usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1
-          ATB_HOST_TILING_BUFFER_BLOCK_NUM: 128
-          ATB_MATMUL_SHUFFLE_K_ENABLE: 1
-          ATB_OPSRUNNER_KERNEL_CACHE_GLOABL_COUNT: 5
-          ATB_OPSRUNNER_KERNEL_CACHE_LOCAL_COUNT: 1
-          ATB_OPSRUNNER_SETUP_CACHE_ENABLE: 1
-          ATB_SHARE_MEMORY_NAME_SUFFIX: ''
-          ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE: 0
-          ATB_STREAM_SYNC_EVERY_OPERATION_ENABLE: 0
-          ATB_STREAM_SYNC_EVERY_RUNNER_ENABLE: 0
-          ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE: 1
-          ATB_WORKSPACE_MEM_ALLOC_GLOBAL: 0
-          AUTO_USE_UC_MEMORY: 1
-          CODE_PATH: /workspace/omniinfer
-          DECODE_POD_NUM: 1
-          GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
-          GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
-          GLOO_SOCKET_IFNAME: enp23s0f3
-          HCCL_CONNECT_TIMEOUT: 1800
-          HCCL_EXEC_TIMEOUT: 1800
-          HCCL_INTRA_PCIE_ENABLE: 0
-          HCCL_INTRA_ROCE_ENABLE: 1
-          HCCL_OP_EXPANSION_MODE: "AIV"
-          HOST_IP: 7.150.9.209
-          KV_RANK: ""
-          LCCL_DETERMINISTIC: 0
-          LCCL_PARALLEL: 0
-          LOG_PATH: "/tmp/omni_logs"
-          MASTER_PORT: 8000
-          MODEL_LEN_MAX_PREFILL: 16384
-          MODEL_PATH: ""
-          PREFILL_POD_NUM: ""
-          PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
-          PREFILL_TENSOR_PARALLEL_SIZE: 8
-          PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
-          RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
-          RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$(echo
-            $PREFILL_SERVER_LIST | tr -d ",").json)
-          ROLE: prefill
-          SERVER_IP_LIST: ''
-          SERVER_OFFSET: 0
-          SHLVL: 1
-          SOCKET_IFNAME: enp23s0f3
-          TASK_QUEUE_ENABLE: 2
-          TNG_HOST_COPY: 1
-          TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
-          TP_SOCKET_IFNAME: enp23s0f3
-          USING_LCCL_COM: 0
-          VLLM_LLMDATADIST_ZMQ_PORT: 5568
-          VLLM_LOGGING_LEVEL: INFO
-          VLLM_USE_V1: 1
-          OMNI_USE_QWEN: 1
-          OMNI_REUSE_PREFILLED_TOKENS: 1
-          OMNI_SKIP_DECODE_TOKENIZE: 1
-          VLLM_WORKER_MULTIPROC_METHOD: fork
-          ENABLE_PREFILL_TND: 1
-        args:
-          base-api-port: $API_PORT
-          extra-args:
-            disable-log-requests: ''
-            enforce-eager: ''
-            max-num-batched-tokens: 61440
-            max-num-seqs: 64
-          gpu-util: '0.65'
-          kv-transfer-config:
-            engine_id: 0
-            kv_buffer_device: npu
-            kv_connector: AscendHcclConnectorV1
-            kv_parallel_size: 4
-            kv_rank: $KV_RANK
-            kv_role: kv_producer
-          log-dir: $LOG_PATH
-          master-ip: $HOST_IP
-          master-port: $MASTER_PORT
-          max-model-len: $MODEL_LEN_MAX_PREFILL
-          model-path: $MODEL_PATH
-          num-servers: 1
-          served-model-name: qwen
-          server-offset: $SERVER_OFFSET
-          tp: 8
-
-      C:
-        env:
-          LOG_PATH: "/tmp/omni_logs"
-          CODE_PATH: "/workspace/omniinfer"
-          API_PORT: 7000
-          ROLE: "proxy"
-        args:
-          prefill-lb-sdk: pd_score_balance
-          decode-lb-sdk: pd_score_balance

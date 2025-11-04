@@ -128,18 +128,38 @@ def update_utils_custom_op():
     utils.direct_register_custom_op = ascend_direct_register_custom_op
 
 
-def enable_overwrite_request_id():
-    """Patch OpenAIServing to use random UUIDs for request IDs."""
-    from fastapi import Request
-    from vllm.utils import random_uuid
-    from vllm.entrypoints.openai.serving_engine import OpenAIServing
-    @staticmethod
-    def _base_request_id(raw_request: Optional[Request], 
-                         default: Optional[str] = None) -> Optional[str]:
-        return default or random_uuid()
+def apply_constant_list_patch():
+      import vllm.v1.utils as vllm_utils
+      cls = vllm_utils.ConstantList
+      def __hash__(self):
+            return hash(self._x)
+      def __eq__(self, other):
+            return isinstance(other, cls) and self._x == other._x
+      cls.__hash__ = __hash__
+      cls.__eq__ = __eq__
+      cls._is_patched = True
 
-    OpenAIServing._base_request_id = _base_request_id
-    logging.info("Applied patch: overwrite_request_id")
+
+def apply_kv_cache_patch():
+    import vllm.v1.core.kv_cache_utils as kv_cache_utils
+    from vllm.v1.core.kv_cache_utils import BlockHashType
+    logger.info("apply_kv_cache_hash_patch")
+    NONE_HASH = kv_cache_utils.NONE_HASH               
+    def patched(hash_function,
+                    parent_block_hash,
+                    curr_block_token_ids,
+                    extra_keys):
+        if not parent_block_hash:
+                parent_block_hash = NONE_HASH             
+        curr_block_token_ids_tuple = tuple(curr_block_token_ids)
+        h = hash_function((parent_block_hash, curr_block_token_ids_tuple, 0))
+        return BlockHashType(
+                h,                                                      
+                curr_block_token_ids_tuple,
+                extra_keys
+        )
+    kv_cache_utils.hash_block_tokens = patched
+    patched.is_patched = True
 
 
 def register() -> str:
@@ -208,7 +228,12 @@ class ConfigUpdater:
         cls._update_parallel_config(vllm_config)
         cls._update_cache_config(vllm_config)
         cls._enable_custom_ops(vllm_config)
-        cls._may_enable_omni_attn(vllm_config)
+        
+        cls._update_scheduler_config(vllm_config)
+        if os.getenv("ENABLE_OMNI_CACHE", "0") == "1":
+            cls._may_enable_omni_cache(vllm_config)
+        else:
+            cls._may_enable_omni_attn(vllm_config)
 
     @staticmethod
     def _handle_graph_mode(vllm_config: 'VllmConfig') -> None:
@@ -262,7 +287,39 @@ class ConfigUpdater:
         is_kv_consumer = kv_transfer_config is None or kv_transfer_config.kv_role == 'kv_consumer'
         omni_attn_config = vllm_config.additional_config.get("omni_attn_config", None)
         apply_omni_attn_patch(enable=enable_omni_attn, is_kv_consumer=is_kv_consumer, config=omni_attn_config)
-
+    
+    @staticmethod
+    def _may_enable_omni_cache(vllm_config: 'VllmConfig') -> None:
+        from omni.models.config_loader.loader import model_extra_config
+        enable_omni_cache = model_extra_config.operator_opt_config.use_omni_cache
+        if not enable_omni_cache:
+            return
+        
+        kv_transfer_config = vllm_config.kv_transfer_config
+        if kv_transfer_config is None:
+            logger.warning(f"Omni cache will not be enabled in PD mixed deployment.")
+            return
+        
+        from omni.accelerators.cache import apply_omni_cache_patch
+        is_kv_consumer = kv_transfer_config.kv_role == "kv_consumer"
+        apply_omni_cache_patch(enable=enable_omni_cache, is_kv_consumer=is_kv_consumer)
+    
+    @staticmethod
+    def _update_scheduler_config(vllm_config: 'VllmConfig') -> None:
+        scheduler_config = vllm_config.scheduler_config
+        additional_config = vllm_config.additional_config
+        if additional_config:
+            if additional_config.get("enable_hybrid_graph_mode", False) and additional_config.get("enable_length_sorted_schedule", False):
+                raise RuntimeError("Cannot enable both hybrid graph mode and length sorted schedule.")
+            if additional_config.get("enable_hybrid_graph_mode", False):
+                from omni.adaptors.vllm.sched.npu_schedule import HybridSchedulerConfig
+                ascend_scheduler_config = HybridSchedulerConfig.initialize_from_config(
+                    vllm_config.scheduler_config)
+                vllm_config.scheduler_config = ascend_scheduler_config
+                logger.info("--------enbale hybrid graph mode----------------")
+            elif additional_config.get("enable_length_sorted_schedule", False):
+                scheduler_config.scheduler_cls = "omni.adaptors.vllm.sched.length_sorted_schedule.LengthSortedScheduler"
+                logger.info("--------enable length sorted schedule----------------")
 
 class NPUPlatform(Platform):
     """Platform implementation for NPU devices in vLLM."""
@@ -304,12 +361,10 @@ class NPUPlatform(Platform):
         """
         ConfigUpdater.update_parser(parser)
         update_parallel_state()
-        if os.getenv("ENABLE_OVERWRITE_REQ_IDS", "0") == "1":
-            enable_overwrite_request_id()
+        if os.getenv("ENABLE_APC_EVENT", "0") == "1":
+            apply_kv_cache_patch()
+            apply_constant_list_patch()
         import omni.quantization  # noqa: F401
-        from omni.adaptors.vllm.ems.ems_env import EmsEnv
-        if EmsEnv.enable_vllm_ems:
-            from omni.adaptors.vllm.patches import ems_patch
 
     @classmethod
     def get_device_capability(cls, device_id: int = 0) -> None:
@@ -392,16 +447,12 @@ class NPUPlatform(Platform):
 
         Args:
             vllm_config: The vLLM configuration to update.
-        """
-        additional_config = vllm_config.additional_config
-        if additional_config and vllm_config.additional_config.get("enable_hybrid_graph_mode", False):
-            from omni.adaptors.vllm.worker.npu_schedule import HybridSchedulerConfig
-            ascend_scheduler_config = HybridSchedulerConfig.initialize_from_config(
-                vllm_config.scheduler_config)
-            vllm_config.scheduler_config = ascend_scheduler_config
-            logger.info("--------enbale hybrid graph mode----------------")
-            
+        """            
         ConfigUpdater.update_vllm_config(vllm_config)
+
+        if (vllm_config.kv_transfer_config and vllm_config.kv_transfer_config.kv_connector and
+                (vllm_config.kv_transfer_config.kv_connector == "CcConnector" or vllm_config.kv_transfer_config.kv_connector == "EmsConnector")):
+            from omni.adaptors.vllm.ems import ems_patch
 
     @classmethod
     def get_attn_backend_cls(cls, selected_backend: str, head_size: int, dtype: torch.dtype,

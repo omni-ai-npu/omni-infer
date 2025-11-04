@@ -1379,9 +1379,9 @@ index 923482d7..a6aae6bc 100644
  
              return AscendAttnBackend(self)
 +        elif self.server_args.attention_backend == "npumla":
-+            from omni.adaptors.sglang.layers.attention.npumla_backend import NpuMLABackend
++            from omni.adaptors.sglang.layers.attention.backend.mla import AscendMLABackend
 +
-+            return NpuMLABackend(self)
++            return AscendMLABackend(self)
          elif backend_str == "triton":
              assert not self.model_config.is_encoder_decoder, (
                  "Cross attention is not supported in the triton attention backend. "
@@ -1542,7 +1542,7 @@ index f81d3c76..12c1dd2c 100644
  
 -ModelRegistry = _ModelRegistry(import_model_classes())
 +tmp_ = _ModelRegistry(import_model_classes())
-+module = importlib.import_module("omni.adaptors.sglang.models.deepseek_v3")
++module = importlib.import_module("omni.adaptors.sglang.models.deepseek.deepseek_v3")
 +tmp_.models["DeepseekV3ForCausalLM"] = module.EntryClass
 +ModelRegistry = tmp_
 diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py

@@ -8,21 +8,24 @@ from torch.nn import Parameter
 import torch_npu
 
 from compressed_tensors.quantization import QuantizationStrategy
+from vllm.distributed import get_tp_group
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.model_executor.layers.quantization.compressed_tensors.schemes import CompressedTensorsScheme
 from vllm.model_executor.parameter import (ChannelQuantScaleParameter,
                                            ModelWeightParameter,
                                            PerTensorScaleParameter)
+from omni.models.config_loader.loader import model_extra_config
 
 
 class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
     _kernel_backends_being_used: set[str] = set()
 
     def __init__(self, strategy: str, is_static_input_scheme: bool,
-                 input_symmetric: bool):
+                 input_symmetric: bool, layer_name: str = ""):
         self.strategy = strategy
         self.is_static_input_scheme = is_static_input_scheme
         self.input_symmetric = input_symmetric
+        self.layer_name = layer_name
 
     @classmethod
     def get_min_capability(cls) -> int:
@@ -72,7 +75,13 @@ class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
         if getattr(layer, 'throw_dequant', False):
             weight_scale = weight_scale.to(torch.float32)
         weight_offset = layer.weight_offset
-        weight = torch_npu.npu_format_cast(weight.t().contiguous(), 29)
+        if (model_extra_config.operator_opt_config.shared_experts_to_gmm and
+            model_extra_config.parall_config.redundancy_shared_expert_num > 0 and
+            "shared_experts" in self.layer_name):
+            weight = weight.unsqueeze(0).transpose(1, 2).contiguous()
+        else:
+            weight = weight.t().contiguous()
+        weight = torch_npu.npu_format_cast(weight, 29)
         layer.weight = Parameter(weight, requires_grad=False)
 
         layer.weight_scale = Parameter(weight_scale.view(-1), requires_grad=False)
@@ -92,6 +101,13 @@ class AscendCompressedTensorsW8A8Int8LinearMethod(CompressedTensorsScheme):
             pertoken_scale = x.get('pertoken_scale')
         else:
             x_int8, pertoken_scale = torch_npu.npu_dynamic_quant(x)
+        if x_transform == 'AG':
+            pertoken_scale = get_tp_group().all_gather(pertoken_scale, dim=0)
+            x_int8 = get_tp_group().all_gather(x_int8, dim=0)
+        elif x_transform == 'A2A':
+            pertoken_scale = get_tp_group().all_to_all(pertoken_scale, dim=0)
+            x_int8 = get_tp_group().all_to_all(x_int8, dim=0)
+
 
         throw_dequant = getattr(layer, 'throw_dequant', False)
         if throw_dequant and bias is None:

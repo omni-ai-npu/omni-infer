@@ -54,6 +54,129 @@ ROPE_ROTARY_FACTOR = 64
 
 NEOX_ROTARY_COEFF = 2
 
+class LongcatRotaryEmbedding(nn.Module):
+    """Original rotary positional embedding."""
+
+    def __init__(
+        self,
+        head_size: int,
+        rotary_dim: int,
+        max_position_embeddings: int,
+        base: int,
+        is_neox_style: bool = True,
+        dtype: torch.dtype = torch.bfloat16,
+    ) -> None:
+        super().__init__()
+        self.head_size = head_size
+        self.rotary_dim = rotary_dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        self.is_neox_style = is_neox_style
+        self.dtype = dtype if dtype is not None else torch.get_default_dtype()
+
+        cache = self._compute_cos_sin_cache()
+        cache = cache.to(dtype)
+
+        self.cos_sin_cache: torch.Tensor
+        self.register_buffer("cos_sin_cache", cache, persistent=False)
+
+    def _compute_inv_freq(self, base: Union[int, float]) -> torch.Tensor:
+        """Compute the inverse frequency."""
+        # NOTE(woosuk): To exactly match the HF implementation, we need to
+        # use CPU to compute the cache and then move it to GPU. However, we
+        # create the cache on GPU for faster initialization. This may cause
+        # a slight numerical difference between the HF implementation and ours.
+        inv_freq = 1.0 / (
+            base
+            ** (
+                torch.arange(0, self.rotary_dim, 2, dtype=torch.float) / self.rotary_dim
+            )
+        )
+        return inv_freq
+
+    def _compute_cos_sin_cache(self) -> torch.Tensor:
+        """Compute the cos and sin cache."""
+        inv_freq = self._compute_inv_freq(self.base)
+        t = torch.arange(self.max_position_embeddings, dtype=torch.float)
+
+        freqs = torch.einsum("i,j -> ij", t, inv_freq)
+        cos = freqs.cos()
+        sin = freqs.sin()
+        if self.is_neox_style:
+            cos = cos.repeat(1, 2)
+            sin = sin.repeat(1, 2)
+        else:
+            cos = cos.repeat_interleave(2, dim=-1)
+            sin = sin.repeat_interleave(2, dim=-1)
+        cache = torch.cat((cos, sin), dim=-1)
+        return cache
+
+    def get_cos_sin(
+        self,
+        positions: torch.Tensor,
+        offsets: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """A PyTorch-native implementation of forward()."""
+        if offsets is not None:
+            positions = positions + offsets
+        positions = positions.flatten()
+        cos_sin = self.cos_sin_cache.index_select(0, positions)
+        cos, sin = cos_sin.chunk(2, dim=-1)
+        cos = cos.view(-1, 1, 1, cos.shape[-1])
+        sin = sin.view(-1, 1, 1, sin.shape[-1])
+
+        return cos, sin
+
+    def forward(self, positions, x, offsets=None):
+        if offsets is not None:
+            positions = positions + offsets
+        positions = positions.flatten()
+        num_tokens = positions.shape[0]
+        cos_sin = self.cos_sin_cache.index_select(0, positions)
+        cos, sin = cos_sin.chunk(2, dim=-1)
+        x_shape = x.shape
+        x = x.view(num_tokens, -1, self.head_size)
+        x_rot = x[..., : self.rotary_dim]
+        x_pass = x[..., self.rotary_dim :]
+        x_rot = self._apply_rotary_emb(x_rot, cos, sin, self.is_neox_style)
+        x = torch.cat((x_rot, x_pass), dim=-1).reshape(x_shape)
+        return x
+        # key_shape = key.shape
+        # key = key.view(num_tokens, -1, self.head_size)
+        # key_rot = key[..., : self.rotary_dim]
+        # key_pass = key[..., self.rotary_dim :]
+        # key_rot = _apply_rotary_emb(key_rot, cos, sin, self.is_neox_style)
+        # key = torch.cat((key_rot, key_pass), dim=-1).reshape(key_shape)
+        # return query, key
+
+    def _apply_rotary_emb(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        is_neox_style: bool,
+    ) -> torch.Tensor:
+        """
+        Args:
+            x: [num_tokens, num_heads, head_size]
+            cos: [num_tokens, head_size // 2]
+            sin: [num_tokens, head_size // 2]
+            is_neox_style: Whether to use the Neox-style or GPT-J-style rotary
+                positional embeddings.
+        """
+        cos = cos.unsqueeze(-2).to(x.dtype)
+        sin = sin.unsqueeze(-2).to(x.dtype)
+        if is_neox_style:
+            x1, x2 = torch.chunk(x, 2, dim=-1)
+        else:
+            x1 = x[..., ::2]
+            x2 = x[..., 1::2]
+        o1 = x1 * cos - x2 * sin
+        o2 = x2 * cos + x1 * sin
+        if is_neox_style:
+            return torch.cat((o1, o2), dim=-1)
+        else:
+            return torch.stack((o1, o2), dim=-1).flatten(-2)
 
 
 class RotaryEmbeddingTorchNpu(torch.nn.Module):
@@ -88,13 +211,6 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         self.cos_sin_cache: torch.Tensor
         self.register_buffer("cos_sin_cache", cache, persistent=False)
 
-        if self.rotary_dim != self.head_size:
-            self.rotary_pos_emb_cache = self.forward_impl(self.max_len, self.rotary_dim/2)
-        else:
-            self.embed = F.embedding
-        self.org_position = None
-        self.q_cache = None
-        self.k_cache = None
         self.partial_rotary_factor = partial_rotary_factor
 
     def _compute_cos_sin_cache_alt(self) -> torch.Tensor:
@@ -131,19 +247,6 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         sin = self.sin[positions].view(-1, 1, 1, self.sin.shape[-1])
         return cos, sin
 
-    def forward_impl(
-            self, seq_len: int, n_elem: int):
-        """Enhanced Transformer with Rotary Position Embedding.
-        Derived from: https://github.com/labmlai/annotated_deep_learning_paper_implementations/blob/master/labml_nn/
-        transformers/rope/__init__.py. MIT License:
-        https://github.com/labmlai/annotated_deep_learning_paper_implementations/blob/master/license.
-        """
-        theta = 1.0 / (self.base ** (torch.arange(0, n_elem, 2, dtype=self.dtype) / n_elem))
-        seq_idx = torch.arange(seq_len, dtype=self.dtype)
-        idx_theta = torch.outer(seq_idx, theta).float().npu()
-        cache = torch.stack([torch.cos(idx_theta), torch.sin(idx_theta)], dim=-1).to(self.dtype)
-        return cache
-
     # use small ops
     def apply_rotary_pos_emb(self, x, cos, sin):
         x1, x2 = torch.chunk(x, 2, -1)
@@ -170,33 +273,46 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         output = torch.cat((x_partial, x_other_than_partial), dim=-1)
         return output
 
-    # use small ops for chatglm
-    def apply_rotary_pos_emb_glm(self, x: torch.Tensor, rope_cache: torch.Tensor) -> torch.Tensor:
-        sq, b, np, hn = x.size(0), x.size(1), x.size(2), x.size(3)
-        rot_dim = rope_cache.shape[-2] * 2
-        x, x_pass = x[..., :rot_dim], x[..., rot_dim:]
-        rope_cache = rope_cache[:sq]
-        xshaped = x.reshape(sq, -1, np, rot_dim // 2, 2)
-        rope_cache = rope_cache.view(sq, -1, 1, xshaped.size(3), 2)
-        x_out2 = torch.stack(
-            [
-                xshaped[..., 0] * rope_cache[..., 0] - xshaped[..., 1] * rope_cache[..., 1],
-                xshaped[..., 1] * rope_cache[..., 0] + xshaped[..., 0] * rope_cache[..., 1],
-            ],
-            -1,
-        )
-        x_out2 = x_out2.flatten(3)
-        return torch.cat((x_out2, x_pass), dim=-1)
+    def apply_rotary_emb_torch(
+            self,
+            x: torch.Tensor,
+            cos: torch.Tensor,
+            sin: torch.Tensor,
+            is_neox_style: bool,
+    ) -> torch.Tensor:
+        cos = cos.unsqueeze(-2).to(x.dtype)
+        sin = sin.unsqueeze(-2).to(x.dtype)
+        if is_neox_style:
+            x1, x2 = torch.chunk(x, 2, dim=-1)
+        else:
+            x1 = x[..., ::2]
+            x2 = x[..., 1::2]
+        o1 = x1 * cos - x2 * sin
+        o2 = x2 * cos + x1 * sin
+        if is_neox_style:
+            return torch.cat((o1, o2), dim=-1)
+        else:
+            return torch.stack((o1, o2), dim=-1).flatten(-2)
 
-    # adapt chatglm : dim = head_size / 2
-    def _forward_chatglm(self, position_ids, query, key):
-        rotary_pos_emb = self.rotary_pos_emb_cache[position_ids]
-        query = query.view(*query.shape[:-1], -1, self.head_size).contiguous()
-        key = key.view(*key.shape[:-1], -1, self.head_size).contiguous()
-
-        q_embed = self.apply_rotary_pos_emb_glm(query, rotary_pos_emb)
-        k_embed = self.apply_rotary_pos_emb_glm(key, rotary_pos_emb)
-        return q_embed.flatten(-2), k_embed.flatten(-2)
+    def _forward_native(self, position_ids, query, key):
+        position = position_ids.flatten()
+        num_tokens = position_ids.shape[0]
+        cos_sin = self.cos_sin_cache.index_select(0, position_ids)
+        cos, sin = cos_sin.chunk(2, dim=-1)
+        query_shape = query.shape
+        query = query.view(num_tokens, -1, self.head_size)
+        query_rot = query[..., :self.rotary_dim]
+        query_pass = query[..., self.rotary_dim:]
+        query_rot = self.apply_rotary_emb_torch(query_rot, cos, sin, self.is_neox_style)
+        query = torch.cat((query_rot, query_pass), dim=-1).reshape(query_shape)
+        if key is not None:
+            key_shape = key.shape
+            key = key.view(num_tokens, -1, self.head_size)
+            key_rot = key[..., :self.rotary_dim]
+            key_pass = key[..., self.rotary_dim:]
+            key_rot = self.apply_rotary_emb_torch(key_rot, cos, sin, self.is_neox_style)
+            key = torch.cat((key_rot, key_pass), dim=-1).reshape(key_shape)
+        return query, key
 
     # use ascend_ops to deal with torch_npu.npu_apply_rotary_pos_emb last dim is not 128 bug
     def _forward_ascend_ops_and_small_ops(self, position_ids, query, key):
@@ -281,14 +397,13 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
             return q_embed, k_embed
         # adapt chatglm : dim = head_size / 2
         if self.rotary_dim < self.head_size:
-            q_embed, k_embed = self._forward_chatglm(position_ids, query, key)
-        if self.rotary_dim != 128:
+            q_embed, k_embed = self._forward_native(position_ids, query, key)
+        elif self.rotary_dim != 128:
             # use ascend_ops to deal with torch_npu.npu_apply_rotary_pos_emb last dim is not 128 bug
             q_embed, k_embed = self._forward_ascend_ops_and_small_ops(position_ids, query, key)
         else:
             q_embed, k_embed = self._forward_fused_ops(position_ids, query, key, layer_name)
         return q_embed, k_embed
-
 
 
 class YaRNScalingRotaryEmbedding(RotaryEmbeddingTorchNpu):

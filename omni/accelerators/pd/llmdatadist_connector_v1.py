@@ -389,7 +389,7 @@ class DecodeConnectorScheduler:
             self.context = zmq.Context()
             self.pub = self.context.socket(zmq.PUB)
             kv_rank = self.vllm_config.kv_transfer_config.kv_rank
-            self.pub.bind(f"ipc:///tmp/sched-pub--{kv_rank}-{vllm_config.parallel_config.data_parallel_rank_local}")
+            self.pub.bind(f"ipc:///tmp/sched-pub-{kv_rank}-{vllm_config.parallel_config.data_parallel_rank_local}")
 
     def _send_pulled_kv_req_list(self, path, data):
         if path in self.zmq_socket_map:
@@ -412,7 +412,6 @@ class DecodeConnectorScheduler:
             num_computed_tokens: int) -> tuple[int, bool]:
         if request.request_id in self.processed_request:
             return 0, False
-        self.processed_request.add(request.request_id)
         params = request.kv_transfer_params
         if params is None:
             return 0, False
@@ -441,6 +440,7 @@ class DecodeConnectorScheduler:
             "num_external_tokens=%s, kv_transfer_params=%s",
             num_external_tokens, params)
 
+        self.processed_request.add(request.request_id)
         if params is not None:
             if params.get("remote_block_ids"):
                 if all(p in params for p in ("remote_cluster_id", "remote_host_ip")):

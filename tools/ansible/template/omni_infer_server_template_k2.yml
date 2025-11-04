@@ -183,7 +183,7 @@
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill_k2.json"
       EXTRA_ARGS='--max-num-batched-tokens 65600 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching'
       GPU_UTIL=0.85
-      ADDITIONAL_CONFIG='{"enable_omni_attn": false, "omni_attn_config": {"sink": 2, "recent": 6, "beta": 0.4}, "multi_rank_pull_kv": false}'
+      ADDITIONAL_CONFIG='{"enable_omni_attn": false, "omni_attn_config": {"sink": 2, "recent": 6, "beta": 0.4}, "multi_rank_pull_kv": false,"enable_omni_placement":true,"omni_placement_config":{"pattern_path":"","max_moe_layer_num":60,"enable_dynamic":true,"max_redundant_per_expert":1,"max_redundant_per_rank":0,"enable_rank_round_robin":false,"enable_dump":true,"dump_dir":"/home/profiling/dump_data"}}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
@@ -267,7 +267,7 @@
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode_k2.json"
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 45 --no-enable-prefix-caching --preemption-mode swap'
       GPU_UTIL=0.85
-      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}, "enable_omni_attn": false, "omni_attn_config": {"sink": 2, "recent": 6, "beta": 0.4}, "multi_rank_pull_kv": false}'
+      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}, "enable_omni_attn": false, "omni_attn_config": {"sink": 2, "recent": 6, "beta": 0.4}, "multi_rank_pull_kv": false,"enable_omni_placement":true,"omni_placement_config":{"pattern_path":"","max_moe_layer_num":60,"enable_dynamic":true,"max_redundant_per_expert":10,"max_redundant_per_rank":1,"enable_rank_round_robin":true,"enable_dump":true,"dump_dir":"/home/profiling/dump_data"}}'
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True

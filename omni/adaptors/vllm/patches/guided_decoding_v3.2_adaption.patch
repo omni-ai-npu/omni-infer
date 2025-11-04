@@ -1,0 +1,70 @@
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 9159a8870..c65514bb9 100755
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -940,6 +940,10 @@ class Scheduler(SchedulerInterface):
+                         spec_token_ids[req_index])
+                 else:
+                     request.spec_token_ids = spec_token_ids[req_index]
++                    # For guided decoding case, if the spec_token_ids is thinking ends token, NEEDS POP IT OUT!
++                    if request.sampling_params.guided_decoding is not None and \
++                        request.spec_token_ids[0] == self.structured_output_manager.get_think_end_token():
++                        request.spec_token_ids.pop()
+
+             # Guided Decoding Adaptation starts
+             # Since Omni MTP requires spec_token_ids's length to be constant and
+@@ -1168,6 +1172,8 @@ class Scheduler(SchedulerInterface):
+             (self.vllm_config.kv_transfer_config is None or self.vllm_config.kv_transfer_config.kv_role != "kv_both") and
+             not self.vllm_config.speculative_config.enable_adaptive):
+             request.spec_token_ids.extend([0] * self.vllm_config.speculative_config.num_speculative_tokens)
++            request.padding_len = self.vllm_config.speculative_config.num_speculative_tokens
++
+         # Update the request state for scheduling.
+         request.num_computed_tokens = request.num_tokens - 1
+
+diff --git a/vllm/v1/structured_output/__init__.py b/vllm/v1/structured_output/__init__.py
+index a6d745cd1..b5507dc4f 100644
+--- a/vllm/v1/structured_output/__init__.py
++++ b/vllm/v1/structured_output/__init__.py
+@@ -154,9 +154,12 @@ class StructuredOutputManager:
+                 assert request is not None
+                 assert request.grammar is not None
+
+-            apply_bitmask = (
+-                request.reasoning_ended if self.reasoner is not None else True
+-            )  # noqa: E501
++            # Check whether thinking ended
++            if not request.reasoning_ended:
++                request.reasoning_ended = self.is_cot_end(requests[req_id])
++
++            # If thinking process is ended, we should enable apply_bitmask
++            apply_bitmask = request.reasoning_ended
+
+             state_advancements = 0
+             req_tokens = scheduled_spec_decode_tokens.get(req_id, []) + [None]
+@@ -221,6 +224,25 @@ class StructuredOutputManager:
+         else:
+             return True
+
++    def is_cot_end(self, request: Request) -> bool:
++        if not request.use_structured_output:
++            return False
++
++        # To determine whether we can advance the FSM.
++        # Supports thinking usage where we skip the reasoning components.
++        if TYPE_CHECKING:
++            assert request.structured_output_request is not None
++            assert request.structured_output_request.grammar is not None
++
++        if self.reasoner is not None:
++            return self.reasoner.is_reasoning_end(request.all_token_ids)
++        else:
++            return True
++
++    def get_think_end_token(self) -> int:
++        if self.reasoner is not None:
++            return self.reasoner.end_token_id
++
+     def clear_backend(self) -> None:
+         if self.backend is not None:
+             self.backend.destroy()

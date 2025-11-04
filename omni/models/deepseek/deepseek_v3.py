@@ -28,6 +28,7 @@ import itertools
 from typing import Iterable, List, Optional, Set, Tuple, Union
 import torch
 from torch import nn
+import torch.nn.functional as F
 from transformers import PretrainedConfig
 import torch.distributed as dist
 import torchair as tng
@@ -41,9 +42,12 @@ from vllm.sequence import IntermediateTensors
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.distributed import (
+    get_ep_group,
+    get_dp_group,
     get_pp_group,
     get_tensor_model_parallel_world_size,
-    tensor_model_parallel_all_gather
+    tensor_model_parallel_all_gather,
+    get_tensor_model_parallel_rank,
 )
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.models.utils import (
@@ -75,7 +79,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
 from omni.layers.moe.fused_moe.layer import FusedMoE
 from omni.layers.moe.deepseek_moe import DeepseekMoE 
 from omni.layers.attention.deepseek_mla import DeepseekMLA 
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 from omni.layers.attention.backend.mla import group_request_list
 
 if model_extra_config.operator_opt_config.unquant_bmm_nz:
@@ -85,6 +89,32 @@ if model_extra_config.operator_opt_config.unquant_bmm_nz:
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64
 
+def _get_pad_size(num_seqs, split_size):
+    """Calculate padding size needed to make sequence count divisible by tp size."""
+    return (split_size - num_seqs % split_size) % split_size
+
+def pad_inputs(input, query_lens, sp_size):
+    padded_lengths = _get_pad_size(query_lens, sp_size)
+    segments = []
+    start_idx = 0
+    for length, pad_length in zip(query_lens, padded_lengths):
+        segment = input[start_idx : start_idx + length]
+        padded_segment = F.pad(segment, (0, 0, 0, pad_length), "constant", 0)
+        segments.append(padded_segment)
+        start_idx += length
+
+    return torch.cat(segments, dim=0)
+
+def generate_sp_inputs(hidden_states, attn_metadata):
+    sp_size = model_extra_config.parall_config.attn_sp_size
+    if attn_metadata is not None:
+        hidden_states = pad_inputs(hidden_states, attn_metadata.prefill.actual_query_lens, sp_size * 2)
+        # split input for sp attention
+        hidden_states_list = torch.split(hidden_states, attn_metadata.prefill.sp_split_list, dim=0)
+        hidden_states = torch.cat([hidden_states_list[i] for i in attn_metadata.prefill.sp_zigzag_index], dim=0)
+    else:
+        hidden_states = torch.split(hidden_states, hidden_states.size(0) // sp_size, dim=0)[get_tensor_model_parallel_rank()]
+    return hidden_states
 
 class ParallelDeepseekMLP(nn.Module):
 
@@ -141,25 +171,31 @@ class ParallelDeepseekMLP(nn.Module):
 
 class DeepseekDecoderLayer(nn.Module):
 
+    is_split_hidden_states = False
+
     def __init__(
             self,
             config: PretrainedConfig,
             prefix: str,
             cache_config: Optional[CacheConfig] = None,
             quant_config: Optional[QuantizationConfig] = None,
+            is_ffn_die: Optional[bool] = False,
     ) -> None:
         super().__init__()
+        layer_idx = int(prefix.split(sep='.')[-1])
         self.prefix = prefix
-        self.layer_name = f"{prefix}.self_attn.attn"
         self.hidden_size = config.hidden_size
+        self.is_ffn_die = is_ffn_die
+
+        self.layer_name = f"{prefix}.self_attn.attn"
         self.quant_symbol = quant_config is not None
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
         max_position_embeddings = getattr(config, "max_position_embeddings",
-                                          8192)
+                                        8192)
         # DecoderLayers are created with `make_layers` which passes the prefix
         # with the layer's index.
-        layer_idx = int(prefix.split(sep='.')[-1])
+        
         self.self_attn = DeepseekMLA(
             config=config,
             hidden_size=self.hidden_size,
@@ -176,6 +212,13 @@ class DeepseekDecoderLayer(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.self_attn",
         )
+        
+        if not self.is_ffn_die:
+            self.input_layernorm = RMSNorm(config.hidden_size,
+                                       eps=config.rms_norm_eps)
+            self.post_attention_layernorm = RMSNorm(config.hidden_size,
+                                                eps=config.rms_norm_eps)
+
         if (config.n_routed_experts is not None
                 and layer_idx >= config.first_k_dense_replace
                 and layer_idx % config.moe_layer_freq == 0):
@@ -186,19 +229,16 @@ class DeepseekDecoderLayer(nn.Module):
             )
             self.is_moe = True
         else:
-            self.mlp = ParallelDeepseekMLP(
-                hidden_size=config.hidden_size,
-                intermediate_size=config.intermediate_size,
-                hidden_act=config.hidden_act,
-                quant_config=quant_config,
-                prefix=f"{prefix}.mlp",
-            )
+            if not self.is_ffn_die:
+                self.mlp = ParallelDeepseekMLP(
+                    hidden_size=config.hidden_size,
+                    intermediate_size=config.intermediate_size,
+                    hidden_act=config.hidden_act,
+                    quant_config=quant_config,
+                    prefix=f"{prefix}.mlp",
+                )
             self.is_moe = False
-        self.input_layernorm = RMSNorm(config.hidden_size,
-                                       eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size,
-                                                eps=config.rms_norm_eps)
-
+        
     def forward(
             self,
             positions: torch.Tensor,
@@ -211,34 +251,40 @@ class DeepseekDecoderLayer(nn.Module):
     ) -> torch.Tensor:
         if isinstance(attn_metadata, dict):
             attn_metadata = attn_metadata[self.layer_name]
-        # Self Attention
-        if residual is None:
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
-        else:
-            # Adapt: adapt for w8a8 dynamic, do quant
-            # Combines residual add and rmsnorm
-            hidden_states, residual = self.input_layernorm(
-                hidden_states, residual, quant_symbol=(not model_extra_config.operator_opt_config.use_mlaprolog and self.quant_symbol))
-            # Adapt end.
-        hidden_states = self.self_attn(
-            positions=positions,
-            hidden_states=hidden_states,
-            kv_cache=kv_cache,
-            attn_metadata=attn_metadata,
-        )
-
         is_prefill = attn_metadata is None or attn_metadata.prefill is not None
 
-        if self.is_moe == True and not is_prefill and model_extra_config.operator_opt_config.use_super_kernel:
-            with tng.scope.super_kernel(self.mlp.prefix, 'stream-fusion=1'):
+        if not self.is_ffn_die:
+            # Self Attention
+            if residual is None:
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
+            else:
+                # Adapt: adapt for w8a8 dynamic, do quant
+                # Combines residual add and rmsnorm
+                quant_symbol = (self.quant_symbol and not model_extra_config.operator_opt_config.use_mlaprolog and not model_extra_config.operator_opt_config.enable_dsa)
+                hidden_states, residual = self.input_layernorm(
+                    hidden_states, residual, quant_symbol=quant_symbol)
+                # Adapt end.
+            hidden_states = self.self_attn(
+                positions=positions,
+                hidden_states=hidden_states,
+                kv_cache=kv_cache,
+                attn_metadata=attn_metadata,
+            )
+
+            if self.is_moe == True and not is_prefill and model_extra_config.operator_opt_config.use_super_kernel:
+                with tng.scope.super_kernel(self.mlp.prefix, 'stream-fusion=1'):
+                    hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+            else:
                 hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        else:
-            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        # hidden : tokens * 7168
+            # hidden : tokens * 7168
 
         # Perform full hidden splitting to avoid OOM
-        if model_extra_config.parall_config.dp_size > 1 and attn_metadata is None:
+        if (get_dp_group().world_size  > 1  or DeepseekDecoderLayer.is_split_hidden_states) and is_prefill \
+            and not model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+            # During prefill, chunk is only triggered when an extremely large number of identical tokens is detected — to prevent GMM from OOM. 
+            # Prefill performance may degrade slightly as a trade-off. 
+            # For longer sequences (e.g., >256K or 512K tokens), consider adjusting SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER to optimize memory usage or avoid OOM.
             reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device=current_platform.device_type)
             local_length = hidden_states.shape[0]
             # global_max_length = torch.tensor(0, dtype=torch.int64)
@@ -268,6 +314,8 @@ class DeepseekDecoderLayer(nn.Module):
                 if isinstance(hidden_states, (tuple, list)):
                     assert len(hidden_states) == 2
                     hidden_states = hidden_states[0] + hidden_states[1]
+            elif self.is_ffn_die:
+                pass
             else:
                 hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata)
 
@@ -353,6 +401,8 @@ class DeepseekV3Model(nn.Module):
         self.prefix = f"{prefix}.layers"
         self.postfix = ".self_attn.attn"
         self.tp_size = get_tensor_model_parallel_world_size()
+        self.hidden_size = config.hidden_size
+        self.is_ffn_die = self.is_ffn_die_in_afd()
         if get_pp_group().is_first_rank:
             self.embed_tokens = VocabParallelEmbedding(
                 config.vocab_size,
@@ -368,6 +418,7 @@ class DeepseekV3Model(nn.Module):
                 prefix,
                 cache_config=cache_config,
                 quant_config=quant_config,
+                is_ffn_die=self.is_ffn_die,
             ),
             prefix=f"{prefix}.layers")
 
@@ -386,7 +437,33 @@ class DeepseekV3Model(nn.Module):
             self.stream1_moe_group = get_stream1_moe_group()
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.embed_tokens(input_ids, reduce=1)
+        return self.embed_tokens(input_ids, reduce=0 if model_extra_config.parall_config.attn_sp_size > 1 else 1)
+
+    def should_split_hidden_states(self, input_ids: torch.Tensor, ratio_threshold: float, count_threshold: int) -> bool:
+        is_split_hidden_states = False
+        if ratio_threshold == 0.0 or count_threshold == 0:
+            return is_split_hidden_states
+        flattened = input_ids.view(-1)
+        min_val = flattened.min()
+        if min_val.item() < 0:
+            flattened = flattened - min_val # Ensure tensor is non-negative
+        counts = torch.bincount(flattened)
+        max_count = counts.max().item()
+        total = flattened.numel() 
+        if total == 0:
+            return is_split_hidden_states
+        max_token_ratio = max_count / total
+        # Split hidden_states if token count or ratio exceeds threshold, to prevent GMM OOM in MoE.
+        is_split_hidden_states = max_token_ratio >= ratio_threshold or max_count >= count_threshold
+        return is_split_hidden_states
+
+    def is_ffn_die_in_afd(self) -> bool:
+        flag = False
+        if model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+            ffn_dies = get_ep_group().world_size - model_extra_config.parall_config.attn_dies
+            if get_ep_group().rank_in_group < ffn_dies:
+                flag = True
+        return flag
 
     def forward(
             self,
@@ -398,6 +475,14 @@ class DeepseekV3Model(nn.Module):
             max_num_tokens=None
     ) -> Union[torch.Tensor, IntermediateTensors]:
         attn_metadata_first = self.get_layer_attn_metadata(attn_metadata, 0)
+
+        if model_extra_config.operator_opt_config.use_omni_cache:
+            if attn_metadata_first is not None and attn_metadata_first.prefill is not None:
+                attn_metadata_first.omni_cache.synchronize_h2d(
+                    prefix_meta=attn_metadata_first.prefill.prefix_meta,
+                    layer_idx=0,
+                )
+
         if model_extra_config.operator_opt_config.enable_prefill_micro_batch and \
             attn_metadata is not None and attn_metadata_first is not None \
             and attn_metadata_first.prefill is not None and \
@@ -414,7 +499,20 @@ class DeepseekV3Model(nn.Module):
             attn_metadata: AttentionMetadata,
             intermediate_tensors: Optional[IntermediateTensors],
     ) -> Union[torch.Tensor, IntermediateTensors]:
+        attn_metadata_first = self.get_layer_attn_metadata(attn_metadata, 0)
+        is_prefill = attn_metadata is None or (attn_metadata_first is not None and attn_metadata_first.prefill is not None)
+        if is_prefill:
+            DeepseekDecoderLayer.is_split_hidden_states = False
         if get_pp_group().is_first_rank:
+            if input_ids.numel() >= model_extra_config.operator_opt_config.max_split_token_count_threshold and \
+                    is_prefill and \
+                    kv_caches is not None:
+                DeepseekDecoderLayer.is_split_hidden_states = self.should_split_hidden_states(
+                    input_ids,
+                    model_extra_config.operator_opt_config.max_split_token_ratio_threshold,
+                    model_extra_config.operator_opt_config.max_split_token_count_threshold
+                )
+
             hidden_states = self.get_input_embeddings(input_ids)
             residual = None
         else:
@@ -422,24 +520,37 @@ class DeepseekV3Model(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
+        if is_prefill and model_extra_config.parall_config.attn_sp_size > 1:
+            # split input for sp attention
+            hidden_states = generate_sp_inputs(hidden_states, attn_metadata_first)
+
+        if self.is_ffn_die:
+            residual = None
+            fake_hidden_states = torch.zeros(size=(input_ids.shape[0], self.hidden_size), dtype=torch.bfloat16, device=input_ids.device)
+            hidden_states = fake_hidden_states
+
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
             layer_id = i - 3
 
-            if i >= self.first_k_dense_replace and i < self.end_layer - 1:
-                next_attention_weights = {
-                    'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,   
-                    'kv_a_proj_with_mqa_weight': self.layers[i + 1].self_attn.kv_a_proj_with_mqa.weight,
-                    'q_b_proj_weight': self.layers[i + 1].self_attn.q_b_proj.weight,
-                    'W_UK': self.layers[i + 1].self_attn.W_UK
-                }
+            if not self.is_ffn_die:
+                if i >= self.first_k_dense_replace and i < self.end_layer - 1:
+                    next_attention_weights = {
+                        'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,   
+                        'kv_a_proj_with_mqa_weight': self.layers[i + 1].self_attn.kv_a_proj_with_mqa.weight,
+                        'q_b_proj_weight': self.layers[i + 1].self_attn.q_b_proj.weight,
+                        'W_UK': self.layers[i + 1].self_attn.W_UK
+                    }
+                else:
+                    next_attention_weights = {
+                        'q_a_proj_weight': None,
+                        'kv_a_proj_with_mqa_weight': None,
+                        'q_b_proj_weight': None,
+                        'W_UK': None
+                    }
             else:
-                next_attention_weights = {
-                    'q_a_proj_weight': None,
-                    'kv_a_proj_with_mqa_weight': None,
-                    'q_b_proj_weight': None,
-                    'W_UK': None
-                }
+                next_attention_weights = None
+
             hidden_states, residual = layer(positions,
                                             hidden_states,
                                             kv_caches[i - self.start_layer] if kv_caches is not None else None,
@@ -453,10 +564,18 @@ class DeepseekV3Model(nn.Module):
                 "hidden_states": hidden_states,
                 "residual": residual
             })
-
-        hidden_states, _ = self.norm(hidden_states, residual)
+        if residual is not None:
+            hidden_states, _ = self.norm(hidden_states, residual)
+        else:
+            hidden_states = self.norm(hidden_states)
 
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
+
+        if model_extra_config.parall_config.attn_sp_size > 1 and attn_metadata_first is not None:
+            # reverse sp split
+            prefill_meta = attn_metadata_first.prefill
+            outputs_list = torch.split(hidden_states, prefill_meta.sp_reverse_split_list, dim=0)
+            hidden_states = torch.cat([outputs_list[i] for i in prefill_meta.sp_reverse_index], dim=0)
 
         return hidden_states
 
@@ -709,12 +828,18 @@ class DeepseekV3ForCausalLM(nn.Module):
 
         self.config = vllm_config.model_config.hf_config
         self.quant_config = vllm_config.quant_config
-        self.model = DeepseekV3Model(vllm_config=vllm_config, prefix="model")
+        
+        if model_extra_config.task_config.hardware_platform.startswith("A2") and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
+            from omni.models.deepseek.deepseek_v3_a2 import DeepseekV3Model as DeepseekV3Model_A2
+            self.model = DeepseekV3Model_A2(vllm_config=vllm_config, prefix="model")
+        else:
+            self.model = DeepseekV3Model(vllm_config=vllm_config, prefix="model")
 
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
                                       quant_config=self.quant_config,
-									  parallel_lmhead=(model_extra_config.parall_config.dp_size > 1))
+									  parallel_lmhead=(get_dp_group().world_size > 1 \
+                                        and not model_extra_config.parall_config.enable_attn_ffn_disaggregation))
         self.logits_processor = LogitsProcessor(self.config.vocab_size,
                                                 logits_as_input=True)
         self.sampler = Sampler()
@@ -723,6 +848,13 @@ class DeepseekV3ForCausalLM(nn.Module):
 
         self.return_hidden_states = True
         self.max_num_token = vllm_config.scheduler_config.max_num_batched_tokens
+
+        is_ffn_die = False
+        if model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+            ffn_dies = get_ep_group().world_size - model_extra_config.parall_config.attn_dies
+            if get_ep_group().rank_in_group < ffn_dies:
+                is_ffn_die = True
+        self.is_ffn_die = is_ffn_die
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
@@ -738,12 +870,23 @@ class DeepseekV3ForCausalLM(nn.Module):
             inputs_embeds = None,
             **kwargs
     ) -> Optional[torch.Tensor]:
-        hidden_states = self.model(input_ids, positions, kv_caches,
-                                   attn_metadata, intermediate_tensors, self.max_num_token)
-        if attn_metadata is None:
-            logits = self.compute_lmhead(hidden_states[-1:, ...], None)
+        if model_extra_config.task_config.hardware_platform.startswith(f"A2") and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
+            hidden_states = self.model(input_ids, positions, kv_caches,
+                                   attn_metadata, intermediate_tensors)
         else:
-            logits = self.compute_lmhead(hidden_states, selected_indices)
+            hidden_states = self.model(input_ids, positions, kv_caches,
+                                   attn_metadata, intermediate_tensors, self.max_num_token)
+        
+        if self.is_ffn_die:
+            logits = torch.zeros(size=(hidden_states.shape[0], 
+                                    self.config.vocab_size), 
+                                    dtype=hidden_states.dtype, 
+                                    device=hidden_states.device)
+        else: 
+            if attn_metadata is None:
+                logits = self.compute_lmhead(hidden_states[-1:, ...], None)
+            else:
+                logits = self.compute_lmhead(hidden_states, selected_indices)
 
         if self.return_hidden_states:
             return hidden_states, logits

@@ -67,7 +67,7 @@ def patch_sglang_distributed():
 def patch_quantization_w8a8_int8():
     from sglang.srt.layers.quantization import w8a8_int8
     from sglang.srt.layers import quantization as q
-    from omni.adaptors.sglang.layers.quantization.compressed_tensors.compressed_tensors import AscendCompressedTensorsConfig
+    from omni.adaptors.sglang.quantization.compressed_tensors.compressed_tensors import AscendCompressedTensorsConfig
 
     w8a8_int8.W8A8Int8Config = AscendCompressedTensorsConfig
     q.BASE_QUANTIZATION_METHODS.update(

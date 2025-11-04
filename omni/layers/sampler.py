@@ -5,6 +5,7 @@
 from typing import Dict, List, Optional
 import torch_npu
 import torch
+import os
 
 from vllm.platforms import current_platform
 from vllm.model_executor.layers.sampler import (
@@ -23,7 +24,7 @@ from vllm.v1.outputs import SamplerOutput as SamplerOutputV1
 from vllm.v1.sample.ops.penalties import apply_min_token_penalties
 from vllm.sampling_params import SamplingType
 from vllm.sequence import Logprob, VLLM_INVALID_TOKEN_ID
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 
 FP32_EPS = 2 ** -24
@@ -730,6 +731,39 @@ def random_sample(
         return res
     else:
         return torch.gather(idx, 1, res.unsqueeze(1)).view(-1)
+
+def generate_random_sequence(
+        logits: torch.Tensor,
+        generators: dict[int, torch.Generator],
+        stream
+) -> torch.Tensor:
+    with torch_npu.npu.stream(stream):
+        q = torch.empty_like(logits, dtype=torch.float32)
+        if len(generators) != logits.shape[0]:
+            q.exponential_()
+        if generators:
+            for i, generator in generators.items():
+                q[i].exponential_(generator=generator)
+    torch.npu.default_stream().wait_stream(stream)
+    return q
+
+
+def random_choice(
+    probs: torch.Tensor,
+    generators: dict[int, torch.Generator],
+    stream,
+) -> torch.Tensor:
+    with torch_npu.npu.stream(stream) :
+        q = torch.empty_like(probs)
+        if len(generators) != probs.shape[0]:
+            q.exponential_()
+        if generators:
+            for i, generator in generators.items():
+                q[i].exponential_(generator=generator)
+    torch.npu.default_stream().wait_stream(stream)
+    res = probs.div(q).argmax(dim=-1).view(-1)
+    return res
+
 class AscendTopKTopPSamplerV1(TopKTopPSampler):
     """
     Module that performs optional top-k and top-p filtering followed by
@@ -753,9 +787,18 @@ class AscendTopKTopPSamplerV1(TopKTopPSampler):
 
         The logits tensor may be updated in-place.
         """
-        logits, idx = apply_top_k_top_p(logits, k, p)
-        probs = logits.softmax(dim=-1, dtype=torch.float32)
-        return random_sample(probs, idx, generators, self.dsa_stream)
+        use_npu_top_k_top_p_sample = model_extra_config.operator_opt_config.enable_topktoppsample_op
+        if use_npu_top_k_top_p_sample == False or p is None or k is None:
+            logits, idx = apply_top_k_top_p(logits, k, p)
+            probs = logits.softmax(dim=-1, dtype=torch.float32)
+            return random_sample(probs, idx, generators, self.dsa_stream)
+        else:
+            logits = logits.type(torch.bfloat16)
+            p = p.type(torch.bfloat16)
+            k = k.type(torch.int32)
+            q = generate_random_sequence(logits, generators, self.dsa_stream)
+            res = torch_npu.npu_top_k_top_p_sample(logits, k, p, q)
+            return res[0]
 
 def _apply_penalties_v1(logits: torch.Tensor, prompt_mask: torch.Tensor,
                     output_mask: torch.Tensor,
@@ -825,7 +868,7 @@ class AscendSamplerV1(SamplerV1):
 
 class SimpleSampler(RejectionSamplerV1):
  
-    def __init__(self, main_sampler, use_rejection_sampler, topk, *args, **kwargs) -> None:
+    def __init__(self, main_sampler, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.previous_frequency_penalties = []
         self.previous_repetition_penalties = [] 
@@ -833,8 +876,6 @@ class SimpleSampler(RejectionSamplerV1):
         self.main_sampler = main_sampler
         self.main_sampler.topk_topp_sampler = AscendTopKTopPSamplerV1()
         self.minus_one = None
-        self.use_rejection_sampler = use_rejection_sampler
-        self.topk = topk
 
     # TODO to support mixture case
     def forward(self, input_ids, logits, logits_indices, sampling_metadata, num_decodes, num_prefills):
@@ -856,7 +897,90 @@ class SimpleSampler(RejectionSamplerV1):
         else:
             start_indices = torch.arange(batch_size, device=logits.device) * num_sampling_tokens_per_req
             forward_tokens = torch.empty_like(logits_indices, dtype=input_ids.dtype, device=input_ids.device).view(batch_size, -1)
-            update_penalty = num_decodes == 0 or not self.use_rejection_sampler 
+            for i in range(num_sampling_tokens_per_req):
+                sampler_output = self.main_sampler(
+                    logits=logits[start_indices],
+                    sampling_metadata=sampling_metadata,
+                )
+                start_indices += 1
+                forward_tokens[:, i] = sampler_output.sampled_token_ids.view(-1)
+                sampler_output.sampled_token_ids = None
+
+        # Create output buffer.
+        # output_token_ids: 
+        # if accepted [input_ids[-1], forward_tokens_result]
+        # else [forward_tokens_result, -1]
+
+        # all prefill
+        
+        num_spec_tokens_per_req = num_sampling_tokens_per_req - 1
+        if num_decodes == 0:
+            last_accepted_index = torch.arange(batch_size, dtype=torch.int32, device = logits_indices.device)
+            output_token_ids = forward_tokens.view(-1, 1)
+            accepted_num = 0
+        else:
+            accepted = input_ids[logits_indices].view(batch_size, -1)[:, 1:] == forward_tokens[:, :-1]
+      
+            if model_extra_config.operator_opt_config.control_accept_rate >= 0 and model_extra_config.operator_opt_config.control_accept_rate <= 1:
+                accepted = torch.empty_like(accepted, dtype=torch.float32).uniform_() < model_extra_config.operator_opt_config.control_accept_rate
+
+            padding_zero = torch.zeros((batch_size, 1), dtype=torch.int32, device=input_ids.device)
+            accepted_mask = accepted.to(dtype=torch.int32)
+            accepted_mask = torch.cat((accepted_mask, padding_zero), dim=1)
+            accepted_num = accepted_mask.argmin(dim=1).to(dtype=torch.int32)
+            offset = torch.arange(num_sampling_tokens_per_req, device=accepted_num.device, dtype=torch.int32)
+            last_accepted_index = torch.arange(batch_size, device=input_ids.device, dtype=torch.int32) * num_sampling_tokens_per_req + accepted_num
+
+            output_token_ids = torch.where(offset[None, :] <= accepted_num[:, None], forward_tokens, self.minus_one)
+            
+            for spec_token_idx in range(1, num_spec_tokens_per_req):
+                accepted[:, spec_token_idx] = accepted[:, spec_token_idx] & accepted[:, spec_token_idx - 1]
+            if self.main_sampler.penalty_cache is not None:
+                self.main_sampler.penalty_cache.revert_rejected_tokens(accepted, forward_tokens.view(batch_size, -1)[:, 1:])
+
+        sampler_output = SamplerOutputV1(
+            sampled_token_ids = output_token_ids,
+            logprobs_tensors = None
+        )
+
+        return sampler_output, forward_tokens, last_accepted_index, accepted_num
+
+class SparseRejectionSampler(RejectionSamplerV1):
+ 
+    def __init__(self, main_sampler, topk, max_num_tokens, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.previous_frequency_penalties = []
+        self.previous_repetition_penalties = [] 
+        self.previous_presence_penalties = []
+        self.main_sampler = main_sampler
+        self.main_sampler.topk_topp_sampler = AscendTopKTopPSamplerV1()
+        self.minus_one = None
+        self.topk = topk
+        self.max_num_tokens = max_num_tokens
+        self.arange = None
+
+    # TODO to support mixture case
+    def forward(self, input_ids, logits, logits_indices, sampling_metadata, num_decodes, num_prefills):
+
+        if num_decodes != 0 and num_prefills != 0:
+            raise ("Chunked prefill is not supported in current version.")
+        num_logprobs = sampling_metadata.max_num_logprobs
+        if num_logprobs is not None:
+            raise ("Logprobs gathered is not supported in current version")
+        if self.minus_one is None:
+            # prepare const on npu
+            self.minus_one = -torch.ones(1, 1, device=input_ids.device, dtype=input_ids.dtype)
+            self.arange = torch.arange(self.max_num_tokens, device=input_ids.device)
+
+        batch_size = num_decodes + num_prefills
+        logits_indices = logits_indices.to(torch.int32)
+        num_sampling_tokens_per_req = (logits_indices.numel() // batch_size)
+        if self.main_sampler is None or sampling_metadata.all_greedy:
+            forward_tokens = logits.argmax(dim=-1).to(dtype = input_ids.dtype, device=input_ids.device).view(batch_size, -1)
+        else:
+            start_indices = torch.arange(batch_size, device=logits.device) * num_sampling_tokens_per_req
+            forward_tokens = torch.empty_like(logits_indices, dtype=input_ids.dtype, device=input_ids.device).view(batch_size, -1)
+            update_penalty = num_decodes == 0
             for i in range(num_sampling_tokens_per_req):
                 sampler_output = self.main_sampler(
                     logits=logits[start_indices],
@@ -880,25 +1004,35 @@ class SimpleSampler(RejectionSamplerV1):
             output_token_ids = forward_tokens.view(-1, 1)
             accepted_num = 0
         else:
-            if self.use_rejection_sampler:
-                main_probs = torch.nn.functional.softmax(logits[logits_indices], dim=-1)
-                vocab_size = main_probs.shape[1]
-                target_probs = main_probs.view(batch_size, -1, vocab_size)[:, :-1, :].view(-1, vocab_size)
+            num_input_tokens = num_sampling_tokens_per_req * batch_size
+            main_probs = torch.nn.functional.softmax(logits[:num_input_tokens].half(), dim=-1)
+            vocab_size = main_probs.shape[1]
+            target_probs = main_probs.view(batch_size, -1, vocab_size)[:, :-1, :].view(-1, vocab_size)
+            num_tokens = num_spec_tokens_per_req * batch_size
+            token_indices = self.arange[:num_tokens]
 
+            if self.topk > 0:
                 topk_spec_token_ids = self.main_sampler.prob_cache.topk_spec_token_ids[:batch_size].view(-1, self.topk)
                 topk_spec_token_probs = self.main_sampler.prob_cache.topk_spec_token_probs[:batch_size].view(-1, self.topk)
-                draft_tokens_probs = topk_spec_token_probs[:, 0].view(-1)
-                draft_token_ids = topk_spec_token_ids[:, 0].view(-1)
-                target_token_probs = target_probs[torch.arange(batch_size), draft_token_ids].view(-1)
-                
-                accepted_probs = target_token_probs / draft_tokens_probs
-                accepted = torch.empty_like(accepted_probs).uniform_() < accepted_probs # boolean mask
-                accepted = accepted.view(batch_size, -1)
-                
-                computed_msk = self.main_sampler.prob_cache.computed[:batch_size].unsqueeze(1).expand(-1, num_spec_tokens_per_req)
-                accepted = torch.where(computed_msk, accepted, computed_msk)
+                draft_token_indices = self.main_sampler.prob_cache.selected_indices[:batch_size].view(-1)
+
+                draft_token_ids = topk_spec_token_ids[token_indices, draft_token_indices].view(-1)
+                draft_token_probs = topk_spec_token_probs[token_indices, draft_token_indices].view(-1)
+                target_token_probs = target_probs[token_indices, draft_token_ids].view(-1)
             else:
-                accepted = input_ids[logits_indices].view(batch_size, -1)[:, 1:] == forward_tokens[:, :-1]
+                spec_token_probs = self.main_sampler.prob_cache.topk_spec_token_probs[:batch_size].view(-1, vocab_size)
+                draft_token_ids = input_ids.view(batch_size, -1)[:, 1:, :].view(-1)
+                draft_token_probs = spec_token_probs[token_indices, draft_token_ids]
+                target_token_probs = target_probs[token_indices, draft_token_ids].view(-1)
+
+            accepted_probs = target_token_probs / draft_token_probs
+            accepted = torch.empty_like(accepted_probs).uniform_() < accepted_probs # boolean mask
+            accepted = accepted.view(batch_size, -1)
+            
+            computed_msk = self.main_sampler.prob_cache.computed[:batch_size].unsqueeze(1).expand(-1, num_spec_tokens_per_req)
+            accepted = torch.where(computed_msk, accepted, computed_msk)
+
+            forward_tokens[:, :-1] = input_ids[:num_input_tokens].view(batch_size, -1)[:, 1:]
       
             if model_extra_config.operator_opt_config.control_accept_rate >= 0 and model_extra_config.operator_opt_config.control_accept_rate <= 1:
                 accepted = torch.empty_like(accepted, dtype=torch.float32).uniform_() < model_extra_config.operator_opt_config.control_accept_rate
@@ -910,20 +1044,18 @@ class SimpleSampler(RejectionSamplerV1):
             offset = torch.arange(num_sampling_tokens_per_req, device=accepted_num.device, dtype=torch.int32)
             last_accepted_index = torch.arange(batch_size, device=input_ids.device, dtype=torch.int32) * num_sampling_tokens_per_req + accepted_num
 
-            if self.use_rejection_sampler:
-                reject_req_indices = torch.where(accepted_num < num_spec_tokens_per_req)[0]
+            accepted_mask = accepted_num == num_spec_tokens_per_req
+            forward_tokens = forward_tokens.view(-1)
+            bias = self.arange[:batch_size]
+            resample_indices = last_accepted_index
+            drafter_resample_indices = resample_indices - bias - accepted_mask.int()
+            resample_tokens = self._reject_sampling(sampling_metadata.generators, main_probs[resample_indices], topk_spec_token_ids[drafter_resample_indices], topk_spec_token_probs[drafter_resample_indices])
+            forward_tokens[resample_indices] = torch.where(accepted_mask, forward_tokens[resample_indices], resample_tokens)
+            forward_tokens = forward_tokens.view(batch_size, -1)
 
-                if reject_req_indices.numel() > 0:
-                    forward_tokens = forward_tokens.view(-1)
-                    resample_indices = last_accepted_index[reject_req_indices]
-                    bias = torch.arange(batch_size, device=last_accepted_index.device, dtype=torch.int32)
-                    drafter_resample_indices = (last_accepted_index - bias)[reject_req_indices]
-                    forward_tokens[resample_indices] = self._reject_sampling(main_probs[resample_indices], topk_spec_token_ids[drafter_resample_indices], topk_spec_token_probs[drafter_resample_indices])
-                    forward_tokens = forward_tokens.view(batch_size, -1)
-
-                if self.main_sampler.penalty_cache is not None:
-                    for i in range(num_sampling_tokens_per_req):
-                        self.main_sampler.penalty_cache.save_token_ids(forward_tokens[:, i])
+            if self.main_sampler.penalty_cache is not None:
+                for i in range(num_sampling_tokens_per_req):
+                    self.main_sampler.penalty_cache.save_token_ids(forward_tokens[:, i])
 
             output_token_ids = torch.where(offset[None, :] <= accepted_num[:, None], forward_tokens, self.minus_one)
             
@@ -939,20 +1071,22 @@ class SimpleSampler(RejectionSamplerV1):
 
         return sampler_output, forward_tokens, last_accepted_index, accepted_num
 
-    def _reject_sampling(self, target_probs, topk_spec_token_ids, topk_spec_token_probs) -> torch.Tensor:
-        draft_probs = torch.zeros_like(target_probs)
-        num_tokens, topk = topk_spec_token_ids.shape
+    def _reject_sampling(self, generators, target_probs, topk_spec_token_ids, topk_spec_token_probs) -> torch.Tensor:
+        if self.topk > 0:
+            draft_probs = torch.zeros_like(target_probs)
+            num_tokens, topk = topk_spec_token_ids.shape
 
-        i_indices = torch.arange(num_tokens, device=target_probs.device).unsqueeze(1).expand(-1, topk)
-        j_indices = topk_spec_token_ids
+            i_indices = torch.arange(num_tokens, device=target_probs.device).unsqueeze(1).expand(-1, topk)
+            j_indices = topk_spec_token_ids
 
-        draft_probs[i_indices.flatten(), j_indices.flatten()] = topk_spec_token_probs.flatten()
-        recovered_probs = torch.clamp(target_probs - draft_probs, min=0)
-        recovered_probs = recovered_probs / torch.sum(recovered_probs, dim=-1, keepdim=True)
+            draft_probs[i_indices.flatten(), j_indices.flatten()] = topk_spec_token_probs.flatten()
+        else:
+            draft_probs = topk_spec_token_probs
+        recovered_probs = target_probs - draft_probs
 
-        sampled_token_ids = torch.multinomial(recovered_probs, num_samples=1)
-        return sampled_token_ids.squeeze(-1)
-
+        sampled_token_ids = random_choice(recovered_probs, generators, self.main_sampler.topk_topp_sampler.dsa_stream)
+        return sampled_token_ids
+    
 def _multinomial(
     probs: torch.Tensor,
     num_samples: int,

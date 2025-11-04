@@ -51,6 +51,9 @@ from sglang.srt.model_executor.forward_batch_info import (
     PPProxyTensors,
     enable_num_token_non_padded,
 )
+from sglang.srt.speculative.eagle_utils import (
+    EagleDraftInput
+)
 from sglang.srt.utils import (
     get_available_gpu_memory,
     get_compiler_backend,
@@ -83,6 +86,52 @@ class NpuGraphRunner(DeviceRunnerBase):
                 "3. disable torch compile by not using --enable-torch-compile\n"
                 "Open an issue on GitHub https://github.com/sgl-project/sglang/issues/new/choose \n"
             )
+
+    def get_spec_info(self, num_tokens: int):
+        spec_info = None
+        if self.model_runner.spec_algorithm.is_mtp():
+            from sglang.srt.speculative.eagle_utils import EagleVerifyInput, EagleDraftInput
+
+            # Target Model
+            if not self.model_runner.is_draft_worker:
+                spec_info = EagleVerifyInput(
+                    draft_token=None,
+                    custom_mask=self.custom_mask,
+                    positions=None,
+                    retrive_index=None,
+                    retrive_next_token=None,
+                    retrive_next_sibling=None,
+                    retrive_cum_len=None,
+                    spec_steps=self.model_runner.server_args.speculative_num_steps,
+                    topk=self.model_runner.server_args.speculative_eagle_topk,
+                    draft_token_num=self.model_runner.server_args.speculative_num_draft_tokens,
+                    capture_hidden_mode=CaptureHiddenMode.FULL,
+                    seq_lens_sum=None,
+                    seq_lens_cpu=None,
+                )
+            # Draft Model
+            else:
+                with torch.device(self.model_runner.device):
+                    self.topk = self.model_runner.server_args.speculative_eagle_topk
+                    self.speculative_num_steps = self.model_runner.server_args.speculative_num_steps
+                    self.topk_p = torch.zeros((self.max_bs, self.topk), dtype=torch.float32)
+                    self.topk_index = torch.zeros((self.max_bs, self.topk), dtype=torch.int64)
+                    self.hidden_states = torch.zeros(
+                        (self.max_bs, self.model_runner.model_config.hidden_size),
+                        dtype=self.model_runner.dtype,
+                    )
+                topk_p = self.topk_p[:num_tokens]
+                topk_index = self.topk_index[:num_tokens]
+                hidden_states = self.hidden_states[:num_tokens]
+
+                spec_info = EagleDraftInput(
+                    topk_p=None,
+                    topk_index=None,
+                    hidden_states=hidden_states,
+                    capture_hidden_mode=CaptureHiddenMode.FULL,
+                )
+
+        return spec_info
 
     def prepare_forward_batch(self, bs: int, num_tokens: int) -> ForwardBatch:
         # Graph inputs
@@ -133,6 +182,7 @@ class NpuGraphRunner(DeviceRunnerBase):
             gathered_buffer = None
 
         spec_info = self.get_spec_info(num_tokens)
+
         if self.capture_hidden_mode != CaptureHiddenMode.FULL:
             self.capture_hidden_mode = (
                 spec_info.capture_hidden_mode if spec_info else CaptureHiddenMode.NULL
@@ -199,6 +249,12 @@ class NpuGraphRunner(DeviceRunnerBase):
         mark_tensor_static(forward_batch.out_cache_loc)
         mark_tensor_static(forward_batch.gathered_buffer)
         mark_tensor_static(forward_batch.attn_backend.forward_metadata.block_kv_indices)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.cos)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.sin)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.actual_seq_lengths_kv)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.actual_seq_lengths)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.norm_res)
+        mark_tensor_static(forward_batch.attn_backend.forward_metadata.mc2_mask)
         try:
             mark_tensor_static(forward_batch.token_to_kv_pool.k_buffer, is_cache=True)
             mark_tensor_static(forward_batch.token_to_kv_pool.v_buffer, is_cache=True)
@@ -219,7 +275,7 @@ class NpuGraphRunner(DeviceRunnerBase):
             self.model_runner.model.compile_forward = torch.compile(
                 torch.no_grad()(self.model_runner.model.forward),
                 fullgraph=True,
-                dynamic=True,
+                dynamic=False,
                 backend=backend,
             )
 
@@ -289,7 +345,8 @@ def {method_name}(self, input_ids, positions, forward_batch, **kwargs):
                     ).parameters
                 ):
                     kwargs["pp_proxy_tensors"] = forward_batch.pp_proxy_tensors
-                self.mark_static(forward_batch, kwargs.get("pp_proxy_tensors"))
+                # if use dynamic graph, should mark static for inputs
+                # self.mark_static(forward_batch, kwargs.get("pp_proxy_tensors"))
 
                 compile_forward = (
                     getattr(self.model_runner.model, compile_method_name)
@@ -330,7 +387,7 @@ def {method_name}(self, input_ids, positions, forward_batch, **kwargs):
                 else self.model_runner.model.compile_forward
             )
             with torch.no_grad():
-                if self.model_runner.profile_save_dir != "":
+                if self.model_runner.profile_save_dir != "" and not self.model_runner.is_draft_worker:
                     if not self.model_runner.profile_already_start and forward_batch.max_tokens >= self.model_runner.profiler_bs_threshold:
                         logger.info(f"******* start graph profiling . . .")
                         self.model_runner.profiler.start()
@@ -342,10 +399,11 @@ def {method_name}(self, input_ids, positions, forward_batch, **kwargs):
                     forward_batch,
                     **kwargs,
                 )
-                if self.model_runner.profile_save_dir != "":
+                if self.model_runner.profile_save_dir != "" and not self.model_runner.is_draft_worker:
                     if self.model_runner.profile_already_start and not self.model_runner.profile_finished:
                         self.model_runner.profile_step += 1
                     if not self.model_runner.profile_finished and self.model_runner.profile_step > self.model_runner.profiler_stop_step:
+                        logger.info(f"******* stop graph profiling . . .")
                         self.model_runner.profiler.stop()
                         self.model_runner.profile_finished = True
                 return ret

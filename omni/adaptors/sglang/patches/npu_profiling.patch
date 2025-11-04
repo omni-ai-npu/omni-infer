@@ -11,7 +11,7 @@ index f1cc2c38..1be39d99 100644
          for i in range(sync_group_size):
              # make sure that the padded length is divisible by attn_tp_size because we may need reduce-scatter across attn_tp dim.
 diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
-index 5038dbf1..21464636 100644
+index 5038dbf1..948b8c8c 100644
 --- a/python/sglang/srt/model_executor/model_runner.py
 +++ b/python/sglang/srt/model_executor/model_runner.py
 @@ -24,6 +24,7 @@ from dataclasses import dataclass
@@ -71,12 +71,12 @@ index 5038dbf1..21464636 100644
  
      def model_specific_adjustment(self):
          server_args = self.server_args
-@@ -1604,12 +1640,25 @@ class ModelRunner:
+@@ -1604,12 +1640,26 @@ class ModelRunner:
          kwargs = {}
          if self.support_pp:
              kwargs["pp_proxy_tensors"] = pp_proxy_tensors
 -        return self.model.forward(
-+        if self.profile_save_dir != "":
++        if self.profile_save_dir != "" and not self.is_draft_worker:
 +            if not self.profile_already_start and forward_batch.max_tokens >= self.profiler_bs_threshold:
 +                logger.info(f"*******start eager decode profiling . . .")
 +                self.profiler.start()
@@ -88,24 +88,25 @@ index 5038dbf1..21464636 100644
              forward_batch,
              **kwargs,
          )
-+        if self.profile_save_dir != "":
++        if self.profile_save_dir != "" and not self.is_draft_worker:
 +            if self.profile_already_start and not self.profile_finished:
 +                self.profile_step += 1
 +            if not self.profile_finished and self.profile_step > self.profiler_stop_step:
++                logger.info(f"*******stop eager decode profiling . . .")
 +                self.profiler.stop()
 +                self.profile_finished = True
 +        return ret
  
      def forward_extend(
          self,
-@@ -1627,12 +1676,25 @@ class ModelRunner:
+@@ -1627,12 +1677,26 @@ class ModelRunner:
              kwargs["input_embeds"] = forward_batch.input_embeds.bfloat16()
          if not self.is_generation:
              kwargs["get_embedding"] = True
 -        return self.model.forward(
-+        if self.profile_save_dir != "":
++        if self.profile_save_dir != "" and not self.is_draft_worker:
 +            if not self.profile_already_start and forward_batch.max_tokens >= self.profiler_bs_threshold:
-+                logger.info(f"*******start eager decode profiling . . .")
++                logger.info(f"*******start eager prefill profiling . . .")
 +                self.profiler.start()
 +                self.profile_already_start = True
 +                self.profile_step = 0
@@ -115,10 +116,11 @@ index 5038dbf1..21464636 100644
              forward_batch,
              **kwargs,
          )
-+        if self.profile_save_dir != "":
++        if self.profile_save_dir != "" and not self.is_draft_worker:
 +            if self.profile_already_start and not self.profile_finished:
 +                self.profile_step += 1
 +            if not self.profile_finished and self.profile_step > self.profiler_stop_step:
++                logger.info(f"*******stop eager prefill profiling . . .")
 +                self.profiler.stop()
 +                self.profile_finished = True
 +        return ret

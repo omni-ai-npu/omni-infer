@@ -1,0 +1,46 @@
+{{- /*
+在 install/upgrade 前执行，确保 NFS 已挂载，清理上次ranktable文件
+*/ -}}
+{{- if and .Values.nfs.server .Values.nfs.cleanupOnInstall }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clean-ranktable-hook
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    # Helm Hook: 在主资源安装前运行
+    "helm.sh/hook": "pre-install,pre-upgrade"
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": "hook-succeeded"
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure # 或 Never，确保此处设置正确
+      hostPID: true
+      hostNetwork: true
+      tolerations:
+      - operator: "Exists"
+      containers:
+      - name: clean-ranktable-container
+        image: {{ include "omniinfer.image" (list .Values.image.repository .Values.image.tag) | quote }}
+        securityContext: {{- toYaml .Values.securityContext | nindent 10 }}
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -x
+          echo "Cleaning old ranktable files from shared storage at /shared..."
+          rm -rf /shared/collect_files_d/
+          rm -rf /shared/collect_files_p/
+          rm -rf /shared/global/
+          find /shared
+          echo "Clean up completed."
+        volumeMounts:
+        - name: shared-storage
+          mountPath: /shared
+      volumes:
+      - name: shared-storage
+        nfs:
+          server: {{ .Values.nfs.server }}    # NFS 服务器 IP
+          path: {{ .Values.nfs.path }}        # NFS 共享路径 
+          readOnly: false
+{{- end }}

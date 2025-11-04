@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
+import os
+
 from vllm.distributed.kv_transfer.kv_connector.factory import \
     KVConnectorFactory
 
@@ -8,6 +10,19 @@ from vllm.distributed.kv_transfer.kv_connector.factory import \
 def register():
     KVConnectorFactory.register_connector(
         "AscendHcclConnectorV1",
-        "omni.accelerators.pd.llmdatadist_connector_v1",
+        "omni.accelerators.pd.omni_cache_connector_v1" if os.getenv("ENABLE_OMNI_CACHE", "0") == "1" 
+                                                        else "omni.accelerators.pd.llmdatadist_connector_v1",
         "LLMDataDistConnector"
+    )
+
+    KVConnectorFactory.register_connector(
+        "CcConnector",
+        "omni.accelerators.pd.cc_connector",
+        "CcConnector"
+    )
+
+    KVConnectorFactory.register_connector(
+        "EmsConnector",
+        "omni.accelerators.pd.ems_connector",
+        "EmsConnector"
     )

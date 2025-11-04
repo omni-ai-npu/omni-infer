@@ -21,6 +21,7 @@ from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.distributed.parallel_state import (
+    get_dp_group,
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
 )
@@ -36,7 +37,7 @@ from omni.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding
 )
 from omni.layers.moe.fused_moe.layer import FusedMoE
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 def get_spec_layer_idx_from_weight_name(config: PretrainedConfig,
                                         weight_name: str) -> Optional[int]:
@@ -149,7 +150,7 @@ class PanguUltraMoEMultiTokenPredictorLayer(PanguUltraMoEDecoderLayer):
             selected_indices: Optional[torch.Tensor] = None,
             embedding_bias: Optional[torch.Tensor] = None,
     ) -> Optional[torch.Tensor]:
-        if model_extra_config.parall_config.dp_size <= 1 and selected_indices is not None:
+        if get_dp_group().world_size <= 1 and selected_indices is not None:
             hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
             if hidden_states.shape[0] != selected_indices.shape[0]:
                 hidden_states = hidden_states.index_select(0, selected_indices)

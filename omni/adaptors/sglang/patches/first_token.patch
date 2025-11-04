@@ -1,0 +1,214 @@
+Subject: [PATCH] first token
+---
+Index: python/sglang/srt/disaggregation/base/conn.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/python/sglang/srt/disaggregation/base/conn.py b/python/sglang/srt/disaggregation/base/conn.py
+--- a/python/sglang/srt/disaggregation/base/conn.py	(revision e90dbd5c8b785d46c7e6d8757ed8f7f00614035e)
++++ b/python/sglang/srt/disaggregation/base/conn.py	(revision 3496e069f3e9959cb91f8cbef355fa5b068ec996)
+@@ -52,6 +52,7 @@
+         disaggregation_mode: DisaggregationMode,
+         server_args: ServerArgs,
+         is_mla_backend: Optional[bool] = False,
++        scheduler: object = None,
+     ): ...
+ 
+ 
+Index: python/sglang/srt/disaggregation/decode.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/python/sglang/srt/disaggregation/decode.py b/python/sglang/srt/disaggregation/decode.py
+--- a/python/sglang/srt/disaggregation/decode.py	(revision e90dbd5c8b785d46c7e6d8757ed8f7f00614035e)
++++ b/python/sglang/srt/disaggregation/decode.py	(revision 3496e069f3e9959cb91f8cbef355fa5b068ec996)
+@@ -222,6 +222,7 @@
+             DisaggregationMode.DECODE,
+             self.scheduler.server_args,
+             self.is_mla_backend,
++            self.scheduler,
+         )
+         return kv_manager
+ 
+@@ -603,7 +604,6 @@
+                     output_hidden_states,
+                 ) = self.metadata_buffers.get_buf(idx)
+ 
+-                decode_req.req.output_ids.append(output_id[0].item())
+                 if not self.spec_algorithm.is_none():
+                     decode_req.req.hidden_states_tensor = output_hidden_states
+                 if decode_req.req.return_logprob:
+@@ -680,9 +680,6 @@
+                 # Generate fake extend output.
+                 if batch.forward_mode.is_extend():
+                     # Note: Logprobs should be handled on the prefill engine.
+-                    self.stream_output(
+-                        batch.reqs, any(req.return_logprob for req in batch.reqs)
+-                    )
+                     if prepare_mlp_sync_flag:
+                         self._prepare_idle_batch_and_run(None)
+                 else:
+@@ -724,9 +721,6 @@
+                 # Generate fake extend output.
+                 if batch.forward_mode.is_extend():
+                     # Note: Logprobs should be handled on the prefill engine.
+-                    self.stream_output(
+-                        batch.reqs, any(req.return_logprob for req in batch.reqs)
+-                    )
+                     if prepare_mlp_sync_flag:
+                         batch_, result = self._prepare_idle_batch_and_run(
+                             None, delay_process=True
+Index: python/sglang/srt/disaggregation/mooncake/conn.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/python/sglang/srt/disaggregation/mooncake/conn.py b/python/sglang/srt/disaggregation/mooncake/conn.py
+--- a/python/sglang/srt/disaggregation/mooncake/conn.py	(revision e90dbd5c8b785d46c7e6d8757ed8f7f00614035e)
++++ b/python/sglang/srt/disaggregation/mooncake/conn.py	(revision 3496e069f3e9959cb91f8cbef355fa5b068ec996)
+@@ -52,6 +52,8 @@
+     maybe_wrap_ipv6_address,
+ )
+ 
++from sglang.srt.managers.scheduler import Scheduler
++
+ logger = logging.getLogger(__name__)
+ 
+ 
+@@ -144,6 +146,7 @@
+         disaggregation_mode: DisaggregationMode,
+         server_args: ServerArgs,
+         is_mla_backend: Optional[bool] = False,
++        scheduler: Scheduler = None,
+     ):
+         self.kv_args = args
+         self.local_ip = get_local_ip_auto()
+@@ -165,6 +168,7 @@
+         )
+         self.pp_size = server_args.pp_size
+         self.pp_rank = self.kv_args.pp_rank
++        self.scheduler = scheduler
+         self.request_status: Dict[int, KVPoll] = {}
+         self.rank_port = None
+         self.server_socket = zmq.Context().socket(zmq.PULL)
+@@ -780,6 +784,8 @@
+                         arrived_response_num = len(
+                             self.prefill_response_tracker[bootstrap_room]
+                         )
++                        # first straight stream_output not build batch
++                        self.scheduler.stream_output_first_token(bootstrap_room)
+                         if (
+                             self.is_mla_backend
+                             or arrived_response_num == expected_response_num
+Index: python/sglang/srt/managers/scheduler.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+--- a/python/sglang/srt/managers/scheduler.py	(revision e90dbd5c8b785d46c7e6d8757ed8f7f00614035e)
++++ b/python/sglang/srt/managers/scheduler.py	(revision 3496e069f3e9959cb91f8cbef355fa5b068ec996)
+@@ -17,6 +17,7 @@
+ import faulthandler
+ import logging
+ import os
++import queue
+ import signal
+ import sys
+ import threading
+@@ -99,6 +100,10 @@
+     UpdateWeightsFromDistributedReqInput,
+     UpdateWeightsFromTensorReqInput,
+ )
++from sglang.srt.managers.io_struct import (
++    BatchTokenIDOut,
++)
++
+ from sglang.srt.managers.mm_utils import init_embedding_cache
+ from sglang.srt.managers.schedule_batch import (
+     FINISH_ABORT,
+@@ -223,6 +228,7 @@
+         self.enable_overlap = not server_args.disable_overlap_schedule
+         self.skip_tokenizer_init = server_args.skip_tokenizer_init
+         self.enable_metrics = server_args.enable_metrics
++        self.token_queue = queue.Queue(maxsize=0)
+         self.enable_metrics_for_all_schedulers = (
+             server_args.enable_metrics_for_all_schedulers
+         )
+@@ -600,6 +606,20 @@
+                     revision=server_args.revision,
+                 )
+ 
++    def batch_token_id_thread(self):
++
++        while True:
++            batch_token_out_obj = self.token_queue.get(block=True)
++            if self.send_to_local_detokenizer is None:
++                raise RuntimeError(f"send_to_local_detokenizer zmq channel is not initialized")
++            self.send_to_local_detokenizer.send_pyobj(batch_token_out_obj)
++
++    def add_to_batch_token_id_queue(self, obj: BatchTokenIDOut):
++        if obj is None:
++            logger.error(f"dp: {self.dp_rank}, tp_rank: {self.tp_rank}, received None BatchTokenIDOut")
++            return
++        self.token_queue.put(obj)
++
+     def init_memory_pool_and_cache(self):
+         server_args = self.server_args
+ 
+@@ -753,6 +773,9 @@
+                 num_reserved_decode_tokens=self.server_args.num_reserved_decode_tokens,
+                 transfer_backend=self.transfer_backend,
+             )
++            # run batch_token_id_thread in decode
++            bt = threading.Thread(target=self.batch_token_id_thread, daemon=True)
++            bt.start()
+ 
+         elif self.disaggregation_mode == DisaggregationMode.PREFILL:
+             # *2 for the headroom.
+Index: python/sglang/srt/managers/scheduler_output_processor_mixin.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/python/sglang/srt/managers/scheduler_output_processor_mixin.py b/python/sglang/srt/managers/scheduler_output_processor_mixin.py
+--- a/python/sglang/srt/managers/scheduler_output_processor_mixin.py	(revision e90dbd5c8b785d46c7e6d8757ed8f7f00614035e)
++++ b/python/sglang/srt/managers/scheduler_output_processor_mixin.py	(revision 3496e069f3e9959cb91f8cbef355fa5b068ec996)
+@@ -670,7 +670,8 @@
+             if self.model_config.is_multimodal_gen:
+                 return
+             if self.server_args.enable_multi_api_server:
+-                self.send_to_local_detokenizer.send_pyobj(
++                # send to token queue for first token batch by token queue to avoid concurrent issue in zmq chan.
++                self.add_to_batch_token_id_queue(
+                     BatchTokenIDOut(
+                         rids,
+                         finished_reasons,
+@@ -758,3 +759,25 @@
+                     rids, finished_reasons, embeddings, prompt_tokens, cached_tokens
+                 )
+             )
++
++    def stream_output_first_token(self: Scheduler, bootstrap_room: int):
++        if not self.disagg_decode_transfer_queue.queue:
++            return
++        for _, decode_req, in enumerate(self.disagg_decode_transfer_queue.queue):
++            if decode_req.req.bootstrap_room == bootstrap_room:
++                idx = decode_req.metadata_buffer_index
++                (
++                    output_id,
++                    output_token_logprobs_val,
++                    output_token_logprobs_idx,
++                    output_top_logprobs_val,
++                    output_top_logprobs_idx,
++                    output_hidden_states,
++                ) = self.disagg_decode_transfer_queue.metadata_buffers.get_buf(idx)
++
++                decode_req.req.output_ids.append(output_id[0].item())
++
++                self.stream_output([decode_req.req], decode_req.req.return_logprob)
++                return
++        logger.error(f"failed to get decode request in disagg_decode_transfer_queue")
++        return

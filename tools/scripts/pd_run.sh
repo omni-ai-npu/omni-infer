@@ -54,6 +54,7 @@ VLLM_ENABLE_MC2=0
 HCCL_BUFFSIZE=0
 HCCL_OP_EXPANSION_MODE=""
 NUM_SPECULATIVE_TOKENS=1
+LLM_WAITING_OUT=3600
 
 # Help information
 print_help() {
@@ -96,6 +97,7 @@ print_help() {
     echo "  --kv-rank                        vLLM framework: PD separation parameter, kv rank (p_num/d_num-1) (default: $KV_RANK)"
     echo "  --kv-engine-id                   vLLM framework: PD separation parameter, kv engine ID (default: $KV_ENGINE_ID)"
     echo "  --kv-parallel-size               vLLM framework: PD separation parameter, kv parallel size (equal to num_p + num_d) (default: $KV_PARALLEL_SIZE)"
+    echo "  --llm-waiting-out                vLLM framework: PD separation parameter, P instance requests waiting time out (default: $LLM_WAITING_OUT)"
     echo "  --extra-args                     vLLM framework: Additional VLLM arguments (space-separated, e.g., '--enable-expert-parallel') (default: $EXTRA_ARGS)"
     echo "  --additional-args                vLLM framework: Additional VLLM arguments"
     echo "  --vllm-enable-mc2                vLLM framework: GRAPH parameter (default: $VLLM_ENABLE_MC2)"
@@ -217,6 +219,9 @@ parse_long_option() {
         --kv-parallel-size)
             KV_PARALLEL_SIZE="$2"
             ;;
+        --llm-waiting-out)
+            LLM_WAITING_OUT="$2"
+            ;;
         --extra-args)
             EXTRA_ARGS="$2"
             ;;
@@ -316,6 +321,7 @@ export VLLM_WORKER_MULTIPROC_METHOD=fork
 export USING_LCCL_COM=0
 export OMNI_USE_DSV3=1
 export VLLM_ENABLE_MC2
+export LLM_WAITING_OUT
 
 # Turn on these two variables to enable proc_bind
 # export CPU_AFFINITY_CONF=2
@@ -332,6 +338,7 @@ fi
 
 export HCCL_CONNECT_TIMEOUT=1800
 export HCCL_EXEC_TIMEOUT=120
+export HCCL_RDMA_TIMEOUT=20
 # 随路拷贝
 export TNG_HOST_COPY=1
 # 使能双页表 pd 分离
@@ -340,6 +347,16 @@ export TASK_QUEUE_ENABLE=2
 
 # enable to overwrite request IDs
 export ENABLE_OVERWRITE_REQ_IDS=1
+
+# enable kv event
+export ENABLE_APC_EVENT=0
+
+# enable middleware
+if [[ -n "$VALIDATORS_CONFIG_PATH" ]]; then
+    EXTRA_ARGS="$EXTRA_ARGS --middleware omni.adaptors.vllm.entrypoints.middleware.param_check.ValidateSamplingParams"
+else
+    EXTRA_ARGS="$EXTRA_ARGS"
+fi
 
 # Print current configuration
 echo "==== Current Configuration ===="
@@ -384,12 +401,17 @@ echo "AUTO_USE_UC_MEMORY: $AUTO_USE_UC_MEMORY"
 echo "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: $RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"
 echo "RAY_CGRAPH_get_timeout: $RAY_CGRAPH_get_timeout"
 echo "TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
+echo "LLM_WAITING_OUT: $LLM_WAITING_OUT"
 echo "=================="
 
-EXTRA_ARGS="$EXTRA_ARGS"
 # Execute Python script
 
 common_operations() {
+  local mtp_args=""
+  if [ "$NUM_SPECULATIVE_TOKENS" -ne 0 ]; then
+    mtp_args="--enable-mtp --num-speculative-tokens $NUM_SPECULATIVE_TOKENS"
+  fi
+
   python start_api_servers.py \
     --num-servers "$NUM_SERVERS" \
     --num-dp "$NUM_DP" \
@@ -405,20 +427,39 @@ common_operations() {
     --kv-transfer-config "$KV_TRANSFER_CONFIG" \
     --gpu-util "$GPU_UTIL" \
     --additional-config "$ADDITIONAL_CONFIG" \
-    --enable-mtp \
-    --num-speculative-tokens "$NUM_SPECULATIVE_TOKENS" \
+    $mtp_args \
     --extra-args "$EXTRA_ARGS"
 }
 
+start_ray_log_rotate(){
+  bash ray_log_rotate/start_ray_logrotate.sh
+  if [ $? -eq 0 ]; then
+      echo "success installed ray log rotate crontab task"
+  else
+      echo "installing ray log rotate crontab task failed, please pay attention for the ray log size"
+  fi
+}
+
+setup_multi_server_ray_backend_logging_config() {
+    [ -z "$VLLM_LOGGING_CONFIG_PATH" ] || [ ! -f "$VLLM_LOGGING_CONFIG_PATH" ] && return
+    local temp_file=$(mktemp)
+    cp "$VLLM_LOGGING_CONFIG_PATH" "$temp_file"
+    sed -i 's|"filename": *"[^"]*"|"filename": "'"$LOG_DIR"'/server_0.log"|g' "$temp_file"
+    export VLLM_LOGGING_CONFIG_PATH="$temp_file"
+}
+
 if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
+  setup_multi_server_ray_backend_logging_config
   if [ "$IP" = "$HOST_IP" ]; then
     export RAY_USAGE_STATS_ENABLED=0
-    ray start --head --num-gpus=$NUM_SERVERS
+    ray start --head
     sleep 10s
+    # install ray log rotate script
+    start_ray_log_rotate
     common_operations
   else
     sleep 5s
-    command="ray start --address='$HOST_IP:6379' --num-gpus=$NUM_SERVERS &> /dev/null"
+    command="ray start --address='$HOST_IP:6379' &> /dev/null"
     echo $command
     cost_time=0
     end_time=300
@@ -431,9 +472,12 @@ if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
       eval $command
       if [ $? -eq 0 ]; then
         echo "succeed to connect to ray head node"
+        # install ray log rotate script
+        start_ray_log_rotate
         break
       else
         echo "failed to connect to ray head node, wait 5s....."
+        ray stop --force
         sleep 5
         cost_time=$((cost + 5))
       fi

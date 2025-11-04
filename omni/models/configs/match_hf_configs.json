@@ -1,0 +1,123 @@
+{
+    "deepseek_v3":{
+        "model_type": "deepseek_v3",
+        "hidden_size": 7168,
+        "num_attention_heads": 128,
+        "max_position_embeddings": 163840,
+        "vocab_size": 129280,
+        "intermediate_size": 18432,
+        "n_routed_experts": 256,
+        "n_shared_experts": 1,
+        "moe_intermediate_size": 2048
+    },
+    "deepseek_v32":{
+        "model_type": "deepseek_v32",
+        "hidden_size": 7168,
+        "num_attention_heads": 128,
+        "max_position_embeddings": 163840,
+        "vocab_size": 129280,
+        "intermediate_size": 18432,
+        "n_routed_experts": 256,
+        "n_shared_experts": 1,
+        "moe_intermediate_size": 2048
+    },
+    "qwen3-235B":{
+        "model_type": "qwen3_moe",
+        "hidden_size": 4096,
+        "num_attention_heads": 64,
+        "max_position_embeddings": 262144,
+        "vocab_size": 151936,
+        "intermediate_size": 12288,
+        "n_routed_experts": null,
+        "n_shared_experts": null,
+        "moe_intermediate_size": 1536
+    },
+    "kimi-k2":{
+        "model_type": "kimi-k2",
+        "hidden_size": 7168,
+        "num_attention_heads": 64,
+        "max_position_embeddings": 131072,
+        "vocab_size": 163840,
+        "intermediate_size": 18432,
+        "n_routed_experts": 384,
+        "n_shared_experts": 1,
+        "moe_intermediate_size": 2048
+    },
+    "pangu-7B":{
+        "model_type": "PanguEmbeded",
+        "hidden_size": 4096,
+        "num_attention_heads": 32,
+        "max_position_embeddings": 32768,
+        "vocab_size": 153376,
+        "intermediate_size": 12800,
+        "n_routed_experts": null,
+        "n_shared_experts": null,
+        "moe_intermediate_size": null
+    },
+    "pangu-72B":{
+        "model_type": "PanguProMoE",
+        "hidden_size": 5120,
+        "num_attention_heads": 64,
+        "max_position_embeddings": 131072,
+        "vocab_size": 153376,
+        "intermediate_size": null,
+        "n_routed_experts": 64,
+        "n_shared_experts": 4,
+        "moe_intermediate_size": 1344
+    },
+    "pangu_ultra_moe":{
+        "model_type": "pangu_ultra_moe",
+        "hidden_size": 7680,
+        "num_attention_heads": 128,
+        "max_position_embeddings": 131072,
+        "vocab_size": 153600,
+        "intermediate_size": 18432,
+        "n_routed_experts": null,
+        "n_shared_experts": null,
+        "moe_intermediate_size": 2048
+    },
+    "qwen3_30b_a3b":{
+        "model_type": "qwen3_moe",
+        "hidden_size": 2048,
+        "num_attention_heads": 32,
+        "max_position_embeddings": 262144,
+        "vocab_size": 151936,
+        "intermediate_size": 6144,
+        "n_routed_experts": null,
+        "n_shared_experts": null,
+        "moe_intermediate_size": 768
+    },
+    "longcat-flash":{
+        "model_type": null,
+        "hidden_size": 6144,
+        "num_attention_heads": 64,
+        "max_position_embeddings": 131072,
+        "vocab_size": 131072,
+        "intermediate_size": null,
+        "n_routed_experts": 512,
+        "n_shared_experts": null,
+        "moe_intermediate_size": null
+    },
+    "ling-mini":{
+        "model_type": "bailing_moe",
+        "hidden_size": 2048,
+        "num_attention_heads": 16,
+        "max_position_embeddings": 32768,
+        "vocab_size": 157184,
+        "intermediate_size": 5120,
+        "n_routed_experts": null,
+        "n_shared_experts": null,
+        "moe_intermediate_size": 512
+    },
+    "ling-1T":{
+        "model_type": "bailing_moe",
+        "hidden_size": 8192,
+        "num_attention_heads": 64,
+        "max_position_embeddings": 32768,
+        "vocab_size": 157184,
+        "intermediate_size": 18432,
+        "n_routed_experts": null,
+        "n_shared_experts": null,
+        "moe_intermediate_size": 2048
+    }
+}

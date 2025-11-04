@@ -33,7 +33,7 @@ index 3b1d3f94a..844f6d511 100644
              num_computed_tokens -= 1
 -
 +        # due to no speculative trans from prefill node, push one manually
-+        if self.vllm_config.speculative_config is not None:
++        if self.vllm_config.speculative_config is not None and (self.vllm_config.kv_transfer_config is None or self.vllm_config.kv_transfer_config.kv_role != "kv_both"):
 +            request.spec_token_ids.extend([0] * self.vllm_config.speculative_config.num_speculative_tokens)
          # Update the request state for scheduling.
          request.num_computed_tokens = request.num_tokens - 1

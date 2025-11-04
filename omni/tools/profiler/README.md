@@ -18,6 +18,7 @@ Set the corresponding environment variable to a YAML config file:
 ### Usage
 * export PROFILING_NAMELIST=/path/to/namelist.yml
 * Example yaml configs are in the [`assets/`](./assets) folder.
+* export ROLE=prefill or export ROLE=decode
 
 ### Step to use omnilogger_namelist.yml for vllm tracing
 
@@ -48,24 +49,35 @@ You can collect logs from multiple nodes by specifying them in a `server_list.tx
 
 ```bash
 #!/bin/bash
-
-# Usage: ./collect_logs.sh server_list.txt /tmp/trace_output_directory your_log_directory
+# Usage: ./collect_logs.sh server_list.txt /tmp/trace_output_directory  nginx_log_path your_log_directory
 
 SERVER_LIST="$1"
 REMOTE_FOLDER="$2"
-TARGET_FOLDER="$3"
+PROXY_FOLDER="$3"
+TARGET_FOLDER="$4"
 
 mkdir $TARGET_FOLDER
 
-while read -r IP; do
+for IP in $(cat "$SERVER_LIST"); do
     echo "Collecting logs from $IP..."
     scp -i key.pem -r "root@$IP:$REMOTE_FOLDER" "./logs_$IP"
     mv "./logs_$IP" $TARGET_FOLDER
-done < "$SERVER_LIST"
+
+    # copy logs in proxy
+    if ssh -i key.pem root@$IP "test -f '$PROXY_FOLDER/nginx_error.log'"; then
+        echo "nginx_error.log found on $IP, copying..."
+        scp -i key.pem "root@$IP:$PROXY_FOLDER/nginx_error.log" "$TARGET_FOLDER/nginx_${IP}.log"
+    fi
+done
 ```
 
 Once logs are collected, parse them using:
 
 ```bash
 python parse_logs.py your_log_directory
+```
+
+Convert log to JSON that can be accepted by Jaeger
+```bashs
+python log_to_jaeger.py your_log_directory trace.json
 ```

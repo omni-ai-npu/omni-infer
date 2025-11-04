@@ -1,0 +1,343 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prefill-deployment
+  labels: {{- include "omniinfer.labels" . | nindent 4 }}
+  annotations:
+    sp-block: "16"
+spec:
+  replicas: {{ include "omniinfer.replicaCountByRole" (dict "role" "prefill" "values" .Values) }}
+  selector:
+    matchLabels:
+      app: prefill
+  template:
+    metadata:
+      labels:
+        app: prefill
+    spec:
+      schedulerName: volcano
+      # 节点反亲和部署场景配置，即同一个节点至多部署一个实例
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - prefill
+              topologyKey: kubernetes.io/hostname
+        # 为满足独占机器上所有卡的假设，也和decode实例反亲和
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - decode
+              topologyKey: kubernetes.io/hostname
+      nodeSelector: {{- toYaml .Values.nodeSelector | nindent 8 }}
+      initContainers:
+      # 1.1 生成 prefill 本地 ranktable
+      - name: generate-local-ranktable
+        image: {{ include "omniinfer.image" (list .Values.image.repository .Values.image.tag) | quote }}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -ex
+          echo "Generating prefill local ranktable..."
+          # 设置环境变量
+          source ~/.bashrc
+          RANKTABLE_SAVE_PATH=${RANKTABLE_SAVE_PATH:-"/tmp/ranktable_save_path"}
+          PREFILL_RANKTABLE_SAVE_PATH=${PREFILL_RANKTABLE_SAVE_PATH:-"${RANKTABLE_SAVE_PATH}/prefill_config"}
+          SHARED_PATH=${SHARED_PATH:-"/shared"}
+          GLOBAL_RANKTABLE_SAVE_PATH="${SHARED_PATH}/collect_files_p/pod_${POD_NAME}/"
+
+          if [ -z "${PREFILL_SERVER_LIST}" ]; then
+              echo "Error: PREFILL_SERVER_LIST (ASCEND_RT_VISIBLE_DEVICES equivalent) is not set."
+              exit 1
+          fi
+
+          # 准备目录
+          mkdir -p ${PREFILL_RANKTABLE_SAVE_PATH}
+          mkdir -p ${GLOBAL_RANKTABLE_SAVE_PATH}
+          rm -rf ${PREFILL_RANKTABLE_SAVE_PATH}/*
+
+          # 生成prefill实例的local ranktable
+          python3 /workspace/omniinfer/tools/scripts/pd_ranktable_tools.py \
+            --mode gen \
+            --prefill-server-list "${PREFILL_SERVER_LIST}" \
+            --save-dir ${PREFILL_RANKTABLE_SAVE_PATH} \
+            --ip $POD_IP # 使用 Pod IP 作为 'host ip'
+
+          echo "Prefill local ranktable generated in ${PREFILL_RANKTABLE_SAVE_PATH}"
+          ls -la ${PREFILL_RANKTABLE_SAVE_PATH}
+
+          # 分发实例级global ranktable
+          cp ${PREFILL_RANKTABLE_SAVE_PATH}/local_ranktable_*.json ${GLOBAL_RANKTABLE_SAVE_PATH}
+        env:
+        - name: RANKTABLE_SAVE_PATH
+          value: "/tmp/ranktable_save_path" # 对应 Ansible 的 ranktable_save_path
+        - name: SHARED_PATH
+          value: "/shared"
+        - name: PREFILL_SERVER_LIST
+          value: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15" # 占位符，需要根据实际部署的 GPU 设置
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: prefill-workspace
+          mountPath: /tmp/ranktable_save_path # 对应 Ansible 中的 ranktable_save_path
+        - name: shared-storage
+          mountPath: /shared # 复制一份实例级global ranktable到共享存储，等价于 Ansible 中分发
+        - name: hccn-conf
+          mountPath: /etc/hccn.conf
+        - name: hccn-bin
+          mountPath: /usr/bin/hccn_tool
+        - name: npu-driver
+          mountPath: /usr/local/Ascend/driver
+        securityContext: {{- toYaml .Values.securityContext | nindent 10 }}
+      # 1.2. 等待全局 ranktable
+      - name: wait-for-global-ranktable
+        image: {{ include "omniinfer.image" (list .Values.image.repository .Values.image.tag) | quote }}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -ex
+          echo "Waiting for global ranktable in init container..."
+          SHARED_PATH=${SHARED_PATH:-"/shared"}
+          GLOBAL_RANK_TABLE_FILE_PATH="${GLOBAL_RANK_TABLE_FILE_PATH:-${SHARED_PATH}/global/global_ranktable_merge.json}"
+
+          echo "Waiting for global ranktable at $GLOBAL_RANK_TABLE_FILE_PATH..."
+          while [ ! -f "$GLOBAL_RANK_TABLE_FILE_PATH" ]; do
+            echo "Global ranktable $GLOBAL_RANK_TABLE_FILE_PATH not found, sleeping..."
+            sleep 1
+          done
+          echo "Global ranktable is ready at $GLOBAL_RANK_TABLE_FILE_PATH in init container!"
+        env:
+        - name: SHARED_PATH
+          value: "/shared"
+        volumeMounts:
+        - name: shared-storage
+          mountPath: /shared # 获取共享存储中全局级global ranktable，等价于 Ansible 中分发
+
+      hostNetwork: true
+      hostIPC: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      # 2. 主容器启动 vLLM prefill 服务 (对应 Ansible 中的 docker_start_vllm_cmd_p)
+      - name: prefill-main
+        image: {{ include "omniinfer.image" (list .Values.image.repository .Values.image.tag) | quote }}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -ex
+          echo "Starting Prefill vLLM Server..."
+
+          # 设置环境变量
+          source ~/.bashrc
+          export LOG_PATH=${LOG_PATH}/${POD_NAME}
+          mkdir -p ${LOG_PATH}
+          export ASCEND_GLOBAL_LOG_LEVEL=3
+          export ENABLE_PREFILL_TND=1
+          export OMNI_USE_NPU_TOP_K_TOP_P_SAMPLE=true
+          prefill_server_list=$(echo "${PREFILL_SERVER_LIST}" | awk '$1=$1' | tr -d ',')
+          KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
+          MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
+          EXTRA_ARGS="--max-num-batched-tokens 61440 --enforce-eager --disable-log-requests --max-num-seqs 64"
+          export HCCL_CONNECT_TIMEOUT=1800
+          export HCCL_EXEC_TIMEOUT=1800
+          export VLLM_LLMDATADIST_ZMQ_PORT=${ZMQ_PORT}
+
+          # 对于单节点 (NODE_IP_LIST 为空或单个IP)，使用该节点的 local ranktable
+          if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
+            export MASTER_NODE_IP=$HOST_IP
+            export NODE_IP_LIST=$NODE_IP_LIST
+            LOCAL_RANKTABLE_FILE=$(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_p/${MASTER_NODE_IP}/local_*merge.json | tr '\n' ' ')
+            node_count=$(( $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) + 1 ))
+            PREFILL_TENSOR_PARALLEL_SIZE=$(( PREFILL_TENSOR_PARALLEL_SIZE * node_count ))
+          else
+            LOCAL_RANKTABLE_FILE=($(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$prefill_server_list.json | tr '\n' ' ')) # 选择一个本地 ranktable
+          fi
+          
+          export SHARED_PATH=${SHARED_PATH:-"/shared"}
+          export GLOBAL_RANK_TABLE_FILE_PATH="${GLOBAL_RANK_TABLE_FILE_PATH:-${SHARED_PATH}/global/global_ranktable_merge.json}"
+          export RANK_TABLE_FILE_PATH="$LOCAL_RANKTABLE_FILE"
+
+          # 等待全局 ranktable 文件存在
+          echo "Waiting for global ranktable at $GLOBAL_RANK_TABLE_FILE_PATH..."
+          while [ ! -f "$GLOBAL_RANK_TABLE_FILE_PATH" ]; do
+            echo "Global ranktable $GLOBAL_RANK_TABLE_FILE_PATH not found, sleeping..."
+            sleep 1
+          done
+          echo "Global ranktable found at $GLOBAL_RANK_TABLE_FILE_PATH."
+
+          export LOCAL_DECODE_SERVER_IP_LIST="$SERVER_IP_LIST"
+          export GLOBAL_DECODE_SERVER_IP_LIST="$SERVER_IP_LIST"
+          export ROLE="prefill"
+          export HCCL_INTRA_ROCE_ENABLE=1
+          export HCCL_INTRA_PCIE_ENABLE=0
+          export ASCEND_LAUNCH_BLOCKING=0
+          export ASCEND_RT_VISIBLE_DEVICES=${PREFILL_SERVER_LIST}
+          export DECODE_POD_NUM=1
+          source /usr/local/Ascend/nnal/atb/set_env.sh
+
+          export GLOO_SOCKET_IFNAME=${SOCKET_IFNAME}
+          export TP_SOCKET_IFNAME=${SOCKET_IFNAME}
+          export VLLM_USE_V1=1
+          export VLLM_WORKER_MULTIPROC_METHOD=fork
+          export VLLM_LOGGING_LEVEL=INFO
+          export OMNI_USE_QWEN=1
+          export OMNI_REUSE_PREFILLED_TOKENS=1
+          export OMNI_SKIP_DECODE_TOKENIZE=1
+          export HCCL_OP_EXPANSION_MODE="AIV"
+          echo "TP=${PREFILL_TENSOR_PARALLEL_SIZE}" > ${LOG_PATH}/run_prefill.log
+          echo "PREFILL_POD_NUM=${PREFILL_POD_NUM}" >> ${LOG_PATH}/run_prefill.log
+          echo "DECODE_POD_NUM=${DECODE_POD_NUM}" >> ${LOG_PATH}/run_prefill.log
+          export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+          unset https_proxy
+          unset http_proxy
+
+          # install omni_placement
+          pip uninstall omni_placement -y
+
+          echo "Starting prefill service with GLOBAL_RANK_TABLE_FILE_PATH=$GLOBAL_RANK_TABLE_FILE_PATH and RANK_TABLE_FILE_PATH=$RANK_TABLE_FILE_PATH"
+          cd /workspace/omniinfer/tools/scripts
+          exec python start_api_servers.py \
+            --num-servers 1 \
+            --model-path ${MODEL_PATH} \
+            --master-ip ${HOST_IP} \
+            --master-port ${MASTER_PORT} \
+            --base-api-port ${API_PORT} \
+            --tp ${PREFILL_TENSOR_PARALLEL_SIZE} \
+            --served-model-name qwen \
+            --max-model-len ${MODEL_LEN_MAX_PREFILL} \
+            --no-enable-prefix-caching \
+            --gpu-util $GPU_UTIL \
+            --extra-args "${EXTRA_ARGS}" \
+            --kv-transfer-config '{
+              "kv_connector": "AscendHcclConnectorV1",
+              "kv_buffer_device": "npu",
+              "kv_role": "kv_producer",
+              "kv_rank": '"${KV_RANK}"',
+              "engine_id": '"${KV_RANK}"',
+              "kv_parallel_size": '"${KV_PARALLEL_SIZE}"'
+            }'  \
+            --log-dir "${LOG_PATH}"
+        ports:
+        - containerPort: 9010
+          name: api
+        - containerPort: 9011
+          name: zmq
+        env:
+        - name: SHARED_PATH
+          value: "/shared"
+        - name: GLOBAL_RANK_TABLE_FILE_PATH
+          value: "/shared/global/global_ranktable_merge.json"
+        - name: RANKTABLE_SAVE_PATH
+          value: "/tmp/ranktable_save_path"
+        - name: LOG_PATH
+          value: {{ .Values.mount.log.path | quote }}
+        - name: MODEL_PATH
+          value: {{ include "omniinfer.modelPathByRole" (dict "role" "prefill" "values" .Values) | quote}}
+        - name: MODEL_LEN_MAX_PREFILL
+          value: "62144"
+        - name: PREFILL_SERVER_LIST
+          value: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+        - name: PREFILL_TENSOR_PARALLEL_SIZE
+          value: "8" # 要能被模型的head数整除
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP # 使用 Pod IP 作为 HOST_IP
+        - name: MASTER_PORT
+          value: "8888" # 占位符
+        - name: API_PORT
+          value: "9010" # 该端口需要对POD外开放
+        - name: ZMQ_PORT
+          value: "9011" # 该端口需要对POD外开放
+        - name: SERVER_IP_LIST
+          value: "POD_IP_OF_DECODE_0,POD_IP_OF_DECODE_1" # 占位符，需要实际的 decode pod IPs
+        - name: PREFILL_POD_NUM
+          value: "1" # 跟replicas副本数一致
+        - name: SOCKET_IFNAME
+          value: "enp23s0f3" # 需要根据实际网络接口设置
+        - name: KV_RANK
+          value: "1" # prefill 填多少？参考ansible调试
+        - name: NNODES
+          value: "1"
+        - name: NODE_RANK
+          value: "0" # 占位符
+        - name: NODE_IP_LIST # 用于多节点 prefill
+          value: "" # 单节点为空或包含自己的 IP
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: GPU_UTIL
+          value: "0.65"
+        volumeMounts:
+        - name: shared-storage
+          mountPath: /shared
+        - name: prefill-workspace
+          mountPath: /tmp/ranktable_save_path # 对应 Ansible 中的 ranktable_save_path
+        - name: data-volume # 模型数据
+          mountPath: {{ .Values.mount.data.hostPath }} # 跟hostPath一致，使用更方便
+        # 其他必要驱动和配置文件的挂载
+        - name: device-davinci-manager
+          mountPath: /dev/davinci_manager
+          readOnly: false
+        - name: npu-driver
+          mountPath: /usr/local/Ascend/driver
+          readOnly: true
+        - name: npu-smi
+          mountPath: /usr/local/sbin/npu-smi
+          readOnly: true
+        - name: dcmi
+          mountPath: /usr/local/dcmi
+          readOnly: true
+        securityContext: {{- toYaml .Values.securityContext | nindent 10 }}
+        resources:
+          {{- include "omniinfer.resourcesByRole" (dict "role" "prefill" "values" .Values) }}
+
+      volumes:
+      - name: shared-storage
+        persistentVolumeClaim:
+          claimName: ranktable-pvc # 确保与 shared-storage.yaml 中定义的名称一致
+      - name: prefill-workspace # 用于在 initContainer 和 main container 之间共享 prefill-specific ranktables 和全局 ranktables
+        emptyDir: {} # 或者使用一个持久卷，如果需要跨重启访问
+      - name: data-volume # 模型、日志等存储
+        hostPath: # 或者使用 PVC
+          path: {{ .Values.mount.data.hostPath }}
+          type: DirectoryOrCreate
+      # 挂载必要的系统路径
+      - name: device-davinci-manager
+        hostPath:
+          path: /dev/davinci_manager
+          type: CharDevice
+      - name: npu-driver
+        hostPath:
+          path: /usr/local/Ascend/driver
+          type: Directory
+      - name: npu-smi
+        hostPath:
+          path: /usr/local/sbin/npu-smi
+          type: File
+      - name: dcmi
+        hostPath:
+          path: /usr/local/dcmi
+          type: Directory
+      - name: hccn-conf
+        hostPath:
+          path: /etc/hccn.conf
+          type: File
+      - name: hccn-bin
+        hostPath:
+          path: /usr/bin/hccn_tool
+          type: File

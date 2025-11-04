@@ -1,0 +1,70 @@
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+index fc62dbf..c7cace5 100644
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -477,9 +477,7 @@ class OpenAIServingChat(OpenAIServing):
+         all_previous_token_ids: Optional[list[list[int]]]
+         function_name_returned = [False] * num_choices
+ 
+-        enable_thinking = self.reasoning_parser is not None
+-        if request.chat_template_kwargs is None or request.chat_template_kwargs.get("thinking", False) is False:
+-            enable_thinking = False
++        enable_thinking = self.should_enable_thinking(request)
+ 
+         # Only one of these will be used, thus previous_texts and
+         # all_previous_token_ids will not be used twice in the same iteration.
+@@ -1036,7 +1034,8 @@ class OpenAIServingChat(OpenAIServing):
+                 logprobs = None
+             auto_tools_called = False
+ 
+-            if self.reasoning_parser:
++            enable_thinking = self.should_enable_thinking(request)
++            if enable_thinking:
+                 try:
+                     reasoning_parser = self.reasoning_parser(tokenizer)
+                 except RuntimeError as e:
+@@ -1383,6 +1382,18 @@ class OpenAIServingChat(OpenAIServing):
+ 
+         return auto_tools_called, delta_message
+ 
++    def should_enable_thinking(self, request: ChatCompletionRequest):
++        enable_thinking = self.reasoning_parser is not None
++        should_apply_default_disable_thinking = request.chat_template_kwargs is None or "thinking" not in request.chat_template_kwargs
++        default_disable_thinking = should_apply_default_disable_thinking and self.tool_parser_name is not None and (
++                "deepseek_v31" in self.tool_parser_name or "deepseek_v32" in self.tool_parser_name)
++        kwargs_disable_thinking = (not should_apply_default_disable_thinking) and request.chat_template_kwargs.get(
++            "thinking", False) is False
++        if enable_thinking and (default_disable_thinking or kwargs_disable_thinking):
++            enable_thinking = False
++
++        return enable_thinking
++
+ def get_turn_id(conversation: List[ConversationMessage]):
+     turn_id = 0
+     for i in range(len(conversation) - 1, -1, -1):
+diff --git a/vllm/reasoning/deepseek_r1_reasoning_parser.py b/vllm/reasoning/deepseek_r1_reasoning_parser.py
+index ebb0c58..715e2b1 100644
+--- a/vllm/reasoning/deepseek_r1_reasoning_parser.py
++++ b/vllm/reasoning/deepseek_r1_reasoning_parser.py
+@@ -79,9 +79,6 @@ class DeepSeekR1ReasoningParser(ReasoningParser):
+         ]):
+             return None
+ 
+-        if request.chat_template_kwargs is None or request.chat_template_kwargs.get("thinking", False) is False:
+-            return DeltaMessage(content=delta_text)
+-
+         # Check if <think> is present in previous or delta.
+         # Keep compatibility with models that don't generate <think> tokens.
+         if self.start_token_id in previous_token_ids:
+@@ -153,10 +150,6 @@ class DeepSeekR1ReasoningParser(ReasoningParser):
+         Returns:
+             tuple[Optional[str], Optional[str]]: reasoning content and content
+         """
+-
+-        if request.chat_template_kwargs is None or request.chat_template_kwargs.get("thinking", False) is False:
+-            return None, model_output
+-
+         # Check if the start token is present in the model output, remove it
+         # if it is present.
+         model_output_parts = model_output.partition(self.start_token)
+

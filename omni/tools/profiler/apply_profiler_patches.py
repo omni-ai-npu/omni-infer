@@ -138,7 +138,7 @@ def monkey_patch_request_status():
         if value == RequestStatus.WAITING_FOR_REMOTE_KVS:
             safe_print(
                 trace_output_directory, 
-                f"<<<Action: Add need pullling sequence;|waiting_pull_len={self.waiting_pull_len} "
+                f"<<<Action: Add need pulling sequence; "
                 f"Timestamp:{time.time()}; "
                 f"RequestID:{self.request_id}; "
                 f"Role:{os.getenv('ROLE')}_{ip_str}"
@@ -175,6 +175,9 @@ def monkey_patch_async_generator_io_logger():
             elif yield_count == 3:
                 # Third chat_completion_stream_generator yield.
                 safe_print(trace_output_directory, f"<<<Action: Second decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+            elif yield_count == 4:
+                # Fourth chat_completion_stream_generator yield.
+                safe_print(trace_output_directory, f"<<<Action: Third decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
             if item == "data: [DONE]\n\n":
                 safe_print(trace_output_directory, f"<<<Action: Finish decode pickle and start response; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
             yield item

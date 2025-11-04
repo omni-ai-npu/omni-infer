@@ -1,0 +1,310 @@
+[
+   {
+      "model": "deepseek_v3",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_w8a8c16_a3_1p1d_p.json",
+      "decode_config_file": "ds_r1_w8a8c16_a3_1p1d_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 2,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_w8a8c16_a3_2p1d_p.json",
+      "decode_config_file": "ds_r1_w8a8c16_a3_2p1d_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 4,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_w8a8c16_a3_4p1d_p.json",
+      "decode_config_file": "ds_r1_w8a8c16_a3_4p1d_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 5,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_w8a8c16_a3_5p1d_p.json",
+      "decode_config_file": "ds_r1_w8a8c16_a3_5p1d_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 6,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_w8a8c16_a3_6p1d_p.json",
+      "decode_config_file": "ds_r1_w8a8c16_a3_6p1d_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A3",
+      "precision": "w4a8",
+      "prefill_node_num": 8,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_w4a8c16_a3_8p1d_p.json",
+      "decode_config_file": "ds_r1_w4a8c16_a3_8p1d_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 18,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_w8a8c16_a3_18p1d_p.json",
+      "decode_config_file": "ds_r1_w8a8c16_a3_18p1d_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A3",
+      "precision": "bf16",
+      "prefill_node_num": 2,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_bf16_a3_2p1d_p.json",
+      "decode_config_file": "ds_r1_bf16_a3_2p1d_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "enable_pd_elastic_scaling": true,
+      "prefill_config_file": "ds_r1_w8a8c16_a3_xpyd_p.json",
+      "decode_config_file": "ds_r1_w8a8c16_a3_xpyd_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A2",
+      "precision": "w4a8",
+      "prefill_node_num": 2,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_w4a8c16_a2_2p1d_p.json",
+      "decode_config_file": "ds_r1_w4a8c16_a2_2p1d_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A2",
+      "precision": "w8a8",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_w8a8c16_a2_1p1d_400tps_p.json",
+      "decode_config_file": "ds_r1_w8a8c16_a2_1p1d_400tps_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A2",
+      "precision": "w4a8",
+      "prefill_node_num": 2,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_w4a8c16_a2_2p1d_p.json",
+      "decode_config_file": "ds_r1_w4a8c16_a2_2p1d_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A2",
+      "precision": "w8a8",
+      "prefill_node_num": 2,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_w8a8c16_a2_2p1d_p.json",
+      "decode_config_file": "ds_r1_w8a8c16_a2_2p1d_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A2",
+      "precision": "bf16",
+      "prefill_node_num": 2,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_bf16_a2_2p1d_p.json",
+      "decode_config_file": "ds_r1_bf16_a2_2p1d_d.json"
+   },
+   {
+      "model": "deepseek_v32",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 2,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_v3.2_w8a8c16_a3_2p1d_p.json",
+      "decode_config_file": "ds_v3.2_w8a8c16_a3_2p1d_d.json"
+   },
+   {
+      "model": "kimi-k2",
+      "hardware": "A3",
+      "precision": "w4a8",
+      "prefill_node_num": 2,
+      "decode_node_num": 1,     
+      "pd_disaggregation": true,
+      "prefill_config_file": "kimi_k2_w4a8c16_a3_2p1d_p.json",
+      "decode_config_file": "kimi_k2_w4a8c16_a3_2p1d_d.json"
+   },
+   {
+      "model": "kimi-k2",
+      "hardware": "A3",
+      "precision": "w4a8_fa_c8",
+      "prefill_node_num": 20,
+      "decode_node_num": 1,     
+      "pd_disaggregation": true,
+      "prefill_config_file": "kimi_k2_w4a8c8_a3_20p1d_p.json",
+      "decode_config_file": "kimi_k2_w4a8c8_a3_20p1d_d.json"
+   },
+   {
+      "model": "pangu_ultra_moe",
+      "hardware": "A3",
+      "precision": "w4a8",
+      "prefill_node_num": 4,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "pangu_718b_w4a8c16_a3_4p1d_p.json",
+      "decode_config_file": "pangu_718b_w4a8c16_a3_4p1d_d.json"
+   },
+   {
+      "model": "pangu_ultra_moe",
+      "hardware": "A3",
+      "precision": "w4a8",
+      "prefill_node_num": 18,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "pangu_718b_w4a8c16_a3_18p1d_p.json",
+      "decode_config_file": "pangu_718b_w4a8c16_a3_18p1d_d.json"
+   },
+   {
+      "model": "pangu_ultra_moe",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 4,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "pangu_718b_w8a8c16_a3_4p1d_p.json",
+      "decode_config_file": "pangu_718b_w8a8c16_a3_4p1d_d.json"
+   },
+      {
+      "model": "pangu_ultra_moe",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 18,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "pangu_718b_w8a8c8_a3_18p1d_p.json",
+      "decode_config_file": "pangu_718b_w8a8c8_a3_18p1d_d.json"
+   },
+   {
+      "model": "qwen3-235B",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "qwen3_235b_w8a8c16_a3_2p1d_p.json",
+      "decode_config_file": "qwen3_235b_w8a8c16_a3_2p1d_d.json"
+   },
+   {
+      "model": "qwen3-235B",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 2,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "qwen3_235b_w8a8c16_a3_2p1d_p.json",
+      "decode_config_file": "qwen3_235b_w8a8c16_a3_2p1d_d.json"
+   },
+   {
+      "model": "qwen3-235B",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 8,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "qwen3_235b_w8a8c16_a3_2p1d_p.json",
+      "decode_config_file": "qwen3_235b_w8a8c16_a3_2p1d_d.json"
+   },
+   {
+      "model": "qwen3-235B",
+      "hardware": "A3",
+      "precision": "bf16",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "qwen3_235b_w8a8c16_a3_2p1d_p.json",
+      "decode_config_file": "qwen3_235b_w8a8c16_a3_2p1d_d.json"
+   },
+   {
+      "model": "qwen3-235B",
+      "hardware": "A3",
+      "precision": "bf16",
+      "prefill_node_num": 2,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "qwen3_235b_w8a8c16_a3_2p1d_p.json",
+      "decode_config_file": "qwen3_235b_w8a8c16_a3_2p1d_d.json"
+   },
+   {
+      "model": "qwen3-235B",
+      "hardware": "A3",
+      "precision": "bf16",
+      "prefill_node_num": 8,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "qwen3_235b_w8a8c16_a3_2p1d_p.json",
+      "decode_config_file": "qwen3_235b_w8a8c16_a3_2p1d_d.json"
+   },
+   {
+      "model": "qwen3_30b_a3b",
+      "hardware": "A3",
+      "precision": "bf16",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "qwen3_30b_a3b_bf16_a3_1p1d_p.json",
+      "decode_config_file": "qwen3_30b_a3b_bf16_a3_1p1d_d.json"
+   },
+   {
+      "model": "longcat-flash",
+      "hardware": "A3",
+      "precision": "bf16",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "longcat_prefill_bf16_1p1d.json",
+      "decode_config_file": "longcat_decode_bf16_1p1d.json"
+   },
+   {
+      "model": "ling-mini",
+      "hardware": "A3",
+      "precision": "bf16",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "ling_bf16_a3_1p1d_p.json",
+      "decode_config_file": "ling_bf16_a3_1p1d_d.json"
+   },
+   {
+      "model": "ling-1T",
+      "hardware": "A3",
+      "precision": "bf16",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "ling_bf16_a3_1p1d_p.json",
+      "decode_config_file": "ling_bf16_a3_1p1d_d.json"
+   }
+]

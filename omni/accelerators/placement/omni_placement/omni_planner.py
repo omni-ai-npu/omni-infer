@@ -11,8 +11,9 @@ import torch
 import torch_npu
 import torchair as tng
 import ctypes
+import importlib.resources
+import yaml
 
-from typing import Optional
 from .cluster_status import ClusterStatus
 from .placement_handler import create_cluster_activation, create_placement_manager, init_dram_weights, do_placement_optimizer
 from .optim.optimizers import Optimizer
@@ -22,6 +23,7 @@ from .expert_mapping import ExpertMapping
 from .utils import calculate_time
 from . import omni_placement
 from datetime import datetime
+from pathlib import Path
 
 import time
 
@@ -53,7 +55,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         optimizers: List of optimization algorithms
         expert_mapping: Expert deployment pattern mapping
     """
-    def __init__(self, config_file: str = "/etc/omni/config.yaml", device: str = "npu",
+    def __init__(self, config_file: str = None, device: str = "npu",
                  rank: int = None, world_size: int = None, num_devices_per_host: int = 16,
                  num_experts = 256, num_redundancy_shared_expert_rank=0, max_redundant_per_expert: int = None,
                  max_redundant_per_rank: int = None, first_k_dense_replace: int = 0, num_layers: int = None):
@@ -66,8 +68,16 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             world_size: Total number of processes in distributed environment
             num_devices_per_host: Number of devices per host machine (default: 8)
         """
-        # Load configuration
+        current_file_path = Path(__file__).resolve()
+        default_config_path = current_file_path.parent.parent / "config.yaml"
+        config_file = config_file or str(default_config_path)
+                
+        if not os.path.exists(config_file):
+            raise FileNotFoundError(f"[Error] Config file not found at: {config_file}")
+        
         self.config = Config(config_file)
+        print(f"[Info] Config file loaded from: {config_file}")
+        
         self.device = torch.device(device)
         self.first_k_dense_replace = first_k_dense_replace
         
@@ -90,11 +100,11 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             exit(1)
         
         self.max_redundant_per_rank = self.config.getattr('max_redundant_per_rank', max_redundant_per_rank) if self.enable_dynamic else None
-        max_redundant_per_expert = self.config.getattr('max_redundant_per_expert', max_redundant_per_expert) if self.enable_dynamic else None
+        self.max_redundant_per_expert = self.config.getattr('max_redundant_per_expert', max_redundant_per_expert) if self.enable_dynamic else None
 
         # Load and validate placement pattern
-        self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.world_size, self.num_devices_per_host, self.enable_dynamic, num_experts, self.enable_rank_round_robin, max_redundant_per_expert,
-                                            max_redundant_per_rank, self.max_moe_layer_num)
+        self.expert_mapping = ExpertMapping(self.config, self.device, self.rank, self.world_size, self.num_devices_per_host, self.enable_dynamic, num_experts, self.enable_rank_round_robin, self.max_redundant_per_expert,
+                                            self.max_redundant_per_rank, self.max_moe_layer_num)
         if (self.expert_mapping.get_world_size() != self.world_size):
             print(f"[Placement-Error]-Pattern world_size is {self.expert_mapping.get_world_size()} should be {self.world_size}.")
             exit(1)
@@ -127,6 +137,15 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
 
         # redundant_enable_per_layer, True is redundant layer, False is Origin Layer
         self.redundant_enable_per_layer = self.expert_mapping.get_redundant_enable_per_layer()
+        
+        # param for longcat zero expert
+        self.enable_zero_expert = getattr(self.config, 'enable_zero_expert', False)
+        self.normal_expert_ids = getattr(self.config, 'normal_expert_ids', 255)
+        
+        if self.enable_zero_expert:
+            self.plan_experts = self.plan_with_zero_experts
+        else:
+            self.plan_experts = self.plan_normal_experts
         
         print(self,flush=True)
     
@@ -190,6 +209,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             device=self.device,
             dtype=torch.int64
         )
+        torch._dynamo.mark_static(self.npu_activation_count)
         self.max_activation_count = int(1e16)
 
         self.cluster_activation = create_cluster_activation(
@@ -213,7 +233,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             )
 
     def is_moe_layer(self, layer_idx_moe):
-        return layer_idx_moe < self.max_moe_layer_num
+        return 0 <= layer_idx_moe < self.max_moe_layer_num
     
     def start_dynamic_optimize_expert_load_balance(self):
         is_thread_required = self.enable_dynamic or self.enable_dump
@@ -252,7 +272,11 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         """
         is_expert_on_current_rank func adapter for SGLang FrameWork
         """
-        exists, local_position = self.is_expert_on_current_rank(layer_id - self.first_k_dense_replace, expert_id, self.rank)
+        moe_layer_idx = self.get_moe_layer_idx(layer_id)
+        if not self.is_moe_layer(moe_layer_idx):
+            return [expert_id]
+        
+        exists, local_position = self.is_expert_on_current_rank(moe_layer_idx, expert_id, self.rank)
         if not exists:
             return []
         else:
@@ -282,7 +306,7 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
         if self.enable_dynamic:
             omni_placement.do_placement_optimizer(self.placement_manager)
 
-    def plan(
+    def plan_normal_experts(
         self,
         layer_idx_moe: Optional[int] = None,
         tokens: Optional[torch.Tensor] = None,
@@ -317,6 +341,91 @@ class OmniPlanner(metaclass=OmniPlannerMeta):
             batch_size = token_expert_ids.shape[0]
             token_expert_ids = expert_mapping[token_expert_ids, self.redundant_bias[:batch_size,] % self.num_redundant_per_expert[layer_idx_moe][token_expert_ids]]
         return tokens, token_expert_ids, token_expert_scores
+
+    def plan_with_zero_experts(
+        self,
+        layer_idx_moe: Optional[int] = None,
+        tokens: Optional[torch.Tensor] = None,
+        token_expert_ids: Optional[torch.Tensor] = None,
+        token_expert_scores: Optional[torch.Tensor] = None,
+        top_k: int = 8,
+        expert_mapping: Optional[torch.Tensor] = None,
+        is_prefill=True
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Optimize token-to-expert mapping using configured optimizers.
+
+        This method takes input tokens and their initially assigned experts and scores. It computes
+        expert loads, updates the cluster status accordingly, and then optimizes the assignment
+        of tokens to experts by applying the configured optimization strategies.
+
+        Args:
+            layer_idx_moe: Identifier for the current layer (optional)
+            tokens: Input tokens tensor with shape [num_tokens, ...]
+            token_expert_ids: Initial expert assignments, shape [num_tokens, top_k], -1 indicates unassigned
+            token_expert_scores: Importance scores for expert assignments, shape [num_tokens, top_k]
+
+        Returns:
+            Tuple containing (original tokens, optimized expert IDs, optimized scores)
+        """
+    
+        if not self.is_moe_layer(layer_idx_moe):
+            return tokens, token_expert_ids, token_expert_scores
+        
+        mask = (token_expert_ids >= 0) & (token_expert_ids <= self.normal_expert_ids)
+        
+        if self.enable_rank_round_robin:
+            new_token_expert_ids = torch.where(
+                mask,
+                torch.nn.functional.embedding(
+                    token_expert_ids, 
+                    expert_mapping
+                ).squeeze(-1),
+                token_expert_ids
+            )
+        else:
+            batch_size = token_expert_ids.shape[0]
+            new_token_expert_ids = torch.where(
+                mask,
+                expert_mapping[
+                    token_expert_ids,
+                    (self.redundant_bias[:batch_size,] % self.num_redundant_per_expert[layer_idx_moe][token_expert_ids])
+                ],
+                token_expert_ids
+            )
+
+        return tokens, new_token_expert_ids, token_expert_scores
+
+    def plan(
+        self,
+        layer_idx_moe: Optional[int] = None,
+        tokens: Optional[torch.Tensor] = None,
+        token_expert_ids: Optional[torch.Tensor] = None,
+        token_expert_scores: Optional[torch.Tensor] = None,
+        top_k: int = 8,
+        expert_mapping: Optional[torch.Tensor] = None,
+        is_prefill=True
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """
+        Optimize token-to-expert mapping using configured optimizers.
+
+        This method takes input tokens and their initially assigned experts and scores. It computes
+        expert loads, updates the cluster status accordingly, and then optimizes the assignment
+        of tokens to experts by applying the configured optimization strategies.
+
+        Args:
+            layer_idx_moe: Identifier for the current layer (optional)
+            tokens: Input tokens tensor with shape [num_tokens, ...]
+            token_expert_ids: Initial expert assignments, shape [num_tokens, top_k], -1 indicates unassigned
+            token_expert_scores: Importance scores for expert assignments, shape [num_tokens, top_k]
+
+        Returns:
+            Tuple containing (original tokens, optimized expert IDs, optimized scores)
+        """
+        # Input validation check
+        if not self.is_moe_layer(layer_idx_moe):
+            return tokens, token_expert_ids, token_expert_scores
+        return self.plan_experts(layer_idx_moe, tokens, token_expert_ids, token_expert_scores, top_k, expert_mapping, is_prefill)
 
 
     @staticmethod

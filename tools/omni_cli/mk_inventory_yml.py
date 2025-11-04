@@ -7,6 +7,11 @@ WARNING = "\033[93m[WARNING]\033[0m"   # yellow
 ERROR   = "\033[91m[ERROR]\033[0m"     # red
 FRAMEWORK = "vllm"                     # vllm
 
+DEFAULT_PROFILE_CONFIG = {
+    'deepseek': 'default_profiles.yml',
+    'qwen': 'default_qwen_profiles.yml',
+}
+
 def load_yaml(path):
     """Load YAML file content, return empty dict if file doesn't exist"""
     if not os.path.exists(path):
@@ -21,19 +26,27 @@ def save_yaml(path, data):
 
 def add_node(args):
     """Add a node to server_profiles.yml under all.children.{role}.hosts"""
+
+    model_name = args.model_name
+    if model_name not in DEFAULT_PROFILE_CONFIG:
+        print(f"{WARNING} model_name config is not supported, use deepseek config as default")
+        default_file_name = DEFAULT_PROFILE_CONFIG['deepseek']
+    else:
+        default_file_name = DEFAULT_PROFILE_CONFIG[model_name]
+
     # Locate default_profiles.yml and server_profiles.yml
     base_dir = os.path.dirname(__file__)
-    default_path = os.path.join(base_dir, 'configs', 'default_profiles.yml')
+    default_path = os.path.join(base_dir, 'configs', default_file_name)
     deploy_path = args.deploy_path
     default_profiles = load_yaml(default_path)
 
     # Validate default profiles structure
     if not default_profiles or 'profiles' not in default_profiles or FRAMEWORK not in default_profiles['profiles']:
-        print(f"{ERROR} default_profiles.yml not found or invalid.")
+        print(f"{ERROR} {default_file_name} not found or invalid.")
         return
 
-    if args.model_name not in default_profiles['profiles'][FRAMEWORK]:
-        print(f"{ERROR} {args.model_name} is not supported.")
+    if model_name not in default_profiles['profiles'][FRAMEWORK]:
+        print(f"{ERROR} {model_name} is not supported.")
         return
 
     # Load or create deployment file
@@ -94,7 +107,7 @@ def add_node(args):
         node['DOCKER_IMAGE_ID'] = args.docker_image_id
 
     # Get role-specific configuration from default profiles
-    role_config = default_profiles['profiles'][FRAMEWORK][args.model_name].get(args.role)
+    role_config = default_profiles['profiles'][FRAMEWORK][model_name].get(args.role)
     env = role_config.get('env', {}).copy()
 
     # Set master IP if not provided

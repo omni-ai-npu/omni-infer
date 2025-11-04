@@ -454,11 +454,10 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration)
 {
     "model_parallel_config": {
         "dense_mlp_tp_size": 4,                 # dense mlp tp大小，默认为4
-        "dp_size": 1,                           # dp大小，P节点为1，D节点设置为die数
         "o_proj_tp_size": 1,                    # attention out_proj tp大小，默认为1
         "redundancy_shared_expert_num": 0       # 冗余共享专家数，默认为0
     },
-    "operator_optimizition_config": {
+    "operator_optimization_config": {
         "enable_kv_rmsnorm_rope_cache": true,   # 是否开启rmsnorm和rope融合，默认开启
         "prefill_moe_all_to_all": true,         # P的moe层是否使用all to all，默认开启。设置为false时，使用allgather+scatter
         "moe_multi_stream_tune": false,         # 是否开启多流，只能图模式使用，单算子会报错, 开启提升3ms性能
@@ -466,24 +465,30 @@ class DeepseekV3ForCausalLM(nn.Module, GraphCompileConfiguration)
         "merge_qkv": false,                     # merge_qkv当前未使能，为false
         "two_stage_comm": false,                # 卡内卡间多级通信，A2使用，为false
         "gmm_nz": false,                        # 是否开启gmm_nz，测试性能时使用，P开启，D关闭
+        "unquant_bmm_nz": false,                # bf16使用
         "decode_moe_dispatch_combine": true,    # D的moe层是否使用dispatch+combine算子，默认开启。设置为false时，使用all to all
-        "use_omni_placement": false,            # 是否使用omni placement
-        "omni_placement_config_path": null,     # omni placement配置文件
         "use_super_kernel": false,              # 是否使用super kernel融合算子，仅图模式可用，开启提升2ms性能
         "use_mlaprolog": false,                 # 暂未使能，默认关闭
-        "opt_w2_scale_cast": false,             # 是否将w2_scale权重转换为float32，默认false
+        "cast_w2_scale_f32": false,             # 是否将w2_scale权重转换为float32，默认false
         "enable_mc2_v2": false,                 # 是否使用npu_moe_distribute_dispatch_v2版本，默认关闭，0714后的主线CANN需要打开
-        "decode_gear_list": [1],                # 图模式挡位，decode节点图模式下使用
         "control_accept_rate": -1,              # <0 or >1 不控制, >=0 and <=1 控制MTP开启时接受率为该值，几乎必然导致输出结果异常，仅保证只投机1个token时满足这一数值
+
+        "use_prefetch": true,                   # 是否开启预取
+        "expert_gate_up_prefetch": 50,          # 默认预取大小为 50Mb；如果是权重是BF16型，设置为 30Mb
+        "expert_down_prefetch": 28,             # 当权重是w8a8且ep_size > 64 时，默认预取大小为 28Mb，否则为0
+        "attn_prefetch": 96,                    # 默认预取大小为 96Mb
+
         "enable_round_pipeline_comm": false,    # d节点使用，moe部分通信pipline，decode为4机时打开，a2相关
         "enable_pipeline_comm": false,          # d节点使用，moe部分通信pipline，decode为2机时打开，a2相关
         "pd_seperate_prefill": false,           # pd分离版本下prefill节点打开，a2相关
         "prefill_enable_long_seq": false,       # prefill使能长序列，64k以上打开，默认关闭，a2相关
         "prefill_moe_multi_stream": true,       # p节点使用，moe部分是否开启多流，a2相关
+        "prefill_enable_mla_alltoall": false,   # p节点使用，mla部分是否开启all2all，a2相关
         "prefill_enable_mla_alltoall_local": true, # p节点使用，mla部分是否开启all2all，a2相关
-        "prefill_enable_pipeline_comm": true,   # p节点使用，moe部分是否开启通信pipline，a2相关
-        "prefill_mla_multi_stream": true,       # p节点使用，mla部分是否开启多流，a2相关
-        "enable_dense_local_tp": 1              # 前三层dense层mlp的tp大小，a2相关
+        "fa_quant": false,                      # kvcache量化使用
+        "c8_calib_path": null,                   # 计算faquant的scale采集的kv_cache的calib地址，在test_config_prefill.json赋值
+        "experts_pruning": false,
+        "use_tnd_pa": false                     # 稠密模型使用新CANN包FIA算子，以TND+PA格式计算attention
     }
 }
 ```

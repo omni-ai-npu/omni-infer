@@ -190,6 +190,8 @@ class LLMDataDistManager:
 
             # dense model.
             # flatten_kv_caches = maybe_merge_kv_caches(flatten_kv_caches)  # This is never called and bugged.
+            # spec model.
+            flatten_kv_caches = maybe_split_kv_caches_for_spec_layers(flatten_kv_caches)
 
             # group by kv cache shape
             key_func = lambda kv_cache: tuple(kv_cache.shape)
@@ -212,7 +214,7 @@ class LLMDataDistManager:
 
                 cache = self.data_dist_engine.cache_manager.register_blocks_cache(cache_desc, cache_addrs, cache_key)
                 self.registered_kv_caches.append(cache)
-        logger.error(f" ***** registered_kv_caches num:{len(self.registered_kv_caches)}")
+        logger.debug(f" ***** registered_kv_caches num:{len(self.registered_kv_caches)}")
 
     def _pull_blocks(self, src_cache_key, dst_cache, src_blocks, dst_blocks):
         for _ in range(KV_CACHE_RETRY_TIMES):
@@ -463,4 +465,22 @@ def maybe_merge_kv_caches(flatten_kv_caches):
         return merged_kv_caches
     return flatten_kv_caches
 
+def maybe_split_kv_caches_for_spec_layers(flatten_kv_caches):
+    flatten_kv_caches_split = []
+    need_split = False
+    for caches in flatten_kv_caches:
+        shape_dict = {}
+        for cache in caches:
+            if str(cache.shape) not in shape_dict:
+                shape_dict[str(cache.shape)] = []
+            shape_dict[str(cache.shape)].append(cache)
+        
+        flatten_kv_caches_split.extend(shape_dict.values())
+        if len(shape_dict) > 1 or need_split: 
+            need_split = True
+        
+    if not need_split:
+        return flatten_kv_caches
+    else:
+        return flatten_kv_caches_split
 RankLinkInfo = namedtuple("RankLinkInfo", ["comm_name", "comm_id", "cluster_rank_info"])

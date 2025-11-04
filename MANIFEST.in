@@ -1,5 +1,6 @@
 include omni/accelerators/placement/omni_placement/cpp/*.cpp
 include omni/accelerators/placement/omni_placement/cpp/include/*.h
+include omni/accelerators/placement/config.yaml
 include LICEN[CS]E*
 include COPYING*
 include NOTICE*

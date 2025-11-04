@@ -15,6 +15,7 @@ from vllm.model_executor.layers.quantization.base_config import (
 from vllm.model_executor.utils import set_weight_attrs
 
 from vllm.distributed import (divide,
+                              get_dp_group,
                               tensor_model_parallel_all_gather,
                               get_tensor_model_parallel_rank,
                               get_tensor_model_parallel_world_size,
@@ -22,7 +23,7 @@ from vllm.distributed import (divide,
                               tensor_model_parallel_reduce_scatter)
 from omni.adaptors.vllm.distributed.parallel_state import get_local_world_group, get_world_group
 from omni.adaptors.vllm.distributed.communication_op import all_gather_local, reduce_scatter_local
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 DEFAULT_VOCAB_PADDING_SIZE = 64
  
@@ -222,14 +223,14 @@ class ParallelLMHead(VocabParallelEmbedding):
             return self
 
     def forward(self, hidden_states, embedding_bias):
-        if model_extra_config.parall_config.dp_size > 1:
+        if self.parallel_lmhead:
             hidden_states = get_local_world_group().all_gather(hidden_states, dim=0)
 
         logits = self.quant_method.apply(self,
                                          hidden_states,
                                          bias=embedding_bias)
 
-        if model_extra_config.parall_config.dp_size > 1:
+        if self.parallel_lmhead:
             logits = get_local_world_group().all_to_all(logits)
         else:
             logits = tensor_model_parallel_all_gather(logits)

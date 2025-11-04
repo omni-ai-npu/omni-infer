@@ -24,4 +24,4 @@ where = ["."]
 include = ["omni_cli*"]
 
 [tool.setuptools.package-data]
-"omni_cli" = ["configs/*.yml"]
+"omni_cli" = ["configs/**/*"]

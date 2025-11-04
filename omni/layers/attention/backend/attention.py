@@ -32,7 +32,7 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
 from vllm.attention.backends.utils import CommonAttentionState
 from vllm.model_executor.layers.rotary_embedding import DynamicNTKScalingRotaryEmbedding
 from vllm.forward_context import ForwardContext, get_forward_context
-from vllm.utils import (direct_register_custom_op, supports_dynamo)
+from vllm.utils import (direct_register_custom_op, supports_dynamo, is_pin_memory_available)
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.worker.gpu_input_batch import InputBatch
 from vllm.v1.kv_cache_interface import AttentionSpec
@@ -41,7 +41,7 @@ from vllm.platforms import current_platform
 from vllm.config import (get_current_vllm_config, CompilationLevel)
 from omni.layers.rotary_embedding import QwenMRotaryEmbedding
 from omni.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 
 class MultipleOf:
     base: int
@@ -153,6 +153,20 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         self.block_size = block_table.block_size
         self.block_table = block_table
 
+        self.decode_num_tokens = torch.zeros(
+            runner.max_num_reqs, dtype=torch.int32, device=runner.device
+        )
+        self.decode_num_tokens_cpu = torch.zeros(
+            runner.max_num_reqs, dtype=torch.int32, pin_memory=is_pin_memory_available(),
+        )
+
+        current_layers_names = []
+        for i, kv_cache_group in enumerate(self.runner.kv_cache_config.kv_cache_groups):
+            if kv_cache_spec == kv_cache_group.kv_cache_spec:
+                current_layers_names = kv_cache_group.layer_names
+        self.is_spec_metadata = hasattr(self.runner, "drafter") \
+            and sorted(self.runner.drafter.attn_layer_names) == sorted(current_layers_names)
+
     def reorder_batch(self, input_batch: "InputBatch",
                       scheduler_output: "SchedulerOutput") -> bool:
         # We now want to reorder the batch so that the "decode" requests are at
@@ -162,6 +176,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         # where attention is likely compute-bound
         decodes = []
         prefills = []
+        decode_num_tokens = []
         num_decode_tokens = 0
         num_prefill_tokens = 0
 
@@ -174,6 +189,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             # Only in decode the spec tokens are scheduled
             if req_id in scheduler_output.scheduled_spec_decode_tokens or num_tokens == 1:
                 decodes.append(i)
+                decode_num_tokens.append(num_tokens)
                 num_decode_tokens += num_tokens
             else:
                 prefills.append(i)
@@ -199,6 +215,8 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         self._num_prefills = num_prefills
         self._num_decode_tokens = num_decode_tokens
         self._num_prefill_tokens = num_prefill_tokens
+        self.decode_num_tokens_cpu[:num_decodes] = torch.tensor(decode_num_tokens)
+        self.decode_num_tokens.copy_(self.decode_num_tokens_cpu, non_blocking=True)
 
         return modified_batch
 
@@ -275,15 +293,14 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             input_positions = torch.cat([input_positions, padding_0])
 
         if self.runner.attn_state == AscendAttentionState.DecodeOnly:
-            if self._num_decode_tokens % self._num_decodes != 0:
-                raise RuntimeError("self._num_decode_tokens must be divisible by self._num_decodes")
-            num_tokens_per_req = self._num_decode_tokens // self._num_decodes
             seq_lens = (input_positions + 1).to(seq_lens.dtype)
             query_lens = torch.ones_like(seq_lens)
             block_table = block_table[:self._num_decodes, ...]
             # has speculative tokens
-            if num_tokens_per_req > 1:
-                block_table = block_table.unsqueeze(1).repeat(1, num_tokens_per_req, 1).view(-1, block_table.shape[-1])
+            if self._num_decode_tokens > self._num_decodes:
+                block_table = block_table.repeat_interleave(
+                    self.decode_num_tokens[:self._num_decodes], dim=0, output_size=self._num_decode_tokens
+                )
             block_table_padding = torch.zeros(
                 (graph_pad_size, ) + block_table.shape[1:],
                 dtype=block_table.dtype,
@@ -324,7 +341,10 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         elif hasattr(self.runner.model.model.layers[0], "self_attn"):
             cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
         else:
-            cos, sin = None, None
+            if self.is_spec_metadata:
+                cos, sin = self.runner.drafter.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
+            else:
+                cos, sin = None, None
 
         is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
                            self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'
@@ -373,8 +393,13 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                 cos, sin = self.runner.model.language_model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
         elif hasattr(self.runner.model.model.layers[0], 'self_attn'):
             cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
-        else:  # Qwen3-Next
+        elif hasattr(self.runner.model.model.layers[3], 'self_attn'):  # Qwen3-Next
             cos, sin = self.runner.model.model.layers[3].self_attn.rotary_emb.get_cos_sin(fake_positions)
+        else:
+            if self.is_spec_metadata:
+                cos, sin = self.runner.drafter.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
+            else:
+                cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
 
         is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
                            self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'

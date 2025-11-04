@@ -32,6 +32,7 @@ from vllm.sequence import IntermediateTensors
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.distributed import (
+    get_dp_group,
     get_pp_group,
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_gather
@@ -66,8 +67,9 @@ from omni.adaptors.vllm.distributed.parallel_state import (
 from omni.layers.moe.fused_moe.layer import FusedMoE
 from omni.layers.moe.deepseek_moe import DeepseekMoE 
 from omni.layers.attention.deepseek_mla import DeepseekMLA 
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 from omni.layers.attention.backend.mla import group_request_list
+from omni.layers.utils import ConditionalTNGScope
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64
 
@@ -130,6 +132,8 @@ class ParallelPanguUltraMoEMLP(nn.Module):
 
 class PanguUltraMoEDecoderLayer(nn.Module):
 
+    is_split_hidden_states = False
+
     def __init__(
             self,
             config: PretrainedConfig,
@@ -148,6 +152,7 @@ class PanguUltraMoEDecoderLayer(nn.Module):
                                           8192)
         moe_layer_freq = getattr(config, "moe_layer_freq", 1)
         num_dense_layers = getattr(config, "num_dense_layers", 3)
+        self.num_hidden_layers = getattr(config, "num_hidden_layers", 61)
         # DecoderLayers are created with `make_layers` which passes the prefix
         # with the layer's index.
         layer_idx = int(prefix.split(sep='.')[-1])
@@ -191,14 +196,10 @@ class PanguUltraMoEDecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
         
-        if getattr(config, 'sandwich_norm', False):
-            self.sandwich_norm = True
-            self.pre_mlp_layernorm = RMSNorm(config.hidden_size,
+        self.pre_mlp_layernorm = RMSNorm(config.hidden_size,
                                              eps=config.rms_norm_eps)
-            self.post_mlp_layernorm = RMSNorm(config.hidden_size,
+        self.post_mlp_layernorm = RMSNorm(config.hidden_size,
                                               eps=config.rms_norm_eps)
-        else:
-            self.sandwich_norm = False
 
     def forward(
             self,
@@ -208,78 +209,91 @@ class PanguUltraMoEDecoderLayer(nn.Module):
             attn_metadata: AttentionMetadata,
             residual: Optional[torch.Tensor],
             layer_id: Optional[int] = None,
-            next_attention_weights: Optional[dict] = None
+            next_attention_weights: Optional[dict] = None,
+            next_input_layernorm: Optional[nn.Module] = None
     ) -> torch.Tensor:
         if isinstance(attn_metadata, dict):
             attn_metadata = attn_metadata[self.layer_name]
-        # Self Attention
-        if residual is None:
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
-        else:
-            # Adapt: adapt for w8a8 dynamic, do quant
-            # Combines residual add and rmsnorm
-            hidden_states, residual = self.input_layernorm(
-                hidden_states, residual, quant_symbol=(not model_extra_config.operator_opt_config.use_mlaprolog and self.quant_symbol))
-            # Adapt end.
-        hidden_states = self.self_attn(
-            positions=positions,
-            hidden_states=hidden_states,
-            kv_cache=kv_cache,
-            attn_metadata=attn_metadata,
-        )
 
         is_prefill = attn_metadata is None or attn_metadata.prefill is not None
+        enable_superkernel = not is_prefill and model_extra_config.operator_opt_config.use_super_kernel
 
-        if self.sandwich_norm:
-            hidden_states = self.post_attention_layernorm(
-                hidden_states)
-            hidden_states, residual = self.pre_mlp_layernorm(
-                hidden_states, residual)
-        else:
-            if self.is_moe == True and not is_prefill and model_extra_config.operator_opt_config.use_super_kernel:
-                with tng.scope.super_kernel(self.mlp.prefix, 'stream-fusion=1'):
-                    hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-            else:
-                hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-
-        # Perform full hidden splitting to avoid OOM
-        if model_extra_config.parall_config.dp_size > 1 and attn_metadata is None:
-            reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device=current_platform.device_type)
-            local_length = hidden_states.shape[0]
-            # global_max_length = torch.tensor(0, dtype=torch.int64)
-            dist.all_reduce(reduce_length, op=dist.ReduceOp.MAX, async_op=False)
-            global_max_length = reduce_length.item()
-            pad_size = global_max_length - hidden_states.shape[0]
-            hidden_states = torch.nn.functional.pad(
-                hidden_states, (0, 0, 0, pad_size)
+        with ConditionalTNGScope(super_kernel=(enable_superkernel and model_extra_config.operator_opt_config.use_mlaprolog), scope=self.self_attn.prefix):
+            # Self Attention
+            if residual is None:
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
+            elif not enable_superkernel:
+                # Adapt: adapt for w8a8 dynamic, do quant
+                # Combines residual add and rmsnorm
+                hidden_states, residual = self.input_layernorm(
+                    hidden_states, residual, quant_symbol=(not model_extra_config.operator_opt_config.use_mlaprolog and self.quant_symbol))
+                # Adapt end.
+            hidden_states = self.self_attn(
+                positions=positions,
+                hidden_states=hidden_states,
+                kv_cache=kv_cache,
+                attn_metadata=attn_metadata,
             )
-            residual = torch.nn.functional.pad(
-                residual, (0, 0, 0, pad_size)
-            )
-            hidden_states_list = hidden_states.split(SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER)
-            residual_list = residual.split(SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER)
-            hidden_state_out = []
-            residual_out = []
-            for i in range(len(hidden_states_list)):
-                hidden_states, residual = self.mlp(hidden_states_list[i], residual_list[i], attn_metadata, layer_id)
-                hidden_state_out.append(hidden_states)
-                residual_out.append(residual)
-            hidden_states = torch.cat(hidden_state_out)[:local_length]
-            residual = torch.cat(residual_out)[:local_length]
-        else:
-            if self.is_moe == True:
-                # omni placement do not support super kernel
-                hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
-                if isinstance(hidden_states, (tuple, list)):
-                    assert len(hidden_states) == 2
-                    hidden_states = hidden_states[0] + hidden_states[1]
-            else:
-                hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata)
 
-        if self.sandwich_norm:
+        if enable_superkernel:
+            with tng.scope.super_kernel(self.self_attn.prefix, 'stream-fusion=1'):
+                hidden_states = self.post_attention_layernorm(hidden_states)
+                hidden_states, residual = self.pre_mlp_layernorm(hidden_states, residual)
+
+                if self.is_moe == True:
+                    # omni placement do not support super kernel
+                    hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
+                    if isinstance(hidden_states, (tuple, list)):
+                        assert len(hidden_states) == 2
+                        hidden_states = hidden_states[0] + hidden_states[1]
+                else:
+                    hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata)
+
+                hidden_states = self.post_mlp_layernorm(hidden_states)
+                if next_input_layernorm is not None:
+                    hidden_states, residual = next_input_layernorm(
+                        hidden_states, residual, quant_symbol=(not model_extra_config.operator_opt_config.use_mlaprolog and self.quant_symbol))
+        else:
+            hidden_states = self.post_attention_layernorm(hidden_states)
+            hidden_states, residual = self.pre_mlp_layernorm(hidden_states, residual)
+
+            # Perform full hidden splitting to avoid OOM
+            if (get_dp_group().world_size > 1 or PanguUltraMoEDecoderLayer.is_split_hidden_states) and is_prefill:
+                reduce_length = torch.tensor(hidden_states.shape[0], dtype=torch.int64, device=current_platform.device_type)
+                local_length = hidden_states.shape[0]
+                # global_max_length = torch.tensor(0, dtype=torch.int64)
+                dist.all_reduce(reduce_length, op=dist.ReduceOp.MAX, async_op=False)
+                global_max_length = reduce_length.item()
+                pad_size = global_max_length - hidden_states.shape[0]
+                hidden_states = torch.nn.functional.pad(
+                    hidden_states, (0, 0, 0, pad_size)
+                )
+                residual = torch.nn.functional.pad(
+                    residual, (0, 0, 0, pad_size)
+                )
+                hidden_states_list = hidden_states.split(SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER)
+                residual_list = residual.split(SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER)
+                hidden_state_out = []
+                residual_out = []
+                for i in range(len(hidden_states_list)):
+                    hidden_states, residual = self.mlp(hidden_states_list[i], residual_list[i], attn_metadata, layer_id)
+                    hidden_state_out.append(hidden_states)
+                    residual_out.append(residual)
+                hidden_states = torch.cat(hidden_state_out)[:local_length]
+                residual = torch.cat(residual_out)[:local_length]
+            else:
+                if self.is_moe == True:
+                    # omni placement do not support super kernel
+                    hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
+                    if isinstance(hidden_states, (tuple, list)):
+                        assert len(hidden_states) == 2
+                        hidden_states = hidden_states[0] + hidden_states[1]
+                else:
+                    hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata)
+
             hidden_states = self.post_mlp_layernorm(hidden_states)
-
+            
         return hidden_states, residual
 
     def forward_attn(
@@ -449,13 +463,18 @@ class PanguUltraMoEModel(nn.Module):
                     'q_b_proj_weight': None,
                     'W_UK': None
                 }
+            if i < self.end_layer - 1:
+                next_input_layernorm = self.layers[i + 1].input_layernorm
+            else:
+                next_input_layernorm = None
             hidden_states, residual = layer(positions,
                                             hidden_states,
                                             kv_caches[i - self.start_layer] if kv_caches is not None else None,
                                             attn_metadata,
                                             residual,
                                             layer_id,
-                                            next_attention_weights)
+                                            next_attention_weights,
+                                            next_input_layernorm)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
@@ -718,12 +737,17 @@ class PanguUltraMoEForCausalLM(nn.Module):
 
         self.config = vllm_config.model_config.hf_config
         self.quant_config = vllm_config.quant_config
-        self.model = PanguUltraMoEModel(vllm_config=vllm_config, prefix="model")
+
+        if model_extra_config.task_config.hardware_platform.startswith("A2") and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
+            from omni.models.pangu.pangu_ultra_moe import PanguUltraMoEModel as PanguUltraMoEModel_A2
+            self.model = PanguUltraMoEModel_A2(vllm_config=vllm_config, prefix="model")
+        else:
+            self.model = PanguUltraMoEModel(vllm_config=vllm_config, prefix="model")
 
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
                                       quant_config=self.quant_config,
-									  parallel_lmhead=(model_extra_config.parall_config.dp_size > 1))
+									  parallel_lmhead=(get_dp_group().world_size > 1))
         self.logits_processor = LogitsProcessor(self.config.vocab_size,
                                                 logits_as_input=True)
         self.sampler = Sampler()
@@ -747,8 +771,14 @@ class PanguUltraMoEForCausalLM(nn.Module):
             inputs_embeds = None,
             **kwargs
     ) -> Optional[torch.Tensor]:
-        hidden_states = self.model(input_ids, positions, kv_caches,
+    
+        if model_extra_config.task_config.hardware_platform.startswith(f"A2") and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
+            hidden_states = self.model(input_ids, positions, kv_caches,
+                                   attn_metadata, intermediate_tensors)
+        else:
+            hidden_states = self.model(input_ids, positions, kv_caches,
                                    attn_metadata, intermediate_tensors, self.max_num_token)
+
         if attn_metadata is None:
             logits = self.compute_lmhead(hidden_states[-1:, ...], None)
         else:

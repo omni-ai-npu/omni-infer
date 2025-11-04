@@ -47,7 +47,7 @@ from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
 from omni.adaptors.vllm.utils import (
     check_torchair_cache_exists, check_block_num_cache_exist, read_block_num_from_file, write_block_num_to_file, delete_torchair_cache_file, clear_var
 )
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config, call_config_updater
 
 
 __origin_get_device_properties__ = torch.npu.get_device_properties
@@ -150,6 +150,9 @@ class NPUWorker(WorkerBase):
             info = f"Not support device type: {self.device_config.device}"
             logger.error(info)
             raise RuntimeError(info)
+        # Initialize the model best practice configs.
+        self._init_omni_placement_configs()
+        self._init_model_best_practice_configs()
         # Initialize the distributed environment.
         self._init_worker_distributed_environment()
         # Set random seed.
@@ -165,6 +168,51 @@ class NPUWorker(WorkerBase):
 
         self.enable_torchair_graph_mode = (self.vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
         self.use_cached_npu_graph = self.vllm_config.npu_compilation_config.use_ge_graph_cached
+
+    def _init_model_best_practice_configs(self):
+
+        hardware_platform = "A2" if torch_npu.npu.get_device_name(0).startswith("Ascend910B") else "A3"
+        is_pd_disaggregation = False
+        is_prefill_node = None
+        if os.getenv('ROLE', None):
+            is_pd_disaggregation = True
+            is_prefill_node = True if os.getenv('ROLE', None)=='prefill' else False
+        enable_chunked_prefill = self.scheduler_config.enable_chunked_prefill
+        if self.vllm_config.additional_config is not None:
+            enable_omni_placement = self.vllm_config.additional_config.get("enable_omni_placement", False)
+            enable_pd_elastic_scaling = self.vllm_config.additional_config.get("enable_pd_elastic_scaling", False)
+        else:
+            enable_omni_placement = False
+            enable_pd_elastic_scaling = False
+        max_num_reqs = self.scheduler_config.max_num_seqs
+        self.decode_gear_list = self.vllm_config.npu_compilation_config.decode_gear_list
+        if self.decode_gear_list is None:
+            self.decode_gear_list = []
+            self.decode_gear_list.append(max_num_reqs if not self.vllm_config.speculative_config else max_num_reqs * \
+                                            (1 + self.vllm_config.speculative_config.num_speculative_tokens))
+        call_config_updater(
+            config_updater_name = 'update_task_config',
+            hf_config = self.model_config.hf_config,
+            hardware_platform = hardware_platform,
+            is_pd_disaggregation = is_pd_disaggregation,
+            is_prefill_node = is_prefill_node,
+            prefill_node_num = int(os.getenv("PREFILL_POD_NUM", 1)),
+            decode_node_num = int(os.getenv("DECODE_POD_NUM", 1)),
+            enable_chunked_prefill = enable_chunked_prefill,
+            enable_omni_placement = enable_omni_placement,
+            enable_pd_elastic_scaling = enable_pd_elastic_scaling,
+            decode_gear_list=self.decode_gear_list,
+            enable_graph_mode=self.enable_torchair_graph_mode
+        )
+    
+    def _init_omni_placement_configs(self)-> None:
+        if self.vllm_config.additional_config is None:
+            return
+        if not self.vllm_config.additional_config.get("enable_omni_placement", False):
+            return
+        else:            
+            from omni.accelerators.placement.omni_placement.utils import apply_omni_placement_attributes
+            apply_omni_placement_attributes(additional_config=self.vllm_config.additional_config)
 
     def page_size_bytes(self) -> int:
         # For MLA we only store a single latent vector
@@ -183,7 +231,7 @@ class NPUWorker(WorkerBase):
         if not self.enable_torchair_graph_mode:
             clear_var()
             # Only For Prefill Stage
-            if model_extra_config.operator_opt_config.use_omni_placement:
+            if model_extra_config.task_config.enable_omni_placement:
                 self.model_runner.planner.start_dynamic_optimize_expert_load_balance()
             return cur_npu_kv_cache_bytes
 
@@ -258,10 +306,6 @@ class NPUWorker(WorkerBase):
             f"Available memory: {usable_memory_size}, total memory: {total_npu_memory}"
         )
         return int(npu_kv_cache_bytes)
-    
-    def load_kv_cache(self, info_load_reqs) -> List[int]:
-        result = self.model_runner.load_kv_cache(info_load_reqs)
-        return result
 
     def execute_model(
         self,
@@ -319,7 +363,10 @@ class NPUWorker(WorkerBase):
             from contextlib import nullcontext
             context = nullcontext()
         with context:
-            self.model_runner.initialize_kv_cache(kv_cache_config)
+            if model_extra_config.operator_opt_config.use_omni_cache:
+                self.model_runner.initialize_omni_kv_cache(kv_cache_config)
+            else:
+                self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def initialize_cache(self, kv_cache_configs: List[KVCacheConfig]) -> None:
         """Allocate GPU KV cache with the specified kv_cache_config."""
@@ -332,10 +379,12 @@ class NPUWorker(WorkerBase):
             self.profiler.start()
         else:
             self.profiler.stop()
+
     def execute_dummy_batch(self) -> None:
         self.model_runner._dummy_run(1)
-        if model_extra_config.operator_opt_config.use_omni_placement:
+        if model_extra_config.task_config.enable_omni_placement:
             self.model_runner.planner.place_experts()
+
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)
 
@@ -347,6 +396,7 @@ class NPUWorker(WorkerBase):
 
     def pin_lora(self, lora_id: int) -> bool:
         return self.model_runner.pin_lora(lora_id)
+
     def _init_worker_distributed_environment(self) -> None:
         """Initialize the distributed environment."""
         additional_config = self.vllm_config.additional_config

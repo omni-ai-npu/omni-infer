@@ -2,6 +2,8 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 import os
 from omni.adaptors.vllm.patches.pangu_patch import patch_pangu
+from omni.adaptors.vllm.patches.shm_bug_fix_patch import patch_shm_to_zmq
+from omni.adaptors.vllm.patches.thinking_tag_bug_fix_patch import patch_thinking_bug_fix
 
 def patch_vllm_distributed():
     from vllm import distributed
@@ -50,6 +52,13 @@ def patch_linear():
     from omni.layers.linear import AscendUnquantizedLinearMethod
     linear.UnquantizedLinearMethod = AscendUnquantizedLinearMethod
 
+def patch_update_xgrammar_graph():
+    exit_code = os.system(f"bash {os.path.join(os.path.dirname(os.path.abspath(__file__)), 'update_xgrammar_graph.sh')}")
+    if exit_code == 0:
+        print("+++++++++++++++++++++++patch_update_xgrammar_graph success+++++++++++++++++++++++++++")
+    else:
+        print("+++++++++++++++++++++++patch_update_xgrammar_graph failed+++++++++++++++++++++++++++")
+
 _patch_done = False
 
 def patch_all():
@@ -63,6 +72,9 @@ def patch_all():
     patch_compilation()
     patch_pangu()
     patch_linear()
+    patch_shm_to_zmq()
+    patch_thinking_bug_fix()
+    patch_update_xgrammar_graph()
     _patch_done = True
 
 patch_all() 

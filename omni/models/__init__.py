@@ -1,34 +1,26 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
-
+import os
+import torch_npu
 from vllm import ModelRegistry
-import os
-from omni.models.common.config.model_config import model_extra_config
 
-import os
 if os.getenv("PROFILING_NAMELIST", None):
     print("<<<Profiler patch environmental variable is enabled, applying profiler patches.")
     from omni.tools.profiler import apply_profiler_patches
 
-
 def register_model():
-    is_A2 = os.getenv("ASCEND_PLATFORM", "A3")=="A2"
-    all2all = model_extra_config.operator_opt_config.prefill_moe_all_to_all
+    is_A2 = torch_npu.npu.get_device_name(0).startswith("Ascend910B")
     ModelRegistry.register_model(
         "DeepseekV2ForCausalLM",
         "omni.models.deepseek.deepseek_v2:CustomDeepseekV2ForCausalLM")
-    if is_A2 and not all2all:
-        ModelRegistry.register_model(
-            "DeepseekV3ForCausalLM",
-            "omni.models.deepseek.deepseek_v3_a2:DeepseekV3ForCausalLM")
-        ModelRegistry.register_model(
-            "PanguUltraMoEForCausalLM",
-            "omni.models.pangu.pangu_ultra_moe_a2:PanguUltraMoEForCausalLM")
-    else:
-        ModelRegistry.register_model(
+
+    ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             "omni.models.deepseek.deepseek_v3:DeepseekV3ForCausalLM")
-        ModelRegistry.register_model(
+    ModelRegistry.register_model(
+            "DeepseekV32ForCausalLM",
+            "omni.models.deepseek.deepseek_v32:DeepseekV32ForCausalLM")
+    ModelRegistry.register_model(
             "PanguUltraMoEForCausalLM",
             "omni.models.pangu.pangu_ultra_moe:PanguUltraMoEForCausalLM")
 
@@ -43,6 +35,10 @@ def register_model():
     ModelRegistry.register_model(
         "DeepSeekMTPModelTres",
         "omni.models.deepseek.deepseek_mtp:DeepseekV3MTPTres")
+
+    ModelRegistry.register_model(
+            "LongcatFlashForCausalLM",
+            "omni.models.longcat.longcat_flash:LongcatFlashForCausalLM")
 
     ModelRegistry.register_model(
         "Qwen2ForCausalLM",
@@ -69,6 +65,15 @@ def register_model():
         "Qwen3NextForCausalLM",
         "omni.models.qwen.qwen3_next:Qwen3NextForCausalLM"
     )
+
+    ModelRegistry.register_model(
+        "Qwen3NextForCausalLM",
+        "omni.models.qwen.qwen3_next:Qwen3NextForCausalLM"
+    )
+
+    ModelRegistry.register_model(
+        "Eagle3LlamaForCausalLMEagle3",
+        "omni.models.qwen.qwen2_eagle3:Eagle3Qwen2ForCausalLM")
 
     ModelRegistry.register_model(
         "LlamaForCausalLM",
@@ -110,6 +115,9 @@ def register_model():
         "Gemma3ForConditionalGeneration",
         "omni.models.gemma.gemma3_mm:Gemma3ForConditionalGeneration")
 
+    ModelRegistry.register_model(
+        "BailingMoeV2ForCausalLM",
+        "omni.models.bailing.bailing:BailingMoeV2ForCausalLM")
 
     if (
         int(os.getenv("RANDOM_MODE", default='0')) or
@@ -122,10 +130,7 @@ def register_model():
         ModelRegistry.register_model(
             "Qwen2ForCausalLM",
             mock_model_class_factory(Qwen2ForCausalLM))
-        if is_A2 and not all2all:
-            from omni.models.deepseek.deepseek_v3_a2 import DeepseekV3ForCausalLM
-        else:
-            from omni.models.deepseek.deepseek_v3 import DeepseekV3ForCausalLM
+        from omni.models.deepseek.deepseek_v3 import DeepseekV3ForCausalLM
         ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             mock_model_class_factory(DeepseekV3ForCausalLM))

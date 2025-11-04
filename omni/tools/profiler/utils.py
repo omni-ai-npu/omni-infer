@@ -11,6 +11,8 @@ from pathlib import Path
 import socket
 import requests
 
+PREFILL = "prefill"
+DECODE = "decode"
 
 def safe_print(directory, message):
     process_id = multiprocessing.current_process().pid

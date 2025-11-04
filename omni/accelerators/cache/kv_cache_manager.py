@@ -10,6 +10,7 @@ from typing_extensions import override
 from vllm.distributed.kv_events import KVCacheEvent
 from vllm.logger import init_logger
 from vllm.utils import sha256
+from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.core.block_pool import BlockPool
 from vllm.v1.core.kv_cache_utils import BlockHashType, KVCacheBlock
 from vllm.v1.core.single_type_kv_cache_manager import SingleTypeKVCacheManager, FullAttentionManager
@@ -59,7 +60,7 @@ class OmniKVCacheBlocks:
         ]
 
 
-class OmniKVCacheManager:
+class OmniKVCacheManager(KVCacheManager):
 
     def __init__(
         self,
@@ -159,43 +160,6 @@ class OmniKVCacheManager:
         """
         return self.block_pools[0]
 
-    def make_prefix_cache_stats(self) -> Optional[PrefixCacheStats]:
-        """Get (and reset) the prefix cache stats.
-
-        Returns:
-            The current prefix caching stats, or None if logging is disabled.
-        """
-        if not self.log_stats:
-            return None
-        stats = self.prefix_cache_stats
-        self.prefix_cache_stats = PrefixCacheStats()
-        return stats
-
-    def get_computed_blocks(self,
-                            request: Request) -> tuple[OmniKVCacheBlocks, int]:
-        """Get the computed (cached) blocks for the request.
-        Note that the computed blocks must be full.
-
-        Args:
-            request: The request to get the computed blocks.
-
-        Returns:
-            A tuple containing:
-                - A list of blocks that are computed for the request.
-                - The number of computed tokens.
-        """
-        # Prefix caching is disabled or
-        # When the request requires prompt logprobs, we skip prefix caching.
-        if (not self.enable_caching
-                or request.sampling_params.prompt_logprobs is not None):
-            return OmniKVCacheBlocks.create_empty(), 0
-
-        # Think about the logic related to prefix caching in omni attention.
-        # Currently disabled. So the function just returns empty blocks and 0.
-        # The two return values correspond to the arguments `new_computed_blocks`
-        # and `num_new_computed_tokens` in method `self.allocate_slots()`.
-        raise RuntimeError("Prefix caching is not supported with OmniAttention yet.")
-
     def allocate_slots(
         self,
         request: Request,
@@ -280,9 +244,16 @@ class OmniKVCacheManager:
 
         # Touch the computed blocks to make sure they won't be evicted.
         if self.enable_caching:
-            raise RuntimeError("Prefix caching is not supported with OmniAttention yet.")
-        elif len(new_computed_block_list) > 0:
-            raise RuntimeError("Computed blocks should be empty when prefix caching is disabled")
+            self.block_pool.touch(new_computed_block_list)
+        else:
+            assert not new_computed_block_list, (
+                "Computed blocks should be empty when "
+                "prefix caching is disabled")
+
+        # Append the new computed blocks to the request blocks until now to
+        # avoid the case where the new blocks cannot be allocated.
+        self.single_type_manager.save_new_computed_blocks(
+            request.request_id, new_computed_block_list)
 
         # outer list is group
         # inner list is blocks of each group
@@ -300,23 +271,12 @@ class OmniKVCacheManager:
         # not cache any speculated tokens. We only cache blocks with
         # generated (accepted) tokens.
         # NOTE: call `cache_blocks` only on full attention layers
-        self.hybrid_managers[0].cache_blocks(
+        num_tokens_to_cache = min(num_computed_tokens + num_new_tokens, request.num_tokens)
+        self.single_type_manager.cache_blocks(
             request, self.req_to_block_hashes[request.request_id],
-            num_computed_tokens + num_new_tokens - num_draft_tokens)
+            num_tokens_to_cache)
 
         return OmniKVCacheBlocks(new_blocks)
-
-    def allocate_slots_running(
-        self,
-        request: Request,
-        num_new_tokens: int,
-        num_lookahead_tokens: int = 0,
-    ) -> Optional[OmniKVCacheBlocks]:
-        return self.allocate_slots(
-            request,
-            num_new_tokens,
-            num_lookahead_tokens=num_lookahead_tokens,
-        )
 
     def free(self, request: Request) -> None:
         """Free the blocks allocated for the request.
@@ -328,88 +288,6 @@ class OmniKVCacheManager:
         """
         for mgr in self.hybrid_managers:
             mgr.free(request.request_id)
-
-    def reset_prefix_cache(self) -> bool:
-        """Reset prefix cache. This function may be used in RLHF
-        flows to invalidate prefix caching after the weights are updated,
-        or used for resetting prefix caching status for benchmarking.
-
-        Returns:
-            bool: True if the prefix cache is successfully reset,
-            False otherwise.
-        """
-        # NOTE: call `reset_prefix_cache` only on full attention layers
-        if not self.block_pools[0].reset_prefix_cache():
-            return False
-        if self.log_stats:
-            if self.prefix_cache_stats is None:
-                raise RuntimeError("log_stats is enabled but prefix_cache_stats is None.")
-            self.prefix_cache_stats.reset = True
-        return True
-
-    def get_num_common_prefix_blocks(
-        self,
-        request: Request,
-        num_running_requests: int,
-    ) -> list[int]:
-        """Calculate the number of common prefix blocks shared by all requests
-        in the RUNNING state for each kv cache group.
-
-        The function determines this by selecting any request and iterating
-        through its blocks.  A block is considered a common prefix block if its
-        `ref_cnt` equals the total number of requests in the RUNNING state.
-
-        NOTE(woosuk): The number of requests in the RUNNING state is **greater
-        than or equal to** the number of requests scheduled in the current step.
-        This is because the RUNNING state only indicates that:
-        1. The request has not yet finished, and
-        2. The request holds its blocks unfreed.
-
-        While all scheduled requests must be in the RUNNING state, the inverse
-        is not necessarily true. There may be RUNNING requests that are not
-        scheduled in the current step.
-
-        This can result in an edge case where the number of common prefix blocks
-        is 0, even though all scheduled requests share a common prefix. This
-        occurs because there may be unscheduled RUNNING requests that do not
-        share the common prefix. Currently, this case cannot be easily detected,
-        so the function returns 0 in such cases.
-
-        Args:
-            request: Any request in the RUNNING state, used to identify the
-                common prefix blocks.
-            num_running_requests: The total number of requests in the RUNNING
-                state. This can be different from the number of scheduled
-                requests in the current step.
-
-        Returns:
-            list[int]: The number of common prefix blocks for each kv cache
-            group.
-        """
-        if request.status != RequestStatus.RUNNING:
-            raise RuntimeError(f"Request status should be running, but got {request.status}.")
-        return [
-            mgr.get_num_common_prefix_blocks(
-                request.request_id, num_running_requests)
-            for mgr in self.hybrid_managers
-        ]
-
-    def free_block_hashes(self, request: Request) -> None:
-        """Discard the block hashes for the request.
-
-        NOTE: Unlike `free`, this method should be called only when the request
-        is finished, not when it is preempted.
-        """
-        self.req_to_block_hashes.pop(request.request_id, None)
-
-    def take_events(self) -> list[KVCacheEvent]:
-        """Take the KV cache events from the block pool. For multiple KV Cache groups,
-        only return full attention KV events.
-
-        Returns:
-            A list of KV cache events.
-        """
-        return self.block_pools[0].take_events()
 
     def get_block_ids(self, request_id: str) -> list[list[int]]:
         """Get the block ids of a request.
@@ -484,14 +362,13 @@ class OmniAttentionManager(SingleTypeKVCacheManager):
         return 0
 
 
-spec_manager_map: dict[type[KVCacheSpec], type[SingleTypeKVCacheManager]] = {
-    FullAttentionSpec: FullAttentionManager,
-    OmniAttentionSpec: OmniAttentionManager,
-}
-
-
 def get_manager_for_kv_cache_spec(kv_cache_spec: KVCacheSpec,
                                   **kwargs) -> SingleTypeKVCacheManager:
+    spec_manager_map: dict[type[KVCacheSpec], type[SingleTypeKVCacheManager]] = \
+    {
+        FullAttentionSpec: FullAttentionManager,
+        OmniAttentionSpec: OmniAttentionManager,
+    }
     manager_class = spec_manager_map[type(kv_cache_spec)]
     manager = manager_class(kv_cache_spec, **kwargs)
     return manager

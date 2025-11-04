@@ -67,7 +67,7 @@ targets:
     function_name: decode
     exit_operation: |
       import os, time
-      from omni.adaptors.vllm.patches.profiler_patches.utils import ip_str, safe_print, trace_output_directory
+      from omni.tools.profiler.utils import ip_str, safe_print, trace_output_directory
       from vllm.v1.engine import EngineCoreOutputs
       if isinstance(result, EngineCoreOutputs) and os.getenv('ROLE') == "prefill":
           for request in getattr(result, 'outputs', []):

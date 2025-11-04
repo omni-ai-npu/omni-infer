@@ -1,0 +1,349 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: decode-deployment
+  labels: {{- include "omniinfer.labels" . | nindent 4 }}
+  annotations:
+    sp-block: "16"
+spec:
+  replicas: {{ include "omniinfer.replicaCountByRole" (dict "role" "decode" "values" .Values) }}
+  selector:
+    matchLabels:
+      app: decode
+  template:
+    metadata:
+      labels:
+        app: decode
+    spec:
+      schedulerName: volcano
+      # 节点反亲和部署场景配置，即同一个节点至多部署一个实例
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - decode
+              topologyKey: kubernetes.io/hostname
+        # 为满足独占机器上所有卡的假设
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - prefill
+              topologyKey: kubernetes.io/hostname
+      nodeSelector: {{- toYaml .Values.nodeSelector | nindent 8 }}
+      initContainers:
+      # 1.1 生成 decode local ranktable
+      - name: generate-local-ranktable
+        image: {{ include "omniinfer.image" (list .Values.image.repository .Values.image.tag) | quote }}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -ex
+          echo "Generating decode local ranktable..."
+          # 设置环境变量
+          source ~/.bashrc
+          RANKTABLE_SAVE_PATH=${RANKTABLE_SAVE_PATH:-"/tmp/ranktable_save_path"}
+          DECODE_RANKTABLE_SAVE_PATH=${DECODE_RANKTABLE_SAVE_PATH:-"${RANKTABLE_SAVE_PATH}/decode_config"}
+          SHARED_PATH=${SHARED_PATH:-"/shared"}
+          GLOBAL_RANKTABLE_SAVE_PATH="${SHARED_PATH}/collect_files_d/pod_${POD_NAME}/"
+
+          if [ -z "$DECODE_SERVER_LIST" ]; then
+              echo "Error: DECODE_SERVER_LIST (ASCEND_RT_VISIBLE_DEVICES equivalent) is not set."
+              exit 1
+          fi
+
+          # 准备目录
+          mkdir -p ${DECODE_RANKTABLE_SAVE_PATH}
+          mkdir -p ${GLOBAL_RANKTABLE_SAVE_PATH}
+          rm -rf ${DECODE_RANKTABLE_SAVE_PATH}/*
+
+          # 生成decode实例的local ranktable
+          python3 /workspace/omniinfer/tools/scripts/pd_ranktable_tools.py \
+            --mode gen \
+            --decode-server-list $DECODE_SERVER_LIST \
+            --save-dir ${DECODE_RANKTABLE_SAVE_PATH} \
+            --ip $POD_IP # 使用 Pod IP 作为 'host ip'
+
+          echo "Decode local ranktable generated in ${DECODE_RANKTABLE_SAVE_PATH}"
+          ls -la ${DECODE_RANKTABLE_SAVE_PATH}
+
+          # 收集实例级global ranktable
+          cp ${DECODE_RANKTABLE_SAVE_PATH}/local_ranktable_*.json ${GLOBAL_RANKTABLE_SAVE_PATH}
+        env:
+        - name: RANKTABLE_SAVE_PATH
+          value: "/tmp/ranktable_save_path" # 对应 Ansible 的 ranktable_save_path
+        - name: SHARED_PATH
+          value: "/shared"
+        - name: DECODE_SERVER_LIST
+          value: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15" # deployment方案副本完全相同，不同POD副本无法指定不同卡，即约束一个POD一台机器，占用所有卡
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: decode-workspace # 挂载一个工作区，让后续 init container 和 main container 共享 ranktable 等文件
+          mountPath: /tmp/ranktable_save_path # 对应 Ansible 中的 ranktable_save_path
+        - name: shared-storage
+          mountPath: /shared # 复制一份实例级global ranktable到共享存储，等价于 Ansible 中收集
+        - name: hccn-conf
+          mountPath: /etc/hccn.conf
+        - name: hccn-bin
+          mountPath: /usr/bin/hccn_tool
+        - name: npu-driver
+          mountPath: /usr/local/Ascend/driver
+        securityContext: {{- toYaml .Values.securityContext | nindent 10 }}
+      # 1.2. 等待全局 ranktable
+      - name: wait-for-global-ranktable
+        image: {{ include "omniinfer.image" (list .Values.image.repository .Values.image.tag) | quote }}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -ex
+          echo "Waiting for global ranktable in init container..."
+          SHARED_PATH=${SHARED_PATH:-"/shared"}
+          GLOBAL_RANK_TABLE_FILE_PATH="${GLOBAL_RANK_TABLE_FILE_PATH:-${SHARED_PATH}/global/global_ranktable_merge.json}"
+
+          echo "Waiting for global ranktable at $GLOBAL_RANK_TABLE_FILE_PATH..."
+          while [ ! -f "$GLOBAL_RANK_TABLE_FILE_PATH" ]; do
+            echo "Global ranktable $GLOBAL_RANK_TABLE_FILE_PATH not found, sleeping..."
+            sleep 1
+          done
+          echo "Global ranktable is ready at $GLOBAL_RANK_TABLE_FILE_PATH in init container!"
+        env:
+        - name: SHARED_PATH
+          value: "/shared"
+        volumeMounts:
+        - name: shared-storage
+          mountPath: /shared # 获取共享存储中全局级global ranktable，等价于 Ansible 中分发
+
+      hostNetwork: true
+      hostIPC: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      # 2. 主容器启动 vLLM decode 服务
+      - name: decode-main
+        image: {{ include "omniinfer.image" (list .Values.image.repository .Values.image.tag) | quote }}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -ex
+          echo "Starting Decode vLLM Server..."
+
+          # 设置环境变量
+          source ~/.bashrc
+          # export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/usr/local/Ascend/ascend-toolkit/latest/aarch64-linux/lib64/
+          export LOG_PATH=${LOG_PATH}/${POD_NAME}
+          mkdir -p ${LOG_PATH}
+          export ASCEND_GLOBAL_LOG_LEVEL=3
+          export ENABLE_PREFILL_TND=1
+          KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
+          EXTRA_ARGS="--max-num-batched-tokens 61440 --disable-log-requests --max-num-seqs 64"
+          ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}, "decode_gear_list": [ 64 ]}'
+
+          # 对于单 decode pod (DECODE_POD_NUM=1)，直接从 decode_config 目录选择
+          export DECODE_POD_NUM=1 # 对于单个 decode deployment
+          LOCAL_RANKTABLE_FILE=($(ls "${RANKTABLE_SAVE_PATH}"/decode_config/local_*.json | tr '' ' ')) # 获取所有 decode local ranktable
+
+          # 使用 Ansible 中的 GLOBAL_RANK_TABLE_FILE_PATH 和 RANK_TABLE_FILE_PATH
+          export GLOBAL_RANK_TABLE_FILE_PATH="${SHARED_PATH}/global/global_ranktable_merge.json"
+          export RANK_TABLE_FILE_PATH=${LOCAL_RANKTABLE_FILE[0]} # 选择第一个文件
+
+          # 等待全局 ranktable 文件存在
+          echo "Waiting for global ranktable at ${GLOBAL_RANK_TABLE_FILE_PATH}..."
+          while [ ! -f "${GLOBAL_RANK_TABLE_FILE_PATH}" ]; do
+            echo "Global ranktable ${GLOBAL_RANK_TABLE_FILE_PATH} not found, sleeping..."
+            sleep 1
+          done
+          echo "Global ranktable found at ${GLOBAL_RANK_TABLE_FILE_PATH}."
+
+          export HCCL_CONNECT_TIMEOUT=1800
+          export HCCL_EXEC_TIMEOUT=1800
+          export VLLM_LLMDATADIST_ZMQ_PORT=${ZMQ_PORT}
+          export ASCEND_RT_VISIBLE_DEVICES=${DECODE_SERVER_LIST}
+          source /usr/local/Ascend/nnal/atb/set_env.sh
+
+          export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+          unset https_proxy
+          unset http_proxy
+          unset proxy
+
+          if [ ${KV_CONNECTOR} == "LMCacheConnectorV1" ]; then
+            export MOONCAKE_CONFIG_PATH=$MOONCAKE_CONFIG_PATH
+            export LMCACHE_CONFIG_FILE=$LMCACHE_MOONCAKE_CONFIG_PATH
+          fi
+
+          # install omni_placement (from Ansible script)
+          pip uninstall omni_placement -y
+
+          export LOCAL_DECODE_SERVER_IP_LIST="$SERVER_IP_LIST"
+          export GLOBAL_DECODE_SERVER_IP_LIST="$SERVER_IP_LIST"
+          export ROLE="decode"
+          export HCCL_INTRA_ROCE_ENABLE=1
+          export HCCL_INTRA_PCIE_ENABLE=0
+          export ASCEND_LAUNCH_BLOCKING=0
+          export PREFILL_POD_NUM=${PREFILL_POD_NUM}
+          
+
+          export OMNI_USE_NPU_TOP_K_TOP_P_SAMPLE=true
+          export GLOO_SOCKET_IFNAME=${SOCKET_IFNAME}
+          export TP_SOCKET_IFNAME=${SOCKET_IFNAME}
+          export VLLM_USE_V1=1
+          export VLLM_WORKER_MULTIPROC_METHOD=fork
+          export VLLM_LOGGING_LEVEL=INFO
+          export OMNI_USE_QWEN=1
+          export OMNI_REUSE_PREFILLED_TOKENS=1
+          export OMNI_SKIP_DECODE_TOKENIZE=1
+
+          # decode enable
+          export VLLM_ENABLE_MC2=1
+          export HCCL_OP_EXPANSION_MODE="AIV"
+          export HCCL_BUFFSIZE=1000
+          export MOE_DISPATCH_COMBINE=1
+
+          echo "Starting decode service with GLOBAL_RANK_TABLE_FILE_PATH=${GLOBAL_RANK_TABLE_FILE_PATH} and RANK_TABLE_FILE_PATH=$RANK_TABLE_FILE_PATH"
+          cd /workspace/omniinfer/tools/scripts
+          exec python start_api_servers.py \
+            --num-servers 1 \
+            --server-offset ${SERVER_OFFSET} \
+            --num-dp ${DP} \
+            --model-path ${MODEL_PATH} \
+            --master-ip ${HOST_IP} \
+            --master-port ${MASTER_PORT} \
+            --base-api-port ${API_PORT} \
+            --tp ${DECODE_TENSOR_PARALLEL_SIZE} \
+            --served-model-name qwen \
+            --max-model-len ${MODEL_LEN_MAX_DECODE} \
+            --no-enable-prefix-caching \
+            --gpu-util $GPU_UTIL \
+            --extra-args "${EXTRA_ARGS}" \
+            --additional-config "$ADDITIONAL_CONFIG" \
+            --kv-transfer-config '{
+              "kv_connector": "AscendHcclConnectorV1",
+              "kv_buffer_device": "npu",
+              "kv_role": "kv_consumer",
+              "kv_rank": '"${PREFILL_POD_NUM}"',
+              "engine_id": 0,
+              "kv_parallel_size": '"${KV_PARALLEL_SIZE}"'
+            }' \
+            --log-dir "${LOG_PATH}"
+        ports:
+        - containerPort: 9100
+          name: api
+        - containerPort: 9011
+          name: zmq
+        env:
+        - name: RANKTABLE_SAVE_PATH
+          value: "/tmp/ranktable_save_path" # 对应 Ansible 的 ranktable_save_path
+        - name: SHARED_PATH
+          value: "/shared"
+        - name: LOG_PATH
+          value: {{ .Values.mount.log.path | quote }}
+        - name: MODEL_PATH
+          value: {{ include "omniinfer.modelPathByRole" (dict "role" "decode" "values" .Values) | quote}}
+        - name: MODEL_LEN_MAX_DECODE
+          value: "62144"
+        # --- 需要根据实际部署情况设置的环境变量 ---
+        - name: DECODE_SERVER_LIST
+          value: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15" # 占位符
+        - name: DECODE_TENSOR_PARALLEL_SIZE
+          value: "8"
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP # 使用 Pod IP 作为 HOST_IP
+        - name: MASTER_PORT
+          value: "8888" # 占位符
+        - name: API_PORT
+          value: "9100" # 该端口需要对POD外开放
+        - name: ZMQ_PORT
+          value: "9011" # 该端口需要对POD外开放
+        - name: SERVER_IP_LIST
+          value: "POD_IP_OF_DECODE_0,POD_IP_OF_DECODE_1" # 占位符，需要实际的 decode pod IPs
+        - name: PREFILL_POD_NUM
+          value: "1" # 占位符
+        - name: SOCKET_IFNAME
+          value: "enp23s0f3" # 占位符
+        - name: NUM_SERVERS
+          value: "1" # 占位符，基于 DECODE_SERVER_LIST 计算
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: DP # Decode Data Parallelism
+          value: "1" # 占位符
+        - name: SERVER_OFFSET # 用于区分不同 decode pod 的计算起点
+          value: "0" # 占位符，需要根据 Pod 序号动态设置，例如通过 downward API 或 initContainer 计算
+        - name: KV_CONNECTOR
+          value: "AscendHcclConnectorV1" # 默认值
+        - name: GPU_UTIL
+          value: "0.88"
+        volumeMounts:
+        - name: shared-storage
+          mountPath: /shared # 基于共享文件系统协调组件服务，如获取全局global ranktable
+        - name: decode-workspace
+          mountPath: /tmp/ranktable_save_path # 对应 Ansible 中的 ranktable_save_path
+        - name: data-volume # 模型数据
+          mountPath: {{ .Values.mount.data.hostPath }}
+        # 其他必要驱动和配置文件的挂载
+        - name: device-davinci-manager
+          mountPath: /dev/davinci_manager
+          readOnly: false
+        - name: npu-driver
+          mountPath: /usr/local/Ascend/driver
+          readOnly: true
+        - name: npu-smi
+          mountPath: /usr/local/sbin/npu-smi
+          readOnly: true
+        - name: dcmi
+          mountPath: /usr/local/dcmi
+          readOnly: true
+        securityContext: {{- toYaml .Values.securityContext | nindent 10 }}
+        resources:
+          {{- include "omniinfer.resourcesByRole" (dict "role" "decode" "values" .Values) }}
+
+      volumes:
+      - name: shared-storage
+        persistentVolumeClaim:
+          claimName: ranktable-pvc # 确保与 shared-storage.yaml 中定义的名称一致
+      - name: decode-workspace
+        emptyDir: {}
+      - name: data-volume # 模型、日志等存储
+        hostPath: # 或者使用 PVC
+          path: {{ .Values.mount.data.hostPath }}
+          type: DirectoryOrCreate
+      # 挂载必要的系统路径
+      - name: device-davinci-manager
+        hostPath:
+          path: /dev/davinci_manager
+          type: CharDevice
+      - name: npu-driver
+        hostPath:
+          path: /usr/local/Ascend/driver
+          type: Directory
+      - name: npu-smi
+        hostPath:
+          path: /usr/local/sbin/npu-smi
+          type: File
+      - name: dcmi
+        hostPath:
+          path: /usr/local/dcmi
+          type: Directory
+      - name: hccn-conf
+        hostPath:
+          path: /etc/hccn.conf
+          type: File
+      - name: hccn-bin
+        hostPath:
+          path: /usr/bin/hccn_tool
+          type: File

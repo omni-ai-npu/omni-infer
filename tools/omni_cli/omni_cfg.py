@@ -111,7 +111,8 @@ def update_container_name(node_type, node_name, container_name_prefix, yml_file_
 def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_path):
     """Resolve the remaining parameters."""
     if is_set:
-        sections = {'env': {}, 'args': {}, 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', 'container_name': ''}
+        sections = {'env': {}, 'args': {}, 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', 'container_name': '',
+                    'ansible_ssh_private_key_file': '', 'ansible_host': '', 'host_ip': '', 'master_node': ''}
     else:
         sections = {'env': [], 'args': [], 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', \
             'container_name': '', 'extra-args': [], 'additional-config': [], 'kv-transfer-config': []}
@@ -127,7 +128,7 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
             seen_sections.add(remaining_args[i])
             if i + 1 >= len(remaining_args) or not remaining_args[i+1].startswith('--'):
                 raise ValueError(f"Missing value for key: '{remaining_args[i]}'")
-            elif remaining_args[i+1][2:] not in list(sections.keys())[2:5]:
+            elif remaining_args[i+1][2:] not in list(sections.keys())[2:]:
                 if is_set:
                     parse_remaining_args_for_set(arg, remaining_args, sections, i)
                     i += 3
@@ -136,7 +137,7 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
                     i += 2
             else:
                 raise ValueError(f"Unexpected argument '{remaining_args[i+1]}' after (env/arg)")
-        elif remaining_args[i][2:] in list(sections.keys())[2:5]:
+        elif remaining_args[i][2:] in list(sections.keys())[2:]:
             arg = remaining_args[i]
             if arg in seen_sections:
                 raise ValueError(f"Duplicate section keyword '{arg}'")
@@ -175,31 +176,6 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
                 raise ValueError(f"Unexpected key {remaining_args[i]}")
 
     return sections
-
-def check_model_path(sections, data, node_type, node_name):
-    if node_type == 'C':
-        return True
-
-    model_path_is_none = 'MODEL_PATH' in data['all']['children'][node_type]['hosts'][node_name]['env'] and \
-        (data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH'] == '' or \
-        data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH'] == None)
-    if 'MODEL_PATH' not in data['all']['children'][node_type]['hosts'][node_name]['env'] or model_path_is_none:
-        if 'MODEL_PATH' in sections['env']:
-            if 'deepseek' in sections['env']['MODEL_PATH'].lower() or 'qwen' in sections['env']['MODEL_PATH'].lower():
-                return True
-            else:
-                print("Error: This model is currently not supported.")
-                return False
-        else:
-            print("Error: This model is not configured.")
-            return False
-    else:
-        model_path = data['all']['children'][node_type]['hosts'][node_name]['env']['MODEL_PATH']
-        if 'deepseek' in model_path.lower() or 'qwen' in model_path.lower():
-            return True
-        else:
-            print("Error: This model is not configured or This model is currently not supported.")
-            return False
 
 def updata_dict(sections, data):
     for modify_key, modify_values in sections.items():
@@ -337,20 +313,6 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
         print(f"{ERROR} There is no data in {yml_file_path}.")
         return
 
-def modify_by_use_default_file(sections, default_cfg, data, node_type, node_name):
-    if check_model_path(sections, data, node_type, node_name) is False:
-        return False
-    if 'MODEL_PATH' in sections['env']:
-        if 'deepseek' in sections['env']['MODEL_PATH'].lower():
-            sections_bak = default_cfg['profiles']['vllm']['deepseek'][node_type]
-        elif 'qwen' in sections['env']['MODEL_PATH'].lower():
-            sections_bak = default_cfg['profiles']['vllm']['qwen'][node_type]
-        else:
-            print("Error: This model is currently not supported.")
-            return False
-        updata_dict(sections_bak, data['all']['children'][node_type]['hosts'][node_name])
-    return True
-
 def cfg_set_process(node_type, node_name, args, sections, deploy_path):
     if node_type is None and node_name is None:
         print(f"{ERROR} Invalid node name: '{args.name[0]}'。")
@@ -359,22 +321,8 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
         print("  - decode_<number> (for example: d0, d1, d11)")
         return
 
-    default_cfg_path = f'{os.path.dirname(__file__)}/configs/default_profiles.yml'
-    default_cfg = get_data_from_yaml(default_cfg_path)
     data =  get_data_from_yaml(deploy_path)
     if data:
-        if node_type == 'all':
-            for n_type in default_cfg['profiles']['vllm']['deepseek']:
-                for n_name in data['all']['children'][n_type]['hosts']:
-                    if modify_by_use_default_file(sections, default_cfg, data, n_type, n_name) is False:
-                        return
-        elif node_type == 'P' or node_type == 'D' or node_type == 'C' and node_name is None:
-            for n_name in data['all']['children'][node_type]['hosts']:
-                if modify_by_use_default_file(sections, default_cfg, data, node_type, n_name) is False:
-                    return
-        else:
-            if modify_by_use_default_file(sections, default_cfg, data, node_type, node_name) is False:
-                return
         with open(deploy_path , 'w') as file:
             yaml.dump(data, file, default_flow_style=False, sort_keys=False)
     else:

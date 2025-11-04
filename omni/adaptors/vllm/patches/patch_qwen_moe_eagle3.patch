@@ -1,0 +1,129 @@
+diff --git a/vllm/config.py b/vllm/config.py
+index 5b255e2..af62470 100644
+--- a/vllm/config.py
++++ b/vllm/config.py
+@@ -2737,7 +2737,7 @@ class SpeculativeConfig:
+                              f"{self.disable_by_batch_size=}")
+
+         if self.method == "eagle3" and self.target_model_config and \
+-            not any(item in self.target_model_config.hf_text_config.model_type for item in ('qwen2',)):
++            not any(item in self.target_model_config.hf_text_config.model_type for item in ('qwen2',"qwen3_moe")):
+             raise ValueError(
+                 "Eagle3 is only supported for Qwen2 models. "
+                 f"Got {self.target_model_config.hf_text_config.model_type=}")
+diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
+index 014018c..5ae56f9 100644
+--- a/vllm/v1/core/kv_cache_manager.py
++++ b/vllm/v1/core/kv_cache_manager.py
+@@ -63,9 +63,9 @@ class KVCacheManager:
+         enable_kv_cache_events: bool = False,
+         combine_block_num: int = 1,
+     ) -> None:
+-        assert len(kv_cache_config.kv_cache_groups) == 1, (
+-            "KVCacheManager does not support hybrid models with more than 1 "
+-            "kv cache group")
++        if len(kv_cache_config.kv_cache_groups) > 1 and \
++            len(set(type(group.kv_cache_spec) for group in kv_cache_config.kv_cache_groups)) != 1:
++            raise ValueError("KVCacheManager does not support hybrid types of AttentionSpec with more than 1 kv cache group")
+         kv_cache_spec = kv_cache_config.kv_cache_groups[0].kv_cache_spec
+         self.block_size = kv_cache_spec.block_size
+         self.num_gpu_blocks = kv_cache_config.num_blocks
+diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
+index 16cee9b..e9648cc 100644
+--- a/vllm/v1/core/kv_cache_utils.py
++++ b/vllm/v1/core/kv_cache_utils.py
+@@ -717,9 +717,69 @@ def get_kv_cache_config(vllm_config: VllmConfig,
+         return _get_kv_cache_config_uniform_type(vllm_config, kv_cache_spec,
+                                                  available_memory)
+
++    if is_kv_cache_class_uniform(kv_cache_spec):
++        return _get_kv_cache_config_different_type(vllm_config, kv_cache_spec,
++                                          available_memory)
+     raise NotImplementedError
+
+
++def is_kv_cache_class_uniform(kv_cache_spec: dict[str, KVCacheSpec]) -> bool:
++    layer_type = set(type(layer) for layer in kv_cache_spec.values())
++    return len(layer_type) == 1
++
++
++def _get_kv_cache_config_different_type(vllm_config: VllmConfig,
++                                      kv_cache_spec: dict[str, KVCacheSpec],
++                                      available_memory: int) -> KVCacheConfig:
++    block_sizes = {layer.block_size for layer in kv_cache_spec.values()}
++    if len(block_sizes) > 1:
++        raise ValueError("Hybrid models with different block sizes are not supported yet.")
++
++    page_sizes = {layer.page_size_bytes for layer in kv_cache_spec.values()}
++
++    same_size_kv_cache_spec = {}
++    for page_size in page_sizes:
++        same_size_kv_cache_spec.setdefault(page_size, {layer_name: layer for layer_name, layer in kv_cache_spec.items() if layer.page_size_bytes == page_size})
++
++    model_page_sizes = sum(page_size * len(sub_kv_cache_spec) for page_size, sub_kv_cache_spec in same_size_kv_cache_spec.items())
++
++    num_blocks = int(available_memory // model_page_sizes)
++    num_blocks = max(num_blocks, 0)
++
++    if vllm_config.cache_config.num_gpu_blocks_override is not None:
++        num_gpu_blocks_override = \
++            vllm_config.cache_config.num_gpu_blocks_override
++        logger.info(
++            "Overriding num_gpu_blocks=%d with "
++            "num_gpu_blocks_override=%d", num_blocks, num_gpu_blocks_override)
++        num_blocks = num_gpu_blocks_override
++
++    num_tokens = num_blocks * vllm_config.cache_config.block_size
++    num_tokens_str = f"{num_tokens:,}"
++    logger.info("GPU KV cache size: %s tokens", num_tokens_str)
++    max_model_len_str = f"{vllm_config.model_config.max_model_len:,}"
++    max_concurrency = num_tokens / vllm_config.model_config.max_model_len
++    logger.info("Maximum concurrency for %s tokens per request: %.2fx",
++                max_model_len_str, max_concurrency)
++    merged_tensors = {}
++    merged_grouped_layer_names = []
++    for page_size, sub_kv_cache_spec in same_size_kv_cache_spec.items():
++        per_layer_size = page_size * num_blocks
++        merged_tensors.update({
++            layer_name: KVCacheTensor(size=per_layer_size)
++            for layer_name in sub_kv_cache_spec
++        })
++        merged_grouped_layer_names.append(list(sub_kv_cache_spec.keys()))
++
++    kv_cache_config = KVCacheConfig(
++        num_blocks=num_blocks,
++        tensors=merged_tensors,
++        kv_cache_groups=create_kv_cache_group_specs(kv_cache_spec,
++                                                    merged_grouped_layer_names),
++    )
++    return kv_cache_config
++
++
+ def unify_kv_cache_configs(kv_cache_configs: list[KVCacheConfig]):
+     """
+     Make the KV cache configurations for each worker consistent, so that all
+diff --git a/vllm/v1/worker/block_table.py b/vllm/v1/worker/block_table.py
+index 576086e..9a43e07 100644
+--- a/vllm/v1/worker/block_table.py
++++ b/vllm/v1/worker/block_table.py
+@@ -136,4 +136,6 @@ class MultiGroupBlockTable:
+
+     def __getitem__(self, idx: int) -> "BlockTable":
+         """Returns the BlockTable for the i-th KV cache group."""
++        if len(self.block_tables) == 1:
++            idx = 0  # block_tables only have one item.
+         return self.block_tables[idx]
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index 9b848fa..0eeb936 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -440,7 +440,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             if not req_data.resumed_from_preemption:
+                 # Append the new blocks to the existing block IDs.
+                 for i in range(len(self.kv_cache_config.kv_cache_groups)):
+-                    req_state.block_ids[i].extend(req_data.new_block_ids[i])
++                    if i < len(req_state.block_ids):
++                        req_state.block_ids[i].extend(req_data.new_block_ids[i])
+             else:
+                 # The request is resumed from preemption.
+                 # Replace the existing block IDs with the new ones.

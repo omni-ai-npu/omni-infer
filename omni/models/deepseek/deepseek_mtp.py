@@ -16,21 +16,23 @@ from vllm.distributed.communication_op import tensor_model_parallel_all_gather
  
 from vllm.model_executor.models.utils import is_pp_missing_parameter
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
-from vllm.sequence import IntermediateTensors
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.models.deepseek_v2 import get_spec_layer_idx_from_weight_name
 from vllm.distributed.parallel_state import (
+    get_dp_group,
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
 )
-from omni.models.common.config.model_config import model_extra_config
+from vllm.distributed import get_ep_group
+
+from omni.models.config_loader.loader import model_extra_config
 
 if os.getenv("ASCEND_PLATFORM", "A3")=="A2" and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
     from .deepseek_v3_a2 import DeepseekDecoderLayer
 else:
-    from .deepseek_v3 import DeepseekDecoderLayer
+    from .deepseek_v3 import DeepseekDecoderLayer, generate_sp_inputs
 
 from omni.layers.layernorm import RMSNorm #zxp: not use
 from omni.layers.vocab_parallel_embedding import (
@@ -60,6 +62,7 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
     def __init__(self, *,
                  vllm_config,
                  prefix: str,
+                 is_ffn_die: Optional[bool] = False,
     ):
         self.config = vllm_config.model_config.hf_config
         self.cache_config = vllm_config.cache_config
@@ -68,6 +71,7 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
         super().__init__(self.config, prefix,
                          cache_config=self.cache_config,
                          quant_config=self.quant_config,
+                         **({"is_ffn_die": True} if is_ffn_die else {})
                         )
 
         self.ignore_share_weight = True # TODO get from config
@@ -83,6 +87,8 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
         self.eh_proj = nn.Linear(2 * self.config.hidden_size, self.config.hidden_size, bias=False)
         self.logits_processor = LogitsProcessor(self.config.vocab_size, logits_as_input=True)
         self.layer_idx = int(prefix.split('.')[-1])
+        self.prefix = prefix
+        self.postfix = ".self_attn.attn"
 
     def forward(
             self,
@@ -101,7 +107,15 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
         tp_size = get_tensor_model_parallel_world_size()  # cloud: get_tp_group().world_size
         rank_in_group = get_tensor_model_parallel_rank()
 
-        if tp_size > 1:
+        is_prefill = attn_metadata is None or (isinstance(attn_metadata, dict) and self.get_layer_attn_metadata(attn_metadata).prefill is not None)
+        if is_prefill and model_extra_config.parall_config.attn_sp_size > 1:
+            # split input for sp attention
+            tok_embeds = tensor_model_parallel_all_gather(tok_embeds, dim=0)
+            tok_embeds = generate_sp_inputs(tok_embeds, self.get_layer_attn_metadata(attn_metadata))
+            previous_hidden_states = generate_sp_inputs(previous_hidden_states, self.get_layer_attn_metadata(attn_metadata))
+
+
+        if tp_size > 1 and model_extra_config.parall_config.attn_sp_size == 1:
             token_num = previous_hidden_states.shape[0]
             start_range = rank_in_group * (token_num // tp_size)
             end_range = (1 + rank_in_group) * (token_num // tp_size)
@@ -119,10 +133,19 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
             attn_metadata=attn_metadata,
             residual=None,
         )
-
-        hidden_states, _ = self.shared_head.norm(encoded_states, residual)
+        if residual is not None:
+            hidden_states, _ = self.shared_head.norm(encoded_states, residual)
+        else:
+            hidden_states = self.shared_head.norm(encoded_states)
 
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
+
+        if model_extra_config.parall_config.attn_sp_size > 1 and is_prefill:
+            # reverse sp split
+            if attn_metadata is not None:
+                prefill_meta = self.get_layer_attn_metadata(attn_metadata).prefill
+                outputs_list = torch.split(hidden_states, prefill_meta.sp_reverse_split_list, dim=0)
+                hidden_states = torch.cat([outputs_list[i] for i in prefill_meta.sp_reverse_index], dim=0)
 
         if attn_metadata is None:
             logits = self.compute_lmhead(hidden_states[-1:, ...], None)
@@ -134,13 +157,20 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids, reduce=1)
 
+    def get_layer_attn_metadata(self, attn_metadata):
+        if attn_metadata is None:
+            return None
+        if isinstance(attn_metadata, dict):
+            key_idx = self.prefix + self.postfix
+            return attn_metadata[key_idx]
+
     def compute_lmhead(
             self,
             hidden_states: torch.Tensor,
             selected_indices: Optional[torch.Tensor] = None,
             embedding_bias: Optional[torch.Tensor] = None,
     ) -> Optional[torch.Tensor]:
-        if model_extra_config.parall_config.dp_size <= 1 and selected_indices is not None:
+        if get_dp_group().world_size <= 1 and selected_indices is not None:
             hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
             if hidden_states.shape[0] != selected_indices.shape[0]:
                 hidden_states = hidden_states.index_select(0, selected_indices)
@@ -181,11 +211,20 @@ class DeepseekMultiTokenPredictor(nn.Module):
         self.mtp_start_layer_idx = self.config.num_hidden_layers
         self.num_mtp_layers = self.config.num_nextn_predict_layers
         self.ignore_share_weight = True # TODO get from config
+        kwargs = {}
+        if model_extra_config.parall_config.enable_attn_ffn_disaggregation:
+            if os.getenv("ASCEND_PLATFORM", "A3") == "A2":
+                raise NotImplementedError("Attention FFN disaggregation on A2 is not supported")
+            else:
+                ffn_dies = get_ep_group().world_size - model_extra_config.parall_config.attn_dies
+                if get_ep_group().rank_in_group < ffn_dies:
+                    kwargs["is_ffn_die"] = True
         self.layers = nn.ModuleDict({
             str(i + self.mtp_start_layer_idx):
             DeepseekMultiTokenPredictorLayer(
                 vllm_config=vllm_config,
                 prefix=f"{prefix}.layers.{i + self.mtp_start_layer_idx}",
+                **kwargs
             )
             for i in range(min(self.num_mtp_layers, vllm_config.speculative_config.num_speculative_tokens))
         })

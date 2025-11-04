@@ -13,7 +13,7 @@ from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tenso
 
 from vllm.distributed import get_ep_group
 from omni.adaptors.vllm.distributed.parallel_state import GroupCoordinator
-from omni.models.common.config.model_config import model_extra_config
+from omni.models.config_loader.loader import model_extra_config
 from omni.layers.moe.fused_moe.fused_moe import (
     fused_experts_moe_dispatch_combine,
     moe_infer_fusion,
@@ -98,9 +98,9 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
         if model_extra_config.operator_opt_config.gmm_nz:
             layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight, 29)
             layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight, 29)
-        if model_extra_config.operator_opt_config.pd_seperate_prefill:
+        if os.getenv('ROLE', None)=='prefill':
             layer.w2_weight_scale = torch.nn.Parameter(layer.w2_weight_scale.to(torch.bfloat16), requires_grad=False)
-        elif not model_extra_config.operator_opt_config.opt_w2_scale_cast:
+        elif not model_extra_config.operator_opt_config.cast_w2_scale_f32:
             layer.w2_weight_scale = torch.nn.Parameter(layer.w2_weight_scale.to(torch.float32), requires_grad=False)
         layer.w13_weight_scale = torch.nn.Parameter(layer.w13_weight_scale.to(torch.float32), requires_grad=False)
         self.n_routed_experts = len(layer.w13_weight)
@@ -125,12 +125,13 @@ class AscendCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
             comm_group: Optional[GroupCoordinator] = None
     ) -> torch.Tensor:
         max_num_deployed_expert_per_rank = self.n_routed_experts
-        if model_extra_config.operator_opt_config.use_omni_placement and layer.planner.is_moe_layer(
+        if model_extra_config.task_config.enable_omni_placement and layer.planner.is_moe_layer(
                 layer.moe_layer_idx):
             max_num_deployed_expert_per_rank = layer.planner.get_max_num_deployed_expert_per_rank()
 
         if get_ep_group().world_size > 1:
-            is_prefill = attn_metadata is None or attn_metadata.prefill is not None
+            is_prefill = attn_metadata is None or (hasattr(attn_metadata, "prefill") and attn_metadata.prefill is not None) or \
+                    (hasattr(attn_metadata, "is_pd_seperate_d") and not attn_metadata.is_pd_seperate_d)
             if model_extra_config.operator_opt_config.prefill_moe_all_to_all or (model_extra_config.operator_opt_config.decode_moe_dispatch_combine and not is_prefill):
                 if is_prefill:
                     out = moe_infer_fusion(
@@ -406,11 +407,10 @@ class AscendCompressedTensorsW4A8Int8MoEMethod(CompressedTensorsMoEMethod):
         max_num_deployed_expert_per_rank = self.n_routed_experts
         # if model_extra_config.operator_opt_config.use_omni_planner:
         #     max_num_deployed_expert_per_rank = layer.planner.get_max_num_deployed_expert_per_rank()
-
-        is_prefill = is_prefill = attn_metadata is None or attn_metadata.prefill is not None
-
-        if model_extra_config.operator_opt_config.enable_moe_expert_parallel:
-            is_prefill = attn_metadata is None or attn_metadata.prefill is not None
+        is_prefill = attn_metadata is None or (hasattr(attn_metadata, "prefill") and attn_metadata.prefill is not None) or \
+                    (hasattr(attn_metadata, "is_pd_seperate_d") and not attn_metadata.is_pd_seperate_d)
+        expert_parallel_size = get_ep_group().world_size
+        if expert_parallel_size > 1:
             if model_extra_config.operator_opt_config.prefill_moe_all_to_all or (model_extra_config.operator_opt_config.decode_moe_dispatch_combine and not is_prefill):
                 if is_prefill:
                     out = moe_infer_fusion(

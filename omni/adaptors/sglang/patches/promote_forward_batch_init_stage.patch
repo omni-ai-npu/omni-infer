@@ -1,0 +1,43 @@
+Subject: [PATCH] promote forward_batch init stage, only create 1 tensor.
+---
+Index: python/sglang/srt/model_executor/forward_batch_info.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
+--- a/python/sglang/srt/model_executor/forward_batch_info.py	(revision 8794d26fc1ea83f7713c5904633c9b9b3210dce6)
++++ b/python/sglang/srt/model_executor/forward_batch_info.py	(revision dcb6601ef23607446ab477dcdffd456fa66670ef)
+@@ -357,10 +357,11 @@
+         )
+         device = model_runner.device
+ 
+-        if batch.extend_input_logprob_token_ids is not None:
+-            ret.extend_input_logprob_token_ids_gpu = (
+-                batch.extend_input_logprob_token_ids.to(device, non_blocking=True)
+-            )
++        if not ret.is_decode_or_idle:
++            if batch.extend_input_logprob_token_ids is not None:
++                ret.extend_input_logprob_token_ids_gpu = (
++                    batch.extend_input_logprob_token_ids.to(device, non_blocking=True)
++                )
+ 
+         if enable_num_token_non_padded(model_runner.server_args):
+             ret.num_token_non_padded = torch.tensor(
+@@ -401,14 +402,10 @@
+                 global_num_tokens_for_logprob = batch.global_num_tokens_for_logprob
+ 
+             ret.global_num_tokens_cpu = global_num_tokens
+-            ret.global_num_tokens_gpu = torch.tensor(
+-                global_num_tokens, dtype=torch.int64
+-            ).to(device, non_blocking=True)
++            ret.global_num_tokens_gpu = ret.num_token_non_padded
+ 
+             ret.global_num_tokens_for_logprob_cpu = global_num_tokens_for_logprob
+-            ret.global_num_tokens_for_logprob_gpu = torch.tensor(
+-                global_num_tokens_for_logprob, dtype=torch.int64
+-            ).to(device, non_blocking=True)
++            ret.global_num_tokens_for_logprob_gpu = ret.num_token_non_padded
+ 
+         if ret.forward_mode.is_idle():
+             ret.positions = torch.empty((0,), dtype=torch.int64, device=device)

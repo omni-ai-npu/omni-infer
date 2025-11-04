@@ -1,0 +1,66 @@
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+index 376041a19..0846f9e82 100644
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -890,9 +890,13 @@ class OpenAIServingChat(OpenAIServing):
+                                         completion_tokens=completion_tokens,
+                                         total_tokens=num_prompt_tokens +
+                                         completion_tokens)
+-                if self.enable_prompt_tokens_details and num_cached_tokens:
+-                    final_usage.prompt_tokens_details = PromptTokenUsageInfo(
+-                        cached_tokens=num_cached_tokens)
++                if self.enable_prompt_tokens_details:
++                    if num_cached_tokens is None:
++                        final_usage.prompt_tokens_details = PromptTokenUsageInfo(
++                            cached_tokens=0)
++                    else:
++                        final_usage.prompt_tokens_details = PromptTokenUsageInfo(
++                            cached_tokens=num_cached_tokens)
+
+                 final_usage_chunk = ChatCompletionStreamResponse(
+                     id=request_id,
+@@ -1139,9 +1143,13 @@ class OpenAIServingChat(OpenAIServing):
+                           completion_tokens=num_generated_tokens,
+                           total_tokens=num_prompt_tokens +
+                           num_generated_tokens)
+-        if self.enable_prompt_tokens_details and final_res.num_cached_tokens:
+-            usage.prompt_tokens_details = PromptTokenUsageInfo(
+-                cached_tokens=final_res.num_cached_tokens)
++        if self.enable_prompt_tokens_details:
++            if final_res.num_cached_tokens is None:
++                usage.prompt_tokens_details = PromptTokenUsageInfo(
++                    cached_tokens=0)
++            else:
++                usage.prompt_tokens_details = PromptTokenUsageInfo(
++                    cached_tokens=final_res.num_cached_tokens)
+
+         request_metadata.final_usage_info = usage
+
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index b0a6841f3..c01917b74 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -928,6 +928,9 @@ class Scheduler(SchedulerInterface):
+             # Get prompt logprobs for this request.
+             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
+             if new_token_ids or kv_transfer_params:
++                # P/D: Prefill will pass the kv_xfer_params to Decode.
++                if kv_transfer_params is not None:
++                    kv_transfer_params["num_cached_tokens"] = request.num_cached_tokens
+
+                 # Add EngineCoreOutput for this Request.
+                 outputs.append(
+diff --git a/vllm/v1/request.py b/vllm/v1/request.py
+index 8a077e3f5..43d0b1a80 100644
+--- a/vllm/v1/request.py
++++ b/vllm/v1/request.py
+@@ -81,6 +81,9 @@ class Request:
+         # State
+         # The number of tokens with prefix cache hits.
+         self.num_cached_tokens = -1
++        # P/D: Decode will get num_cached_tokens from kv_tranfer_params, passed by Prefill.
++        if self.kv_transfer_params is not None:
++            self.num_cached_tokens = self.kv_transfer_params.get("num_cached_tokens", -1)
+ 
+     @classmethod
+     def from_engine_core_request(cls, request: EngineCoreRequest) -> "Request":

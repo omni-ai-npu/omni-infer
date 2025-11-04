@@ -94,7 +94,12 @@ class GlobalRankTable:
                     device_info["cluster_id"] = cluster_id
 
                     cluster_id += 1
-            group_dict.setdefault(group_id, ServerGroup(server_group))
+            group_dict.setdefault(
+                group_id, ServerGroup(
+                    server_group,
+                    need_sort=self.get_server_role(group_id) == GROUP_TYPE_TO_ROLE[GroupType.PREFILL]
+                )
+            )
 
         return group_dict
 

@@ -316,9 +316,9 @@ static ngx_int_t ngx_http_pd_score_body_filter(ngx_http_request_t *r,
 
     uscf = ngx_http_conf_upstream_srv_conf(
         r->upstream->upstream, ngx_http_upstream_pd_score_balance_module);
-    if (uscf->mode == PD_MODE_PREFILL) {
+    if (uscf->mode != PD_MODE_PREFILL) {
         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                      "prefill mode, ignore filter");
+                      "not decode mode, ignore filter");
         return ngx_http_next_body_filter(r, in);
     }
     ngx_chain_t *cl;

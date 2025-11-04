@@ -1,0 +1,159 @@
+diff --git a/vllm/sampling_params.py b/vllm/sampling_params.py
+index dc38daa38..500f3644c 100644
+--- a/vllm/sampling_params.py
++++ b/vllm/sampling_params.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ """Sampling parameters for text generation."""
+ import copy
++import json as JSON
+ from dataclasses import dataclass
+ from enum import Enum, IntEnum
+ from functools import cached_property
+@@ -449,6 +450,54 @@ class SamplingParams(
+                 RequestOutputKind.DELTA):
+             raise ValueError("best_of must equal n to use output_kind=DELTA")
+ 
++        if self.guided_decoding is not None and \
++            self.guided_decoding.backend is not None and \
++            self.guided_decoding.backend != "xgrammar":
++            raise ValueError("Not support any backend except xgrammar")
++        if self.guided_decoding is not None and \
++            self.guided_decoding.choice is not None:
++            if not isinstance(self.guided_decoding.choice, list):
++                raise ValueError("guided decoding choice must be a list.")
++            if len(self.guided_decoding.choice) == 0:
++                raise ValueError("guided decoding choice can not be an empty [].")
++            else:
++                for choice in self.guided_decoding.choice:
++                    if not isinstance(choice, str):
++                        raise ValueError(f"Invalid guided decoding choice value:{choice}, it's not a str.")
++        if self.guided_decoding is not None and \
++            self.guided_decoding.json is not None:
++            guided_decoding_json = self.guided_decoding.json
++            if isinstance(guided_decoding_json, str):
++                if len(guided_decoding_json) == 0:
++                    raise ValueError("guided json can not be empty.")
++                if guided_decoding_json.isdigit():
++                    raise ValueError("guided json can not be digit.")
++                guided_decoding_dict = None
++                try:
++                    guided_decoding_dict = JSON.loads(guided_decoding_json)
++                except (JSON.JSONDecodeError, TypeError):
++                    raise ValueError("guided decoding json is invalid json format")
++                finally:
++                    if guided_decoding_dict is not None and \
++                        len(guided_decoding_dict) == 0:
++                        raise ValueError("guided decoding json can not be an empty {}.")
++    
++            if isinstance(guided_decoding_json, dict):
++                if len(guided_decoding_json) == 0:
++                    raise ValueError("guided decoding json can not be an empty {}.")
++    
++            if not isinstance(guided_decoding_json, str) and \
++                not isinstance(guided_decoding_json, dict):
++                raise ValueError("guided decoding json must be str or dict type.")
++    
++        if self.guided_decoding is not None and \
++            self.guided_decoding.regex is not None:
++            raise ValueError("guided regex is not supported in guided decoding.")
++        if self.guided_decoding is not None and \
++            self.guided_decoding.whitespace_pattern is not None:
++            raise ValueError("guided whitespace_pattern is not supported in guided decoding.")
++
++
+     def _verify_greedy_sampling(self) -> None:
+         if self.n > 1:
+             raise ValueError("n must be 1 when using greedy sampling, "
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index c01917b74..4e1ee5975 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -925,6 +925,18 @@ class Scheduler(SchedulerInterface):
+                 else:
+                     request.spec_token_ids = spec_token_ids[req_index]
+ 
++            # Guided Decoding Adaptation starts
++            # Since Omni MTP requires spec_token_ids's length to be constant and
++            # validate_tokens might truncate spec_token_ids, we have to calculate
++            # the length of it in each step and pad it to the original length
++            if self.vllm_config.speculative_config is not None and request.sampling_params.guided_decoding is not None:
++                request.padding_len = self.vllm_config.speculative_config.num_speculative_tokens \
++                                      - len(request.spec_token_ids)
++                if request.padding_len > 0:
++                    request.spec_token_ids.extend([0] * request.padding_len)
++            # Guided Decoding Adaptation ends
++
++
+             # Get prompt logprobs for this request.
+             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
+             if new_token_ids or kv_transfer_params:
+diff --git a/vllm/v1/request.py b/vllm/v1/request.py
+index 43d0b1a80..9c0621137 100644
+--- a/vllm/v1/request.py
++++ b/vllm/v1/request.py
+@@ -31,6 +31,7 @@ class Request:
+         structured_output_request: Optional["StructuredOutputRequest"] = None,
+         cache_salt: Optional[str] = None,
+     ) -> None:
++        self.padding_len = 0
+         self.arrival_time = arrival_time
+         self.request_id = request_id
+         self.sampling_params = sampling_params
+diff --git a/vllm/v1/structured_output/__init__.py b/vllm/v1/structured_output/__init__.py
+index c701ab1d3..a6d745cd1 100644
+--- a/vllm/v1/structured_output/__init__.py
++++ b/vllm/v1/structured_output/__init__.py
+@@ -160,17 +160,28 @@ class StructuredOutputManager:
+ 
+             state_advancements = 0
+             req_tokens = scheduled_spec_decode_tokens.get(req_id, []) + [None]
++            # Guided Decoding Adaptation starts
++            # For padded tokens which can't be accepted by xGrammar's FSM,
++            # we have to generate bitmask manually; for non-padded tokens,
++            # we can still use the original logic which is retrieving bitmask
++            # from FSM by fill_bitmask and update the FSM by accept_tokens
++            non_padding_len = len(req_tokens) - requests[req_id].padding_len - 1
+             for i, token in enumerate(req_tokens):
+-                if apply_bitmask and not request.grammar.is_terminated():
+-                    request.grammar.fill_bitmask(bitmask_tensor,
+-                                                 cumulative_index)
+-                    if token is not None:
+-                        # In order to generate the correct bitmask for each
+-                        # position in the speculative sequence, we advance
+-                        # the FSM state for each speculative token and rollback
+-                        # to restore the previous state when we are finished.
+-                        assert request.grammar.accept_tokens(req_id, [token])
+-                        state_advancements += 1
++                if i <= non_padding_len:
++                    if apply_bitmask and not request.grammar.is_terminated():
++                        request.grammar.fill_bitmask(bitmask_tensor,
++                                                     cumulative_index)
++                        if token is not None and i < non_padding_len:
++                            # In order to generate the correct bitmask for each
++                            # position in the speculative sequence, we advance
++                            # the FSM state for each speculative token and rollback
++                            # to restore the previous state when we are finished.
++                            assert request.grammar.accept_tokens(req_id, [token])
++                            state_advancements += 1
++                else:
++                    bitmask_tensor[cumulative_index].zero_()
++                    bitmask_tensor[cumulative_index, 0] = 1
++            # Guided Decoding Adaptation ends
+                 cumulative_index += 1
+             if state_advancements > 0:
+                 request.grammar.rollback(state_advancements)
+diff --git a/vllm/v1/worker/gpu_input_batch.py b/vllm/v1/worker/gpu_input_batch.py
+index b3e65917d..7628272ee 100644
+--- a/vllm/v1/worker/gpu_input_batch.py
++++ b/vllm/v1/worker/gpu_input_batch.py
+@@ -250,6 +250,9 @@ class InputBatch:
+ 
+         self.req_id_to_index[req_id] = req_index
+ 
++        if request.sampling_params.guided_decoding is not None:
++            request.prompt_token_ids.extend([0])
++
+         # Copy the prompt token ids and output token ids.
+         num_prompt_tokens = len(request.prompt_token_ids)
+         self.num_prompt_tokens[req_index] = num_prompt_tokens

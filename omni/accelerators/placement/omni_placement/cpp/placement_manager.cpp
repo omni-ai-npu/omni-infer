@@ -549,7 +549,7 @@ void Placement::placement_manager(aclrtContext currentContext) {
         changeInstructions = optimizer_->optimize();
 
         std::cout << "[handle ins] placement worker before handle "
-                     "instructions. tatal cnt: "
+                     "instructions. total cnt: "
                   << changeInstructions.size() << "\n";
         if (changeInstructions.size() > 0) {
             TRACK_START();
@@ -609,7 +609,8 @@ void do_placement_optimizer(Placement &placement) {
     bool rst =
         placement.buf_ready_flag_.compare_exchange_strong(expected, desired);
     if (!rst)
-        std::cout << "[handle ins][err] buf ready flag error 3." << "\n";
+        std::cout << "[handle ins][err] buf ready flag error 3."
+                  << "\n";
 }
 
 pybind11::bytes GetPDRootInfo() {

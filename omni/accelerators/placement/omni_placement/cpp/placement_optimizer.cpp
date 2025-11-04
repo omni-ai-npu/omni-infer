@@ -486,6 +486,24 @@ std::vector<ChangeInstruction> PlacementOptimizer::optimize() {
     int max_slots_per_rank = num_experts_per_rank_ + num_redundant_per_rank_;
     std::vector<ChangeInstruction> all_instructions;
 
+    if (rank_ == 0) {
+        const std::string title = " Placement Optimization Summary ";
+        const int total_width = 69;
+        const int title_length = title.length();
+        const int padding_total = total_width - title_length;
+        const int padding_left = padding_total / 2;
+        const int padding_right = padding_total - padding_left;
+
+        std::cout << std::endl;
+        std::cout << std::string(padding_left, '=') << title
+                  << std::string(padding_right, '=') << std::endl;
+
+        std::cout << std::left << std::setw(10) << "Layer" << std::setw(15)
+                  << "Instructions" << std::setw(22) << "Imbalance (Before)"
+                  << std::setw(22) << "Imbalance (After)" << std::endl;
+        std::cout << std::string(total_width, '-') << std::endl;
+    }
+
     for (int layer_idx = 0; layer_idx < num_layers_; ++layer_idx) {
         DebugInfo info;
         info.layer_idx = layer_idx;
@@ -507,6 +525,28 @@ std::vector<ChangeInstruction> PlacementOptimizer::optimize() {
         info.initial_placement = current_f;
         info.optimized_placement = g;
 
+        double before_ratio = 0.0;
+        double after_ratio = 0.0;
+        if (rank_ == 0) {
+            // Calculate "before" ratio using current placement and activations
+            before_ratio = load_balancer_->ut_compute_placement_ratio_combined(
+                current_f, layer_activations, layer_idx, world_size_,
+                max_slots_per_rank, num_experts_, 0);
+
+            // To calculate "after" ratio, we need the total load per expert
+            auto layer_expert_info =
+                load_balancer_->ut_extract_layer_expert_info(
+                    placement, activations, layer_idx, world_size_,
+                    max_slots_per_rank, num_experts_, expert_redundant_limit_);
+            auto expert_loads = load_balancer_->ut_compute_expert_loads(
+                layer_expert_info, num_experts_);
+
+            // Simulate the "after" ratio using the optimized placement 'g'
+            after_ratio = load_balancer_->ut_simulate_placement_ratio(
+                g, expert_loads, layer_idx, world_size_, max_slots_per_rank,
+                num_experts_);
+        }
+
         // Generate instructions for this layer
         auto [layer_instructions, tmp_placement] =
             generate_layer_instructions(current_f, g, layer_idx, world_size_,
@@ -519,7 +559,18 @@ std::vector<ChangeInstruction> PlacementOptimizer::optimize() {
                                 layer_instructions.begin(),
                                 layer_instructions.end());
 
+        if (rank_ == 0) {
+            std::cout << std::left << std::fixed << std::setprecision(4)
+                      << std::setw(10) << layer_idx << std::setw(15)
+                      << layer_instructions.size() << std::setw(22)
+                      << before_ratio << std::setw(22) << after_ratio
+                      << std::endl;
+        }
+
         debug_info.push_back(info);
+    }
+    if (rank_ == 0) {
+        std::cout << std::string(69, '-') << std::endl;
     }
 
     // Print debug information

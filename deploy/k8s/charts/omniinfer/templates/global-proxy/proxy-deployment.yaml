@@ -1,0 +1,311 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: global-proxy-deployment
+  labels: {{- include "omniinfer.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.routerSpec.enableRouter }}
+  replicas: {{ .Values.routerSpec.replicaCount | default 0 | int }}
+  {{- else }}
+  replicas: 0
+  {{- end }}
+  selector:
+    matchLabels:
+      app: global-proxy
+  template:
+    metadata:
+      labels:
+        app: global-proxy
+    spec:
+      initContainers:
+      # 1.1. 等待prefill/decode实例级 ranktable 生成完成
+      - name: wait-for-all-ranktable
+        image: {{ include "omniinfer.image" (list .Values.image.repository .Values.image.tag) | quote }}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -x
+          # 等待所有decode pods生成local ranktable
+          DECODE_REPLICAS=$(cat /config/decode-replicas)
+          PREFILL_REPLICAS=$(cat /config/prefill-replicas)
+          SHARED_PATH=${SHARED_PATH:-"/shared"}
+
+          echo "Waiting for ${DECODE_REPLICAS} decode ranktables..."
+          while true; do
+            count=$(find ${SHARED_PATH}/collect_files_d/ -name "local_ranktable_*.json" 2>/dev/null | wc -l)
+            if [ "${count}" -ge "${DECODE_REPLICAS}" ]; then
+              echo "Found ${count} decode ranktables, next..."
+              break
+            fi
+            echo "Found ${count} decode ranktables, expected ${DECODE_REPLICAS}, waiting..."
+            sleep 1
+          done
+
+          echo "Waiting for ${PREFILL_REPLICAS} prefill ranktables..."
+          while true; do
+            count=$(find ${SHARED_PATH}/collect_files_p/ -name "local_ranktable_*.json" 2>/dev/null | wc -l)
+            if [ "${count}" -ge "${PREFILL_REPLICAS}" ]; then
+              echo "Found ${count} prefill ranktables, generating global..."
+              break
+            fi
+            echo "Found ${count} prefill ranktables, expected ${PREFILL_REPLICAS}, waiting..."
+            sleep 1
+          done
+        env:
+        - name: SHARED_PATH
+          value: "/shared"
+        volumeMounts:
+        - name: shared-storage
+          mountPath: /shared
+        - name: config-volume
+          mountPath: /config
+
+      # 1.2 生成全局级 global ranktable
+      - name: generate-global-ranktable
+        image: {{ include "omniinfer.image" (list .Values.image.repository .Values.image.tag) | quote }}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -x
+          echo "Generating global ranktable..."
+          # 设置环境变量
+          source ~/.bashrc
+          SHARED_PATH=${SHARED_PATH:-"/shared"}
+          GLOBAL_RANKTABLE_SAVE_PATH="${SHARED_PATH}/global/"
+          DECODE_REPLICAS=$(cat /config/decode-replicas)
+          PREFILL_REPLICAS=$(cat /config/prefill-replicas)
+
+          # 准备目录
+          mkdir -p ${GLOBAL_RANKTABLE_SAVE_PATH}
+          rm -rf ${GLOBAL_RANKTABLE_SAVE_PATH}/*
+
+          # 1、汇总 prefill local ranktable
+          # 假设每个 prefill 实例只生成一个 local*merge.json，无需内部合并
+          prefill_merge_ranktable_list=$(find "${SHARED_PATH}/collect_files_p/" -name "local_ranktable_*.json" -not -path "*/api/*" | tr '\n' ' ' | sed 's/ $//')
+          prefill_local_ranktable_merge=""
+          IFS=' ' read -ra parts <<< ${prefill_merge_ranktable_list}
+
+          for i in "${!parts[@]}"; do
+            # 对 prefill 的每个组解析逗号，多机组P
+            part="${parts[$i]}"
+            comma_count=$(grep -o "," <<< "$part" | wc -l)
+            ip_address=""
+
+            if [[ "$comma_count" -ge 1 ]]; then
+              IFS=',' read -ra subparts <<< "$part"
+              file_name="${subparts[0]}"
+            else
+              file_name="$part"
+            fi
+            # 提取 POD IP
+            if [[ "$file_name" =~ local_ranktable_([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})_ ]]; then
+              ip_address="${BASH_REMATCH[1]}"
+            else
+              ip_addresses=($(grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' <<< "$file_name"))
+              ip_address="${ip_addresses[0]}"
+            fi
+
+            # 若含多个文件，多机组p，合并放到${ip_address}目录下local*merge.json，当前调试部署用例未覆盖该分支，暂不完善
+            if [ "$comma_count" -ge 1 ]; then
+              mkdir -p "${GLOBAL_RANKTABLE_SAVE_PATH}/global/collect_files_p/${ip_address}"
+
+              python3 /workspace/omniinfer/tools/scripts/pd_ranktable_tools.py \
+              --mode merge-local \
+              --local-ranktable-list ${part} \
+              --save-dir ${GLOBAL_RANKTABLE_SAVE_PATH}/global/collect_files_p/${ip_address}
+
+              if [ -z "$prefill_local_ranktable_merge" ]; then
+                prefill_local_ranktable_merge=$(ls ${GLOBAL_RANKTABLE_SAVE_PATH}/global/collect_files_p/${ip_address}/local*merge.json | tr '\n' ' ')
+              else
+                # 收集所有 prefill 的 merge 结果，多机组P
+                prefill_local_ranktable_merge="${prefill_local_ranktable_merge} $(ls ${GLOBAL_RANKTABLE_SAVE_PATH}/global/collect_files_p/${ip_address}/local*merge.json | tr '\n' ' ')"
+              fi
+
+            else
+              if [ -z "$prefill_local_ranktable_merge" ]; then
+                prefill_local_ranktable_merge="${part}"
+              else
+                # 收集所有 prefill 的 merge 结果，1机1P
+                prefill_local_ranktable_merge="${prefill_local_ranktable_merge} ${part}"
+              fi
+            fi
+          done
+
+          # 2、汇总 decode local ranktable
+          DECODE_RANKTABLE_LIST=$(find "${SHARED_PATH}/collect_files_d/" -name "local_ranktable_*.json" | tr '\n' ' ' | sed 's/ $//')
+
+          # decode 实例若副本数 >1，合并所有 decode local ranktable，放到local*merge.json
+          # 逻辑不完善，待实际部署场景用例驱动调试
+          if [[ "${DECODE_REPLICAS}" -gt 1 ]]; then
+            echo "Merging decode ranktables..."
+            python3 /workspace/omniinfer/tools/scripts/pd_ranktable_tools.py \
+              --mode merge-local \
+              --local-ranktable-list "${DECODE_RANKTABLE_LIST}" \
+              --save-dir "${GLOBAL_RANKTABLE_SAVE_PATH}/collect_files_d"
+            decode_local_ranktable_merge=$(find "${GLOBAL_RANKTABLE_SAVE_PATH}/collect_files_d" -name "local*merge.json" | head -n1)
+          else
+            decode_local_ranktable_merge="${DECODE_RANKTABLE_LIST}"
+          fi
+
+          # 生成最终 global ranktable
+          echo "Generating final global ranktable..."
+          python3 /workspace/omniinfer/tools/scripts/pd_ranktable_tools.py \
+            --mode merge-all \
+            --prefill-server-list ${prefill_local_ranktable_merge} \
+            --decode-server-list ${decode_local_ranktable_merge} \
+            --save-dir ${GLOBAL_RANKTABLE_SAVE_PATH}
+
+          # 验证输出
+          OUTPUT_FILE=$(find "${GLOBAL_RANKTABLE_SAVE_PATH}" -name "global_ranktable_merge.json" | head -n1)
+          if [ -z "${OUTPUT_FILE}" ]; then
+            echo "ERROR: Global ranktable not generated!"
+            exit 1
+          fi
+          
+          echo "Global ranktable generated successfully!"
+          ls -la ${GLOBAL_RANKTABLE_SAVE_PATH}
+        env:
+        - name: SHARED_PATH
+          value: "/shared"
+        - name: DECODE_SERVER_LIST
+          value: "0,1,2,3,4,5,6,7" # 占位符，需要根据实际部署的 GPU 设置
+        volumeMounts:
+        # - name: decode-workspace # 挂载一个工作区，让后续 init container 和 main container 共享 ranktable 等文件
+        #   mountPath: /tmp/ranktable_save_path # 对应 Ansible 中的 ranktable_save_path
+        - name: shared-storage
+          mountPath: /shared # 复制一份实例级global ranktable到共享存储，等价于 Ansible 中分发
+        - name: config-volume
+          mountPath: /config
+        - name: hccn-conf
+          mountPath: /etc/hccn.conf
+        - name: hccn-bin
+          mountPath: /usr/bin/hccn_tool
+        - name: npu-driver
+          mountPath: /usr/local/Ascend/driver
+        securityContext: {{- toYaml .Values.securityContext | nindent 10 }}
+
+      hostNetwork: true
+      hostIPC: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      # 2. 主容器启动 global_proxy.sh (对应 Ansible 中的 docker_start_proxy_cmd_c 和 run_proxy_cmd)
+      - name: global-proxy-main
+        image: {{ include "omniinfer.image" (list .Values.image.repository .Values.image.tag) | quote }}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -x
+          echo "Starting global proxy setup..."
+
+          # 1. 设置环境变量
+          source ~/.bashrc
+          export LOG_PATH=${LOG_PATH}/${POD_NAME}
+          mkdir -p ${LOG_PATH}
+
+          # 2. 构建、安装omni-proxy-*.rpm安装包（可以单独构建global proxy的镜像）
+          # cd /workspace/omniinfer/build/dist
+          # yum install ./omni-proxy-*.rpm
+          rpm -ql omni-proxy
+          
+          # 3. Run the global proxy script (对应 Ansible 中的 run_proxy_cmd)
+          # 设置 Prefill 和 Decode API 服务器列表 (需要通过 K8s Service 或其他方式发现)
+          # 这里使用占位符，实际部署时需要通过环境变量或配置注入
+          if [ -z "$PREFILL_API_SERVER_LIST" ] || [ -z "$DECODE_API_SERVER_LIST" ]; then
+             echo "Error: PREFILL_API_SERVER_LIST and DECODE_API_SERVER_LIST must be set via environment variables."
+             exit 1
+          fi
+
+          cd /workspace/omniinfer/tools/scripts
+          # 修改配置，启动nginx验证
+          bash -x global_proxy.sh \
+            --listen-port "$PROXY_NODE_PORT" \
+            --prefill-servers-list "$PREFILL_API_SERVER_LIST" \
+            --decode-servers-list "$DECODE_API_SERVER_LIST" \
+            --log-file ${LOG_PATH}/nginx_error.log \
+            --log-level ${PROXY_LOG_LEVEL:-notice} \
+            --core-num ${PROXY_CORE_NUM:-4} \
+            --start-core-index ${PROXY_START_CORE_INDEX:-16} \
+            --prefill-lb-sdk ${PREFILL_LB_SDK} \
+            --decode-lb-sdk ${DECODE_LB_SDK}
+            
+          # 关闭上述nginx进程
+          bash -x global_proxy.sh --stop
+
+          # 启动 nginx 前台模式，替换当前 shell 进程，成为 PID 1
+          exec nginx -g "daemon off;" -c /usr/local/nginx/conf/nginx.conf
+          echo "Global proxy service script finished."
+        env:
+        # --- Environment variables required by the script (与 Ansible 环境变量一致) ---
+        # Code and paths
+        - name: SHARED_PATH
+          value: "/shared"
+        - name: LOG_PATH
+          value: {{ .Values.mount.log.path | quote }}
+        # Proxy configuration
+        - name: PROXY_NODE_PORT
+          value: {{ .Values.routerSpec.proxyPort | quote }}
+        - name: PREFILL_API_SERVER_LIST
+          value: "prefill-service:9010" # K8s Service name:port
+        - name: DECODE_API_SERVER_LIST
+          value: "decode-service:9100" # K8s Service name:port
+        - name: PREFILL_LB_SDK
+          value: {{ .Values.routerSpec.routingLogic | quote }}
+        - name: DECODE_LB_SDK
+          value: {{ .Values.routerSpec.routingLogic | quote }}
+        # Proxy runtime configuration
+        - name: PROXY_LOG_LEVEL
+          value: "notice"
+        - name: PROXY_CORE_NUM
+          value: "4"
+        - name: PROXY_START_CORE_INDEX
+          value: "16"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: shared-storage
+          mountPath: /shared
+        - name: proxy-workspace
+          mountPath: /tmp/ranktable_save_path # 对应 Ansible 中的 ranktable_save_path
+        - name: log-storage # 挂载日志路径
+          mountPath: {{ .Values.mount.log.path | quote }}
+      volumes:
+      - name: shared-storage
+        persistentVolumeClaim:
+          claimName: ranktable-pvc # 确保与 shared-storage.yaml 中定义的名称一致
+      - name: config-volume
+        configMap:
+          name: coordination-config
+      # 挂载必要的系统路径
+      - name: device-davinci-manager
+        hostPath:
+          path: /dev/davinci_manager
+          type: CharDevice
+      - name: npu-driver
+        hostPath:
+          path: /usr/local/Ascend/driver
+          type: Directory
+      - name: npu-smi
+        hostPath:
+          path: /usr/local/sbin/npu-smi
+          type: File
+      - name: dcmi
+        hostPath:
+          path: /usr/local/dcmi
+          type: Directory
+      - name: hccn-conf
+        hostPath:
+          path: /etc/hccn.conf
+          type: File
+      - name: hccn-bin
+        hostPath:
+          path: /usr/bin/hccn_tool
+          type: File
+      # Mount for logs (example using hostPath; adapt as needed)
+      - name: log-storage
+        hostPath: # Or use PVC
+          path: {{ .Values.mount.log.path }} # Path on the host
+          type: DirectoryOrCreate
+      - name: proxy-workspace
+        emptyDir: {} # 或者使用 PVC 以持久化 ranktable

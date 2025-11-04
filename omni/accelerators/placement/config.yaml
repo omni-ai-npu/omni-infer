@@ -17,20 +17,26 @@
 #     rather, experts may be replicated across multiple devices to enable parallelism or redundancy.
 
 #     Defaults to None.
-pattern_path: "../patterns/base_patterns/DSV3_baseline_16_devices_58_MoE_Layers.npy"
+pattern_path: null
 
-#define max_layer_num as a constant 58 (for deepseek moe layer num 58)
+# define max_layer_num as a constant 58 (for deepseek moe layer num 58)
 max_moe_layer_num: 58
 
 enable_dynamic: False
-max_redundant_per_expert: 10 # 10
-max_redundant_per_rank: 1 # 1
+max_redundant_per_expert: 1 # 10
+max_redundant_per_rank: 0 # 1
+
+enable_rank_round_robin: True
+
+enable_dump: False
+dump_dir: "../dump_data"
 
 max_batch_size: 100000
 max_top_k: 8
 
-enable_dump: True
-dump_dir: "../dump_data"
+# Adaptation for longcat zero expert
+enable_zero_expert: False
+normal_expert_ids: 255
 
 # Optimizers
 Optimizers:

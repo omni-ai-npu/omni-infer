@@ -92,11 +92,10 @@ class NPUCompilationConfig:
     def update_gear_options(self, vllm_config: VllmConfig):
         max_num_reqs = vllm_config.scheduler_config.max_num_seqs
         use_spec_decode = vllm_config.speculative_config is not None
+        enable_adaptive = use_spec_decode and vllm_config.speculative_config.enable_adaptive
         max_batch_size = max_num_reqs if not use_spec_decode else max_num_reqs * (1 + vllm_config.speculative_config.num_speculative_tokens)
-        if not self.decode_gear_list:
-            self.decode_gear_list = [max_batch_size]
 
-        if len(self.decode_gear_list) > MAX_GEAR_NUM:
+        if self.decode_gear_list is not None and len(self.decode_gear_list) > MAX_GEAR_NUM:
             raise ValueError(f"Max gear num supported is {MAX_GEAR_NUM} now.")
 
         if self.decode_gear_list and max(self.decode_gear_list) > max_batch_size:
@@ -105,7 +104,10 @@ class NPUCompilationConfig:
                 f"PTA_TORCHAIR_DECODE_GEAR_LIST({self.decode_gear_list}) becomes ({decode_gear_list}) due to max_batch_size({max_batch_size})")
             self.decode_gear_list = decode_gear_list
 
-        if len(self.decode_gear_list) < MAX_GEAR_NUM and max(self.decode_gear_list) < max_batch_size:
+        if not self.decode_gear_list:
+            self.decode_gear_list = [max_batch_size]
+
+        if (not enable_adaptive and len(self.decode_gear_list) < MAX_GEAR_NUM and max(self.decode_gear_list) < max_batch_size):
             self.decode_gear_list.append(max_batch_size)
 
     def init_backend(self, vllm_config: VllmConfig) -> Union[str, Callable]:
