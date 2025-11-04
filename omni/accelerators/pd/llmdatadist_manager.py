@@ -137,8 +137,8 @@ class LLMDataDistManager:
         llm_config.enable_switch_role = True
         llm_config.enable_cache_manager = True
 
-        # RoCE timeout is 20s
-        llm_config.sync_kv_timeout = 20000
+        # RoCE timeout is 31s， prevent pull kv timeout
+        llm_config.sync_kv_timeout = 31000
 
         llm_config.enable_remote_cache_accessible = True
         options = llm_config.generate_options()
