@@ -11,7 +11,7 @@ index f3d6ffaeb..3aebcbde5 100644
          raise NotImplementedError
  
 diff --git a/vllm/config.py b/vllm/config.py
-index 5b255e210..baa23b655 100644
+index c14e3c00c..64686ba07 100644
 --- a/vllm/config.py
 +++ b/vllm/config.py
 @@ -220,6 +220,7 @@ def is_init_field(cls: ConfigType, name: str) -> bool:
@@ -73,6 +73,55 @@ index 5b255e210..baa23b655 100644
      # Will be set after profiling.
      num_gpu_blocks: Optional[int] = field(default=None, init=False)
      """The number of blocks to allocate for GPU memory."""
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+index 2ca47b07a..4c606f154 100755
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -237,15 +237,10 @@ class OpenAIServingChat(OpenAIServing):
+                 sampling_params: Union[SamplingParams, BeamSearchParams]
+                 if reuse_prefilled_tokens:
+                     if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
+-                        new_tokens = tokenizer.convert_ids_to_tokens(request.kv_transfer_params["prefilled_token"][0])
++                        engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
++                        new_tokens = tokenizer.convert_ids_to_tokens(engine_prompt["prefilled_token_ids"][0])
+                         delta_text = tokenizer.convert_tokens_to_string([new_tokens])
+-                        # If the decoded text ends with '�', it indicates an incomplete UTF-8 sequence — abandon reuse.
+-                        # If the prefilled side has already triggered a stop reason, we also fall back to normal generation.
+-                        if delta_text.endswith("�") or any(s is not None for s in request.kv_transfer_params["stop_reasons"]):
+-                            request.kv_transfer_params.pop("prefilled_token", None)
+-                        else:
+-                            engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
+-                            engine_prompt["prefilled_texts"] = delta_text
++                        engine_prompt["prefilled_texts"] = delta_text
+                 default_max_tokens = self.max_model_len - len(
+                     engine_prompt["prompt_token_ids"])
+                 if request.use_beam_search:
+@@ -986,14 +981,6 @@ class OpenAIServingChat(OpenAIServing):
+ 
+         assert final_res is not None
+ 
+-        # Pass the internal request id in P side to D side in kv_transfer_params
+-        if final_res.kv_transfer_params:
+-            final_res.kv_transfer_params["p_side_request_id"] = vllm_request_id
+-
+-        turn_id = 0
+-        if self.tool_parser_name == "ascend_kimi_k2" or self.tool_parser_name == "kimi_k2":
+-            turn_id = get_turn_id(conversation)
+-
+         if reuse_prefilled_tokens:
+             if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
+                 prompt_token_ids = request.kv_transfer_params["prefilled_token"]
+@@ -1187,10 +1174,6 @@ class OpenAIServingChat(OpenAIServing):
+         if reuse_prefilled_tokens:
+             if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
+                 num_generated_tokens += 1
+-            if final_res.kv_transfer_params:
+-                final_res.kv_transfer_params["stop_reasons"] = [
+-                    output.stop_reason for output in final_res.outputs
+-                ]
+         usage = UsageInfo(prompt_tokens=num_prompt_tokens,
+                           completion_tokens=num_generated_tokens,
+                           total_tokens=num_prompt_tokens +
 diff --git a/vllm/model_executor/layers/mamba/ops/ssd_bmm.py b/vllm/model_executor/layers/mamba/ops/ssd_bmm.py
 index 0fdb055aa..99532f5be 100644
 --- a/vllm/model_executor/layers/mamba/ops/ssd_bmm.py
@@ -495,7 +544,7 @@ index 6f69ca743..2f39ab04f 100644
  def _state_passing_fwd_kernel(
      # Pointers to matrices
 diff --git a/vllm/model_executor/models/utils.py b/vllm/model_executor/models/utils.py
-index 3d821d3dc..6e025019c 100644
+index 1e67c2608..6e025019c 100644
 --- a/vllm/model_executor/models/utils.py
 +++ b/vllm/model_executor/models/utils.py
 @@ -690,14 +690,14 @@ def maybe_prefix(prefix: str, name: str) -> str:
@@ -515,20 +564,19 @@ index 3d821d3dc..6e025019c 100644
      """
      subnames = layer_name.split(".")
      int_vals: list[int] = []
-@@ -706,9 +706,22 @@ def extract_layer_index(layer_name: str) -> int:
+@@ -706,11 +706,22 @@ def extract_layer_index(layer_name: str) -> int:
              int_vals.append(int(subname))
          except ValueError:
              continue
--    assert len(int_vals) == 1, (f"layer name {layer_name} should"
--                                " only contain one integer")
--    return int_vals[0]
 +    if num_attn_module == 1 or "attn" not in layer_name:
 +        assert len(int_vals) == 1, (
 +            f"layer name {layer_name} should only contain one integer"
 +        )
-+
-+        return int_vals[0]
-+    else:
+ 
+-    if len(int_vals) == 1:
+         return int_vals[0]
+     else:
+-        return int_vals[0] * 2 + int_vals[1]
 +        assert len(int_vals) <= 2, (
 +            f"layer name {layer_name} should contain most two integers"
 +        )
@@ -1094,7 +1142,7 @@ index 000000000..ac82c2601
 +        dcp_world_size=dcp_world_size,
 +    )
 diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
-index 4965df17e..32cd9d871 100644
+index 04dc331a1..c0144ded4 100755
 --- a/vllm/v1/core/kv_cache_manager.py
 +++ b/vllm/v1/core/kv_cache_manager.py
 @@ -8,6 +8,7 @@ from vllm.distributed.kv_events import KVCacheEvent
@@ -1178,15 +1226,16 @@ index 4965df17e..32cd9d871 100644
  
  class KVCacheManager:
  
-@@ -61,13 +84,11 @@ class KVCacheManager:
+@@ -61,14 +84,12 @@ class KVCacheManager:
          use_eagle: bool = False,
          log_stats: bool = False,
          enable_kv_cache_events: bool = False,
 +        dcp_world_size: int = 1,
+         combine_block_num: int = 1,
      ) -> None:
--        assert len(kv_cache_config.kv_cache_groups) == 1, (
--            "KVCacheManager does not support hybrid models with more than 1 "
--            "kv cache group")
+-        if len(kv_cache_config.kv_cache_groups) > 1 and \
+-            len(set(type(group.kv_cache_spec) for group in kv_cache_config.kv_cache_groups)) != 1:
+-            raise ValueError("KVCacheManager does not support hybrid types of AttentionSpec with more than 1 kv cache group")
 -        kv_cache_spec = kv_cache_config.kv_cache_groups[0].kv_cache_spec
 -        self.block_size = kv_cache_spec.block_size
 -        self.num_gpu_blocks = kv_cache_config.num_blocks
@@ -1196,7 +1245,7 @@ index 4965df17e..32cd9d871 100644
          self.max_model_len = max_model_len
  
          self.enable_caching = enable_caching
-@@ -77,22 +98,56 @@ class KVCacheManager:
+@@ -78,23 +99,56 @@ class KVCacheManager:
          # FIXME: make prefix cache stats conditional on log_stats
          self.prefix_cache_stats = PrefixCacheStats() if log_stats else None
  
@@ -1234,6 +1283,7 @@ index 4965df17e..32cd9d871 100644
              use_eagle=self.use_eagle,
 -            num_kv_cache_groups=1,
 -            caching_hash_fn=self.caching_hash_fn,
+-            combine_block_num=combine_block_num,
 +            enable_caching=self.enable_caching,
 +            enable_kv_cache_events=enable_kv_cache_events,
 +            dcp_world_size=dcp_world_size,
@@ -1263,7 +1313,7 @@ index 4965df17e..32cd9d871 100644
  
      @property
      def usage(self) -> float:
-@@ -101,9 +156,9 @@ class KVCacheManager:
+@@ -103,9 +157,9 @@ class KVCacheManager:
          Returns:
              The KV cache usage (between 0.0 and 1.0).
          """
@@ -1275,7 +1325,7 @@ index 4965df17e..32cd9d871 100644
          """Get (and reset) the prefix cache stats.
  
          Returns:
-@@ -115,8 +170,7 @@ class KVCacheManager:
+@@ -117,8 +171,7 @@ class KVCacheManager:
          self.prefix_cache_stats = PrefixCacheStats()
          return stats
  
@@ -1285,7 +1335,7 @@ index 4965df17e..32cd9d871 100644
          """Get the computed (cached) blocks for the request.
          Note that the computed blocks must be full.
  
-@@ -130,21 +184,11 @@ class KVCacheManager:
+@@ -132,21 +185,11 @@ class KVCacheManager:
          """
          # Prefix caching is disabled or
          # When the request requires prompt logprobs, we skip prefix caching.
@@ -1312,7 +1362,7 @@ index 4965df17e..32cd9d871 100644
  
          # NOTE: When all tokens hit the cache, we must recompute the last token
          # to obtain logits. Thus, set max_cache_hit_length to prompt_length - 1.
-@@ -153,32 +197,37 @@ class KVCacheManager:
+@@ -155,32 +198,38 @@ class KVCacheManager:
          # num_computed_tokens to be block-size aligned. Removing this limitation
          # could slightly improve performance in the future.
          max_cache_hit_length = request.num_tokens - 1
@@ -1360,12 +1410,13 @@ index 4965df17e..32cd9d871 100644
          delay_cache_blocks: bool = False,
 -        is_swap: bool = False
 -    ) -> Optional[KVCacheBlocks]:
++        is_swap: bool = False,
 +        num_encoder_tokens: int = 0,
 +    ) -> KVCacheBlocks | None:
          """Add slots for a request with new tokens to append.
  
          Args:
-@@ -188,10 +237,10 @@ class KVCacheManager:
+@@ -190,10 +239,10 @@ class KVCacheManager:
                  already been computed locally (i.e. new_computed_blocks).
              num_new_computed_tokens: The number of new computed tokens just
                  hitting the prefix caching, excluding external tokens.
@@ -1378,14 +1429,7 @@ index 4965df17e..32cd9d871 100644
                  as eagle.
              delay_cache_blocks: Whether to skip caching the blocks. This is
                  used by P/D when allocating blocks used in a KV transfer
-@@ -214,13 +263,15 @@ class KVCacheManager:
-         Returns:
-             A list of new allocated blocks.
-         """
--        if num_new_tokens == 0 and not is_swap:
-+        if num_new_tokens == 0:
-             raise ValueError("num_new_tokens must be greater than 0")
- 
+@@ -222,7 +271,9 @@ class KVCacheManager:
          if new_computed_blocks is not None:
              new_computed_block_list = new_computed_blocks.blocks
          else:
@@ -1396,7 +1440,7 @@ index 4965df17e..32cd9d871 100644
  
          # Free the blocks that are skipped during the attention computation
          # (e.g., tokens outside the sliding window).
-@@ -228,67 +279,73 @@ class KVCacheManager:
+@@ -230,67 +281,73 @@ class KVCacheManager:
          # insufficient free blocks.
          # Should call this function before allocating new blocks to reduce
          # the number of evicted blocks.
@@ -1420,10 +1464,11 @@ index 4965df17e..32cd9d871 100644
 -                num_tokens=num_tokens_need_slot,
 -                new_computed_blocks=new_computed_block_list,
 -            ))
+-
+-        if num_blocks_to_allocate > self.block_pool.get_num_free_blocks():
 +            self.max_model_len,
 +        )
- 
--        if num_blocks_to_allocate > self.block_pool.get_num_free_blocks():
++
 +        num_blocks_to_allocate = self.coordinator.get_num_blocks_to_allocate(
 +            request_id=request.request_id,
 +            num_tokens=num_tokens_need_slot,
@@ -1499,7 +1544,7 @@ index 4965df17e..32cd9d871 100644
  
      def reset_prefix_cache(self) -> bool:
          """Reset prefix cache. This function may be used in RLHF
-@@ -299,65 +356,46 @@ class KVCacheManager:
+@@ -301,65 +358,46 @@ class KVCacheManager:
              bool: True if the prefix cache is successfully reset,
              False otherwise.
          """
@@ -1584,7 +1629,7 @@ index 4965df17e..32cd9d871 100644
  
      def take_events(self) -> list[KVCacheEvent]:
          """Take the KV cache events from the block pool.
-@@ -365,14 +403,24 @@ class KVCacheManager:
+@@ -367,14 +405,24 @@ class KVCacheManager:
          Returns:
              A list of KV cache events.
          """
@@ -1615,44 +1660,8 @@ index 4965df17e..32cd9d871 100644
  
  class CpuNpuKVCacheManager:
  
-@@ -384,7 +432,7 @@ class CpuNpuKVCacheManager:
-         self.max_model_len = max_model_len
- 
-     def _can_swap(self, device: Device, num_need_blocks: int = 0) -> bool:
--        num_free_blocks = self.allocators[device].single_type_manager.block_pool.get_num_free_blocks()
-+        num_free_blocks = self.allocators[device].coordinator.block_pool[0].get_num_free_blocks()
-         if num_free_blocks < num_need_blocks:
-             return False
-         return True
-@@ -396,7 +444,7 @@ class CpuNpuKVCacheManager:
-             num_computed_tokens + num_new_tokens + num_lookahead_tokens,
-             self.max_model_len)
-         num_blocks_to_allocate = (
--            self.allocators[Device.GPU].single_type_manager.get_num_blocks_to_allocate(
-+            self.allocators[Device.GPU].coordinator.get_num_blocks_to_allocate(
-                 request_id=request.request_id,
-                 num_tokens=num_tokens_need_slot,
-                 new_computed_blocks=[],
-@@ -404,7 +452,7 @@ class CpuNpuKVCacheManager:
-         return self._can_swap(Device.GPU, num_blocks_to_allocate)
- 
-     def can_swap_out(self, request: Request) -> bool:
--        num_cached_blocks = len(self.allocators[Device.GPU].single_type_manager.req_to_blocks[request.request_id])
-+        num_cached_blocks = len(self.allocators[Device.GPU].coordinator.req_to_blocks[request.request_id])
-         return self._can_swap(Device.CPU, num_cached_blocks)
- 
-     def swap(self,request: Request, src_device: Device, dst_device: Device)-> list[tuple[int, int]]:
-@@ -423,7 +471,7 @@ class CpuNpuKVCacheManager:
-         return dst_block_ids
- 
-     def _swap_out(self,request: Request, device: Device) -> list[int]:
--        src_blocks = self.allocators[device].single_type_manager.req_to_blocks[request.request_id]
-+        src_blocks = self.allocators[device].coordinator.req_to_blocks[request.request_id]
-         src_block_ids = [block.block_id for block in src_blocks]
-         self.allocators[device].free(request)
-         return src_block_ids
 diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
-index 403b5401b..913fcb304 100644
+index e9648cc31..532a1982a 100644
 --- a/vllm/v1/core/kv_cache_utils.py
 +++ b/vllm/v1/core/kv_cache_utils.py
 @@ -1,22 +1,27 @@
@@ -1688,7 +1697,7 @@ index 403b5401b..913fcb304 100644
  
  class BlockHashType(NamedTuple):
      """Hash value of a block (int), the token IDs in the block, and extra keys.
-@@ -702,12 +707,12 @@ def get_kv_cache_config(vllm_config: VllmConfig,
+@@ -710,12 +715,12 @@ def get_kv_cache_config(vllm_config: VllmConfig,
      """
      check_enough_kv_cache_memory(vllm_config, kv_cache_spec, available_memory)
      unify_hybrid_kv_cache_specs(kv_cache_spec)
@@ -1702,9 +1711,9 @@ index 403b5401b..913fcb304 100644
 +    return _get_kv_cache_config_uniform_type(vllm_config, kv_cache_spec,
 +                                                available_memory)
  
-     raise NotImplementedError
- 
-@@ -746,3 +751,549 @@ def unify_kv_cache_configs(kv_cache_configs: list[KVCacheConfig]):
+     if is_kv_cache_class_uniform(kv_cache_spec):
+         return _get_kv_cache_config_different_type(vllm_config, kv_cache_spec,
+@@ -814,3 +819,549 @@ def unify_kv_cache_configs(kv_cache_configs: list[KVCacheConfig]):
          kv_cache_config.num_blocks = min_num_blocks
  
      return kv_cache_configs
@@ -2255,10 +2264,10 @@ index 403b5401b..913fcb304 100644
 +    
 +    return create_kv_cache_group_specs(kv_cache_spec, grouped_layers)
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index e386183af..6a6cbf976 100644
+index 2d62c5ad1..fdb6037ed 100755
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
-@@ -280,7 +280,6 @@ class Scheduler(SchedulerInterface):
+@@ -316,7 +316,6 @@ class Scheduler(SchedulerInterface):
                  new_blocks = self.kv_cache_manager.allocate_slots(
                      request,
                      num_new_tokens,
@@ -2266,7 +2275,7 @@ index e386183af..6a6cbf976 100644
                      num_lookahead_tokens=self.num_lookahead_tokens)
                  if new_blocks is None:
                      # The request cannot be scheduled.
-@@ -427,7 +426,9 @@ class Scheduler(SchedulerInterface):
+@@ -479,7 +478,9 @@ class Scheduler(SchedulerInterface):
                  # KVTransfer: WAITING reqs have num_computed_tokens > 0
                  # after async KV recvs are completed.
                  else:
@@ -2277,7 +2286,7 @@ index e386183af..6a6cbf976 100644
                      num_new_local_computed_tokens = 0
                      num_computed_tokens = request.num_computed_tokens
  
-@@ -569,7 +570,7 @@ class Scheduler(SchedulerInterface):
+@@ -621,7 +622,7 @@ class Scheduler(SchedulerInterface):
              any_request = self.running[0]
              num_common_prefix_blocks = (
                  self.kv_cache_manager.get_num_common_prefix_blocks(
@@ -2286,7 +2295,7 @@ index e386183af..6a6cbf976 100644
  
          grammar_bitmask = self.structured_output_manager.grammar_bitmask(
              self.requests,
-@@ -990,7 +991,6 @@ class Scheduler(SchedulerInterface):
+@@ -1071,7 +1072,6 @@ class Scheduler(SchedulerInterface):
             self.cpu_npu_kv_cache_manager.free(request, Device.CPU)
  
          self.kv_cache_manager.free(request)
@@ -2294,17 +2303,8 @@ index e386183af..6a6cbf976 100644
          del self.requests[request.request_id]
  
      def get_num_unfinished_requests(self) -> int:
-@@ -1056,7 +1056,7 @@ class Scheduler(SchedulerInterface):
-             return False, None
-         # assert len(self.kv_cache_config.kv_cache_groups
-         #            ) == 1, "KV connector only supports one KV cache group now"
--        block_ids = self.kv_cache_manager.get_block_ids(request.request_id)[0]
-+        block_ids = self.kv_cache_manager.get_block_ids(request.request_id)
-         return self.connector.request_finished(request, block_ids)
- 
-     def _update_waiting_for_remote_kv(self, request: Request) -> bool:
 diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
-index 0223c9cee..2912db1f3 100644
+index cd24fb4bb..1998bc009 100644
 --- a/vllm/v1/core/single_type_kv_cache_manager.py
 +++ b/vllm/v1/core/single_type_kv_cache_manager.py
 @@ -1,19 +1,24 @@
@@ -2337,15 +2337,19 @@ index 0223c9cee..2912db1f3 100644
      logic of one specific type of attention layer.
      """
  
-@@ -21,52 +26,46 @@ class SingleTypeKVCacheManager(ABC):
+@@ -21,54 +26,53 @@ class SingleTypeKVCacheManager(ABC):
          self,
          kv_cache_spec: KVCacheSpec,
          block_pool: BlockPool,
 -        use_eagle: bool,
 -        num_kv_cache_groups: int,
 -        caching_hash_fn: Callable,
++        # use_eagle: bool,
++        # num_kv_cache_groups: int,
++        # caching_hash_fn: Callable,
 +        kv_cache_group_id: int,
 +        dcp_world_size: int = 1,
+         combine_block_num: int = 1,
      ) -> None:
          """
 -        Initializes the SpecializedManager.
@@ -2388,6 +2392,9 @@ index 0223c9cee..2912db1f3 100644
 -        self.caching_hash_fn = caching_hash_fn
 +        self.kv_cache_group_id = kv_cache_group_id
 +        self._null_block = block_pool.null_block
++        # self.num_kv_cache_groups = num_kv_cache_groups
++        # self.caching_hash_fn = caching_hash_fn
+         self.combine_block_num = combine_block_num
  
      def get_num_blocks_to_allocate(
 -            self, request_id: str, num_tokens: int,
@@ -2404,7 +2411,7 @@ index 0223c9cee..2912db1f3 100644
                  tokens that are already allocated).
              new_computed_blocks: The new computed blocks just hitting the
                  prefix caching.
-@@ -76,20 +75,23 @@ class SingleTypeKVCacheManager(ABC):
+@@ -78,20 +82,23 @@ class SingleTypeKVCacheManager(ABC):
          """
  
          num_required_blocks = cdiv(num_tokens, self.block_size)
@@ -2436,7 +2443,7 @@ index 0223c9cee..2912db1f3 100644
          """
          Add the new computed blocks to the request.
  
-@@ -108,15 +110,16 @@ class SingleTypeKVCacheManager(ABC):
+@@ -110,15 +117,16 @@ class SingleTypeKVCacheManager(ABC):
              # A running request. Should not have new computed blocks.
              assert len(new_computed_blocks) == 0
  
@@ -2457,7 +2464,7 @@ index 0223c9cee..2912db1f3 100644
                  tokens that are already allocated).
  
          Returns:
-@@ -128,38 +131,43 @@ class SingleTypeKVCacheManager(ABC):
+@@ -132,38 +140,43 @@ class SingleTypeKVCacheManager(ABC):
          if num_new_blocks <= 0:
              return []
          else:
@@ -2509,7 +2516,7 @@ index 0223c9cee..2912db1f3 100644
          # Default to [] in case a request is freed (aborted) before alloc.
          req_blocks = self.req_to_blocks.pop(request_id, [])
  
-@@ -171,53 +179,69 @@ class SingleTypeKVCacheManager(ABC):
+@@ -178,53 +191,69 @@ class SingleTypeKVCacheManager(ABC):
          self.num_cached_block.pop(request_id, None)
  
      @abstractmethod
@@ -2601,7 +2608,7 @@ index 0223c9cee..2912db1f3 100644
  
          Args:
              request_id: The request ID.
-@@ -227,35 +251,55 @@ class SingleTypeKVCacheManager(ABC):
+@@ -234,35 +263,55 @@ class SingleTypeKVCacheManager(ABC):
  
  
  class FullAttentionManager(SingleTypeKVCacheManager):
@@ -2674,7 +2681,7 @@ index 0223c9cee..2912db1f3 100644
                  num_common_blocks += 1
              else:
                  break
-@@ -263,47 +307,67 @@ class FullAttentionManager(SingleTypeKVCacheManager):
+@@ -270,47 +319,67 @@ class FullAttentionManager(SingleTypeKVCacheManager):
  
  
  class SlidingWindowManager(SingleTypeKVCacheManager):
@@ -2762,7 +2769,7 @@ index 0223c9cee..2912db1f3 100644
                      match_found = True
                      break
              else:
-@@ -311,13 +375,14 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
+@@ -318,13 +387,14 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
          if not match_found:
              # The first `num_contiguous_blocks` is a cache hit even if
              # `num_contiguous_blocks < sliding_window_contiguous_blocks`.
@@ -2782,7 +2789,7 @@ index 0223c9cee..2912db1f3 100644
          # Remove the blocks that are no longer be in the sliding window and
          # skipped during the attention computation.
          last_useful_token = num_computed_tokens - self.sliding_window + 1
-@@ -334,25 +399,286 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
+@@ -341,25 +411,286 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
              blocks[i] = self._null_block
          self.block_pool.free_blocks(removed_blocks)
  
@@ -3076,7 +3083,7 @@ index 0223c9cee..2912db1f3 100644
      manager = manager_class(kv_cache_spec, **kwargs)
      return manager
 diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
-index 4f3eb9428..e45809d78 100644
+index 5bd55fd96..7d4080d5c 100755
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
 @@ -24,7 +24,9 @@ from vllm.transformers_utils.config import (
@@ -3090,7 +3097,7 @@ index 4f3eb9428..e45809d78 100644
  from vllm.v1.core.sched.interface import SchedulerInterface
  from vllm.v1.core.sched.output import SchedulerOutput
  from vllm.v1.core.sched.scheduler import Scheduler as V1Scheduler
-@@ -178,33 +180,35 @@ class EngineCore:
+@@ -179,33 +181,35 @@ class EngineCore:
          # Get all kv cache needed by the model
          kv_cache_specs = self.model_executor.get_kv_cache_specs()
  
@@ -3150,7 +3157,7 @@ index 4f3eb9428..e45809d78 100644
  
          # Initialize kv cache and warmup the execution
          self.model_executor.initialize_from_config(kv_cache_configs)
-@@ -214,6 +218,50 @@ class EngineCore:
+@@ -215,6 +219,50 @@ class EngineCore:
                       "warmup model) took %.2f seconds"), elapsed)
          return num_gpu_blocks, num_cpu_blocks, scheduler_kv_cache_config
  
@@ -3418,7 +3425,7 @@ index 0758747a8..256a4cb8e 100644
      for layer_index in sorted(index2name.keys()):
          layer_names = index2name[layer_index]
 diff --git a/vllm/v1/worker/block_table.py b/vllm/v1/worker/block_table.py
-index 576086ebe..d50bbab3d 100644
+index 9a43e073d..04b20fbc7 100644
 --- a/vllm/v1/worker/block_table.py
 +++ b/vllm/v1/worker/block_table.py
 @@ -1,37 +1,75 @@
@@ -3750,7 +3757,7 @@ index 576086ebe..d50bbab3d 100644
      def clear(self) -> None:
          for block_table in self.block_tables:
 diff --git a/vllm/v1/worker/gpu_input_batch.py b/vllm/v1/worker/gpu_input_batch.py
-index b3e65917d..a9b9a683e 100644
+index 7628272ee..50829e1ef 100644
 --- a/vllm/v1/worker/gpu_input_batch.py
 +++ b/vllm/v1/worker/gpu_input_batch.py
 @@ -62,7 +62,9 @@ class InputBatch:
@@ -3776,7 +3783,7 @@ index b3e65917d..a9b9a683e 100644
  
          # Sampling-related.
 diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
-index 9b848fac5..ee69fb663 100644
+index 0eeb936cc..c4579872b 100644
 --- a/vllm/v1/worker/gpu_model_runner.py
 +++ b/vllm/v1/worker/gpu_model_runner.py
 @@ -26,6 +26,7 @@ from vllm.distributed.parallel_state import (
@@ -3806,7 +3813,7 @@ index 9b848fac5..ee69fb663 100644
          )
  
          self.use_cuda_graph = (self.vllm_config.compilation_config.level
-@@ -1935,7 +1937,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1936,7 +1938,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
  
      def initialize_attn_backend(self, kv_cache_config: KVCacheConfig) -> None:
          """
@@ -3815,7 +3822,7 @@ index 9b848fac5..ee69fb663 100644
          """
          assert len(self.attn_backends) == 0 and len(
              self.attn_metadata_builders
-@@ -1944,16 +1946,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1945,16 +1947,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  kv_cache_config.kv_cache_groups):
              kv_cache_spec = kv_cache_group_spec.kv_cache_spec
              if not isinstance(kv_cache_spec, AttentionSpec):
@@ -3845,7 +3852,7 @@ index 9b848fac5..ee69fb663 100644
              if attn_backend_i is None:
                  error_msg = (
                      f"Error with get_attn_backend: {kv_cache_spec.head_size=}, "
-@@ -1977,10 +1982,23 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1978,10 +1983,23 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                          f"{attn_backend_name}, FlashAttention version is "
                          f"{flash_attn_version}.")
  
@@ -3870,7 +3877,7 @@ index 9b848fac5..ee69fb663 100644
              self.attn_metadata_builders.append(attn_metadata_builder_i)
  
      def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
-@@ -1996,6 +2014,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1997,6 +2015,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                  "supported yet.")
          self.kv_cache_config = kv_cache_config
          self.initialize_attn_backend(kv_cache_config)
@@ -3878,7 +3885,7 @@ index 9b848fac5..ee69fb663 100644
  
          kv_caches: dict[str, torch.Tensor] = {}
  
-@@ -2040,6 +2059,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -2041,6 +2060,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          if has_kv_transfer_group():
              get_kv_transfer_group().register_kv_caches(kv_caches)
  
@@ -3886,7 +3893,7 @@ index 9b848fac5..ee69fb663 100644
      def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
          """
          Generates the KVCacheSpec by parsing the kv cache format from each
-@@ -2049,36 +2069,225 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -2050,36 +2070,225 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              format. Layers that do not need KV cache are not included.
          """
  

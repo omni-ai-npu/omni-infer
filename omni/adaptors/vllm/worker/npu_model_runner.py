@@ -1266,9 +1266,6 @@ class NPUModelRunner(GPUModelRunner):
         if has_kv_transfer_group():
             get_kv_transfer_group().register_kv_caches(kv_caches)
 
-        if EmsEnv.enable_vllm_ems:
-            self.ems_adapter.bind_kvcaches(self.kv_caches)
-
     def may_reinitialize_input_batch(self, kv_cache_config: KVCacheConfig) -> None:
         """
         Re-initialize the input batch if the block sizes are different from

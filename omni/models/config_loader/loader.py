@@ -67,7 +67,7 @@ class ModelOperatorOptConfig:
     two_stage_comm: bool = False
     gmm_nz: bool = False
     unquant_bmm_nz: bool = False
-    decode_moe_dispatch_combine: bool = True
+    decode_moe_dispatch_combine: bool = False
     use_super_kernel: bool = False
     enable_prefill_micro_batch: bool = False
     use_mlaprolog: bool = False
