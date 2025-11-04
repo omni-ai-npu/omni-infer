@@ -121,6 +121,9 @@ class LLMDataDistManager:
         self.rank_link_info_map = {}
 
         self.registered_link_infos = {}
+        
+        self.block_size = vllm_config.cache_config.block_size
+        self.num_kernel_blocks_per_kv_block = self.block_size // 128
 
     def get_real_remote_cluster_ids(self, meta: "ReqMeta"):
         remote_cluster_ids = self.registered_link_infos.get(
@@ -151,7 +154,7 @@ class LLMDataDistManager:
             raise ValueError("Attr `registered_kv_caches` must be empty before register kv_caches.")
         
         from vllm.model_executor.models.utils import extract_layer_index
-        if True:
+        if any(["linear_attn" for layer_name in kv_caches.keys()]):
             model_id = 0
             for kv_cache_group in range(4):
                 kv_caches_of_group = {k: kv_caches[k] for i, k in enumerate(sorted(kv_caches.keys(), key=extract_layer_index)) if i % 4 == kv_cache_group}
@@ -186,7 +189,7 @@ class LLMDataDistManager:
                 flatten_kv_caches = unzip_kv_cache_list(kv_caches)
 
             # dense model.
-            # flatten_kv_caches = maybe_merge_kv_caches(flatten_kv_caches)  # This is bugged
+            # flatten_kv_caches = maybe_merge_kv_caches(flatten_kv_caches)  # This is never called and bugged.
 
             # group by kv cache shape
             key_func = lambda kv_cache: tuple(kv_cache.shape)
@@ -246,10 +249,12 @@ class LLMDataDistManager:
                     prompt_cache_key = BlocksCacheKey(
                         prompt_cluster_id=prompt_cluster_id, model_id=model_id)
                     self._pull_blocks(prompt_cache_key, self.registered_kv_caches[model_id],
-                                    [val for x in src_blocks[kv_cache_group] for val in range(x*4, x*4+4)]  # TODO fix (replace 4 with block_size // 128)
+                                    [val for x in src_blocks[kv_cache_group] 
+                                     for val in range(x*self.num_kernel_blocks_per_kv_block, x*self.num_kernel_blocks_per_kv_block+self.num_kernel_blocks_per_kv_block)]
                                     if kv_cache_group == 3
                                     else [x for x in src_blocks[kv_cache_group]], 
-                                    [val for x in tgt_blocks[kv_cache_group] for val in range(x*4, x*4+4)]
+                                    [val for x in tgt_blocks[kv_cache_group] 
+                                     for val in range(x*self.num_kernel_blocks_per_kv_block, x*self.num_kernel_blocks_per_kv_block+self.num_kernel_blocks_per_kv_block)]
                                     if kv_cache_group == 3
                                     else [x for x in tgt_blocks[kv_cache_group]])
                     print(f"_pull_blocks {prompt_cache_key=} {self.registered_kv_caches[model_id]=} {src_blocks[kv_cache_group]=} {tgt_blocks[kv_cache_group]=}")
