@@ -151,7 +151,13 @@ static inline omni_req_context_t *omni_get_req_ctx(ngx_http_request_t *r)
 
 static inline omni_req_t *omni_get_req(ngx_http_request_t *r)
 {
-    return omni_get_req_ctx(r)->req;
+    omni_req_context_t *ctx = omni_get_req_ctx(r);
+    if (ctx == NULL){
+        ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0, 
+            "omni_get_req: Failed to get request context for a request that should have one, not a omni req.");
+        return NULL;
+    }
+    return ctx->req;
 }
 
 static void omni_proxy_post_tokenized(omni_req_t *req)
