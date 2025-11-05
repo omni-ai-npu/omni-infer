@@ -22,12 +22,12 @@ index 3a0028a59..814c87762 100644
 +        if (not sampling_params.ignore_eos
 +                and last_token_id == request.eos_token_id):
 +            request.append_output_token_ids(token_ids[:true_idx])
-+            request.status = RequestStatus.FINISHED_STOPPED
++            request.status = RequestStatus.FINISHED_LENGTH_CAPPED if remain_len == true_idx else RequestStatus.FINISHED_STOPPED
 +            return True, true_idx
 +
 +        if last_token_id in (sampling_params.stop_token_ids or ()):
 +            request.append_output_token_ids(token_ids[:true_idx])
-+            request.status = RequestStatus.FINISHED_STOPPED
++            request.status = RequestStatus.FINISHED_LENGTH_CAPPED if remain_len == true_idx else RequestStatus.FINISHED_STOPPED
 +            request.stop_reason = last_token_id
 +            return True, true_idx
 +
