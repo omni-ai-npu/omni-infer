@@ -402,12 +402,13 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
             dtype=config.torch_dtype,
         )
 
-        self.out_proj = RowParallelLinear(self.value_dim,
-                                          self.hidden_size,
-                                          bias=False,
-                                          input_is_parallel=True,
-                                          quant_config=quant_config,
-                                          prefix=f"{prefix}.out_proj")
+        self.out_proj = RowParallelFlashCommLinear(self.value_dim,
+                                                self.hidden_size,
+                                                tp_size=get_tp_group().world_size,
+                                                tp_rank=get_tp_group().rank,
+                                                bias=False,
+                                                quant_config=quant_config,
+                                                prefix=f"{prefix}.out_proj")
 
         compilation_config = get_current_vllm_config().compilation_config
         if prefix in compilation_config.static_forward_context:
@@ -788,22 +789,26 @@ class Qwen3NextAttention(nn.Module):
             config, "dual_chunk_attention_config", None)
         self.attn_output_gate = getattr(config, "attn_output_gate", True)
 
-        self.qkv_proj = QKVParallelLinear(
+        self.qkv_proj = QKVParallelFlashCommLinear(
             config.hidden_size,
             self.head_dim,
             self.total_num_heads * (1 + self.attn_output_gate),
             self.total_num_kv_heads,
+            tp_size=tp_size,
+            tp_rank=get_tp_group().rank,
             bias=getattr(config, "qkv_bias", False),
             quant_config=quant_config,
             prefix=f"{prefix}.qkv_proj",
         )
 
-        self.o_proj = RowParallelLinear(
+        self.o_proj = RowParallelFlashCommLinear(
             self.total_num_heads * self.head_dim,
             config.hidden_size,
+            tp_size=tp_size,
+            tp_rank=get_tp_group().rank,
             bias=False,
             quant_config=quant_config,
-            prefix=f"{prefix}.o_proj",
+            prefix=f"{prefix}.o_proj"
         )
 
         self.rotary_emb = get_rope(
@@ -1078,6 +1083,8 @@ class Qwen3NextModel(nn.Module):
                 hidden_states=hidden_states,
                 residual=residual,
             )
+            if get_tp_group().is_first_rank:
+                print(f"{layer.layer_name=}: {hidden_states[:5]=}")
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({

@@ -680,7 +680,7 @@ class DecodeConnectorWorker:
             # If local_block_ids is a list of lists (e.g., [[], []]), omni-attention is used
             # local_block_ids[0] is a list of local block ids for uncompressed layers
             # local_block_ids[1] is a list of local block ids for compressed layers
-            # TODO: Redo OmniAttn processing and non-OmniAttn preprocessing
+            # TODO: Redo OmniAttn processing and non-OmniAttn preprocessing for new KV cache layout
             # elif isinstance(meta.local_block_ids[0], list):
             #     # If local_block_ids[0] is a list of lists, we need to ensure that remote_block_ids
             #     # is a list of lists as well, where each sublist corresponds to the local_block
