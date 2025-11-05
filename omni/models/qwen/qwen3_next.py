@@ -1083,8 +1083,6 @@ class Qwen3NextModel(nn.Module):
                 hidden_states=hidden_states,
                 residual=residual,
             )
-            if get_tp_group().is_first_rank:
-                print(f"{layer.layer_name=}: {hidden_states[:5]=}")
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
