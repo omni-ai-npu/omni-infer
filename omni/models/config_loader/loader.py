@@ -102,6 +102,8 @@ class ModelOperatorOptConfig:
 
     enable_scale_parallel: bool = False #用于qwen235b的scale_parallel优化启用开关，默认关闭
 
+    enable_mlp_seq_split: bool = False # 模型大 + 权重大 + 长序列场景下会OOM，需要切分长度时打开以避免OOM，默认切分大小为4096
+
 @dataclass 
 class ModelExtraConfig:
     parall_config: ModelParallelConfig = field(default_factory = ModelParallelConfig)

@@ -26,6 +26,7 @@ from typing import Any, Optional, Union, List, Tuple
 
 import torch
 import torch_npu
+import torch.distributed as dist
 from torch import nn
 from transformers import PretrainedConfig
 from vllm.attention import Attention, AttentionMetadata
@@ -361,8 +362,15 @@ class Qwen3MoeDecoderLayer(nn.Module):
         if isinstance(attn_metadata, dict):
             attn_metadata = attn_metadata[next(iter(attn_metadata))]
         is_prefill = attn_metadata is None or not attn_metadata.is_pd_seperate_d
-        if is_prefill:
+        if is_prefill and model_extra_config.operator_opt_config.enable_mlp_seq_split:
             local_length = hidden_states.shape[0]
+            reduce_length = torch.tensor(local_length, dtype=torch.int64, device="npu")
+            dist.all_reduce(reduce_length, op=dist.ReduceOp.MAX, async_op=False)
+            global_max_length = reduce_length.item()
+            pad_size = global_max_length - local_length
+            hidden_states = torch.nn.functional.pad(
+                hidden_states, (0, 0, 0, pad_size)
+            )
             hidden_states_list = hidden_states.split(SEQ_SPLIT_LENGTH)
             hidden_states_out = []
             for i in range(len(hidden_states_list)):
