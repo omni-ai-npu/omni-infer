@@ -33,7 +33,7 @@ def parse_node_name(name):
     return None, None
 
 def convert_to_dict(s):
-    if ':' not in s:
+    if ':' not in s or '{' in s:
         return s
 
     parts = s.split(":", 1)
