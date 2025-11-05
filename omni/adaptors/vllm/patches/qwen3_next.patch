@@ -2303,6 +2303,15 @@ index 2d62c5ad1..fdb6037ed 100755
          del self.requests[request.request_id]
  
      def get_num_unfinished_requests(self) -> int:
+@@ -1056,7 +1056,7 @@ class Scheduler(SchedulerInterface):
+             return False, None
+         # assert len(self.kv_cache_config.kv_cache_groups
+         #            ) == 1, "KV connector only supports one KV cache group now"
+-        block_ids = self.kv_cache_manager.get_block_ids(request.request_id)[0]
++        block_ids = self.kv_cache_manager.get_block_ids(request.request_id)
+         return self.connector.request_finished(request, block_ids)
+ 
+     def _update_waiting_for_remote_kv(self, request: Request) -> bool:
 diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
 index cd24fb4bb..1998bc009 100644
 --- a/vllm/v1/core/single_type_kv_cache_manager.py
