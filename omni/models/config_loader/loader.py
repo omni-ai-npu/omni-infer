@@ -60,7 +60,7 @@ class ModelParallelConfig:
 @dataclass
 class ModelOperatorOptConfig:
     enable_kv_rmsnorm_rope_cache: bool = True
-    prefill_moe_all_to_all: bool = True
+    prefill_moe_all_to_all: bool = False
     moe_multi_stream_tune: bool = False
     best_ep: bool = False
     merge_qkv: bool = False

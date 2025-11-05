@@ -3809,7 +3809,7 @@ index 0eeb936cc..c4579872b 100644
              vocab_size=self.model_config.get_vocab_size(),
 -            block_size=self.cache_config.block_size,
 +            block_sizes=[self.cache_config.block_size],
-+            kernel_block_sizes=[self.cache_config.block_size],
++            kernel_block_sizes=[128],  # NPU uses fixed kernel block size of 128
          )
  
          self.use_cuda_graph = (self.vllm_config.compilation_config.level

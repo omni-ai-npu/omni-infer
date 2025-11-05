@@ -718,12 +718,27 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
             src=torch.arange(expanded_x_idx.shape[0], dtype=expanded_x_idx.dtype, device=expanded_x_idx.device)
         )
 
-        y = torch_npu.npu_moe_finalize_routing(
-            y, None, None, None,
-            topk_weights, # 数据类型要求与y一致
-            another_expanded_idx,
-            topk_ids,
-        )
+        if is_prefill and model_extra_config.operator_opt_config.prefill_moe_all_to_all:
+            y = torch_npu.npu_moe_finalize_routing(
+                y, None, None, None,
+                topk_weights, # 数据类型要求与y一致
+                another_expanded_idx,
+                topk_ids,
+            )
+        elif not is_prefill and model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
+            y = torch_npu.npu_moe_finalize_routing(
+                y, None, None, None,
+                topk_weights, # 数据类型要求与y一致
+                another_expanded_idx,
+                topk_ids,
+            )
+        else:
+            y = torch_npu.npu_moe_finalize_routing(
+                y.float(), None, None, None,
+                topk_weights.float(), # 数据类型要求与y一致
+                another_expanded_idx,
+                topk_ids,
+            ).to(x.dtype)
 
         if is_prefill:
             assert len(y.shape) == 2
