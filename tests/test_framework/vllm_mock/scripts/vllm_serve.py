@@ -17,7 +17,7 @@ def run_vllm_serve(tp=1, dp=1, model="/home/kc/models/DeepSeek-V2-Lite"):
         "--max_model_len", "8000",
         "--tensor_parallel_size", f"{tp}",
         "--data_parallel_size", f"{dp}",
-        "--gpu_memory_utilization", "0.8",
+        "--gpu_memory_utilization", "0.9",
         "--trust_remote_code",
         "--served-model-name", "deepseek",
         "--dtype", "bfloat16",
@@ -25,6 +25,7 @@ def run_vllm_serve(tp=1, dp=1, model="/home/kc/models/DeepSeek-V2-Lite"):
         "--block_size", "512",
         "--no-enable-prefix-caching",
         "--no-enable-chunked-prefill",
+        # '--additional-config', '{\"graph_model_compile_config\":{\"level\":1}}',
     ]
 
     # Set sys.argv to include the script name and all parameters
@@ -52,4 +53,4 @@ if __name__ == "__main__":
     os.environ["HCCL_BUFFSIZE"] = "1000"
     os.environ["HCCL_OP_EXPANSION_MODE"] = "AIV"
     
-    run_vllm_serve(tp=8, dp=1, model="/home/ma-user/work/models/Qwen/Qwen3-Next")
+    run_vllm_serve(tp=4, dp=1, model="/home/ma-user/work/models/Qwen/Qwen3-Next")
