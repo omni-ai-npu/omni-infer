@@ -308,8 +308,8 @@ static inline void omni_proxy_cleanup_req(omni_req_t *req)
                 ps->num_tokens = 0;
             }
             ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
-                          "[Prefill Release Stats] req %d prompt_tokens=%ui, decoded_tokens=%ui; "
-                          "prefill idx=%d num_running=%ui, num_tokens(after)=%ui",
+                          "[Prefill Release Stats] req=%uD, prompt_tokens=%uD, decoded_tokens=%uD; "
+                          "prefill_idx=%uD, num_running=%uD, num_tokens(after)=%uD",
                           req->slot_index,
                           req->metrics.prompt_num_tokens,
                           req->metrics.decoded_tokens,
@@ -335,8 +335,8 @@ static inline void omni_proxy_cleanup_req(omni_req_t *req)
                 ds->num_tokens = 0;
             }
             ngx_log_error(NGX_LOG_INFO, omni_get_http_request(req)->connection->log, 0,
-                          "[Decode Release Stats] req %d prompt_tokens=%ui, decoded_tokens=%ui; "
-                          "decode idx=%d num_running=%ui, num_tokens(after)=%ui",
+                          "[Decode Release Stats] req=%uD, prompt_tokens=%uD, decoded_tokens=%uD; "
+                          "decode_idx=%uD, num_running=%uD, num_tokens(after)=%uD",
                           req->slot_index,
                           req->metrics.prompt_num_tokens,
                           req->metrics.decoded_tokens,
@@ -511,9 +511,6 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     ctx->prefill_response_body_size = total;
 
     omni_upstream_prefill_t *us = &g_state->prefill_states[req->prefill_upstream_endpoint_idx];
-    us->num_running--;
-    ngx_atomic_fetch_add(&us->comm.ref, -1);
-    us->num_tokens -= req->metrics.prompt_num_tokens;
 
     if (subr->headers_out.status < NGX_HTTP_OK ||
         subr->headers_out.status >= NGX_HTTP_SPECIAL_RESPONSE)
@@ -692,6 +689,10 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     // check policy
     if (g_state->pd_policy == PD_SEQUENTIAL)
     {
+        us->num_running--;
+        ngx_atomic_fetch_add(&us->comm.ref, -1);
+        us->num_tokens -= req->metrics.prompt_num_tokens;
+
         omni_phase_transition_all(req, PHASE_PREFILLING, PHASE_DECODE_WAITING_SCHEDULE);
         req->metrics.time_enter_wait_decode = ngx_current_msec;
         struct timeval tv;
@@ -1953,7 +1954,7 @@ static ngx_int_t omni_proxy_post_config(ngx_conf_t *cf)
         return NGX_ERROR;
     }
     *h = ngx_http_omni_proxy_health_status_handler;
-    
+
     ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "omni proxy post config finished");
     return NGX_OK;
 }

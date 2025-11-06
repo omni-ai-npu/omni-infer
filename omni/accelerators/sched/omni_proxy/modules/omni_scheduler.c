@@ -574,7 +574,7 @@ static void update_prefill_weights(omni_req_group_t *group)
         }
         omni_req_t *req = omni_info_to_req(info);
         ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
-                      "[Prefill-Sort] Order %ui: slot=%ui tokens=%ui weight=%.2f",
+                      "[Prefill-Sort] Order %uD: slot=%uD tokens=%uD weight=%.2f",
                       idx,
                       info->slot_index,
                       req->metrics.prompt_num_tokens,
@@ -611,7 +611,7 @@ static void update_decode_weights(omni_req_group_t *group)
         }
         omni_req_t *req = omni_info_to_req(info);
         ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
-                      "[Decode-Sort] Order %ui: slot=%ui total_tokens=%ui prompt_num_tokens=%ui max_tokens=%ui weight=%.2f",
+                      "[Decode-Sort] Order %uD: slot=%uD total_tokens=%uD prompt_num_tokens=%uD max_tokens=%uD weight=%.2f",
                       idx,
                       info->slot_index,
                       req->metrics.prompt_num_tokens + req->metrics.max_tokens,
