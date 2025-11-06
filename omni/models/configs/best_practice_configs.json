@@ -306,5 +306,15 @@
       "pd_disaggregation": true,
       "prefill_config_file": "ling_bf16_a3_1p1d_p.json",
       "decode_config_file": "ling_bf16_a3_1p1d_d.json"
+   },
+   {
+      "model": "qwen3-next",
+      "hardware": "A2",
+      "precision": "bf16",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "qwen3_next_bf16_a2_1p1d_p.json",
+      "decode_config_file": "qwen3_next_bf16_a2_1p1d_d.json"
    }
 ]
