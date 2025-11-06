@@ -434,7 +434,7 @@ class NPUWorker(WorkerBase):
             self.profile_finished = False
             return torch_npu.profiler.profile(
                 activities=[
-                    torch_npu.profiler.ProfilerActivity.CPU,
+                    #torch_npu.profiler.ProfilerActivity.CPU,
                     torch_npu.profiler.ProfilerActivity.NPU,
                 ],
                 with_stack=False,

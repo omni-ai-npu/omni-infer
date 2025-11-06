@@ -711,12 +711,19 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
         token_ids = expanded_x_idx // topk
         expert_ids = expanded_x_idx % topk
         target_indices = expert_ids * tmp_n_tokens + token_ids
-        another_expanded_idx = torch.zeros_like(expanded_x_idx)
-        another_expanded_idx.scatter_(
-            dim=0,
-            index=target_indices.to(torch.long),
-            src=torch.arange(expanded_x_idx.shape[0], dtype=expanded_x_idx.dtype, device=expanded_x_idx.device)
+        # another_expanded_idx = torch.zeros_like(expanded_x_idx)
+        # another_expanded_idx.scatter_(
+        #     dim=0,
+        #     index=target_indices.to(torch.long),
+        #     src=torch.arange(expanded_x_idx.shape[0], dtype=expanded_x_idx.dtype, device=expanded_x_idx.device)
+        # )
+        another_expanded_idx = torch.zeros_like(expanded_x_idx, dtype = torch.int64)
+        torch_npu.npu_scatter_nd_update_(
+            another_expanded_idx,
+            target_indices.to(torch.long).unsqueeze(1),
+            torch.arange(expanded_x_idx.shape[0], dtype=torch.int64, device=expanded_x_idx.device)
         )
+        another_expanded_idx = another_expanded_idx.to(expanded_x_idx.dtype)
 
         if is_prefill and model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             y = torch_npu.npu_moe_finalize_routing(
