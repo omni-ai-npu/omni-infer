@@ -23,14 +23,14 @@
     # Global Configuration
     LOG_PATH: "/data/kai/infer/c00923721/logs"
     MODEL_PATH: "/data/kai/infer/c00923721/Qwen3-Next-80B-A3B-Instruct/"
-    MODEL_LEN_MAX_PREFILL: "1024" #"8192"
+    MODEL_LEN_MAX_PREFILL: "4096" #"8192"
     MODEL_LEN_MAX_DECODE: "32768"
     LOG_PATH_IN_EXECUTOR: "/data/kai/infer/c00923721/logs"
     CODE_PATH: "/data/kai/infer/c00923721/code"
     HTTP_PROXY: "http://p_atlas:proxy%40123@172.18.100.92:8080" # set to your own proxy
 
     # Configuration for containers
-    DOCKER_IMAGE_ID: "75c0701521a2"
+    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer/omni_infer-a2-arm:release_0.6.0_20251028_vllm"
     # DOCKER_IMAGE_ID: "ef518138f490"
     DOCKER_NAME_P: "mtk"
     DOCKER_NAME_D: "mtk"
@@ -43,7 +43,7 @@
     DECODE_LB_SDK: "least_conn"
 
     # Tensor Parallel Size
-    DECODE_TENSOR_PARALLEL_SIZE: "4"
+    DECODE_TENSOR_PARALLEL_SIZE: "8"
 
   vars:
     # Configure the storage path of the ranktable file.
@@ -181,7 +181,7 @@
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((DECODE_TENSOR_PARALLEL_SIZE + 0))
       MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
-      EXTRA_ARGS='--max-num-batched-tokens 1024 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 4 --enable-chunked-prefill'
+      EXTRA_ARGS='--max-num-batched-tokens 4096 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 4 --enable-chunked-prefill'
       ADDITIONAL_CONFIG='{"ascend_scheduler_config":{"enabled":false,"enable_chunked_prefill":true}}'
       GPU_UTIL=0.7
       VLLM_ENABLE_MC2=0
@@ -237,6 +237,8 @@
         --kv-role "kv_producer" \
         --max-model-len ${MODEL_LEN_MAX_PREFILL} \
         --master-port ${MASTER_PORT} \
+        --num-dp 1 \
+        --num-servers 1 \
         --base-api-port ${API_PORT} \
         --tp ${KV_PARALLEL_SIZE} \
         --ascend-rt-visible-devices "${PREFILL_SERVER_LIST}" \
