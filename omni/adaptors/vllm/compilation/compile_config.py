@@ -10,6 +10,8 @@ from torchair import patch_for_hcom
 from vllm.config import CompilationLevel, VllmConfig
 from vllm.logger import init_logger
 
+from omni.models.config_loader.loader import model_extra_config
+
 logger = init_logger(__name__)
 
 MAX_GEAR_NUM = 6
@@ -119,6 +121,8 @@ class NPUCompilationConfig:
         ]:
             if not self.backend or self.backend == "":
                 config = get_torchair_config()
+                if model_extra_config.operator_opt_config.inplace_add_rms_norm_fustion_pass:
+                    config.ge_config.optimization_switch = "InplaceAddRmsNormFusionPass:off"
                 npu_backend = torchair.get_npu_backend(compiler_config=config)
                 logger.info(f"Using torchair backend!")
                 return npu_backend

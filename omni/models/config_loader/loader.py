@@ -8,7 +8,7 @@ import torch.distributed
 
 from vllm.logger import logger
 import omni.adaptors.vllm.envs as envs
-from omni.models.config_loader.features import apply_eager_mode_config
+from omni.models.config_loader.features import apply_eager_mode_config, apply_fusion_pass
 
 default_config_path = os.path.normpath(os.path.join(os.path.abspath(__file__), '../../configs'))
 
@@ -101,6 +101,7 @@ class ModelOperatorOptConfig:
     enable_topktoppsample_op: bool = False # 使用topktoppsample算子
 
     enable_scale_parallel: bool = False #用于qwen235b的scale_parallel优化启用开关，默认关闭
+    inplace_add_rms_norm_fustion_pass: bool = False
 
     enable_mlp_seq_split: bool = False # 模型大 + 权重大 + 长序列场景下会OOM，需要切分长度时打开以避免OOM，默认切分大小为4096
 
@@ -320,6 +321,7 @@ def _validate_config():
         logger.warning(
             f"[WARNING] Eager mode disables all these optimization configurations by default."
         )
+    apply_fusion_pass(model_extra_config)
 
 
 @register_config_updaters('update_task_config')
