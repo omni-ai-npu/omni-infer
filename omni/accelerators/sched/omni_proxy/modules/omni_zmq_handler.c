@@ -16,7 +16,7 @@ static void omni_zmq_event_handler(ngx_event_t *ev)
     size_t events_size = sizeof(events);
     if (zmq_getsockopt(handler->zmq_socket, ZMQ_EVENTS, &events, &events_size) != 0)
     {
-        ngx_log_error(NGX_LOG_ERR, handler->log, 0,
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                       "ZMQ get events failed: %s", zmq_strerror(errno));
         handler->active = 0;
         return;
@@ -24,7 +24,7 @@ static void omni_zmq_event_handler(ngx_event_t *ev)
 
     if (events & ZMQ_POLLERR)
     {
-        ngx_log_error(NGX_LOG_ERR, handler->log, 0,
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                       "ZMQ connection error detected");
         handler->active = 0;
         return;
@@ -43,7 +43,7 @@ static void omni_zmq_event_handler(ngx_event_t *ev)
             zmq_msg_close(&topic_msg);
             if (errno == EAGAIN)
                 break;
-            ngx_log_error(NGX_LOG_ERR, handler->log, errno,
+            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, errno,
                           "ZMQ recv topic failed: %s", zmq_strerror(errno));
             handler->active = 0;
             break;
@@ -63,7 +63,7 @@ static void omni_zmq_event_handler(ngx_event_t *ev)
         {
             zmq_msg_close(&topic_msg);
             zmq_msg_close(&seq_msg);
-            ngx_log_error(NGX_LOG_ERR, handler->log, errno,
+            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, errno,
                           "ZMQ recv seq failed: %s", zmq_strerror(errno));
             break;
         }
@@ -85,7 +85,7 @@ static void omni_zmq_event_handler(ngx_event_t *ev)
             zmq_msg_close(&topic_msg);
             zmq_msg_close(&seq_msg);
             zmq_msg_close(&payload_msg);
-            ngx_log_error(NGX_LOG_ERR, handler->log, errno,
+            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, errno,
                           "ZMQ recv payload failed: %s", zmq_strerror(errno));
             break;
         }
@@ -148,7 +148,7 @@ ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler)
     handler->zmq_context = zmq_ctx_new();
     if (!handler->zmq_context)
     {
-        ngx_log_error(NGX_LOG_ERR, handler->log, 0,
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                       "ZMQ context creation failed");
         return NGX_ERROR;
     }
@@ -156,7 +156,7 @@ ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler)
     handler->zmq_socket = zmq_socket(handler->zmq_context, ZMQ_SUB);
     if (!handler->zmq_socket)
     {
-        ngx_log_error(NGX_LOG_ERR, handler->log, 0,
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                       "ZMQ socket creation failed");
         zmq_ctx_destroy(handler->zmq_context);
         handler->zmq_context = NULL;
@@ -172,7 +172,7 @@ ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler)
 
     if (zmq_connect(handler->zmq_socket, addr_str) != 0)
     {
-        ngx_log_error(NGX_LOG_ERR, handler->log, 0,
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                       "ZMQ connect to %s failed: %s", addr_str, zmq_strerror(errno));
         omni_zmq_cleanup_resources(handler);
         return NGX_ERROR;
@@ -184,7 +184,7 @@ ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler)
 
     if (zmq_setsockopt(handler->zmq_socket, ZMQ_SUBSCRIBE, topic_str, strlen(topic_str)) != 0)
     {
-        ngx_log_error(NGX_LOG_ERR, handler->log, 0,
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                       "ZMQ subscribe to %s failed: %s", topic_str, zmq_strerror(errno));
         omni_zmq_cleanup_resources(handler);
         return NGX_ERROR;
@@ -194,7 +194,7 @@ ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler)
     size_t fd_size = sizeof(zmq_fd);
     if (zmq_getsockopt(handler->zmq_socket, ZMQ_FD, &zmq_fd, &fd_size) != 0)
     {
-        ngx_log_error(NGX_LOG_ERR, handler->log, 0,
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                       "ZMQ get FD failed: %s", zmq_strerror(errno));
         omni_zmq_cleanup_resources(handler);
         return NGX_ERROR;
@@ -203,7 +203,7 @@ ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler)
     handler->zmq_connection = ngx_get_connection(zmq_fd, handler->log);
     if (!handler->zmq_connection)
     {
-        ngx_log_error(NGX_LOG_ERR, handler->log, 0,
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                       "ZMQ get connection failed");
         omni_zmq_cleanup_resources(handler);
         return NGX_ERROR;
@@ -211,7 +211,7 @@ ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler)
 
     if (ngx_nonblocking(zmq_fd) == -1)
     {
-        ngx_log_error(NGX_LOG_ERR, handler->log, 0,
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                       "ZMQ set nonblocking failed");
         omni_zmq_cleanup_resources(handler);
         return NGX_ERROR;
@@ -230,14 +230,14 @@ ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler)
 
     if (ngx_add_conn(handler->zmq_connection) != NGX_OK)
     {
-        ngx_log_error(NGX_LOG_ERR, handler->log, 0,
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                       "ZMQ add connection failed");
         omni_zmq_cleanup_resources(handler);
         return NGX_ERROR;
     }
 
     handler->active = 1;
-    ngx_log_error(NGX_LOG_INFO, handler->log, 0,
+    ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
                   "ZMQ handler initialized for %s, topic: %s", addr_str, topic_str);
 
     return NGX_OK;
