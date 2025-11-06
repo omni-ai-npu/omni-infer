@@ -1,0 +1,91 @@
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+index 2ca47b07a3..01a492a50c 100755
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -246,6 +246,8 @@ class OpenAIServingChat(OpenAIServing):
+                         else:
+                             engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
+                             engine_prompt["prefilled_texts"] = delta_text
++                            engine_prompt["max_tokens"] = min(request.max_tokens or self.max_model_len, self.max_model_len-len(engine_prompt["prompt_token_ids"]))
++                            request.kv_transfer_params["max_tokens"] = engine_prompt["max_tokens"]
+                 default_max_tokens = self.max_model_len - len(
+                     engine_prompt["prompt_token_ids"])
+                 if request.use_beam_search:
+@@ -999,7 +1001,8 @@ class OpenAIServingChat(OpenAIServing):
+                 prompt_token_ids = request.kv_transfer_params["prefilled_token"]
+                 new_tokens = tokenizer.convert_ids_to_tokens(prompt_token_ids[0])
+                 prompt_text = tokenizer.convert_tokens_to_string([new_tokens])
+-                final_res.outputs[0].text = prompt_text + final_res.outputs[0].text
++                if request.kv_transfer_params["max_tokens"] > 1:
++                    final_res.outputs[0].text = prompt_text + final_res.outputs[0].text
+         ## In Prefill node, the response will carry prompt_token_ids with kv_transfer_params
+         if skip_decode_tokenize:
+             if final_res.kv_transfer_params:
+@@ -1186,7 +1189,8 @@ class OpenAIServingChat(OpenAIServing):
+             len(output.token_ids) for output in final_res.outputs)
+         if reuse_prefilled_tokens:
+             if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
+-                num_generated_tokens += 1
++                if request.kv_transfer_params["max_tokens"] > 1:
++                    num_generated_tokens += 1
+             if final_res.kv_transfer_params:
+                 final_res.kv_transfer_params["stop_reasons"] = [
+                     output.stop_reason for output in final_res.outputs
+diff --git a/vllm/v1/engine/async_llm.py b/vllm/v1/engine/async_llm.py
+index 9e697a43f4..1605571865 100644
+--- a/vllm/v1/engine/async_llm.py
++++ b/vllm/v1/engine/async_llm.py
+@@ -292,6 +292,12 @@ class AsyncLLM(EngineClient):
+         """
+ 
+         try:
++            # We start the output_handler on the first call to generate() so
++            # we can call __init__ before the event loop, which enables us
++            # to handle startup failure gracefully in the OpenAI server.
++            self._run_output_handler()
++
++            early_stop_flag = False
+             if reuse_prefilled_tokens:
+                 if "prefilled_token_ids" in prompt and prompt["prefilled_token_ids"] != []:
+                     if sampling_params.n == 1:
+@@ -315,25 +321,26 @@ class AsyncLLM(EngineClient):
+                                         text= prompt["prefilled_texts"],
+                                         token_ids=prompt["prefilled_token_ids"])])
+                     prompt["prefilled_token_ids"] = []
++                    if prompt["max_tokens"] == 1:
++                        early_stop_flag = True
+                     yield output
+-            # We start the output_handler on the first call to generate() so
+-            # we can call __init__ before the event loop, which enables us
+-            # to handle startup failure gracefully in the OpenAI server.
+-            self._run_output_handler()
+-
+-            q = await self.add_request(
+-                request_id,
+-                prompt,
+-                sampling_params,
+-                lora_request=lora_request,
+-                trace_headers=trace_headers,
+-                prompt_adapter_request=prompt_adapter_request,
+-                priority=priority,
+-            )
++            
++            if not early_stop_flag:
++                q = await self.add_request(
++                    request_id,
++                    prompt,
++                    sampling_params,
++                    lora_request=lora_request,
++                    trace_headers=trace_headers,
++                    prompt_adapter_request=prompt_adapter_request,
++                    priority=priority,
++                )
+ 
+             # The output_handler task pushes items into the queue.
+             # This task pulls from the queue and yields to caller.
+             finished = False
++            if early_stop_flag:
++                finished = True
+             while not finished:
+                 # Note: drain queue without await if possible (avoids
+                 # task switching under load which helps performance).
