@@ -71,8 +71,42 @@ function rollback_os_config() {
 ## nginx configuration ##
 #########################
 
+function gen_access_log() {
+    local access_log_file="$1"
+
+    echo "log_format json_combined escape=json
+    '{'
+        'time:\"\$msec\",'
+        'request_id:\"\$http_x_request_id\",'
+        'request_time:\"\$request_time\",'
+        'upstream_addr:\"\$upstream_addr\",'
+        'connection_info:\"\$connection:\$connection_time\",'
+        'time_iso8601:\"\$time_iso8601\",'
+        'status:\"\$status\",'
+        'upstream_connect_time:\"\$upstream_connect_time\",'
+        'upstream_header_time:\"\$upstream_header_time\",'
+        'upstream_response_time:\"\$upstream_response_time\",'
+        'upstream_bytes_received:\"\$upstream_bytes_received\",'
+        'body_bytes_sent:\"\$body_bytes_sent\",'
+        'promt_tks:\"\$promt_tks\",'
+        'cmplt_tks:\"\$cmplt_tks\",'
+        'start:\"\$start\",'
+        'p_send:\"\$p_send\",'
+        'p_done:\"\$p_done\",'
+        'd_send:\"\$d_send\",'
+        'd_done:\"\$d_done\",'
+        '1st_tk:\"\$1st_tk\",'
+        'ttft:\"\$ttft\",'
+        'tpot:\"\$tpot\",'
+        'latency:\"\$e2e\"'
+    '}';
+    access_log ${access_log_file} json_combined;
+    "
+}
+
 function create_default_nginx_conf() {
     local nginx_conf_file="$1"
+    local access_log_file="$2"
 
     cat <<EOF > $nginx_conf_file
 
@@ -83,6 +117,7 @@ events {
 }
 
 http {
+    $(gen_access_log "$access_log_file")
     include       mime.types;
     default_type  application/octet-stream;
 
@@ -820,9 +855,10 @@ function nginx_configuration() {
     local enable_internal_metrics="${12}"
     local enable_attention_ffn_disaggregation="${13}"
     local attention_num="${14}"
+    local access_log_file="${15}"
 
     \cp -n $nginx_conf_file "$nginx_conf_file"_bak
-    create_default_nginx_conf $nginx_conf_file
+    create_default_nginx_conf $nginx_conf_file $access_log_file
     nginx_set_worker_processes $nginx_conf_file $core_num
     nginx_set_worker_cpu_affinity $nginx_conf_file $start_core_index $core_num
     nginx_set_worker_rlimit_nofile $nginx_conf_file
@@ -940,6 +976,7 @@ rollback=false
 dry_run=false
 log_file=""
 log_level=""
+access_log_file="/tmp/nginx_access.log"
 prefill_lb_sdk="pd_score_balance"
 decode_lb_sdk="pd_score_balance"
 prefill_max_num_seqs=16
@@ -963,6 +1000,7 @@ print_help() {
     echo "  --client-body-buffer-size <size>           Set client_body_buffer_size (default: 1024K)"
     echo "  --log-file <path>,      -l <path>          Log file path"
     echo "  --log-level <LEVEL>                        Log level (e.g. debug, info, notice, warn, error, crit, alert, emerg)"
+    echo "  --access-log-file <path>                   Access log file path (default path: /tmp/nginx_access.log)"
     echo "  --prefill-lb-sdk <string>                  Upstream load balance config for prefill_servers. Default: \"pd_score_balance\""
     echo "  --decode-lb-sdk <string>                   Upstream load balance config for decode_servers. Default: \"pd_score_balance\""
     echo "  --prefill-max-num-seqs <N>                 Prefill servers' setups for max-num-seqs"
@@ -987,6 +1025,7 @@ print_help() {
     echo "       --client-body-buffer-size 256K \\"
     echo "       --enable-internal-metrics \\"
     echo "       --log-file /var/log/proxy.log --log-level info"
+    echo "       --access-log-file /var/log/proxy_access.log"
     echo ""
     echo "  Start global proxy with custom metrics size:"
     echo "    $0 --listen-port 8080 \\"
@@ -1102,6 +1141,10 @@ while [[ $# -gt 0 ]]; do
             log_level="$2"
             shift 2
             ;;
+        --access-log-file)
+            access_log_file="$2"
+            shift 2
+            ;;
         --dry-run|-d)
             dry_run=true
             shift 1
@@ -1148,9 +1191,9 @@ function do_start() {
     # TODO: Currently only sglang is supported in the refactor implementation.
     # vllm support will be added later.
     if [ "$engine_type" = "vllm" ]; then
-        nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level" "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list" "$enable_internal_metrics" "$enable_attention_ffn_disaggregation" "$attention_num"
+        nginx_configuration "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level" "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list" "$enable_internal_metrics" "$enable_attention_ffn_disaggregation" "$attention_num" "$access_log_file"
     elif [ "$engine_type" = "sglang" ]; then
-        nginx_configuration_refactor "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level"  "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list" "$enable_internal_metrics"
+        nginx_configuration_refactor "$nginx_conf_file" "$start_core_index" "$core_num" "$listen_port" "$prefill_servers_list" "$decode_servers_list" "$log_file" "$log_level"  "$prefill_lb_sdk" "$decode_lb_sdk" "$metrics_servers_list" "$enable_internal_metrics" "$access_log_file"
     fi
     if [ "$dry_run" = true ]; then
         echo "Dry run complete. Configuration generated at $nginx_conf_file."
