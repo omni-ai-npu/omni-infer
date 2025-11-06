@@ -10,15 +10,9 @@ def run_vllm_serve(tp=1, dp=1, model="/home/kc/models/DeepSeek-V2-Lite"):
     # Define the parameters you want to pass to vllm serve
     additional_config = None
     additional_config = \
-'{"graph_model_compile_config": \
-{"level":1, "use_ge_graph_cached":false, "block_num_floating_range":50}, \
-"enable_hybrid_graph_mode": true}'
-
-#    additional_config = \
-#'{"graph_model_compile_config": \
-#{"level":1, "use_ge_graph_cached":false, "block_num_floating_range":50}}'                             
-
-    #additional_config = '{"enable_hybrid_graph_mode": true}'                             
+        '{"graph_model_compile_config": \
+        {"level":1, "use_ge_graph_cached":false, "block_num_floating_range":50}, \
+        "enable_hybrid_graph_mode": true}'
     params = [
         "vllm.entrypoints.openai.api_server",
         "--port", "8089",

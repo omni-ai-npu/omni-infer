@@ -148,9 +148,6 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
         **kwargs,
     ) -> GDNAttentionMetadata:
         m = common_attn_metadata
-        print(f'{num_reqs = }')
-        print(f'{num_actual_tokens = }')
-        print(f'{graph_pad_size = }')
         query_start_loc = m.query_start_loc.to(self.runner.device)
         context_lens = num_computed_tokens_cpu_tensor
         context_lens_tensor = context_lens.to(query_start_loc.device)
@@ -166,16 +163,12 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             if spec_sequence_masks.sum().item() == 0:
                 spec_sequence_masks = None
 
-        block_table = self.block_table.block_table
         if graph_pad_size > 0 and self.runner.attn_state == AscendAttentionState.DecodeOnly:
             padding = torch.full((graph_pad_size, ),
                                     query_start_loc[-1],
                                     dtype=query_start_loc.dtype,
                                     device=self.runner.device)
-            print(f'{padding=}')
             query_start_loc = torch.cat([query_start_loc.to(padding.device), padding], dim=0)
-        print(f'{query_start_loc=}')
-        print(f'{spec_sequence_masks=}')
         if spec_sequence_masks is None:
             num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
                 split_decodes_and_prefills(num_reqs, num_actual_tokens, max_query_len, m, decode_threshold=1))
@@ -237,7 +230,6 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             assert num_accepted_tokens is not None
             num_accepted_tokens = num_accepted_tokens[spec_sequence_masks]
 
-        print(f'{non_spec_query_start_loc=}')
         if num_prefills > 0:
             has_initial_state = context_lens_tensor > 0
             if spec_sequence_masks is not None:
@@ -369,9 +361,6 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
         max_pad_size: int = -1,
     ) -> GDNAttentionMetadata:
 
-        print(f" here is gdn", flush=1)
-        print(f" here is gdn {self.runner.model.model.layers[0] = }", flush=1)
-
         if max_pad_size == -1:
             max_pad_size = self.runner.max_batch_size
         slot_mapping = torch.zeros(max_pad_size,
@@ -449,7 +438,6 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             spec_token_masks=None,
             num_accepted_tokens=None,
         )
-        print(f" {attn_metadata = }", flush=1)
         return attn_metadata
 
     def build_for_cudagraph_capture(

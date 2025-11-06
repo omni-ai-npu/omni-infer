@@ -5,9 +5,6 @@ from typing import Union
 import torch
 import torch.nn as nn
 import torchair
-import logging
-import torch_npu
-from torchair import logger as tng_logger
 from vllm.config import CompilationLevel, VllmConfig
 from vllm.logger import init_logger
 import vllm.envs as envs
@@ -34,16 +31,13 @@ class TorchNpuCompilerWrapperWithCustomDispatcher:
     def compile_dispatcher(self):
         backend = self.vllm_config.npu_compilation_config.init_backend(self.vllm_config)
         if not self.vllm_config.npu_compilation_config.use_ge_graph_cached:
-            #tng_logger.setLevel(logging.DEBUG)
             logger.debug(
                 f"[not use cache npu graph], VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE = {envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE}")
             self.compiled_model = torch.compile(
                 self.forward,
                 dynamic=False,
                 fullgraph=envs.VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE,
-                backend=backend
-                #backend="aot_eager"
-                )
+                backend=backend)
 
         elif self.vllm_config.npu_compilation_config.use_ge_graph_cached:
             logger.debug(

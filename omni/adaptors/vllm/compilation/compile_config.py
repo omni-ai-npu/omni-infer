@@ -24,7 +24,6 @@ def get_torchair_config():
         config.experimental_config.frozen_parameter = True
     config.experimental_config.tiling_schedule_optimize = True
     torch.npu.set_compile_mode(jit_compile=False)
-    config.debug.graph_dump.type = "py"
     return config
 
 
@@ -112,7 +111,6 @@ class NPUCompilationConfig:
             self.decode_gear_list.append(max_batch_size)
 
     def init_backend(self, vllm_config: VllmConfig) -> Union[str, Callable]:
-        #print(f'{self.backend=}')
         if self.level == CompilationLevel.NO_COMPILATION:
             raise ValueError("No compilation level is set.")
 
