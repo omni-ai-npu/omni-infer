@@ -17,12 +17,14 @@ class CacheEngine:
         self.attn_backends = attn_backends
         self.kv_cache_config = kv_cache_config
 
-    def swap_in(self, src_to_dst: torch.Tensor) -> None:
+    def swap_in(self, src_to_dst: list[list[tuple[int, int]]]) -> None:
         for i, kv_cache_group in enumerate(self.kv_cache_config.kv_cache_groups):
+            src_to_dst_tensor = torch.tensor(src_to_dst[i], device="cpu", dtype=torch.int64)
             for layer_name in kv_cache_group.layer_names:
-                self.attn_backends[i].swap_blocks(self.cpu_cache[layer_name], self.gpu_cache[layer_name], src_to_dst[i])
+                self.attn_backends[i].swap_blocks(self.cpu_cache[layer_name], self.gpu_cache[layer_name], src_to_dst_tensor)
 
-    def swap_out(self, src_to_dst: torch.Tensor) -> None:
+    def swap_out(self, src_to_dst: list[list[tuple[int, int]]]) -> None:
         for i, kv_cache_group in enumerate(self.kv_cache_config.kv_cache_groups):
+            src_to_dst_tensor = torch.tensor(src_to_dst[i], device="cpu", dtype=torch.int64)
             for layer_name in kv_cache_group.layer_names:
-                self.attn_backends[i].swap_blocks(self.gpu_cache[layer_name], self.cpu_cache[layer_name], src_to_dst[i])
+                self.attn_backends[i].swap_blocks(self.gpu_cache[layer_name], self.cpu_cache[layer_name], src_to_dst_tensor)

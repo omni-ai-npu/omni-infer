@@ -754,16 +754,10 @@ class NPUModelRunner(GPUModelRunner):
 
     def _prepare_kv_cache(self, scheduler_output):
         if scheduler_output.blocks_to_swap_in is not None and any(scheduler_output.blocks_to_swap_in):
-            blocks_to_swap_in = torch.tensor(scheduler_output.blocks_to_swap_in,
-                                             device="cpu",
-                                             dtype=torch.int64)
-            self.cache_engine.swap_in(blocks_to_swap_in)
+            self.cache_engine.swap_in(scheduler_output.blocks_to_swap_in)
 
         if scheduler_output.blocks_to_swap_out is not None and any(scheduler_output.blocks_to_swap_out):
-            blocks_to_swap_out = torch.tensor(scheduler_output.blocks_to_swap_out,
-                                              device="cpu",
-                                              dtype=torch.int64)
-            self.cache_engine.swap_out(blocks_to_swap_out)
+            self.cache_engine.swap_out(scheduler_output.blocks_to_swap_out)
 
     def save_tokens(
         self,
