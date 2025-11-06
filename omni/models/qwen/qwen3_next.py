@@ -107,6 +107,7 @@ from omni.layers.attention.backend.attention import AscendAttentionState
 
 
 logger = init_logger(__name__)
+SEQ_SPLIT_LENGTH = 4096
 
 KVCache = tuple[torch.Tensor, torch.Tensor]
 
@@ -156,7 +157,7 @@ class Qwen3NextSparseMoeBlock(nn.Module):
             return None
         return quant_config
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, is_prefill: bool = False) -> torch.Tensor:
         # NOTE: hidden_states can have either 1D or 2D shape.
         orig_shape = hidden_states.shape
         hidden_dim = hidden_states.shape[-1]
@@ -173,7 +174,8 @@ class Qwen3NextSparseMoeBlock(nn.Module):
         router_logits, _ = self.gate(hidden_states)
 
         final_hidden_states = self.experts(hidden_states=hidden_states,
-                                           router_logits=router_logits)
+                                           router_logits=router_logits,
+                                           is_prefill=is_prefill)
 
         if shared_output is not None:
             final_hidden_states = final_hidden_states + shared_output
@@ -845,7 +847,12 @@ class Qwen3NextAttention(nn.Module):
         output: torch.Tensor,
         hidden_states: torch.Tensor,
     ):
-        qkv, _ = self.qkv_proj(hidden_states)
+        forward_context: ForwardContext = get_forward_context()
+        attn_metadata = forward_context.attn_metadata
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[next(iter(attn_metadata))]
+        is_prefill = attn_metadata is None or not attn_metadata.is_pd_seperate_d
+        qkv, _ = self.qkv_proj(hidden_states, is_prefill = is_prefill)
 
         if self.attn_output_gate:
             q_gate, k, v = qkv.split(
@@ -995,7 +1002,21 @@ class Qwen3NextDecoderLayer(nn.Module):
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
+        forward_context: ForwardContext = get_forward_context()
+        attn_metadata = forward_context.attn_metadata
+        if isinstance(attn_metadata, dict):
+            attn_metadata = attn_metadata[next(iter(attn_metadata))]
+        is_prefill = attn_metadata is None or not attn_metadata.is_pd_seperate_d
+        if is_prefill:
+            local_length = hidden_states.shape[0]
+            hidden_states_list = hidden_states.split(SEQ_SPLIT_LENGTH)
+            hidden_states_out = []
+            for i in range(len(hidden_states_list)):
+                hidden_states = self.mlp(hidden_states_list[i], is_prefill=is_prefill)
+                hidden_states_out.append(hidden_states)
+            hidden_states = torch.cat(hidden_states_out)[:local_length]
+        else:
+            hidden_states = self.mlp(hidden_states, is_prefill=is_prefill)
 
         if self.layer_scale:
             if len(hidden_states.shape) == 2:
