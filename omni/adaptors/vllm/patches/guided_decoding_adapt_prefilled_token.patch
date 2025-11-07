@@ -1,0 +1,27 @@
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+index 548efa3d0..96e274f06 100755
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -126,6 +126,13 @@ class OpenAIServingChat(OpenAIServing):
+             logger.info("Using default chat sampling params from %s: %s",
+                         source, self.default_sampling_params)
+ 
++
++    async def is_guided_decoding_request(self, request: ChatCompletionRequest):
++        return request.guided_json is not None or request.guided_regex is not None \
++            or request.guided_choice is not None or request.guided_grammar is not None \
++            or request.structural_tag is not None or request.guided_whitespace_pattern is not None
++
++
+     async def create_chat_completion(
+         self,
+         request: ChatCompletionRequest,
+@@ -241,7 +248,7 @@ class OpenAIServingChat(OpenAIServing):
+                         delta_text = tokenizer.convert_tokens_to_string([new_tokens])
+                         # If the decoded text ends with '�', it indicates an incomplete UTF-8 sequence — abandon reuse.
+                         # If the prefilled side has already triggered a stop reason, we also fall back to normal generation.
+-                        if delta_text.endswith("�") or any(s is not None for s in request.kv_transfer_params["stop_reasons"]):
++                        if delta_text.endswith("�") or any(s is not None for s in request.kv_transfer_params["stop_reasons"]) or self.is_guided_decoding_request(request):
+                             request.kv_transfer_params.pop("prefilled_token", None)
+                         else:
+                             engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]

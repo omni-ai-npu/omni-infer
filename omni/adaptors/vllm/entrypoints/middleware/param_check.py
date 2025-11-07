@@ -306,7 +306,7 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
             response_format = json_load.get("response_format")
             if response_format is not None and isinstance(response_format, dict) and "type" in response_format \
                 and response_format["type"] == "json_schema":
-                if "json_schema" not in response_format:
+                if response_format.get("json_schema", None) is None:
                     json_load.pop("response_format")
             # guided_decoding_backend is not supported
             if "guided_decoding_backend" in json_load:
