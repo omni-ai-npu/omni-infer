@@ -314,8 +314,8 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
             request._body = json.dumps(json_load).encode("utf-8")
 
             if json_load.get("kv_transfer_params"):
-                max_tokens = json_load.get("max_tokens", -1)
-                if isinstance(max_tokens, int) and max_tokens < 0:
+                max_tokens = json_load.get("max_tokens", None)
+                if not max_tokens:
                     json_load["max_tokens"] = int(os.getenv("DEFAULT_MAX_TOKENS", DEFAULT_MAX_MODEL_LEN))
                     request._body = json.dumps(json_load).encode("utf-8")
 
