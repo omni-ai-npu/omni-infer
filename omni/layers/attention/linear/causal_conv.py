@@ -49,7 +49,7 @@ def causal_conv1d_ref(
                        padding=width - 1,
                        groups=dim)
     else:
-        x = torch.cat([initial_states, x], dim=-1)
+        x = torch.cat([initial_states.transpose(-1, -2), x], dim=-1)
         out = F.conv1d(x, weight.unsqueeze(1), bias, padding=0, groups=dim)
     out = out[..., :seqlen]
     if return_final_states:
@@ -58,7 +58,7 @@ def causal_conv1d_ref(
         if final_states_out is not None:
             final_states_out.copy_(final_states.transpose(-1, -2))
         else:
-            final_states_out = final_states
+            final_states_out = final_states.transpose(-1, -2)
     out = (out if activation is None else F.silu(out)).to(dtype=dtype_in)
     return (out, None) if not return_final_states else (out, final_states_out)
 
