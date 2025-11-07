@@ -40,7 +40,7 @@ all:
               enable-reasoning: ''
               reasoning-parser: deepseek_r1
               max-num-seqs: 4
-              speculative-config: '{"method":"eagle3","num_speculative_tokens":1,"model":"/data/models/qwen3_30b_moe_eagle3-Tengyunw"}'
+              speculative-config: '{"method":"eagle3","num_speculative_tokens":1,"model":"/tmp/qwen3_30b_moe_eagle3-Tengyunw"}'
             gpu-util: '0.85'
             kv-transfer-config:
               engine_id: 1
@@ -84,9 +84,9 @@ all:
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp23s0f3
-            HCCL_BUFFSIZE: 7199
-            HCCL_CONNECT_TIMEOUT: 500
-            HCCL_EXEC_TIMEOUT: 1800
+            HCCL_BUFFSIZE: 500
+            HCCL_CONNECT_TIMEOUT: 1800
+            HCCL_EXEC_TIMEOUT: 500
             HCCL_INTRA_PCIE_ENABLE: 0
             HCCL_INTRA_ROCE_ENABLE: 1
             MM_ALL_REDUCE_OP_THRESHOLD: 1000000
@@ -99,7 +99,7 @@ all:
             ENABLE_ROUND_PIPELINE_COMM: 1
             MASTER_PORT: 8000
             MODEL_LEN_MAX_DECODE: 4096
-            MODEL_PATH: /tmp/models/Qwen3-30B-A3B-Instruct-2507
+            MODEL_PATH: /data/models/Qwen3-30B-A3B-Thinking-2507
             OMNI_USE_QWEN: 1
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -135,7 +135,6 @@ all:
             VLLM_WORKER_MULTIPROC_METHOD: fork
             VLLM_PLUGINS: npu,npu_optimized_models,kv_connectors
             VLLM_ENGINE_ITERATION_TIMEOUT_S: 6000
-            TORCHAIR_CACHE_HOME: /tmp/omniinfer_cache_d
           host_ip: 127.0.0.2
           master_node: d0
     P:
@@ -156,7 +155,7 @@ all:
               num-gpu-blocks-override: 1224
               enable-reasoning: ''
               reasoning-parser: deepseek_r1
-              speculative-config: '{"method":"eagle3","num_speculative_tokens":1,"model":"/data/models/qwen3_30b_moe_eagle3-Tengyunw"}'
+              speculative-config: '{"method":"eagle3","num_speculative_tokens":1,"model":"/tmp/qwen3_30b_moe_eagle3-Tengyunw"}'
             gpu-util: '0.85'
             kv-transfer-config:
               engine_id: 0
@@ -200,7 +199,8 @@ all:
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp23s0f3
-            HCCL_CONNECT_TIMEOUT: 7199
+            HCCL_BUFFSIZE: 500
+            HCCL_CONNECT_TIMEOUT: 1800
             HCCL_EXEC_TIMEOUT: 700
             HCCL_INTRA_PCIE_ENABLE: 0
             HCCL_INTRA_ROCE_ENABLE: 1
@@ -211,7 +211,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_LEN_MAX_PREFILL: 4096
-            MODEL_PATH: /tmp/models/Qwen3-30B-A3B-Instruct-2507
+            MODEL_PATH: /data/models/Qwen3-30B-A3B-Thinking-2507
             OMNI_USE_QWEN: 1
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
