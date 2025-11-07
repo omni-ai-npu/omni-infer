@@ -50,7 +50,7 @@ all:
               max-num-seqs: 13
               no-enable-prefix-caching: ''
               preemption-mode: swap
-            gpu-util: '0.95'
+            gpu-util: '0.92'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
@@ -112,7 +112,7 @@ all:
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp23s0f3
-            HCCL_BUFFSIZE: 800
+            HCCL_BUFFSIZE: 900
             HCCL_CONNECT_TIMEOUT: 1800
             HCCL_EXEC_TIMEOUT: 1800
             HCCL_INTRA_PCIE_ENABLE: 0
@@ -181,7 +181,7 @@ all:
               max-num-seqs: 13
               no-enable-prefix-caching: ''
               preemption-mode: swap
-            gpu-util: '0.95'
+            gpu-util: '0.92'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
@@ -243,7 +243,7 @@ all:
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp23s0f3
-            HCCL_BUFFSIZE: 800
+            HCCL_BUFFSIZE: 900
             HCCL_CONNECT_TIMEOUT: 1800
             HCCL_EXEC_TIMEOUT: 1800
             HCCL_INTRA_PCIE_ENABLE: 0
@@ -293,16 +293,7 @@ all:
           args:
             additional-config:
               enable_omni_attn: true
-              enable_omni_placement: true
-              omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_ds_r1_w4a8c16_a3_4p1d_p.npy"
-                max_moe_layer_num: 58
-                enable_dynamic: False
-                max_redundant_per_expert: 10
-                max_redundant_per_rank: 1
-                enable_rank_round_robin: False
-                enable_dump: False
-                dump_dir: "../dump_data"
+              enable_omni_placement: false
             enable-mtp: ''
             base-api-port: $API_PORT
             extra-args:
@@ -312,8 +303,7 @@ all:
               max-num-batched-tokens: 64640
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-              preemption-mode: swap
-            gpu-util: '0.95'
+            gpu-util: '0.921'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
@@ -427,16 +417,7 @@ all:
           args:
             additional-config:
               enable_omni_attn: true
-              enable_omni_placement: true
-              omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_ds_r1_w4a8c16_a3_4p1d_p.npy"
-                max_moe_layer_num: 58
-                enable_dynamic: False
-                max_redundant_per_expert: 10
-                max_redundant_per_rank: 1
-                enable_rank_round_robin: False
-                enable_dump: False
-                dump_dir: "../dump_data"
+              enable_omni_placement: false
             enable-mtp: ''
             base-api-port: $API_PORT
             extra-args:
@@ -446,8 +427,7 @@ all:
               max-num-batched-tokens: 64640
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-              preemption-mode: swap
-            gpu-util: '0.95'
+            gpu-util: '0.921'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
@@ -561,16 +541,7 @@ all:
           args:
             additional-config:
               enable_omni_attn: true
-              enable_omni_placement: true
-              omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_ds_r1_w4a8c16_a3_4p1d_p.npy"
-                max_moe_layer_num: 58
-                enable_dynamic: False
-                max_redundant_per_expert: 10
-                max_redundant_per_rank: 1
-                enable_rank_round_robin: False
-                enable_dump: False
-                dump_dir: "../dump_data"
+              enable_omni_placement: false
             enable-mtp: ''
             base-api-port: $API_PORT
             extra-args:
@@ -580,8 +551,7 @@ all:
               max-num-batched-tokens: 64640
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-              preemption-mode: swap
-            gpu-util: '0.95'
+            gpu-util: '0.921'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
@@ -695,16 +665,7 @@ all:
           args:
             additional-config:
               enable_omni_attn: true
-              enable_omni_placement: true
-              omni_placement_config:
-                pattern_path: "../../tests/test_config/ep_ds_r1_w4a8c16_a3_4p1d_p.npy"
-                max_moe_layer_num: 58
-                enable_dynamic: False
-                max_redundant_per_expert: 10
-                max_redundant_per_rank: 1
-                enable_rank_round_robin: False
-                enable_dump: False
-                dump_dir: "../dump_data"
+              enable_omni_placement: false
             enable-mtp: ''
             base-api-port: $API_PORT
             extra-args:
@@ -714,8 +675,7 @@ all:
               max-num-batched-tokens: 64640
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-              preemption-mode: swap
-            gpu-util: '0.95'
+            gpu-util: '0.921'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
