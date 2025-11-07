@@ -19,7 +19,7 @@
         "control_accept_rate": -1,
         "shared_experts_to_gmm": true,
         "mtp_remove_redundant_kv": true,
-        "enable_gmm_swiglu_quant": false,
+        "enable_gmm_swiglu_quant": true,
         "use_prefetch": true,
         "expert_gate_up_prefetch": 40,
         "expert_down_prefetch": 20,

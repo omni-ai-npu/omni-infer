@@ -1080,7 +1080,7 @@ class DeepseekMLA(nn.Module):
         op_scope = tng.ops if self.enable_graph_mode else torch.ops.npu
 
         if model_extra_config.operator_opt_config.mtp_remove_redundant_kv:
-            attn_mask = self.decode_attn_mask
+            attn_mask = self.decode_attn_mask if self.fa_quant else self.attn_mask
             sparse_mode = 3
         else:
             attn_mask = None
