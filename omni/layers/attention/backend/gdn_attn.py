@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import ClassVar, Optional, List
 
 import torch
+import numpy as np
 
 from vllm.attention.backends.abstract import AttentionBackend
 from vllm.attention.backends.utils import PAD_SLOT_ID
@@ -13,7 +14,7 @@ from vllm.v1.attention.backends.utils import (CommonAttentionMetadata,
                                               split_decodes_and_prefills)
 from vllm.v1.kv_cache_interface import AttentionSpec, MambaSpec
 
-from omni.layers.attention.backend.attention import AscendAttentionMetadataBuilder, AscendAttentionState
+from omni.layers.attention.backend.attention import AscendMetadata, AscendAttentionMetadataBuilder, AscendAttentionState
 
 
 class GDNAttentionBackend(AttentionBackend):
@@ -43,6 +44,7 @@ class GDNAttentionMetadata:
     num_prefills: int
     num_prefill_tokens: int
     num_decodes: int
+    is_decode: bool
     num_decode_tokens: int
     num_spec_decodes: int
     num_spec_decode_tokens: int
@@ -142,11 +144,11 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
         num_accepted_tokens: Optional[torch.Tensor] = None,
         num_draft_tokens: Optional[torch.Tensor] = None,
         fast_build: bool = False,
+        graph_pad_size: int = -1,
         **kwargs,
     ) -> GDNAttentionMetadata:
         m = common_attn_metadata
-
-        query_start_loc = m.query_start_loc
+        query_start_loc = m.query_start_loc.to(self.runner.device)
         context_lens = num_computed_tokens_cpu_tensor
         context_lens_tensor = context_lens.to(query_start_loc.device)
         seq_lens_tensor = m.seq_lens
@@ -161,6 +163,12 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             if spec_sequence_masks.sum().item() == 0:
                 spec_sequence_masks = None
 
+        if graph_pad_size > 0 and self.runner.attn_state == AscendAttentionState.DecodeOnly:
+            padding = torch.full((graph_pad_size, ),
+                                    query_start_loc[-1],
+                                    dtype=query_start_loc.dtype,
+                                    device=self.runner.device)
+            query_start_loc = torch.cat([query_start_loc.to(padding.device), padding], dim=0)
         if spec_sequence_masks is None:
             num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
                 split_decodes_and_prefills(num_reqs, num_actual_tokens, max_query_len, m, decode_threshold=1))
@@ -302,6 +310,7 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             num_actual_tokens=num_actual_tokens,
             max_query_len=max_query_len,
             common_prefix_len=None,
+            graph_pad_size=graph_pad_size,
             **kwargs,
         )
 
@@ -324,6 +333,7 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             num_prefills=num_prefills,
             num_prefill_tokens=num_prefill_tokens,
             num_decodes=num_decodes,
+            is_decode=(num_decodes > 0),
             num_decode_tokens=num_decode_tokens,
             num_spec_decodes=num_spec_decodes,
             num_spec_decode_tokens=num_spec_decode_tokens,
@@ -335,7 +345,98 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             non_spec_state_indices_tensor=non_spec_state_indices_tensor,
             spec_sequence_masks=spec_sequence_masks,
             spec_token_masks=spec_token_masks,
-            num_accepted_tokens=num_accepted_tokens,
+            num_accepted_tokens=None,
+        )
+        return attn_metadata
+
+    def mark_static_for_attn_metadata(self, attn_metadata):
+        if attn_metadata is not None:
+            torch._dynamo.mark_static(attn_metadata.non_spec_query_start_loc)
+            # torch._dynamo.mark_static(attn_metadata.query_lens)
+            # torch._dynamo.mark_static(attn_metadata.seq_lens)
+
+    def build_dummy(  # type: ignore[override]
+        self,
+        num_tokens: int, 
+        max_pad_size: int = -1,
+    ) -> GDNAttentionMetadata:
+
+        if max_pad_size == -1:
+            max_pad_size = self.runner.max_batch_size
+        slot_mapping = torch.zeros(max_pad_size,
+                                   dtype=self.runner.slot_mapping_cpu.dtype,
+                                   device=self.runner.device)
+        if isinstance(self.runner.graph_block_tables, np.ndarray):
+            graph_block_tables = torch.zeros((max_pad_size, self.runner.graph_block_tables.shape[1]))
+        block_table = graph_block_tables.to(
+            device=self.runner.device,
+            dtype=self.runner.input_batch.block_table[0].get_device_tensor(max_pad_size).dtype
+        )
+
+        query_lens = torch.ones(max_pad_size, dtype=torch.long, device=self.runner.device, pin_memory=True)
+        seq_lens = query_lens * 2
+
+        slot_indices = torch.stack([slot_mapping // self.block_size, slot_mapping % self.block_size], dim=1)
+
+        fake_positions = torch.zeros(max_pad_size, dtype=torch.int64, device=self.device)
+
+        cos, sin = None, None
+
+        is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
+                           self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'
+
+        non_spec_query_start_loc = torch.tensor([0, 1], device=self.runner.device)
+        non_spec_state_indices_tensor = self.block_table.block_table[:, 0]
+
+        ascend_attn_metadata = AscendMetadata(
+            num_actual_tokens=num_tokens,
+            block_tables=block_table,
+            query_lens=query_lens,
+            query_lens_list=query_lens.tolist(),
+            seq_lens=seq_lens,
+            seq_lens_list=seq_lens.tolist(),
+            slot_mapping=slot_mapping,
+            slot_indices=slot_indices,
+            is_only_prefill=False,
+            attn_state=self.runner.attn_state,
+            cos=cos,
+            sin=sin,
+            is_pd_seperate_d=is_pd_seperate_d
+        )
+
+          
+        attn_metadata = GDNAttentionMetadata(
+            block_tables=ascend_attn_metadata.block_tables,
+            query_lens=ascend_attn_metadata.query_lens,
+            query_lens_list=ascend_attn_metadata.query_lens_list,
+            seq_lens=ascend_attn_metadata.seq_lens,
+            seq_lens_list=ascend_attn_metadata.seq_lens_list,
+            max_query_len=ascend_attn_metadata.max_query_len,
+            slot_mapping=ascend_attn_metadata.slot_mapping,
+            slot_indices=ascend_attn_metadata.slot_indices,
+            is_only_prefill=ascend_attn_metadata.is_only_prefill,
+            attn_state=ascend_attn_metadata.attn_state,
+            cos=ascend_attn_metadata.cos,
+            sin=ascend_attn_metadata.sin,
+            is_pd_seperate_d=ascend_attn_metadata.is_pd_seperate_d,
+            kv_index=ascend_attn_metadata.kv_index,
+            # up to here, just copy AscendMetadata
+            num_prefills=0,
+            num_prefill_tokens=0,
+            num_decodes=num_tokens,
+            is_decode=(num_decodes > 0),
+            num_decode_tokens=num_tokens,
+            num_spec_decodes=0,
+            num_spec_decode_tokens=0,
+            num_actual_tokens=num_tokens,
+            has_initial_state=None,
+            spec_query_start_loc=None,
+            non_spec_query_start_loc=non_spec_query_start_loc,
+            spec_state_indices_tensor=None,
+            non_spec_state_indices_tensor=non_spec_state_indices_tensor,
+            spec_sequence_masks=None,
+            spec_token_masks=None,
+            num_accepted_tokens=None,
         )
         return attn_metadata
 

@@ -10,6 +10,7 @@
 from typing import Optional, Union
 
 import torch
+import torchair, torch_npu
 import torch.nn.functional as F
 from vllm.triton_utils import tl, triton
 
@@ -55,7 +56,7 @@ def causal_conv1d_ref(
         final_states = F.pad(x, (width - 1 - x.shape[-1], 0)).to(
             dtype_in)  # (batch, dim, width - 1)
         if final_states_out is not None:
-            final_states_out.copy_(final_states)
+            final_states_out.copy_(final_states.transpose(-1, -2))
         else:
             final_states_out = final_states
     out = (out if activation is None else F.silu(out)).to(dtype=dtype_in)
@@ -161,13 +162,14 @@ def causal_conv1d_update_ref(x,
         x = x.unsqueeze(-1)
     batch, dim, seqlen = x.shape
     width = weight.shape[1]
-    state_len = conv_state.shape[-1]
+    state_len = conv_state.shape[-2]
     assert weight.shape == (dim, width)
     if cache_seqlens is None:
-        x_new = torch.cat([conv_state[conv_state_indices], x], dim=-1).to(
-            weight.dtype)  # (batch, dim, state_len + seqlen)
-        conv_state[conv_state_indices] = x_new[:, :, -state_len:]
+        x_new = torch.cat([conv_state[torch.clamp(conv_state_indices, 0)].transpose(-1, -2), x], dim=-1).to(
+            weight.dtype)
+        torch_npu.npu_scatter_nd_update_(conv_state, conv_state_indices.unsqueeze(1), x_new[:, :, -state_len:].transpose(-1, -2))
     else:
+        assert(false)
         width_idx = torch.arange(
             -(width - 1), 0, dtype=torch.long,
             device=x.device).unsqueeze(0) + cache_seqlens.unsqueeze(1)
