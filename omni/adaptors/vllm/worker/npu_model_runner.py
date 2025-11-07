@@ -119,7 +119,7 @@ class NPUModelRunner(GPUModelRunner):
         super().__init__(vllm_config, device)
         self.cache_engine = None
         self.head_size = self.model_config.get_head_size()
-        self.block_size = vllm_config.cache_config.block_size
+        self.block_size = 128  # NPU kernel block size, not KV block size
 
         self.num_attn_layers = self.model_config.get_num_layers_by_block_type(
             vllm_config.parallel_config, LayerBlockType.attention)
