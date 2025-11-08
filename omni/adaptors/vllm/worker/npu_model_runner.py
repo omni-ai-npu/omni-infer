@@ -181,7 +181,7 @@ class NPUModelRunner(GPUModelRunner):
             self.decode_max_num_tokens, dtype=torch.int32, device=self.device,
         )
         self.target_logits_indices = torch.zeros(
-            self.max_num_reqs, dtype=torch.int32, device=self.device,
+            self.decode_max_num_tokens, dtype=torch.int32, device=self.device,
         )
         self.bonus_logits_indices = torch.zeros(
             self.max_num_reqs, dtype=torch.int32, device=self.device,
@@ -194,7 +194,7 @@ class NPUModelRunner(GPUModelRunner):
             self.decode_max_num_tokens, dtype=torch.int32, pin_memory=is_pin_memory_available(),
         )
         self.target_logits_indices_cpu = torch.zeros(
-            self.max_num_reqs, dtype=torch.int32, pin_memory=is_pin_memory_available(),
+            self.decode_max_num_tokens, dtype=torch.int32, pin_memory=is_pin_memory_available(),
         )
         self.bonus_logits_indices_cpu = torch.zeros(
             self.max_num_reqs, dtype=torch.int32, pin_memory=is_pin_memory_available(),
@@ -215,7 +215,10 @@ class NPUModelRunner(GPUModelRunner):
         self.arange_npu = torch.arange(max(self.max_num_reqs + 1, self.max_model_len, self.max_num_tokens),
                                        dtype=torch.int64,
                                        device=self.device)
-
+        self.arange_npu_int32 = torch.arange(max(self.max_num_reqs + 1, self.max_model_len, self.max_num_tokens),
+                                             dtype=torch.int32,
+                                             device=self.device)
+        
         self.omni_cache = None
         rank = get_tensor_model_parallel_rank()
         self.training_data_save_path = os.environ.get('TRAINING_DATA_SAVE_PATH', "")
@@ -250,11 +253,51 @@ class NPUModelRunner(GPUModelRunner):
             self.decode_gear_list = []
             self.decode_gear_list.append(self.max_batch_size)
 
+    def _calc_spec_decode_metadata_same_num(
+        self,
+        num_draft_tokens,
+        cu_num_scheduled_tokens,
+    ) -> SpecDecodeMetadata:
+        if num_draft_tokens[0] == 0:
+            logits_indices = cu_num_scheduled_tokens - 1
+            self.logits_indices_cpu[:logits_indices.size] = torch.from_numpy(logits_indices)
+            self.logits_indices.copy_(self.logits_indices_cpu, non_blocking=True)
+            logits_indices = self.logits_indices[:logits_indices.size]
+            metadata = SpecDecodeMetadata(
+                draft_token_ids=torch.zeros((0,), dtype=self.input_ids.dtype, device=self.input_ids.device),
+                num_draft_tokens=num_draft_tokens.tolist(),
+                cu_num_draft_tokens=torch.zeros((cu_num_scheduled_tokens.size,), dtype=self.cu_num_draft_tokens.dtype, device=self.cu_num_draft_tokens.device),
+                target_logits_indices=logits_indices,
+                bonus_logits_indices=logits_indices,
+                logits_indices=logits_indices,
+            )
+        else:
+            # Decode Only
+            num_tokens = cu_num_scheduled_tokens[-1]
+            batch_size = cu_num_scheduled_tokens.size
+            input_ids = self.input_ids[:num_tokens]
+            target_range = self.arange_npu_int32[:num_draft_tokens[0]]
+            token_start_indices = self.arange_npu_int32[:batch_size] * (num_draft_tokens[0] + 1)
+            metadata = SpecDecodeMetadata(
+                draft_token_ids=input_ids.view(batch_size, -1)[:, 1:].reshape(-1),
+                num_draft_tokens=num_draft_tokens.tolist(),
+                cu_num_draft_tokens=self.arange_npu_int32[:batch_size] * num_draft_tokens[0] + num_draft_tokens[0],
+                target_logits_indices=(token_start_indices[:, None] + target_range[None, :]).reshape(-1),
+                bonus_logits_indices=token_start_indices + num_draft_tokens[0],
+                logits_indices=self.arange_npu_int32[:num_tokens],
+            )
+
+        return metadata
+
     def _calc_spec_decode_metadata(
         self,
         num_draft_tokens: np.ndarray,
         cu_num_scheduled_tokens: np.ndarray,
     ) -> SpecDecodeMetadata:
+        if (num_draft_tokens[0] == num_draft_tokens).all():
+            return self._calc_spec_decode_metadata_same_num(
+                num_draft_tokens, cu_num_scheduled_tokens,
+            )
         # Inputs:
         # cu_num_scheduled_tokens:  [  4, 104, 107, 207, 209]
         # num_draft_tokens:         [  3,   0,   2,   0,   1]

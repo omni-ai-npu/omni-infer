@@ -43,7 +43,6 @@ class SimpleValidator(RejectionSamplerV1):
             )
 
         batch_size = len(metadata.num_draft_tokens)
-        output_token_ids = self.minus_ones[:batch_size, :metadata.max_spec_len + 1].clone()
 
         key_tokens = input_ids[metadata.logits_indices]
 
@@ -51,34 +50,40 @@ class SimpleValidator(RejectionSamplerV1):
             logits, sampling_metadata, metadata, key_tokens, do_sample=True,
         )
 
-        indices = metadata.bonus_logits_indices - metadata.cu_num_draft_tokens
-        indices[1:] += metadata.cu_num_draft_tokens[:-1]
-        last_accepted_index = indices.clone()
+        last_accepted_index = metadata.bonus_logits_indices - metadata.cu_num_draft_tokens
+        last_accepted_index[1:] += metadata.cu_num_draft_tokens[:-1]
+        
         valid_flag = torch.ones(batch_size, dtype=bool, device=input_ids.device)
-        accepted_num = torch.zeros_like(last_accepted_index)
-
         if self.enable_force_accept:
             with torch_npu.npu.stream(self.main_sampler.sampler_preparing_stream): 
-                accepted = torch.empty_like(key_tokens, dtype=torch.float32).uniform_() < self.force_accept_rate
+                forced_accepted = torch.empty_like(key_tokens, dtype=torch.float32).uniform_() < self.force_accept_rate
 
-        for i in range(metadata.max_spec_len + 1):
-            now_indices = indices % key_tokens.numel()
-            sampled_token_ids = all_sampled_tokens[now_indices]
-            if i == 0:
-                forward_tokens = sampled_token_ids
-            else:
-                valid_flag &= output_token_ids[:, i - 1] == key_tokens[now_indices] if not self.enable_force_accept else accepted[now_indices]
-                valid_flag &= indices <= metadata.bonus_logits_indices
-                sampled_token_ids = torch.where(valid_flag, sampled_token_ids, self.minus_one[0])
-                forward_tokens = torch.where(valid_flag, sampled_token_ids, forward_tokens)
-                accepted_num += valid_flag
+        if (metadata.max_spec_len == torch.tensor(metadata.num_draft_tokens)).all():
+            accepted = key_tokens.roll(-1, 0) == all_sampled_tokens if not self.enable_force_accept else forced_accepted
+            accepted[metadata.bonus_logits_indices] = ~valid_flag
+            _, accepted_num = accepted.view(batch_size, -1).min(-1)
+            accepted_num = accepted_num.to(torch.int32)
+            offset = self.runner.arange_npu_int32[:metadata.max_spec_len + 1]
+            output_token_ids = torch.where(offset[None, :] <= accepted_num[:, None], all_sampled_tokens.view(batch_size, -1), self.minus_one)
+        else:
+            output_token_ids = self.minus_ones[:batch_size, :metadata.max_spec_len + 1].clone()
+            indices = last_accepted_index.clone()
+            accepted_num = torch.zeros_like(last_accepted_index)
+            for i in range(metadata.max_spec_len + 1):
+                now_indices = indices % key_tokens.numel()
+                sampled_token_ids = all_sampled_tokens[now_indices]
+                if i > 0:
+                    valid_flag &= output_token_ids[:, i - 1] == key_tokens[now_indices] if not self.enable_force_accept else forced_accepted[now_indices]
+                    valid_flag &= indices <= metadata.bonus_logits_indices
+                    sampled_token_ids = torch.where(valid_flag, sampled_token_ids, self.minus_one[0])
+                    accepted_num += valid_flag
 
-            output_token_ids[:, i] = sampled_token_ids
-            indices += 1
+                output_token_ids[:, i] = sampled_token_ids
+                indices += 1
         last_accepted_index += accepted_num
+        forward_tokens = output_token_ids.gather(1, accepted_num.view(-1, 1)).reshape(-1)
 
         self.main_sampler.revert_rejected_tokens(accepted_num, key_tokens, metadata)
-
 
         sampler_output = SamplerOutput(
             sampled_token_ids = output_token_ids,
