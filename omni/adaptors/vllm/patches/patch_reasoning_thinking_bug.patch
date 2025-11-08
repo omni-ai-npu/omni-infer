@@ -1,0 +1,22 @@
+diff --git a/vllm/v1/core/sched/utils.py b/vllm/v1/core/sched/utils.py
+index 38a6199b5..a5089ad18 100644
+--- a/vllm/v1/core/sched/utils.py
++++ b/vllm/v1/core/sched/utils.py
+@@ -35,7 +35,7 @@ def add_token_and_check_stop(token_ids: list[int], request: Request, max_model_l
+     global ENABLE_MAX_TOKENS_EXCLUDE_REASONING, ENABLE_REASONING_MAX_TOKENS, REASONING_MAX_TOKENS, COT_TOKEN_IDS, THINK_START_TOKEN_ID, THINK_END_TOKEN_ID, AFTER_THINK_TOKEN_IDS
+     if ENABLE_REASONING_MAX_TOKENS and not request.is_cot_end() and request.num_output_tokens >= REASONING_MAX_TOKENS:
+         request.status = RequestStatus.FINISHED_LENGTH_CAPPED
+-        return True, 0
++        return True, 1
+     if ENABLE_MAX_TOKENS_EXCLUDE_REASONING and not request.is_cot_end():
+         end_index = -1
+         for token_id in token_ids:
+@@ -51,7 +51,7 @@ def add_token_and_check_stop(token_ids: list[int], request: Request, max_model_l
+     remain_len = min(max_model_len - request.num_tokens, request.max_tokens - request.num_output_tokens)
+     if remain_len <= 0:
+         request.status = RequestStatus.FINISHED_LENGTH_CAPPED
+-        return True, 0
++        return True, 1
+ 
+     possible_len = min(len(token_ids), remain_len)
+ 
