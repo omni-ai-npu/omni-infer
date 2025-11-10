@@ -201,7 +201,7 @@
       "model": "kimi-k2-thinking",
       "hardware": "A3",
       "precision": "w4a8",
-      "prefill_node_num": 1,
+      "prefill_node_num": 2,
       "decode_node_num": 1,     
       "pd_disaggregation": true,
       "prefill_config_file": "kimi_k2_w4a8c16_a3_2p1d_p.json",
