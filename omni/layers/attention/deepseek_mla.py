@@ -1019,6 +1019,8 @@ class DeepseekMLA(nn.Module):
             if self.quant_symbol and model_extra_config.operator_opt_config.enable_dsa:
                 hidden_states_quant, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
                 hidden_states_quant = {"x_int8": hidden_states_quant, "pertoken_scale": pertoken_scale}
+            else:
+                hidden_states_quant = hidden_states
             with ConditionalTNGScope(multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune,
                                         core_num=model_extra_config.operator_opt_config.mla_multistream_limit_core):
                 if self.q_lora_rank is not None:
