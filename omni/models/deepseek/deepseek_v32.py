@@ -23,7 +23,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from transformers import DeepseekV3Config
-from transformers import AutoConfig
 from vllm.compilation.decorators import support_torch_compile
 from .deepseek_v3 import DeepseekV3ForCausalLM
 
@@ -34,8 +33,7 @@ class DeepseekV32Config(DeepseekV3Config):
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
-AutoConfig.register("deepseek_v32", DeepseekV32Config)
+
 
 @support_torch_compile
 class DeepseekV32ForCausalLM(DeepseekV3ForCausalLM):

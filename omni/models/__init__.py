@@ -17,6 +17,9 @@ def register_model():
     ModelRegistry.register_model(
             "DeepseekV3ForCausalLM",
             "omni.models.deepseek.deepseek_v3:DeepseekV3ForCausalLM")
+    from transformers import AutoConfig
+    from omni.models.deepseek.deepseek_v32 import DeepseekV32Config
+    AutoConfig.register("deepseek_v32", DeepseekV32Config)
     ModelRegistry.register_model(
             "DeepseekV32ForCausalLM",
             "omni.models.deepseek.deepseek_v32:DeepseekV32ForCausalLM")

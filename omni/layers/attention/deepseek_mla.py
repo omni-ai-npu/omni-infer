@@ -55,8 +55,11 @@ from omni.adaptors.vllm.distributed.parallel_state import (
 )
 from omni.models.config_loader.loader import model_extra_config
 from omni.layers.utils import ConditionalTNGScope
-if model_extra_config.operator_opt_config.enable_dsa:
+
+try:
     import custom_ops
+except:
+    pass
 
 KVCACHE_NZ_DIM = 16
 
@@ -962,24 +965,28 @@ class DeepseekMLA(nn.Module):
 
             if model_extra_config.operator_opt_config.enable_dsa:
                 cache_mode = "PA_BSND"
-                q_nope, q_pe, dequant_scale_q_nope, qr, dequant_scale_q_norm = torch.ops.npu.npu_mla_prolog_v3(
-                    token_x = hidden_states_mla_prolog.view(bsz, 1, -1),
-                    weight_dq=self.q_a_proj.weight, weight_uq_qr=self.q_b_proj.weight,
-                    weight_uk=self.W_UK, weight_dkv_kr=self.kv_a_proj_with_mqa.weight,
-                    rmsnorm_gamma_cq=self.q_a_layernorm.weight, rmsnorm_gamma_ckv=self.kv_a_layernorm.weight,
-                    rope_sin=sin.squeeze(1), rope_cos=cos.squeeze(1), cache_index=cache_index,
-                    kv_cache=key_cache, kr_cache=value_cache,
+                q_nope, q_pe, dequant_scale_q_nope, qr, dequant_scale_q_norm = torch.ops.custom.npu_mla_prolog_v3(
+                    token_x=hidden_states_mla_prolog.view(bsz, 1, -1),
+                    weight_dq=self.q_a_proj.weight,
+                    weight_uq_qr=self.q_b_proj.weight,
+                    weight_uk=self.W_UK,
+                    weight_dkv_kr=self.kv_a_proj_with_mqa.weight,
+                    rmsnorm_gamma_cq=self.q_a_layernorm.weight,
+                    rmsnorm_gamma_ckv=self.kv_a_layernorm.weight,
+                    rope_sin=sin.squeeze(1),
+                    rope_cos=cos.squeeze(1),
+                    kv_cache=key_cache,
+                    kr_cache=value_cache,
+                    cache_index=cache_index,
                     dequant_scale_x=pertoken_scale.view(-1, 1) if self.quant_symbol else None, # pertoken quant
                     dequant_scale_w_dq=self.q_a_proj.weight_scale.view(1, -1) if self.quant_symbol else None,
                     dequant_scale_w_uq_qr=self.q_b_proj.weight_scale.view(1, -1) if self.quant_symbol else None,
                     dequant_scale_w_dkv_kr=self.kv_a_proj_with_mqa.weight_scale.view(1, -1) if self.quant_symbol else None,
-                    quant_scale_ckv=self.kv_scale_reci_tile,
-                    quant_scale_ckr=None,
-                    smooth_scales_cq=None,
                     rmsnorm_epsilon_cq=self.q_a_layernorm.variance_epsilon,
                     rmsnorm_epsilon_ckv=self.kv_a_layernorm.variance_epsilon,
                     cache_mode=cache_mode,
-                    query_norm_flag=True)
+                    query_norm_flag=True,
+                    weight_quant_mode=2 if self.quant_symbol else 0)
             else:
                 cache_mode = "PA_NZ"
                 q_nope, q_pe, k_nope, k_rope, dequant_scale_q_nope = torch.ops.npu.npu_mla_prolog_v2(
@@ -1009,21 +1016,20 @@ class DeepseekMLA(nn.Module):
             q_nope = q_nope.view(bsz, self.num_local_heads, self.kv_lora_rank)
             q_pe = q_pe.view(bsz, self.num_local_heads, -1)
         else:
-            hidden_states_origin = hidden_states
             if self.quant_symbol and model_extra_config.operator_opt_config.enable_dsa:
-                hidden_states, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
-                hidden_states = {"x_int8": hidden_states, "pertoken_scale": pertoken_scale}
+                hidden_states_quant, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
+                hidden_states_quant = {"x_int8": hidden_states_quant, "pertoken_scale": pertoken_scale}
             with ConditionalTNGScope(multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune,
                                         core_num=model_extra_config.operator_opt_config.mla_multistream_limit_core):
                 if self.q_lora_rank is not None:
-                    q_lowrank = self.q_a_proj(hidden_states)[0]
+                    q_lowrank = self.q_a_proj(hidden_states_quant)[0]
                 else:
-                    q_lowrank = self.q_proj(hidden_states)[0]
+                    q_lowrank = self.q_proj(hidden_states_quant)[0]
 
             with ConditionalTNGScope(multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune,
                                         stream_id='11', 
                                         core_num=model_extra_config.operator_opt_config.mla_multistream_limit_core):
-                kv = self.kv_a_proj_with_mqa(hidden_states)[0]
+                kv = self.kv_a_proj_with_mqa(hidden_states_quant)[0]
             if model_extra_config.operator_opt_config.moe_multi_stream_tune:
                 tng.scope.npu_wait_tensor(q_lowrank, q_lowrank)
 
@@ -1106,7 +1112,7 @@ class DeepseekMLA(nn.Module):
             if model_extra_config.operator_opt_config.moe_multi_stream_tune:
                 tng.scope.npu_wait_tensor(qr, k_rope)
             # todo indexer only support bsnd
-            topk_indices, _ = self.indexer(hidden_states_origin, qr, attn_metadata,
+            topk_indices, _ = self.indexer(hidden_states, qr, attn_metadata,
                                         kv_cache=kv_cache, is_prefill=False)
             attn_output = torch.ops.custom.npu_sparse_flash_attention(
                 query=q_nope,
