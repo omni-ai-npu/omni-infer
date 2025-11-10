@@ -50,6 +50,8 @@ ln -sf libmsgpack-c.so.2.0.0 %{buildroot}/usr/lib64/libmsgpack-c.so
 mkdir -p %{buildroot}/usr/local/lib
 cp /usr/local/lib/libpython3.11.so.1.0 %{buildroot}/usr/local/lib
 ln -sf libpython3.11.so.1.0 %{buildroot}/usr/local/lib/libpython3.11.so
+mkdir -p %{buildroot}/usr/local/lib/python3.11/site-packages
+cp %{_builddir}/%{name}-%{version}/omni_proxy/modules/omni_tokenizer.py %{buildroot}/usr/local/lib/python3.11/site-packages/omni_tokenizer.py
 
 %files
 /usr/sbin/nginx
@@ -63,6 +65,7 @@ ln -sf libpython3.11.so.1.0 %{buildroot}/usr/local/lib/libpython3.11.so
 /usr/lib64/libmsgpack-c.so
 /usr/local/lib/libpython3.11.so.1.0
 /usr/local/lib/libpython3.11.so
+/usr/local/lib/python3.11/site-packages/*
 
 %changelog
 * Mon Oct 27 2025 Huawei - 1.0-1
