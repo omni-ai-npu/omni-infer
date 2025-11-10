@@ -121,6 +121,9 @@ class LLMDataDistManager:
         self.rank_link_info_map = {}
 
         self.registered_link_infos = {}
+        
+        self.block_size = vllm_config.cache_config.block_size
+        self.num_kernel_blocks_per_kv_block = self.block_size // 128
 
     def get_real_remote_cluster_ids(self, meta: "ReqMeta"):
         remote_cluster_ids = self.registered_link_infos.get(
@@ -149,29 +152,68 @@ class LLMDataDistManager:
     def register_memory(self, kv_caches: dict[str, torch.Tensor]):
         if len(self.registered_kv_caches) > 0:
             raise ValueError("Attr `registered_kv_caches` must be empty before register kv_caches.")
-        if isinstance(kv_caches, dict):
-            flatten_kv_caches = unzip_kv_cache_dict(kv_caches)
+        
+        from vllm.model_executor.models.utils import extract_layer_index
+        if any(["linear_attn" for layer_name in kv_caches.keys()]):
+            model_id = 0
+            for kv_cache_group in range(4):
+                kv_caches_of_group = {k: kv_caches[k] for i, k in enumerate(sorted(kv_caches.keys(), key=extract_layer_index)) if i % 4 == kv_cache_group}
+                print(f"{kv_caches_of_group.keys()=} {list(sorted(kv_caches.keys(), key=extract_layer_index))=}")
+                flatten_kv_caches = unzip_kv_cache_dict(kv_caches_of_group)
+
+                # group by kv cache shape
+                key_func = lambda kv_cache: tuple(kv_cache.shape)
+                grouped_by_shape = defaultdict(list)
+                for kv_cache in flatten_kv_caches[0]:
+                    grouped_by_shape[key_func(kv_cache)].append(kv_cache)
+
+                for sub_kv_cache_shape in sorted(list(grouped_by_shape.keys())):
+                    a_kv_cache = next(iter(grouped_by_shape[sub_kv_cache_shape]))
+                    cache_desc = CacheDesc(num_tensors=len(grouped_by_shape[sub_kv_cache_shape]), shape=tuple(sub_kv_cache_shape), data_type=TORCH_DTYPE_TO_NPU_DTYPE[a_kv_cache.dtype])
+
+                    cache_addrs = [int(item.data_ptr()) for item in grouped_by_shape[sub_kv_cache_shape]]
+
+                    if self.data_dist_config.is_prefill:
+                        cache_key = BlocksCacheKey(self.data_dist_engine.cluster_id, model_id=model_id)
+                    else:
+                        cache_key = None
+
+                    cache = self.data_dist_engine.cache_manager.register_blocks_cache(cache_desc, cache_addrs, cache_key)
+                    print(f"register_blocks_cache {model_id=} {kv_cache_group=} {sub_kv_cache_shape=} {len(grouped_by_shape[sub_kv_cache_shape])=} {tuple(a_kv_cache.shape)=}")
+                    self.registered_kv_caches.append(cache)
+                    model_id += 1
         else:
-            flatten_kv_caches = unzip_kv_cache_list(kv_caches)
-
-        # dense model.
-        flatten_kv_caches = maybe_merge_kv_caches(flatten_kv_caches)
-        # spec model.
-        flatten_kv_caches = maybe_split_kv_caches_for_spec_layers(flatten_kv_caches)
-
-        for model_id, sub_kv_caches in enumerate(flatten_kv_caches):
-            cache_desc = CacheDesc(num_tensors=len(sub_kv_caches), shape=tuple(sub_kv_caches[0].shape),
-                                   data_type=TORCH_DTYPE_TO_NPU_DTYPE[sub_kv_caches[0].dtype])
-
-            cache_addrs = [int(item.data_ptr()) for item in sub_kv_caches]
-
-            if self.data_dist_config.is_prefill:
-                cache_key = BlocksCacheKey(self.data_dist_engine.cluster_id, model_id=model_id)
+            if isinstance(kv_caches, dict):
+                flatten_kv_caches = unzip_kv_cache_dict(kv_caches)
             else:
-                cache_key = None
+                flatten_kv_caches = unzip_kv_cache_list(kv_caches)
 
-            cache = self.data_dist_engine.cache_manager.register_blocks_cache(cache_desc, cache_addrs, cache_key)
-            self.registered_kv_caches.append(cache)
+            # dense model.
+            # flatten_kv_caches = maybe_merge_kv_caches(flatten_kv_caches)  # This is never called and bugged.
+            # spec model.
+            flatten_kv_caches = maybe_split_kv_caches_for_spec_layers(flatten_kv_caches)
+
+            # group by kv cache shape
+            key_func = lambda kv_cache: tuple(kv_cache.shape)
+            grouped_by_shape = defaultdict(set)
+            for kv_cache in flatten_kv_caches[0]:
+                grouped_by_shape[key_func(kv_cache)].add(kv_cache)
+
+            for model_id, sub_kv_caches in enumerate(grouped_by_shape.values()):
+                a_kv_cache = next(iter(sub_kv_caches))
+                print(f"{tuple(a_kv_cache.shape)=}")
+                cache_desc = CacheDesc(num_tensors=len(sub_kv_caches), shape=tuple(a_kv_cache.shape),
+                                    data_type=TORCH_DTYPE_TO_NPU_DTYPE[a_kv_cache.dtype])
+
+                cache_addrs = [int(item.data_ptr()) for item in sub_kv_caches]
+
+                if self.data_dist_config.is_prefill:
+                    cache_key = BlocksCacheKey(self.data_dist_engine.cluster_id, model_id=model_id)
+                else:
+                    cache_key = None
+
+                cache = self.data_dist_engine.cache_manager.register_blocks_cache(cache_desc, cache_addrs, cache_key)
+                self.registered_kv_caches.append(cache)
         logger.debug(f" ***** registered_kv_caches num:{len(self.registered_kv_caches)}")
 
     def _pull_blocks(self, src_cache_key, dst_cache, src_blocks, dst_blocks):
@@ -199,12 +241,32 @@ class LLMDataDistManager:
     def pull_kv(self, src_blocks, tgt_blocks, prompt_cluster_id):
         # If this line is not added, the fx mode will report an error.
         # The preliminary reason is that the context is lost when multiple coroutines pull kv.
+        print(f"pull_kv {len(src_blocks)=} {len(tgt_blocks)=} {len(src_blocks[0])=} {len(tgt_blocks[0])=} {src_blocks=} {tgt_blocks=} ")
+        
         torch.npu.set_device(f"npu:{self.local_rank}")
-        for model_id, kv_cache in enumerate(self.registered_kv_caches):
-            prompt_cache_key = BlocksCacheKey(
-                prompt_cluster_id=prompt_cluster_id, model_id=model_id)
-            self._pull_blocks(prompt_cache_key, kv_cache,
-                              src_blocks, tgt_blocks)
+        if len(src_blocks) == 4 and 4 == len(tgt_blocks):  # Qwen3-Next
+            model_id = 0
+            for kv_cache_group in range(4):
+                for sub_kv_cache_id in range(1 if kv_cache_group == 3 else 2):
+                    prompt_cache_key = BlocksCacheKey(
+                        prompt_cluster_id=prompt_cluster_id, model_id=model_id)
+                    self._pull_blocks(prompt_cache_key, self.registered_kv_caches[model_id],
+                                    [val for x in src_blocks[kv_cache_group] 
+                                     for val in range(x*self.num_kernel_blocks_per_kv_block, x*self.num_kernel_blocks_per_kv_block+self.num_kernel_blocks_per_kv_block)]
+                                    if kv_cache_group == 3
+                                    else [x for x in src_blocks[kv_cache_group]], 
+                                    [val for x in tgt_blocks[kv_cache_group] 
+                                     for val in range(x*self.num_kernel_blocks_per_kv_block, x*self.num_kernel_blocks_per_kv_block+self.num_kernel_blocks_per_kv_block)]
+                                    if kv_cache_group == 3
+                                    else [x for x in tgt_blocks[kv_cache_group]])
+                    print(f"_pull_blocks {prompt_cache_key=} {self.registered_kv_caches[model_id]=} {src_blocks[kv_cache_group]=} {tgt_blocks[kv_cache_group]=}")
+                    model_id += 1
+        else:
+            for model_id, kv_cache in enumerate(self.registered_kv_caches):
+                prompt_cache_key = BlocksCacheKey(
+                    prompt_cluster_id=prompt_cluster_id, model_id=model_id)
+                self._pull_blocks(prompt_cache_key, kv_cache,
+                                src_blocks[model_id][0], tgt_blocks[model_id])
 
     def register_link(self):
 
@@ -215,6 +277,7 @@ class LLMDataDistManager:
             prefill_server_groups = self.data_dist_config.global_rank_table.prefill_group
             decode_server_groups = [self.data_dist_config.local_group]
 
+        print(f"{prefill_server_groups[0].device_list=} {self.data_dist_config.kv_producer_dp_size=}")
         prefill_tp_size = len(prefill_server_groups[0].device_list) // self.data_dist_config.kv_producer_dp_size
         prefill_dp_size = self.data_dist_config.kv_producer_dp_size
 
@@ -229,6 +292,7 @@ class LLMDataDistManager:
                 for decode_device in decode_server_group.device_list:
                     d_rank = decode_device.rank_id
                     # compute p_rank with dp_size=1, and expand to dp_size>1.
+                    print(f"{prefill_tp_size=} {decode_tp_size=} {decode_dp_size=} {decode_num=} {decode_id=} {d_rank=}")
                     p_rank_start = get_p_start_rank(prefill_tp_size, 1, decode_tp_size, decode_dp_size,
                                               decode_num, decode_id, d_rank)
 
@@ -361,7 +425,10 @@ def unzip_kv_cache_dict(kv_caches: dict[str, torch.Tensor], ):
         kv_cache = kv_caches[layer_name]
         if isinstance(kv_cache, tuple):
             for index, sub_cache in enumerate(kv_cache):
-                flatten_kv_caches[index].append(sub_cache)
+                flatten_kv_caches[0].append(sub_cache)
+        elif isinstance(kv_cache, list):
+            for index, sub_cache in enumerate(kv_cache):
+                flatten_kv_caches[0].append(sub_cache)
         else:
             flatten_kv_caches[0].append(kv_cache)
     return flatten_kv_caches
@@ -380,6 +447,9 @@ def unzip_kv_cache_list(kv_caches: list[torch.Tensor], ):
         if isinstance(kv_cache, tuple):
             for index, sub_cache in enumerate(kv_cache):
                 flatten_kv_caches[index].append(sub_cache)
+        elif isinstance(kv_cache, list):
+            for index, sub_cache in enumerate(kv_cache):
+                flatten_kv_caches[0].append(sub_cache)
         else:
             flatten_kv_caches[0].append(kv_cache)
     return flatten_kv_caches

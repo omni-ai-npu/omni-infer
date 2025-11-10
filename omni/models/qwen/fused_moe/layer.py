@@ -711,19 +711,41 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
         token_ids = expanded_x_idx // topk
         expert_ids = expanded_x_idx % topk
         target_indices = expert_ids * tmp_n_tokens + token_ids
-        another_expanded_idx = torch.zeros_like(expanded_x_idx)
-        another_expanded_idx.scatter_(
-            dim=0,
-            index=target_indices.to(torch.long),
-            src=torch.arange(expanded_x_idx.shape[0], dtype=expanded_x_idx.dtype, device=expanded_x_idx.device)
-        )
-
-        y = torch_npu.npu_moe_finalize_routing(
-            y, None, None, None,
-            topk_weights, # 数据类型要求与y一致
+        # another_expanded_idx = torch.zeros_like(expanded_x_idx)
+        # another_expanded_idx.scatter_(
+        #     dim=0,
+        #     index=target_indices.to(torch.long),
+        #     src=torch.arange(expanded_x_idx.shape[0], dtype=expanded_x_idx.dtype, device=expanded_x_idx.device)
+        # )
+        another_expanded_idx = torch.zeros_like(expanded_x_idx, dtype = torch.int64)
+        torch_npu.npu_scatter_nd_update_(
             another_expanded_idx,
-            topk_ids,
+            target_indices.to(torch.long).unsqueeze(1),
+            torch.arange(expanded_x_idx.shape[0], dtype=torch.int64, device=expanded_x_idx.device)
         )
+        another_expanded_idx = another_expanded_idx.to(expanded_x_idx.dtype)
+
+        if is_prefill and model_extra_config.operator_opt_config.prefill_moe_all_to_all:
+            y = torch_npu.npu_moe_finalize_routing(
+                y, None, None, None,
+                topk_weights, # 数据类型要求与y一致
+                another_expanded_idx,
+                topk_ids,
+            )
+        elif not is_prefill and model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
+            y = torch_npu.npu_moe_finalize_routing(
+                y, None, None, None,
+                topk_weights, # 数据类型要求与y一致
+                another_expanded_idx,
+                topk_ids,
+            )
+        else:
+            y = torch_npu.npu_moe_finalize_routing(
+                y.float(), None, None, None,
+                topk_weights.float(), # 数据类型要求与y一致
+                another_expanded_idx,
+                topk_ids,
+            ).to(x.dtype)
 
         if is_prefill:
             assert len(y.shape) == 2
@@ -841,6 +863,10 @@ class FusedMoE(torch.nn.Module):
             self.moe_rs_group = get_pp_group().device_group
             self.moe_rs_group_rank = get_pp_group().rank_in_group
             self.moe_rs_group_name = self.moe_rs_group._get_backend(torch.device('npu')).get_hccl_comm_name(self.moe_rs_group_rank)
+
+            is_a2 = os.getenv("ASCEND_PLATFORM", "A3") == "A2"
+            if is_a2:
+                self.moe_rs_group_name = ""
 
         # Determine expert maps
         if self.use_ep:
@@ -1032,7 +1058,9 @@ class FusedMoE(torch.nn.Module):
 
     def _map_global_expert_id_to_local_expert_id(self, expert_id: int):
         if self.expert_range is not None:
-            if expert_id < self.expert_range[0] or expert_id >= self.expert_range[1]:
+            if isinstance(self.expert_range, int) and expert_id < self.expert_range:
+                return None
+            elif expert_id < self.expert_range[0] or expert_id >= self.expert_range[1]:
                 return None
             else:
                 return expert_id - self.expert_range[0]

@@ -1,0 +1,4210 @@
+diff --git a/vllm/attention/backends/abstract.py b/vllm/attention/backends/abstract.py
+index f3d6ffaeb..3aebcbde5 100644
+--- a/vllm/attention/backends/abstract.py
++++ b/vllm/attention/backends/abstract.py
+@@ -74,6 +74,7 @@ class AttentionBackend(ABC):
+         block_size: int,
+         num_kv_heads: int,
+         head_size: int,
++        cache_dtype_str: str = "auto"
+     ) -> Tuple[int, ...]:
+         raise NotImplementedError
+ 
+diff --git a/vllm/config.py b/vllm/config.py
+index c14e3c00c..64686ba07 100644
+--- a/vllm/config.py
++++ b/vllm/config.py
+@@ -220,6 +220,7 @@ def is_init_field(cls: ConfigType, name: str) -> bool:
+ 
+ TokenizerMode = Literal["auto", "slow", "mistral", "custom"]
+ ModelDType = Literal["auto", "half", "float16", "bfloat16", "float", "float32"]
++MambaDType = Literal["auto", "float32"]
+ 
+ 
+ @config
+@@ -1257,6 +1258,20 @@ class ModelConfig:
+             if attn_type_list:
+                 return sum(t == 1 for t in attn_type_list[start:end])
+ 
++            # Hybrid model Qwen3Next
++            layer_types_value = getattr(self.hf_config, "layer_types", None)
++            if layer_types_value is not None:
++                if getattr(block_type, "value", block_type) == "attention":
++                    return sum(t == "full_attention"
++                               for t in layer_types_value[start:end])
++                elif getattr(block_type, "value",
++                             block_type) == "linear_attention":
++                    return sum(t == "linear_attention"
++                               for t in layer_types_value[start:end])
++                else:
++                    return sum(t == getattr(block_type, "value", block_type)
++                               for t in layer_types_value[start:end])
++                
+             if layers_block_type_value is None and attn_type_list is None:
+                 raise ValueError(
+                     "The model is an hybrid without a"
+@@ -1387,7 +1402,7 @@ class ModelConfig:
+         return getattr(self.hf_config, "matryoshka_dimensions", None)
+ 
+ 
+-BlockSize = Literal[1, 8, 16, 32, 64, 128]
++BlockSize = Literal[1, 8, 16, 32, 64, 128, 256, 384, 512, 640]
+ CacheDType = Literal["auto", "fp8", "fp8_e4m3", "fp8_e5m2"]
+ PrefixCachingHashAlgo = Literal["builtin", "sha256"]
+ 
+@@ -1449,6 +1464,20 @@ class CacheConfig:
+     kv_cache_dtype is fp8. If `False`, the scales will be loaded from the model
+     checkpoint if available. Otherwise, the scales will default to 1.0."""
+ 
++    mamba_page_size_padded: int | None = None
++    """ Optional override for mamba page size; used by hybrid mamba/attention
++    models to ensure exact alignment with attention page size."""
++    mamba_block_size: int | None = None
++    """Size of a contiguous cache block in number of tokens for mamba cache."""
++    mamba_cache_dtype = "auto"
++    """The data type to use for the Mamba cache (both the conv as well as the
++    ssm state). If set to 'auto', the data type will be inferred from the model
++    config."""
++    mamba_ssm_cache_dtype = "auto"
++    """The data type to use for the Mamba cache (ssm state only, conv state will
++    still be controlled by mamba_cache_dtype). If set to 'auto', the data type
++    for the ssm state will be determined by mamba_cache_dtype."""
++
+     # Will be set after profiling.
+     num_gpu_blocks: Optional[int] = field(default=None, init=False)
+     """The number of blocks to allocate for GPU memory."""
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+index 2ca47b07a..4c606f154 100755
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -237,15 +237,10 @@ class OpenAIServingChat(OpenAIServing):
+                 sampling_params: Union[SamplingParams, BeamSearchParams]
+                 if reuse_prefilled_tokens:
+                     if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
+-                        new_tokens = tokenizer.convert_ids_to_tokens(request.kv_transfer_params["prefilled_token"][0])
++                        engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
++                        new_tokens = tokenizer.convert_ids_to_tokens(engine_prompt["prefilled_token_ids"][0])
+                         delta_text = tokenizer.convert_tokens_to_string([new_tokens])
+-                        # If the decoded text ends with '�', it indicates an incomplete UTF-8 sequence — abandon reuse.
+-                        # If the prefilled side has already triggered a stop reason, we also fall back to normal generation.
+-                        if delta_text.endswith("�") or any(s is not None for s in request.kv_transfer_params["stop_reasons"]):
+-                            request.kv_transfer_params.pop("prefilled_token", None)
+-                        else:
+-                            engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
+-                            engine_prompt["prefilled_texts"] = delta_text
++                        engine_prompt["prefilled_texts"] = delta_text
+                 default_max_tokens = self.max_model_len - len(
+                     engine_prompt["prompt_token_ids"])
+                 if request.use_beam_search:
+@@ -986,14 +981,6 @@ class OpenAIServingChat(OpenAIServing):
+ 
+         assert final_res is not None
+ 
+-        # Pass the internal request id in P side to D side in kv_transfer_params
+-        if final_res.kv_transfer_params:
+-            final_res.kv_transfer_params["p_side_request_id"] = vllm_request_id
+-
+-        turn_id = 0
+-        if self.tool_parser_name == "ascend_kimi_k2" or self.tool_parser_name == "kimi_k2":
+-            turn_id = get_turn_id(conversation)
+-
+         if reuse_prefilled_tokens:
+             if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
+                 prompt_token_ids = request.kv_transfer_params["prefilled_token"]
+@@ -1187,10 +1174,6 @@ class OpenAIServingChat(OpenAIServing):
+         if reuse_prefilled_tokens:
+             if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
+                 num_generated_tokens += 1
+-            if final_res.kv_transfer_params:
+-                final_res.kv_transfer_params["stop_reasons"] = [
+-                    output.stop_reason for output in final_res.outputs
+-                ]
+         usage = UsageInfo(prompt_tokens=num_prompt_tokens,
+                           completion_tokens=num_generated_tokens,
+                           total_tokens=num_prompt_tokens +
+diff --git a/vllm/model_executor/layers/mamba/ops/ssd_bmm.py b/vllm/model_executor/layers/mamba/ops/ssd_bmm.py
+index 0fdb055aa..99532f5be 100644
+--- a/vllm/model_executor/layers/mamba/ops/ssd_bmm.py
++++ b/vllm/model_executor/layers/mamba/ops/ssd_bmm.py
+@@ -12,83 +12,6 @@ import torch
+ from vllm.triton_utils import tl, triton
+ 
+ 
+-@triton.autotune(
+-    configs=[
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 64
+-            },
+-            num_stages=3,
+-            num_warps=8),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 32,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=2),
+-    ],
+-    key=['chunk_size', 'K', 'IS_CAUSAL'],
+-)
+ @triton.jit
+ def _bmm_chunk_fwd_kernel(
+     # Pointers to matrices
+diff --git a/vllm/model_executor/layers/mamba/ops/ssd_chunk_scan.py b/vllm/model_executor/layers/mamba/ops/ssd_chunk_scan.py
+index 1652c5181..cfc5b052d 100644
+--- a/vllm/model_executor/layers/mamba/ops/ssd_chunk_scan.py
++++ b/vllm/model_executor/layers/mamba/ops/ssd_chunk_scan.py
+@@ -10,102 +10,6 @@ from packaging import version
+ 
+ from vllm.triton_utils import tl, triton
+ 
+-TRITON_22 = version.parse(triton.__version__) >= version.parse('2.2.0')
+-
+-
+-@triton.autotune(
+-    configs=[
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 64
+-            },
+-            num_stages=3,
+-            num_warps=8),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 64
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 64
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 32,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=2),
+-    ],
+-    key=['chunk_size', 'hdim', 'dstate', 'IS_CAUSAL'],
+-)
+ @triton.jit
+ def _chunk_scan_fwd_kernel(
+     # Pointers to matrices
+diff --git a/vllm/model_executor/layers/mamba/ops/ssd_chunk_state.py b/vllm/model_executor/layers/mamba/ops/ssd_chunk_state.py
+index ee6335690..ec085a98a 100644
+--- a/vllm/model_executor/layers/mamba/ops/ssd_chunk_state.py
++++ b/vllm/model_executor/layers/mamba/ops/ssd_chunk_state.py
+@@ -14,18 +14,6 @@ from vllm.triton_utils import tl, triton
+ from .mamba_ssm import softplus
+ 
+ 
+-@triton.autotune(
+-    configs=[
+-        triton.Config({'BLOCK_SIZE_H': 1}),
+-        triton.Config({'BLOCK_SIZE_H': 2}),
+-        triton.Config({'BLOCK_SIZE_H': 4}),
+-        triton.Config({'BLOCK_SIZE_H': 8}),
+-        triton.Config({'BLOCK_SIZE_H': 16}),
+-        triton.Config({'BLOCK_SIZE_H': 32}),
+-        triton.Config({'BLOCK_SIZE_H': 64}),
+-    ],
+-    key=['chunk_size', 'nheads'],
+-)
+ @triton.jit
+ def _chunk_cumsum_fwd_kernel(
+     # Pointers to matrices
+@@ -110,83 +98,6 @@ def _chunk_cumsum_fwd_kernel(
+              mask=(offs_h[:, None] < nheads) & (offs_c[None, :] < chunk_size))
+ 
+ 
+-@triton.autotune(
+-    configs=[
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 64
+-            },
+-            num_stages=3,
+-            num_warps=8),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 32,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=2),
+-    ],
+-    key=['hdim', 'dstate', 'chunk_size'],
+-)
+ @triton.jit
+ def _chunk_state_fwd_kernel(
+     # Pointers to matrices
+@@ -311,83 +222,6 @@ def _chunk_state_fwd_kernel(
+     tl.store(states_ptrs, states, mask=c_mask)
+ 
+ 
+-@triton.autotune(
+-    configs=[
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 64
+-            },
+-            num_stages=3,
+-            num_warps=8),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 256,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 128,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 128,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=4),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 32,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 32,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=5,
+-            num_warps=2),
+-        triton.Config(
+-            {
+-                'BLOCK_SIZE_M': 64,
+-                'BLOCK_SIZE_N': 64,
+-                'BLOCK_SIZE_K': 32
+-            },
+-            num_stages=4,
+-            num_warps=2),
+-    ],
+-    key=['hdim', 'dstate', 'chunk_size'],
+-)
+ @triton.jit
+ def _chunk_state_varlen_kernel(
+     # Pointers to matrices
+diff --git a/vllm/model_executor/layers/mamba/ops/ssd_combined.py b/vllm/model_executor/layers/mamba/ops/ssd_combined.py
+index 79a1663b8..05fe621ae 100644
+--- a/vllm/model_executor/layers/mamba/ops/ssd_combined.py
++++ b/vllm/model_executor/layers/mamba/ops/ssd_combined.py
+@@ -17,8 +17,6 @@ from .ssd_chunk_state import (_chunk_cumsum_fwd, _chunk_state_fwd,
+                               chunk_state_varlen)
+ from .ssd_state_passing import _state_passing_fwd
+ 
+-TRITON_22 = version.parse(triton.__version__) >= version.parse('2.2.0')
+-
+ 
+ def _mamba_chunk_scan_combined_fwd(x,
+                                    dt,
+diff --git a/vllm/model_executor/layers/mamba/ops/ssd_state_passing.py b/vllm/model_executor/layers/mamba/ops/ssd_state_passing.py
+index 6f69ca743..2f39ab04f 100644
+--- a/vllm/model_executor/layers/mamba/ops/ssd_state_passing.py
++++ b/vllm/model_executor/layers/mamba/ops/ssd_state_passing.py
+@@ -10,17 +10,6 @@ import torch
+ from vllm.triton_utils import tl, triton
+ 
+ 
+-@triton.autotune(
+-    configs=[
+-        triton.Config({'BLOCK_SIZE': 64}),
+-        triton.Config({'BLOCK_SIZE': 128}),
+-        triton.Config({'BLOCK_SIZE': 256}),
+-        triton.Config({'BLOCK_SIZE': 512}),
+-        triton.Config({'BLOCK_SIZE': 1024}),
+-        triton.Config({'BLOCK_SIZE': 2048}),
+-    ],
+-    key=['dim'],
+-)
+ @triton.jit
+ def _state_passing_fwd_kernel(
+     # Pointers to matrices
+diff --git a/vllm/model_executor/models/utils.py b/vllm/model_executor/models/utils.py
+index 1e67c2608..6e025019c 100644
+--- a/vllm/model_executor/models/utils.py
++++ b/vllm/model_executor/models/utils.py
+@@ -690,14 +690,14 @@ def maybe_prefix(prefix: str, name: str) -> str:
+     return name if not prefix else f"{prefix}.{name}"
+ 
+ 
+-def extract_layer_index(layer_name: str) -> int:
++def extract_layer_index(layer_name: str, num_attn_module: int = 1) -> int:
+     """
+     Extract the layer index from the module name.
+     Examples:
+     - "encoder.layers.0" -> 0
+     - "encoder.layers.1.self_attn" -> 1
+     - "2.self_attn" -> 2
+-    - "model.encoder.layers.0.sub.1" -> ValueError
++    - "model.encoder.layers.0.sub.1" -> ValueError if num_attn_module == 1
+     """
+     subnames = layer_name.split(".")
+     int_vals: list[int] = []
+@@ -706,11 +706,22 @@ def extract_layer_index(layer_name: str) -> int:
+             int_vals.append(int(subname))
+         except ValueError:
+             continue
++    if num_attn_module == 1 or "attn" not in layer_name:
++        assert len(int_vals) == 1, (
++            f"layer name {layer_name} should only contain one integer"
++        )
+ 
+-    if len(int_vals) == 1:
+         return int_vals[0]
+     else:
+-        return int_vals[0] * 2 + int_vals[1]
++        assert len(int_vals) <= 2, (
++            f"layer name {layer_name} should contain most two integers"
++        )
++        layer_index = (
++            int_vals[0] * num_attn_module + int_vals[1]
++            if len(int_vals) == 2
++            else int_vals[0]
++        )
++        return layer_index
+ 
+ 
+ def cast_overflow_tensors(
+diff --git a/vllm/triton_utils/__init__.py b/vllm/triton_utils/__init__.py
+index 9f14a907a..390001826 100644
+--- a/vllm/triton_utils/__init__.py
++++ b/vllm/triton_utils/__init__.py
+@@ -6,8 +6,10 @@ from vllm.triton_utils.importing import (HAS_TRITON, TritonLanguagePlaceholder,
+ if HAS_TRITON:
+     import triton
+     import triton.language as tl
++    import triton.language.extra.libdevice as tldevice
+ else:
+     triton = TritonPlaceholder()
+     tl = TritonLanguagePlaceholder()
++    tldevice = TritonLanguagePlaceholder()
+ 
+ __all__ = ["HAS_TRITON", "triton", "tl"]
+diff --git a/vllm/v1/attention/backends/utils.py b/vllm/v1/attention/backends/utils.py
+index 10a771e83..e87e68bc8 100644
+--- a/vllm/v1/attention/backends/utils.py
++++ b/vllm/v1/attention/backends/utils.py
+@@ -16,3 +16,47 @@ class CommonAttentionMetadata:
+     seq_lens: torch.Tensor
+     """(batch_size,), the length of each request including both computed tokens
+     and newly scheduled tokens"""
++
++
++def split_decodes_and_prefills(
++    num_reqs,
++    num_actual_tokens,
++    max_query_len,
++    common_attn_metadata: CommonAttentionMetadata,
++    decode_threshold: int = 1,
++) -> tuple[int, int, int, int]:
++    """
++    Assuming a reordered batch, finds the boundary between prefill and decode
++    requests.
++
++    Args:
++        common_attn_metadata: CommonAttentionMetadata object containing the
++            batch metadata.
++        decode_threshold: The maximum query length to be considered a decode.
++
++    Returns:
++        num_decodes: The number of decode requests.
++        num_prefills: The number of prefill requests.
++        num_decode_tokens: The number of tokens in the decode requests.
++        num_prefill_tokens: The number of tokens in the prefill requests.
++    """
++    max_query_len = max_query_len
++    num_reqs = num_reqs
++    num_tokens = num_actual_tokens
++    query_start_loc = common_attn_metadata.query_start_loc
++
++    if max_query_len <= decode_threshold:
++        return num_reqs, 0, num_tokens, 0
++
++    query_lens = query_start_loc[1:] - query_start_loc[:-1]
++    is_prefill = query_lens > decode_threshold
++    if not torch.any(is_prefill):
++        return num_reqs, 0, num_tokens, 0
++
++    first_prefill = is_prefill.int().argmax(dim=-1).item()
++    assert torch.all(query_lens[:first_prefill] <= decode_threshold)
++    num_decodes = first_prefill
++    num_prefills = num_reqs - num_decodes
++    num_decode_tokens = query_start_loc[first_prefill].item()
++    num_prefill_tokens = num_tokens - num_decode_tokens
++    return (num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens)
+diff --git a/vllm/v1/core/kv_cache_coordinator.py b/vllm/v1/core/kv_cache_coordinator.py
+new file mode 100644
+index 000000000..ac82c2601
+--- /dev/null
++++ b/vllm/v1/core/kv_cache_coordinator.py
+@@ -0,0 +1,479 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++from abc import ABC, abstractmethod
++
++from vllm.v1.core.block_pool import BlockPool
++from vllm.v1.core.kv_cache_utils import BlockHash, KVCacheBlock
++from vllm.v1.core.single_type_kv_cache_manager import (
++    FullAttentionManager,
++    get_manager_for_kv_cache_spec,
++)
++from vllm.v1.kv_cache_interface import FullAttentionSpec, KVCacheConfig, KVCacheSpec
++from vllm.v1.request import Request
++
++
++class KVCacheCoordinator(ABC):
++    """
++    Coordinate the KV cache of different KV cache groups.
++    """
++
++    def __init__(
++        self,
++        kv_cache_config: KVCacheConfig,
++        max_model_len: int,
++        use_eagle: bool,
++        enable_caching: bool,
++        enable_kv_cache_events: bool,
++        dcp_world_size: int,
++    ):
++        self.kv_cache_config = kv_cache_config
++        self.max_model_len = max_model_len
++        self.enable_caching = enable_caching
++
++        self.block_pool = [BlockPool(
++            kv_cache_config.num_blocks, enable_caching, enable_kv_cache_events
++        ) for _ in self.kv_cache_config.kv_cache_groups]
++
++        # Needs special handling for find_longest_cache_hit if eagle is enabled
++        self.use_eagle = use_eagle
++        self.single_type_managers = tuple(
++            get_manager_for_kv_cache_spec(
++                kv_cache_spec=kv_cache_group.kv_cache_spec,
++                block_pool=self.block_pool[i],
++                kv_cache_group_id=i,
++                dcp_world_size=dcp_world_size,
++            )
++            for i, kv_cache_group in enumerate(self.kv_cache_config.kv_cache_groups)
++        )
++
++    def get_num_blocks_to_allocate(
++        self,
++        request_id: str,
++        num_tokens: int,
++        new_computed_blocks: tuple[list[KVCacheBlock], ...],
++        num_encoder_tokens: int,
++    ) -> int:
++        """
++        Get the number of blocks needed to be allocated for the request.
++
++        Args:
++            request_id: The request ID.
++            num_tokens: The total number of tokens that need a slot (including
++                tokens that are already allocated).
++            new_computed_blocks: The new computed blocks just hitting the
++                prefix caching.
++            num_encoder_tokens: The number of encoder tokens for allocating
++                blocks for cross-attention.
++
++        Returns:
++            The number of blocks.
++        """
++        num_blocks_to_allocate = 0
++        for i, manager in enumerate(self.single_type_managers):
++            # if isinstance(manager, CrossAttentionManager):
++            #     # For cross-attention, we issue a single static allocation
++            #     # of blocks based on the number of encoder input tokens.
++            #     num_blocks_to_allocate += manager.get_num_blocks_to_allocate(
++            #         request_id, num_encoder_tokens, []
++            #     )
++            # else:
++            num_blocks_to_allocate += manager.get_num_blocks_to_allocate(
++                request_id, num_tokens, new_computed_blocks[i]
++            )
++        return num_blocks_to_allocate
++
++    def save_new_computed_blocks(
++        self, request_id: str, new_computed_blocks: tuple[list[KVCacheBlock], ...]
++    ) -> None:
++        """
++        Add the new computed blocks to the request.
++
++        Args:
++            request_id: The request ID.
++            new_computed_blocks: The new computed blocks just hitting the
++                prefix cache.
++        """
++        for i, manager in enumerate(self.single_type_managers):
++            manager.save_new_computed_blocks(request_id, new_computed_blocks[i])
++
++    def allocate_new_blocks(
++        self, request_id: str, num_tokens: int, num_encoder_tokens: int = 0
++    ) -> tuple[list[KVCacheBlock], ...]:
++        """
++        Allocate new blocks for the request to give it at least `num_tokens`
++        token slots.
++
++        Args:
++            request_id: The request ID.
++            num_tokens: The total number of tokens that need a slot (including
++                tokens that are already allocated).
++            num_encoder_tokens: The number of encoder tokens for allocating
++                blocks for cross-attention.
++
++        Returns:
++            The new allocated blocks.
++        """
++        return tuple(
++            manager.allocate_new_blocks(
++                request_id,
++                # num_encoder_tokens
++                # if isinstance(manager, CrossAttentionManager)
++                # else 
++                num_tokens,
++            )
++            for manager in self.single_type_managers
++        )
++
++    def cache_blocks(self, request: Request, num_computed_tokens: int) -> None:
++        """
++        Cache the blocks for the request.
++
++        Args:
++            request: The request.
++            num_computed_tokens: The total number of tokens
++                that need to be cached
++                (including tokens that are already cached).
++        """
++        for manager in self.single_type_managers:
++            manager.cache_blocks(request, num_computed_tokens)
++
++    def free(self, request_id: str) -> None:
++        """
++        Free the blocks for the request.
++
++        Args:
++            request_id: The request ID.
++        """
++        for manager in self.single_type_managers:
++            manager.free(request_id)
++
++    def get_num_common_prefix_blocks(self, running_request_id: str) -> list[int]:
++        """
++        Get the number of common prefix blocks for all requests with allocated
++        KV cache for each kv cache group.
++
++        Args:
++            running_request_id: The request ID of any running request, used to
++                identify the common prefix blocks.
++
++        Returns:
++            list[int]: The number of common prefix blocks for each kv cache group.
++        """
++        return [
++            manager.get_num_common_prefix_blocks(running_request_id)
++            for manager in self.single_type_managers
++        ]
++
++    def remove_skipped_blocks(self, request_id: str, num_computed_tokens: int) -> None:
++        """
++        Remove the blocks that are no longer needed from `blocks` and replace
++        the removed blocks with null_block.
++
++        Args:
++            request_id: The request ID.
++            num_computed_tokens: The number of tokens that have been computed.
++        """
++        for manager in self.single_type_managers:
++            manager.remove_skipped_blocks(request_id, num_computed_tokens)
++
++    def get_blocks(self, request_id: str) -> tuple[list[KVCacheBlock], ...]:
++        """
++        Get the blocks for the request.
++        """
++        return tuple(
++            manager.req_to_blocks.get(request_id) or []
++            for manager in self.single_type_managers
++        )
++
++    @abstractmethod
++    def find_longest_cache_hit(
++        self,
++        block_hashes: list[BlockHash],
++        max_cache_hit_length: int,
++    ) -> tuple[tuple[list[KVCacheBlock], ...], int]:
++        pass
++
++
++class KVCacheCoordinatorNoPrefixCache(KVCacheCoordinator):
++    """
++    KV cache coordinator to use if prefix caching is disabled or unsupported.
++    In contrast to UnitaryKVCacheCoordinator and HybridKVCacheCoordinator,
++    supports arbitrary numbers of KV cache groups (including 0 groups).
++    Does not implement any features related to prefix caching.
++    """
++
++    def __init__(
++        self,
++        kv_cache_config: KVCacheConfig,
++        max_model_len: int,
++        use_eagle: bool,
++        enable_kv_cache_events: bool,
++        dcp_world_size: int,
++    ):
++        super().__init__(
++            kv_cache_config,
++            max_model_len,
++            use_eagle,
++            False,
++            enable_kv_cache_events,
++            dcp_world_size=dcp_world_size,
++        )
++        self.num_single_type_manager = len(self.single_type_managers)
++
++    def get_num_common_prefix_blocks(self, running_request_id: str) -> list[int]:
++        return [0] * self.num_single_type_manager
++
++    def find_longest_cache_hit(
++        self,
++        block_hashes: list[BlockHash],
++        max_cache_hit_length: int,
++    ) -> tuple[tuple[list[KVCacheBlock], ...], int]:
++        blocks: tuple[list[KVCacheBlock], ...] = tuple(
++            [] for _ in range(self.num_single_type_manager)
++        )
++        return blocks, 0
++
++
++class UnitaryKVCacheCoordinator(KVCacheCoordinator):
++    """
++    KV cache coordinator for models with only one KV cache group. This is the
++    case for models with only one KV cache type, e.g., all attention layers use
++    full attention or all attention layers use sliding window attention.
++    """
++
++    def __init__(
++        self,
++        kv_cache_config: KVCacheConfig,
++        max_model_len: int,
++        use_eagle: bool,
++        enable_caching: bool,
++        enable_kv_cache_events: bool,
++        dcp_world_size: int,
++    ):
++        super().__init__(
++            kv_cache_config,
++            max_model_len,
++            use_eagle,
++            enable_caching,
++            enable_kv_cache_events,
++            dcp_world_size=dcp_world_size,
++        )
++        self.kv_cache_spec = self.kv_cache_config.kv_cache_groups[0].kv_cache_spec
++        self.block_size = self.kv_cache_spec.block_size
++        self.dcp_world_size = dcp_world_size
++        if dcp_world_size > 1:
++            self.block_size *= dcp_world_size
++        assert len(self.kv_cache_config.kv_cache_groups) == 1, (
++            "UnitaryKVCacheCoordinator assumes only one kv cache group"
++        )
++
++    def find_longest_cache_hit(
++        self,
++        block_hashes: list[BlockHash],
++        max_cache_hit_length: int,
++    ) -> tuple[tuple[list[KVCacheBlock], ...], int]:
++        hit_blocks = self.single_type_managers[0].find_longest_cache_hit(
++            block_hashes=block_hashes,
++            max_length=max_cache_hit_length,
++            kv_cache_group_ids=[0],
++            block_pool=self.block_pool[0],
++            kv_cache_spec=self.kv_cache_spec,
++            use_eagle=self.use_eagle,
++            dcp_world_size=self.dcp_world_size,
++        )
++        return hit_blocks, len(hit_blocks[0]) * self.block_size
++
++
++class HybridKVCacheCoordinator(KVCacheCoordinator):
++    """
++    KV cache coordinator for hybrid models with multiple KV cache types, and
++    thus multiple kv cache groups.
++    To simplify `find_longest_cache_hit`, it only supports the combination of
++    two types of KV cache groups, and one of them must be full attention.
++    May extend to more general cases in the future.
++    """
++
++    def __init__(
++        self,
++        kv_cache_config: KVCacheConfig,
++        max_model_len: int,
++        use_eagle: bool,
++        enable_caching: bool,
++        enable_kv_cache_events: bool,
++        dcp_world_size: int,
++    ):
++        super().__init__(
++            kv_cache_config,
++            max_model_len,
++            use_eagle,
++            enable_caching,
++            enable_kv_cache_events,
++            dcp_world_size=dcp_world_size,
++        )
++        assert dcp_world_size == 1, "DCP not support hybrid attn now."
++        self.verify_and_split_kv_cache_groups()
++
++    def verify_and_split_kv_cache_groups(self) -> None:
++        """
++        Verifies that the model has exactly two types of KV cache groups, and
++        one of them is full attention. Then, split the kv cache groups into full
++        attention groups and other groups.
++        """
++        full_attention_spec: FullAttentionSpec | None = None
++        other_spec: KVCacheSpec | None = None
++        self.full_attention_group_ids: list[int] = []
++        self.other_group_ids: list[int] = []
++        for i, g in enumerate(self.kv_cache_config.kv_cache_groups):
++            if isinstance(g.kv_cache_spec, FullAttentionSpec):
++                if full_attention_spec is None:
++                    full_attention_spec = g.kv_cache_spec
++                else:
++                    assert full_attention_spec == g.kv_cache_spec, (
++                        "HybridKVCacheCoordinator assumes exactly one type of "
++                        "full attention groups now."
++                    )
++                self.full_attention_group_ids.append(i)
++            else:
++                if other_spec is None:
++                    other_spec = g.kv_cache_spec
++                else:
++                    assert other_spec == g.kv_cache_spec, (
++                        "HybridKVCacheCoordinator assumes "
++                        "exactly one other type of groups now."
++                    )
++                self.other_group_ids.append(i)
++
++        assert full_attention_spec is not None, (
++            "HybridKVCacheCoordinator assumes exactly one type of full "
++            "attention groups now."
++        )
++        assert other_spec is not None, (
++            "HybridKVCacheCoordinator assumes exactly one type of other groups now."
++        )
++
++        self.full_attention_manager_cls = FullAttentionManager
++        self.other_attention_cls = self.single_type_managers[
++            self.other_group_ids[0]
++        ].__class__
++        self.full_attention_spec = full_attention_spec
++        self.other_spec = other_spec
++        self.full_attention_block_size = self.full_attention_spec.block_size
++        self.other_block_size = self.other_spec.block_size
++
++        if self.enable_caching:
++            # this requirement is only needed for the prefix caching logic
++            divisible = self.other_block_size % self.full_attention_block_size
++            assert divisible == 0, (
++                "KVCacheCoordinator assumes the block_size of full "
++                "attention layers is divisible by other layers now."
++            )
++
++        if max(self.full_attention_group_ids) < min(self.other_group_ids):
++            self.full_attn_first = True
++        elif max(self.other_group_ids) < min(self.full_attention_group_ids):
++            self.full_attn_first = False
++        else:
++            raise ValueError(
++                "HybridKVCacheCoordinator assumes the full "
++                "attention group ids and other attention group ids "
++                "do not interleave, either full attention group ids "
++                "are before other attention group ids or vice versa."
++                "This is for simplifying merging hit_blocks_full_attn and "
++                "hit_blocks_other_attn to hit_blocks."
++            )
++
++    def find_longest_cache_hit(
++        self,
++        block_hashes: list[BlockHash],
++        max_cache_hit_length: int,
++    ) -> tuple[tuple[list[KVCacheBlock], ...], int]:
++        """
++        Find the longest cache hit for the request.
++
++        Args:
++            block_hashes: The block hashes of the request.
++            max_cache_hit_length: The maximum length of the cache hit.
++
++        Returns:
++            A tuple containing:
++                - A list of the cache hit blocks for each single type manager.
++                - The number of tokens of the longest cache hit.
++        """
++        # First, find the longest cache hit for full attention.
++        hit_blocks_full_attn = self.full_attention_manager_cls.find_longest_cache_hit(
++            block_hashes=block_hashes,
++            max_length=max_cache_hit_length,
++            kv_cache_group_ids=self.full_attention_group_ids,
++            block_pool=self.block_pool[3],  # TODO remove hardcode
++            kv_cache_spec=self.full_attention_spec,
++            use_eagle=self.use_eagle,
++        )
++        hit_length = len(hit_blocks_full_attn[0]) * self.full_attention_block_size
++
++        # Next, find the cache hit for the other attention WITHIN
++        # the cache hit of full attention.
++        hit_blocks_other_attn = self.other_attention_cls.find_longest_cache_hit(
++            block_hashes=block_hashes,
++            max_length=hit_length,
++            kv_cache_group_ids=self.other_group_ids,
++            block_pool=self.block_pool[0],  # TODO remove hardcode
++            kv_cache_spec=self.other_spec,
++            use_eagle=self.use_eagle,
++        )
++        hit_length = len(hit_blocks_other_attn[0]) * self.other_block_size
++
++        # NOTE: the prefix cache hit length must be a multiple of block_size as
++        # we don't support partial block cache hit yet. The cache hit length
++        # of other attention is ensured to be a multiple of the block size of
++        # full attention layers in current implementation, because hit_length is
++        # a multiple of other attention's block size, and other attention's
++        # block size is a multiple of full attention's block size (verified in
++        # `verify_and_split_kv_cache_groups`).
++        assert hit_length % self.full_attention_block_size == 0
++
++        # Truncate the full attention cache hit to the length of the
++        # cache hit of the other attention.
++        for group_hit_blocks in hit_blocks_full_attn:
++            del group_hit_blocks[hit_length // self.full_attention_block_size :]
++
++        # Merge the hit blocks of full attention and other attention.
++        if self.full_attn_first:
++            hit_blocks = hit_blocks_full_attn + hit_blocks_other_attn
++        else:
++            hit_blocks = hit_blocks_other_attn + hit_blocks_full_attn
++        return hit_blocks, hit_length
++
++
++def get_kv_cache_coordinator(
++    kv_cache_config: KVCacheConfig,
++    max_model_len: int,
++    use_eagle: bool,
++    enable_caching: bool,
++    enable_kv_cache_events: bool,
++    dcp_world_size: int,
++) -> KVCacheCoordinator:
++    if not enable_caching:
++        return KVCacheCoordinatorNoPrefixCache(
++            kv_cache_config,
++            max_model_len,
++            use_eagle,
++            enable_kv_cache_events,
++            dcp_world_size=dcp_world_size,
++        )
++    if len(kv_cache_config.kv_cache_groups) == 1:
++        return UnitaryKVCacheCoordinator(
++            kv_cache_config,
++            max_model_len,
++            use_eagle,
++            enable_caching,
++            enable_kv_cache_events,
++            dcp_world_size=dcp_world_size,
++        )
++    return HybridKVCacheCoordinator(
++        kv_cache_config,
++        max_model_len,
++        use_eagle,
++        enable_caching,
++        enable_kv_cache_events,
++        dcp_world_size=dcp_world_size,
++    )
+diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
+index 04dc331a1..c0144ded4 100755
+--- a/vllm/v1/core/kv_cache_manager.py
++++ b/vllm/v1/core/kv_cache_manager.py
+@@ -8,6 +8,7 @@ from vllm.distributed.kv_events import KVCacheEvent
+ from vllm.logger import init_logger
+ from vllm.utils import (sha256, Device)
+ from vllm.v1.core.block_pool import BlockPool
++from vllm.v1.core.kv_cache_coordinator import get_kv_cache_coordinator
+ from vllm.v1.core.kv_cache_utils import (BlockHashType, KVCacheBlock,
+                                          hash_request_tokens)
+ from vllm.v1.core.single_type_kv_cache_manager import (
+@@ -21,34 +22,56 @@ logger = init_logger(__name__)
+ 
+ @dataclass
+ class KVCacheBlocks:
+-    blocks: list[KVCacheBlock]
++    """
++    The allocation result of KVCacheManager, work as the interface between
++    Scheduler and KVCacheManager, to hide KVCacheManager's internal data
++    structure from the Scheduler.
++    """
++
++    blocks: tuple[list[KVCacheBlock], ...]
++    """
++    `blocks[i][j]` refers to the i-th kv_cache_group
++    and the j-th block of tokens.We don't use block of
++    tokens as the outer dimension because it assumes all
++    kv_cache_groups have the same number of blocks, which is true for now but
++    will be broken if we want to give different block_size to different
++    kv_cache_groups in the future.
++    """
+ 
+     def __add__(self, other: "KVCacheBlocks") -> "KVCacheBlocks":
+         """Adds two KVCacheBlocks instances."""
+-        return KVCacheBlocks(self.blocks + other.blocks)
+-
+-    @classmethod
+-    def create_empty(cls) -> "KVCacheBlocks":
+-        """Creates a new KVCacheBlocks instance with no blocks."""
+-        return cls([])
++        return KVCacheBlocks(
++            tuple(blk1 + blk2 for blk1, blk2 in zip(self.blocks, other.blocks))
++        )
+ 
+-    def get_block_ids(self) -> list[list[int]]:
++    def get_block_ids(
++        self,
++        allow_none: bool = False,
++    ) -> tuple[list[int], ...] | None:
+         """
+         Converts the KVCacheBlocks instance to block_ids.
+-        
++
+         Returns:
+-            list[list[int]]: A two-level list where
+-            * the outer list corresponds to KV cache groups (only 1 group now)
+-            * each inner list contains the block_ids of the blocks in that group
++            tuple[list[int], ...]: A tuple of lists where:
++                - the outer tuple corresponds to KV cache groups
++                - each inner list contains the block_ids of the blocks in that
++                  group
+         """
+-        return [[block.block_id for block in self.blocks]]
++        if allow_none and all(len(group) == 0 for group in self.blocks):
++            return None
++        return tuple([blk.block_id for blk in group] for group in self.blocks)
+ 
+-    def get_unhashed_block_ids(self) -> list[int]:
+-        """Get block_ids of unhashed blocks from KVCacheBlocks instance."""
++    def get_unhashed_block_ids(self) -> list[list[int]]:
++        """Get block_ids of unhashed blocks from KVCacheBlocks instances."""
+         return [
+-            block.block_id for block in self.blocks if block.block_hash is None
++            [block.block_id for block in group if block.block_hash is None]
++            for group in self.blocks
+         ]
+ 
++    def new_empty(self) -> "KVCacheBlocks":
++        """Creates a new KVCacheBlocks instance with no blocks."""
++        return KVCacheBlocks(tuple([] for _ in range(len(self.blocks))))
++
+ 
+ class KVCacheManager:
+ 
+@@ -61,14 +84,12 @@ class KVCacheManager:
+         use_eagle: bool = False,
+         log_stats: bool = False,
+         enable_kv_cache_events: bool = False,
++        dcp_world_size: int = 1,
+         combine_block_num: int = 1,
+     ) -> None:
+-        if len(kv_cache_config.kv_cache_groups) > 1 and \
+-            len(set(type(group.kv_cache_spec) for group in kv_cache_config.kv_cache_groups)) != 1:
+-            raise ValueError("KVCacheManager does not support hybrid types of AttentionSpec with more than 1 kv cache group")
+-        kv_cache_spec = kv_cache_config.kv_cache_groups[0].kv_cache_spec
+-        self.block_size = kv_cache_spec.block_size
+-        self.num_gpu_blocks = kv_cache_config.num_blocks
++        # kv_cache_spec = kv_cache_config.kv_cache_groups[0].kv_cache_spec
++        # self.block_size = kv_cache_spec.block_size
++        # self.num_gpu_blocks = kv_cache_config.num_blocks
+         self.max_model_len = max_model_len
+ 
+         self.enable_caching = enable_caching
+@@ -78,23 +99,56 @@ class KVCacheManager:
+         # FIXME: make prefix cache stats conditional on log_stats
+         self.prefix_cache_stats = PrefixCacheStats() if log_stats else None
+ 
+-        self.block_pool = BlockPool(self.num_gpu_blocks, enable_caching,
+-                                    enable_kv_cache_events)
+-
+-        self.single_type_manager = get_manager_for_kv_cache_spec(
+-            kv_cache_spec=kv_cache_spec,
+-            block_pool=self.block_pool,
++        self.block_size: int | None = None
++        if self.enable_caching:
++            assert (
++                len(
++                    set(
++                        g.kv_cache_spec.block_size
++                        for g in kv_cache_config.kv_cache_groups
++                    )
++                )
++                == 1
++            ), "Only one block size is supported for now"
++            self.block_size = kv_cache_config.kv_cache_groups[
++                0
++            ].kv_cache_spec.block_size
++
++            if dcp_world_size > 1:
++                assert len(kv_cache_config.kv_cache_groups) == 1
++                # Note(hc): need revisit. When both DCP and any future
++                # PCP are enabled, the block_size may need to be scaled
++                # by a factor of dcp_size × pcp_size?
++                self.block_size *= dcp_world_size
++
++        self.coordinator = get_kv_cache_coordinator(
++            kv_cache_config=kv_cache_config,
++            max_model_len=self.max_model_len,
+             use_eagle=self.use_eagle,
+-            num_kv_cache_groups=1,
+-            caching_hash_fn=self.caching_hash_fn,
+-            combine_block_num=combine_block_num,
++            enable_caching=self.enable_caching,
++            enable_kv_cache_events=enable_kv_cache_events,
++            dcp_world_size=dcp_world_size,
+         )
++        self.num_kv_cache_groups = len(kv_cache_config.kv_cache_groups)
++        self.block_pool = self.coordinator.block_pool
++        self.kv_cache_config = kv_cache_config
++
++        # self.block_pool = BlockPool(self.num_gpu_blocks, enable_caching,
++        #                             enable_kv_cache_events)
++
++        # self.coordinator = get_manager_for_kv_cache_spec(
++        #     kv_cache_spec=kv_cache_spec,
++        #     block_pool=self.block_pool,
++        #     use_eagle=self.use_eagle,
++        #     num_kv_cache_groups=1,
++        #     caching_hash_fn=self.caching_hash_fn,
++        # )
+ 
+         # Mapping from request ID to kv block hashes.
+         # This is to avoid recomputing the block hashes for each call of
+         # `get_computed_blocks` or `allocate_slots`.
+-        self.req_to_block_hashes: defaultdict[
+-            str, list[BlockHashType]] = defaultdict(list)
++        # self.req_to_block_hashes: defaultdict[
++        #     str, list[BlockHashType]] = defaultdict(list)
+ 
+     @property
+     def usage(self) -> float:
+@@ -103,9 +157,9 @@ class KVCacheManager:
+         Returns:
+             The KV cache usage (between 0.0 and 1.0).
+         """
+-        return self.block_pool.get_usage()
++        return max([bp.get_usage() for bp in self.coordinator.block_pool])
+ 
+-    def make_prefix_cache_stats(self) -> Optional[PrefixCacheStats]:
++    def make_prefix_cache_stats(self) -> PrefixCacheStats | None:
+         """Get (and reset) the prefix cache stats.
+ 
+         Returns:
+@@ -117,8 +171,7 @@ class KVCacheManager:
+         self.prefix_cache_stats = PrefixCacheStats()
+         return stats
+ 
+-    def get_computed_blocks(self,
+-                            request: Request) -> tuple[KVCacheBlocks, int]:
++    def get_computed_blocks(self, request: Request) -> tuple[KVCacheBlocks, int]:
+         """Get the computed (cached) blocks for the request.
+         Note that the computed blocks must be full.
+ 
+@@ -132,21 +185,11 @@ class KVCacheManager:
+         """
+         # Prefix caching is disabled or
+         # When the request requires prompt logprobs, we skip prefix caching.
+-        if (not self.enable_caching
+-                or request.sampling_params.prompt_logprobs is not None):
+-            return KVCacheBlocks.create_empty(), 0
+-
+-        # The block hashes for the request may already be computed
+-        # if the scheduler has tried to schedule the request before.
+-        block_hashes = self.req_to_block_hashes[request.request_id]
+-        if not block_hashes:
+-            block_hashes = hash_request_tokens(self.caching_hash_fn,
+-                                               self.block_size, request)
+-            self.req_to_block_hashes[request.request_id] = block_hashes
+-
+-        if self.log_stats:
+-            assert self.prefix_cache_stats is not None
+-            self.prefix_cache_stats.requests += 1
++        if not self.enable_caching or (
++            request.sampling_params is not None
++            and request.sampling_params.prompt_logprobs is not None
++        ):
++            return self.create_empty_block_list(), 0
+ 
+         # NOTE: When all tokens hit the cache, we must recompute the last token
+         # to obtain logits. Thus, set max_cache_hit_length to prompt_length - 1.
+@@ -155,32 +198,38 @@ class KVCacheManager:
+         # num_computed_tokens to be block-size aligned. Removing this limitation
+         # could slightly improve performance in the future.
+         max_cache_hit_length = request.num_tokens - 1
+-
+-        computed_blocks = self.single_type_manager.find_longest_cache_hit(
+-            block_hashes, max_cache_hit_length)
+-        # NOTE(woosuk): Since incomplete blocks are not eligible for
+-        # sharing, `num_computed_tokens` is always a multiple of
+-        # `block_size`.
+-        num_computed_tokens = len(computed_blocks) * self.block_size
++        computed_blocks, num_new_computed_tokens = (
++            self.coordinator.find_longest_cache_hit(
++                request.block_hashes, max_cache_hit_length
++            )
++        )
+ 
+         if self.log_stats:
+             assert self.prefix_cache_stats is not None
+-            self.prefix_cache_stats.queries += request.num_tokens
+-            self.prefix_cache_stats.hits += num_computed_tokens
+-
+-        return KVCacheBlocks(computed_blocks), num_computed_tokens
++            if request.num_preemptions > 0:
++                # Previously preempted request
++                self.prefix_cache_stats.preempted_requests += 1
++                self.prefix_cache_stats.preempted_queries += request.num_tokens
++                self.prefix_cache_stats.preempted_hits += num_new_computed_tokens
++            else:
++                # New request
++                self.prefix_cache_stats.requests += 1
++                self.prefix_cache_stats.queries += request.num_tokens
++                self.prefix_cache_stats.hits += num_new_computed_tokens
++
++        return KVCacheBlocks(computed_blocks), num_new_computed_tokens
+ 
+     def allocate_slots(
+         self,
+         request: Request,
+         num_new_tokens: int,
+         num_new_computed_tokens: int = 0,
+-        new_computed_blocks: Optional[KVCacheBlocks] = None,
+-        num_draft_tokens: int = 0,
++        new_computed_blocks: KVCacheBlocks | None = None,
+         num_lookahead_tokens: int = 0,
+         delay_cache_blocks: bool = False,
+-        is_swap: bool = False
+-    ) -> Optional[KVCacheBlocks]:
++        is_swap: bool = False,
++        num_encoder_tokens: int = 0,
++    ) -> KVCacheBlocks | None:
+         """Add slots for a request with new tokens to append.
+ 
+         Args:
+@@ -190,10 +239,10 @@ class KVCacheManager:
+                 already been computed locally (i.e. new_computed_blocks).
+             num_new_computed_tokens: The number of new computed tokens just
+                 hitting the prefix caching, excluding external tokens.
+-            new_computed_blocks: The cached blocks for the above new computed 
++            new_computed_blocks: The cached blocks for the above new computed
+                 tokens.
+             num_lookahead_tokens: The number of speculative tokens to allocate.
+-                This is used by spec decode proposers with kv-cache such 
++                This is used by spec decode proposers with kv-cache such
+                 as eagle.
+             delay_cache_blocks: Whether to skip caching the blocks. This is
+                 used by P/D when allocating blocks used in a KV transfer
+@@ -222,7 +271,9 @@ class KVCacheManager:
+         if new_computed_blocks is not None:
+             new_computed_block_list = new_computed_blocks.blocks
+         else:
+-            new_computed_block_list = []
++            new_computed_block_list = tuple(
++                [] for _ in range(len(self.kv_cache_config.kv_cache_groups))
++            )
+ 
+         # Free the blocks that are skipped during the attention computation
+         # (e.g., tokens outside the sliding window).
+@@ -230,67 +281,73 @@ class KVCacheManager:
+         # insufficient free blocks.
+         # Should call this function before allocating new blocks to reduce
+         # the number of evicted blocks.
+-        self.single_type_manager.remove_skipped_blocks(
+-            request.request_id, request.num_computed_tokens)
++        self.coordinator.remove_skipped_blocks(
++            request.request_id, request.num_computed_tokens
++        )
+ 
+         # The number of computed tokens is the number of computed tokens plus
+         # the new prefix caching hits
+-        num_computed_tokens = (request.num_computed_tokens +
+-                               num_new_computed_tokens)
++        num_computed_tokens = request.num_computed_tokens + num_new_computed_tokens
+         num_tokens_need_slot = min(
+             num_computed_tokens + num_new_tokens + num_lookahead_tokens,
+-            self.max_model_len)
+-        num_blocks_to_allocate = (
+-            self.single_type_manager.get_num_blocks_to_allocate(
+-                request_id=request.request_id,
+-                num_tokens=num_tokens_need_slot,
+-                new_computed_blocks=new_computed_block_list,
+-            ))
+-
+-        if num_blocks_to_allocate > self.block_pool.get_num_free_blocks():
++            self.max_model_len,
++        )
++
++        num_blocks_to_allocate = self.coordinator.get_num_blocks_to_allocate(
++            request_id=request.request_id,
++            num_tokens=num_tokens_need_slot,
++            new_computed_blocks=new_computed_block_list,
++            num_encoder_tokens=num_encoder_tokens,
++        )
++
++        if num_blocks_to_allocate > min([bp.get_num_free_blocks() for bp in self.coordinator.block_pool]):
+             # Cannot allocate new blocks
+             return None
+ 
+         # Touch the computed blocks to make sure they won't be evicted.
+         if self.enable_caching:
+-            self.block_pool.touch(new_computed_block_list)
++            for block_pool in self.coordinator.block_pool:
++                block_pool.touch(new_computed_block_list)
+         else:
+-            assert not new_computed_block_list, (
+-                "Computed blocks should be empty when "
+-                "prefix caching is disabled")
++            assert not any(new_computed_block_list), (
++                "Computed blocks should be empty when prefix caching is disabled"
++            )
+ 
+         # Append the new computed blocks to the request blocks until now to
+         # avoid the case where the new blocks cannot be allocated.
+-        self.single_type_manager.save_new_computed_blocks(
+-            request.request_id, new_computed_block_list)
++        self.coordinator.save_new_computed_blocks(
++            request.request_id, new_computed_block_list
++        )
+ 
+-        new_blocks = self.single_type_manager.allocate_new_blocks(
+-            request.request_id, num_tokens_need_slot)
++        new_blocks = self.coordinator.allocate_new_blocks(
++            request.request_id, num_tokens_need_slot, num_encoder_tokens
++        )
+ 
+         # P/D: delay caching blocks if we have to recv from
+         # remote. Update state for locally cached blocks.
+         if not self.enable_caching or delay_cache_blocks:
+             return KVCacheBlocks(new_blocks)
+ 
+-        # Speculated tokens might be rejected in the future, so we does
+-        # not cache any speculated tokens. We only cache blocks with
+-        # generated (accepted) tokens.
+-        num_tokens_to_cache = min(num_computed_tokens + num_new_tokens, request.num_tokens)
+-        self.single_type_manager.cache_blocks(
+-            request, self.req_to_block_hashes[request.request_id],
+-            num_tokens_to_cache)
++        # NOTE(woosuk): We want to commit (cache) up to num_computed_tokens +
++        # num_new_tokens, but must exclude "non-committable" tokens (e.g.,
++        # draft tokens that could be rejected). Therefore, we cap the number
++        # at `request.num_tokens`, ensuring only "finalized" tokens are cached.
++        num_tokens_to_cache = min(
++            num_computed_tokens + num_new_tokens, request.num_tokens
++        )
++        self.coordinator.cache_blocks(request, num_tokens_to_cache)
+ 
+         return KVCacheBlocks(new_blocks)
+ 
+     def free(self, request: Request) -> None:
+         """Free the blocks allocated for the request.
+-        We free the blocks in reverse order so that he tail blocks are evicted 
++        We free the blocks in reverse order so that the tail blocks are evicted
+         first when caching is enabled.
+ 
+         Args:
+             request: The request to free the blocks.
+         """
+-        self.single_type_manager.free(request.request_id)
++        self.coordinator.free(request.request_id)
+ 
+     def reset_prefix_cache(self) -> bool:
+         """Reset prefix cache. This function may be used in RLHF
+@@ -301,65 +358,46 @@ class KVCacheManager:
+             bool: True if the prefix cache is successfully reset,
+             False otherwise.
+         """
+-        if not self.block_pool.reset_prefix_cache():
++        if not all([block_pool.reset_prefix_cache() for block_pool in self.coordinator.block_pool]):
+             return False
+         if self.log_stats:
+             assert self.prefix_cache_stats is not None
+             self.prefix_cache_stats.reset = True
+         return True
+ 
+-    def get_num_common_prefix_blocks(
+-        self,
+-        request: Request,
+-        num_running_requests: int,
+-    ) -> list[int]:
+-        """Calculate the number of common prefix blocks shared by all requests
+-        in the RUNNING state for each kv cache group.
++    def get_num_common_prefix_blocks(self, running_request_id: str) -> list[int]:
++        """Calculate the number of common prefix blocks for each kv cache group.
+ 
+-        The function determines this by selecting any request and iterating
+-        through its blocks.  A block is considered a common prefix block if its
+-        `ref_cnt` equals the total number of requests in the RUNNING state.
++        The function selects a running request and iterates through its blocks.
++        A block is considered a common prefix block if ALL requests with
++        allocated KV cache share it (i.e., ref_cnt equals the number of entries
++        in req_to_blocks).
+ 
+-        NOTE(woosuk): The number of requests in the RUNNING state is **greater
++        NOTE(woosuk): The number of requests with allocated KV cache is **greater
+         than or equal to** the number of requests scheduled in the current step.
+-        This is because the RUNNING state only indicates that:
++        This is because having allocated KV cache only indicates that:
+         1. The request has not yet finished, and
+         2. The request holds its blocks unfreed.
+ 
+-        While all scheduled requests must be in the RUNNING state, the inverse
+-        is not necessarily true. There may be RUNNING requests that are not
+-        scheduled in the current step.
++        While all scheduled requests must have allocated KV cache, the inverse
++        is not necessarily true. There may be requests with allocated KV cache
++        that are not scheduled in the current step.
+ 
+         This can result in an edge case where the number of common prefix blocks
+         is 0, even though all scheduled requests share a common prefix. This
+-        occurs because there may be unscheduled RUNNING requests that do not
+-        share the common prefix. Currently, this case cannot be easily detected,
+-        so the function returns 0 in such cases.
++        occurs because there may be unscheduled requests that do not share the
++        common prefix. Currently, this case cannot be easily detected, so the
++        function returns 0 in such cases.
+ 
+         Args:
+-            request: Any request in the RUNNING state, used to identify the
+-                common prefix blocks.
+-            num_running_requests: The total number of requests in the RUNNING
+-                state. This can be different from the number of scheduled
+-                requests in the current step.
++            running_request_id: The request ID of any running request, used to
++                identify the common prefix blocks.
+ 
+         Returns:
+-            list[int]: The number of common prefix blocks for each kv cache 
++            list[int]: The number of common prefix blocks for each kv cache
+             group.
+         """
+-        assert request.status == RequestStatus.RUNNING
+-        return [
+-            self.single_type_manager.get_num_common_prefix_blocks(
+-                request.request_id, num_running_requests)
+-        ]
+-
+-    def free_block_hashes(self, request: Request) -> None:
+-        """Discard the block hashes for the request.
+-
+-        NOTE: Unlike `free`, this method should be called only when the request
+-        is finished, not when it is preempted.
+-        """
+-        self.req_to_block_hashes.pop(request.request_id, None)
++        return self.coordinator.get_num_common_prefix_blocks(running_request_id)
+ 
+     def take_events(self) -> list[KVCacheEvent]:
+         """Take the KV cache events from the block pool.
+@@ -367,14 +405,24 @@ class KVCacheManager:
+         Returns:
+             A list of KV cache events.
+         """
+-        return self.block_pool.take_events()
++        return self.block_pool[0].take_events()  # Assuming all block pools are deterministic and same
+ 
+-    def get_block_ids(self, request_id: str) -> list[list[int]]:
++    def get_blocks(self, request_id: str) -> KVCacheBlocks:
++        """Get the blocks of a request."""
++        return KVCacheBlocks(self.coordinator.get_blocks(request_id))
++
++    def get_block_ids(self, request_id: str) -> tuple[list[int], ...]:
+         """Get the block ids of a request."""
+-        if request_id not in self.single_type_manager.req_to_blocks:
+-            return [[]]
+-        return KVCacheBlocks(self.single_type_manager.req_to_blocks[request_id]
+-                             ).get_block_ids()
++        return self.get_blocks(request_id).get_block_ids()
++
++    def cache_blocks(self, request: Request, num_computed_tokens: int) -> None:
++        """Cache the blocks for the request, if enabled."""
++        if self.enable_caching:
++            self.coordinator.cache_blocks(request, num_computed_tokens)
++
++    def create_empty_block_list(self) -> KVCacheBlocks:
++        """Creates a new KVCacheBlocks instance with no blocks."""
++        return KVCacheBlocks(tuple([] for _ in range(self.num_kv_cache_groups)))
+ 
+ class CpuNpuKVCacheManager:
+ 
+diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
+index e9648cc31..532a1982a 100644
+--- a/vllm/v1/core/kv_cache_utils.py
++++ b/vllm/v1/core/kv_cache_utils.py
+@@ -1,22 +1,27 @@
+ # SPDX-License-Identifier: Apache-2.0
+ """KV-Cache Utilities."""
++import copy
+ import os
+-from collections import deque
+-from collections.abc import Sequence
++from collections import defaultdict, deque
++from collections.abc import Callable, Iterable, Sequence
+ from dataclasses import dataclass
+-from typing import Any, Callable, NamedTuple, Optional
++from typing import Any, Callable, NamedTuple, Optional, NewType, TypeAlias
+ 
+ from vllm.config import VllmConfig
+ from vllm.logger import init_logger
+-from vllm.utils import GiB_bytes, sha256
++from vllm.utils import GiB_bytes, cdiv, sha256
+ from vllm.v1.kv_cache_interface import (FullAttentionSpec, KVCacheConfig,
+                                         KVCacheGroupSpec, KVCacheSpec,
+-                                        KVCacheTensor, SlidingWindowSpec)
++                                        KVCacheTensor, SlidingWindowSpec, UniformTypeKVCacheSpecs)
+ from vllm.v1.metrics.stats import PrefixCacheStats
+ from vllm.v1.request import Request
+ 
+ logger = init_logger(__name__)
+ 
++# BlockHash represents the hash of a single KV-cache block used for
++# prefix caching.  Treating it as a distinct type from ``bytes`` helps
++# catch accidental misuse when passing around raw byte strings.
++BlockHash = NewType("BlockHash", bytes)
+ 
+ class BlockHashType(NamedTuple):
+     """Hash value of a block (int), the token IDs in the block, and extra keys.
+@@ -710,12 +715,12 @@ def get_kv_cache_config(vllm_config: VllmConfig,
+     """
+     check_enough_kv_cache_memory(vllm_config, kv_cache_spec, available_memory)
+     unify_hybrid_kv_cache_specs(kv_cache_spec)
+-    if is_kv_cache_type_uniform(kv_cache_spec):
++    # if is_kv_cache_type_uniform(kv_cache_spec):
+         # KV cache of all layers are the same, which is true for
+         # most models. Allocate the same amount of memory for
+         # each layer.
+-        return _get_kv_cache_config_uniform_type(vllm_config, kv_cache_spec,
+-                                                 available_memory)
++    return _get_kv_cache_config_uniform_type(vllm_config, kv_cache_spec,
++                                                available_memory)
+ 
+     if is_kv_cache_class_uniform(kv_cache_spec):
+         return _get_kv_cache_config_different_type(vllm_config, kv_cache_spec,
+@@ -814,3 +819,549 @@ def unify_kv_cache_configs(kv_cache_configs: list[KVCacheConfig]):
+         kv_cache_config.num_blocks = min_num_blocks
+ 
+     return kv_cache_configs
++
++
++def generate_scheduler_kv_cache_config(
++    kv_cache_configs: list[KVCacheConfig],
++) -> KVCacheConfig:
++    """
++    Generate the KV cache configuration for the scheduler.
++    """
++    assert all(
++        [cfg.num_blocks == kv_cache_configs[0].num_blocks for cfg in kv_cache_configs]
++    )
++    # All workers have the same kv_cache_config except layer names, so use
++    # an arbitrary one to initialize the scheduler.
++    cfg = copy.deepcopy(kv_cache_configs[0])
++    for group in cfg.kv_cache_groups:
++        if isinstance(group.kv_cache_spec, UniformTypeKVCacheSpecs):
++            # All layers in the UniformTypeKVCacheSpecs have the same type,
++            # so use an arbitrary one to initialize the scheduler.
++            group.kv_cache_spec = next(
++                iter(group.kv_cache_spec.kv_cache_specs.values())
++            )
++    return cfg
++
++
++def get_kv_cache_configs(
++    vllm_config: VllmConfig,
++    kv_cache_specs: list[dict[str, KVCacheSpec]],
++    available_memory: list[int],
++) -> list[KVCacheConfig]:
++    """
++    Generates the KV cache configurations for a model.
++    Since we use a shared centralized controller for all workers, we need the
++    `kv_cache_config` to be consistent across all workers to make sure
++    the KV cache allocation can be applied to all workers. However, different
++    workers may have different memory available, and different type of layers
++    (when pipeline parallel is enabled). To handle the difference between
++    workers, the current implementation is:
++    1. Merge the KV cache specs of all workers to get the KVCacheSpecs for
++       the whole model.
++    2. Generate the KV cache groups based on the layer ratio of the whole model.
++    3. Generate the KV cache configs for each worker based on the KV cache
++       grouping strategy. (This is reasonable because the layer ratio of
++       different PP stages are similar.)
++    4. Change the num_blocks of each worker to the smallest among all workers
++       and shrink tensor sizes proportionally to avoid allocating unused memory.
++
++    Args:
++        vllm_config: The global VllmConfig
++        kv_cache_specs: List of dict[layer_name, KVCacheSpec] for each worker.
++        available_memory: Memory available for KV cache in bytes for each
++            worker.
++
++    Returns:
++        The generated KVCacheConfigs for each worker.
++    """
++
++    # Check if the available memory is enough for each worker.
++    for kv_cache_spec_one_worker, available_memory_one_worker in zip(
++        kv_cache_specs, available_memory
++    ):
++        check_enough_kv_cache_memory(
++            vllm_config, kv_cache_spec_one_worker, available_memory_one_worker
++        )
++
++    # Merge the KV cache specs of all workers. Different PP stages may have
++    # different layer names, and different TP ranks of the same PP stage should
++    # have the same KV cache spec.
++    merged_kv_cache_specs: dict[str, KVCacheSpec] = {}
++    for kv_cache_spec_one_worker in kv_cache_specs:
++        for layer_name, layer_spec in kv_cache_spec_one_worker.items():
++            if layer_name not in merged_kv_cache_specs:
++                merged_kv_cache_specs[layer_name] = layer_spec
++            else:
++                assert merged_kv_cache_specs[layer_name] == layer_spec, (
++                    "The KV cache specs for the same layer are different "
++                    "across workers. This is not supported yet."
++                )
++    global_kv_cache_groups = get_kv_cache_groups(vllm_config, merged_kv_cache_specs)
++
++    kv_cache_configs: list[KVCacheConfig] = []
++    for kv_cache_spec_one_worker, available_memory_one_worker in zip(
++        kv_cache_specs, available_memory
++    ):
++        kv_cache_groups_one_worker: list[KVCacheGroupSpec] = []
++        for group in global_kv_cache_groups:
++            group_layer_names_one_worker = [
++                layer_name
++                for layer_name in group.layer_names
++                if layer_name in kv_cache_spec_one_worker
++            ]
++            kv_cache_groups_one_worker.append(
++                KVCacheGroupSpec(group_layer_names_one_worker, group.kv_cache_spec)
++            )
++        assert sum(
++            len(group.layer_names) for group in kv_cache_groups_one_worker
++        ) == len(kv_cache_spec_one_worker), "Some layers are not assigned to any group."
++        kv_cache_configs.append(
++            get_kv_cache_config_from_groups(
++                vllm_config,
++                kv_cache_groups_one_worker,
++                kv_cache_spec_one_worker,
++                available_memory_one_worker,
++            )
++        )
++
++    # Change the num_blocks of each rank to the smallest among all ranks.
++    # We also need to shrink the tensor size proportionally to avoid
++    # allocating unused memory.
++    min_num_blocks = min(
++        kv_cache_config.num_blocks for kv_cache_config in kv_cache_configs
++    )
++    for kv_cache_config in kv_cache_configs:
++        num_blocks_old = kv_cache_config.num_blocks
++        kv_cache_config.num_blocks = min_num_blocks
++
++        # Shrink tensor size proportionally
++        for tensor in kv_cache_config.tensors:
++            assert tensor.size % num_blocks_old == 0
++            tensor.size = tensor.size // num_blocks_old * min_num_blocks
++
++        if len(kv_cache_config.kv_cache_groups) > 0:
++            _report_kv_cache_config(vllm_config, kv_cache_config)
++
++    return kv_cache_configs
++
++
++def get_kv_cache_config_from_groups(
++    vllm_config: VllmConfig,
++    kv_cache_groups: list[KVCacheGroupSpec],
++    kv_cache_specs: dict[str, KVCacheSpec],
++    available_memory: int,
++) -> KVCacheConfig:
++    """
++    Generate the KV cache configuration from the KV cache groups and spec
++    of each layer.
++
++    Args:
++        vllm_config: The global VllmConfig
++        kv_cache_groups: The KV cache groups
++        kv_cache_specs: The KV cache spec of each attention layer in the model
++        available_memory: Memory available for KV cache in bytes
++    Returns:
++        The generated KVCacheConfig
++    """
++    if len(kv_cache_groups) == 0:
++        # Attention free models do not have KV cache.
++        # Return num_blocks=1 as BlockPool always needs a null_block.
++        return KVCacheConfig(
++            num_blocks=1,
++            tensors=[],
++            kv_cache_groups=kv_cache_groups,
++        )
++
++    # Determine how model runners should initialize the KV cache tensors.
++    if len(kv_cache_groups) == 1 and isinstance(
++        kv_cache_groups[0].kv_cache_spec, UniformTypeKVCacheSpecs
++    ):
++        # Special case: all layers have the same type of KV cache but with
++        # different hidden size. Allocate different amount of memory for each
++        # layer based on its hidden size.
++        num_blocks = (
++            available_memory // kv_cache_groups[0].kv_cache_spec.page_size_bytes
++        )
++        num_blocks = may_override_num_blocks(vllm_config, num_blocks)
++        per_layer_specs = kv_cache_groups[0].kv_cache_spec.kv_cache_specs
++        kv_cache_tensors = [
++            KVCacheTensor(
++                size=per_layer_specs[layer_name].page_size_bytes * num_blocks,
++                shared_by=[layer_name],
++            )
++            for layer_name in kv_cache_groups[0].layer_names
++        ]
++    else:
++        # General case:
++        # We will have group_size memory pools, each is shared by one layer from
++        # each group. As layers of different groups have different block table,
++        # they will use different parts of the shared Tensor.
++        # The memory layout for 3 groups (full.0, full.1), (sw.0, sw.2),
++        # (sw.1, padding) will be: (group_size = 2)
++        # full.0, sw.0, sw.1: share a Tensor with size=available_memory//2
++        # full.1, sw.2: share another Tensor with size=available_memory//2
++        group_size = max(len(group.layer_names) for group in kv_cache_groups)
++
++        page_size = get_uniform_page_size(kv_cache_specs)
++        assert group_size > 0, "group_size must be greater than 0"
++        num_blocks = get_num_blocks(
++            vllm_config, group_size, available_memory, page_size
++        )
++
++        # NOTE: NPU does not allow sharing across groups, so we adjust the computation here.
++        num_blocks //= len(kv_cache_groups)
++
++        kv_cache_tensors = []
++        for i in range(group_size):
++            shared_by = []
++            for j in range(len(kv_cache_groups)):
++                if i < len(kv_cache_groups[j].layer_names):
++                    shared_by.append(kv_cache_groups[j].layer_names[i])
++            kv_cache_tensors.append(
++                KVCacheTensor(size=page_size * num_blocks, shared_by=shared_by)
++            )
++
++    return KVCacheConfig(
++        num_blocks=num_blocks,
++        tensors=kv_cache_tensors,
++        kv_cache_groups=kv_cache_groups,
++    )
++
++
++def may_override_num_blocks(vllm_config: VllmConfig, num_blocks: int) -> int:
++    """
++    Override the number of kv cache blocks if `num_gpu_blocks_override` is set.
++    """
++    if vllm_config.cache_config.num_gpu_blocks_override is not None:
++        num_gpu_blocks_override = vllm_config.cache_config.num_gpu_blocks_override
++        logger.info(
++            "Overriding num_gpu_blocks=%d with num_gpu_blocks_override=%d",
++            num_blocks,
++            num_gpu_blocks_override,
++        )
++        num_blocks = num_gpu_blocks_override
++
++    return num_blocks
++
++
++def get_num_blocks(
++    vllm_config: VllmConfig, num_layers: int, available_memory: int, page_size: int
++) -> int:
++    """
++    Get the number of kv cache blocks.
++
++    Args:
++        vllm_config: The global VllmConfig
++        num_layers: The number of layers
++        available_memory: Memory available for KV cache in bytes.
++        page_size: The page size of the KV cache.
++    """
++    num_blocks = int(available_memory // page_size // num_layers)
++    num_blocks = max(num_blocks, 0)
++    num_blocks = may_override_num_blocks(vllm_config, num_blocks)
++    return num_blocks
++
++
++def get_uniform_page_size(kv_cache_spec: dict[str, KVCacheSpec]) -> int:
++    """
++    Get the page size of the KV cache.
++    """
++    page_sizes = set(layer.page_size_bytes for layer in kv_cache_spec.values())
++    assert len(page_sizes) == 1
++    return page_sizes.pop()
++
++
++def max_memory_usage_bytes(
++    vllm_config: VllmConfig, kv_cache_specs: Iterable[KVCacheSpec]
++) -> int:
++    """
++    Get the maximum memory usage in bytes for the given KV cache specs.
++    """
++    return sum(spec.max_memory_usage_bytes(vllm_config) for spec in kv_cache_specs)
++
++
++def get_max_concurrency_for_kv_cache_config(
++    vllm_config: VllmConfig, kv_cache_config: KVCacheConfig
++) -> float:
++    """
++    Get the maximum concurrency for the given KV cache configuration.
++    """
++    num_layer_per_group = max(
++        len(group.layer_names) for group in kv_cache_config.kv_cache_groups
++    )
++    max_memory_usage_per_request = num_layer_per_group * max_memory_usage_bytes(
++        vllm_config, (group.kv_cache_spec for group in kv_cache_config.kv_cache_groups)
++    )
++    memory_per_block = (
++        kv_cache_config.kv_cache_groups[0].kv_cache_spec.page_size_bytes
++        * num_layer_per_group
++    )
++    num_block_per_request = cdiv(max_memory_usage_per_request, memory_per_block)
++    max_concurrency = kv_cache_config.num_blocks / num_block_per_request
++    return max_concurrency
++
++
++def _report_kv_cache_config(
++    vllm_config: VllmConfig, kv_cache_config: KVCacheConfig
++) -> None:
++    """
++    Log resolved KV cache configuration.
++
++    Args:
++        vllm_config: The global VllmConfig
++        kv_cache_config: The resolved KV cache configuration
++    """
++    min_block_size = min(
++        [group.kv_cache_spec.block_size for group in kv_cache_config.kv_cache_groups]
++    )
++
++    # Log the KV cache size and maximum concurrency.
++    num_tokens = (
++        kv_cache_config.num_blocks
++        // len(kv_cache_config.kv_cache_groups)
++        * min_block_size
++    )
++    # if vllm_config.parallel_config.decode_context_parallel_size > 1:
++    #     num_tokens *= vllm_config.parallel_config.decode_context_parallel_size
++    #     logger.info(
++    #         "Multiplying the GPU KV cache size by the dcp_world_size %d.",
++    #         vllm_config.parallel_config.decode_context_parallel_size,
++    #     )
++    num_tokens_str = f"{num_tokens:,}"
++    logger.info("GPU KV cache size: %s tokens", num_tokens_str)
++    max_model_len_str = f"{vllm_config.model_config.max_model_len:,}"
++    max_concurrency = get_max_concurrency_for_kv_cache_config(
++        vllm_config, kv_cache_config
++    )
++    logger.info(
++        "Maximum concurrency for %s tokens per request: %.2fx",
++        max_model_len_str,
++        max_concurrency,
++    )
++
++
++def get_kv_cache_groups(
++    vllm_config: VllmConfig, kv_cache_spec: dict[str, KVCacheSpec]
++) -> list[KVCacheGroupSpec]:
++    """
++    Split the layers in the model into groups with the same KV cache spec.
++
++    Args:
++        vllm_config: The global VllmConfig
++        kv_cache_spec: The kv cache spec of each attention layer in the model
++
++    Returns:
++        The generated KVCacheGroups
++    """
++    if is_kv_cache_type_attention_free(kv_cache_spec):
++        # This returns an empty list to allow for the KVCacheManager to handle
++        # attention free models.
++        return []
++    elif is_kv_cache_spec_uniform(kv_cache_spec):
++        # KV cache of all layers are the same, which is true for
++        # most models. Allocate the same amount of memory for
++        # each layer.
++        return _get_kv_cache_groups_uniform_spec(kv_cache_spec)
++    elif uniform_spec := UniformTypeKVCacheSpecs.from_specs(kv_cache_spec):
++        # All layers need the same number of token slots (e.g., all layers are
++        # full attention, or all layers are sliding window attention with the
++        # same window size). Put all layers into one group.
++        return _get_kv_cache_groups_uniform_type(uniform_spec)
++    elif is_kv_cache_page_size_uniform(kv_cache_spec):
++        # Model contains multiple attention types, but KV cache of all layers
++        # have the same physical memory per block per layer. Split the layers
++        # into groups with the same number of layers, and thus same total page
++        # size.
++        return _get_kv_cache_groups_uniform_page_size(kv_cache_spec)
++
++    raise NotImplementedError("Check block_size is sufficiently high (e.g., Qwen3-Next: 512 for tp=4)")
++
++
++def is_kv_cache_spec_uniform(kv_cache_spec: dict[str, KVCacheSpec]) -> bool:
++    """
++    Whether all layers in the given KVCacheSpec have the same KV cache spec.
++    Note that we regard FullAttentionSpec with and without sliding window as
++    the same type.
++
++    Args:
++        kv_cache_spec: The kv cache spec of each attention layer in the model
++
++    Returns:
++        True if all layers have the same type, False otherwise.
++    """
++
++    if not kv_cache_spec:
++        # Encoder-only models do not have KV cache, kv_cache_type can be
++        # regarded as uniform.
++        return True
++    try:
++        kv_cache_spec_values = list(kv_cache_spec.values())
++        _ = kv_cache_spec_values[0].merge(kv_cache_spec_values)
++    except AssertionError:
++        return False
++    return True
++
++
++def _get_kv_cache_groups_uniform_spec(
++    kv_cache_specs: dict[str, KVCacheSpec],
++) -> list[KVCacheGroupSpec]:
++    """
++    Generates the KV cache configuration for a model with the same KV cache
++    spec for all layers.
++
++    Args:
++        kv_cache_specs: The kv cache spec of each attention layer in the model
++
++    Returns:
++        The generated KVCacheGroupSpecs
++    """
++
++    return create_kv_cache_group_specs(kv_cache_specs, [list(kv_cache_specs.keys())])
++
++
++def _get_kv_cache_groups_uniform_type(
++    spec: UniformTypeKVCacheSpecs,
++) -> list[KVCacheGroupSpec]:
++    """
++    Generates the KV cache configuration for a model with one type of KV cache
++    but different hidden sizes. All layers are merged into one group.
++
++    Args:
++        spec: The UniformTypeKVCacheSpecs of the model
++
++    Returns:
++        The generated KVCacheGroupSpecs
++    """
++
++    return [KVCacheGroupSpec(list(spec.kv_cache_specs.keys()), spec)]
++
++
++def is_kv_cache_page_size_uniform(kv_cache_spec: dict[str, KVCacheSpec]) -> bool:
++    """
++    Whether all layers in the given KVCacheSpec have the same page size.
++    Args:
++        kv_cache_spec: The KVCacheSpec of each attention layer in the model
++
++    Returns:
++        True if all layers have the same page size, False otherwise.
++    """
++
++    page_sizes = {layer.page_size_bytes for layer in kv_cache_spec.values()}
++    return len(page_sizes) == 1
++
++
++def is_kv_cache_type_attention_free(kv_cache_spec: dict[str, KVCacheSpec]) -> bool:
++    # kv_cache_spec is an empty dict for attention free models
++    return not kv_cache_spec
++
++
++def _get_kv_cache_groups_uniform_page_size(
++    kv_cache_spec: dict[str, KVCacheSpec],
++) -> list[KVCacheGroupSpec]:
++    """
++    Generates the KV cache groups for hybrid models with multiple
++    attention types but still with a uniform page size (physical memory per
++    block per layer) for all layers.
++
++    Detailed explanation about kv cache management of hybrid models:
++    The layers in the models are repeated with some patterns, e.g., a model
++    with 10 full attention layers and 20 sliding window attention layers can be
++    regarded as repeating the pattern (1 * full, 2 * sw) 10 times.
++    The KVCacheManager allocates different block tables for each of the 3 layers
++    in the pattern, and repeats each of them 10 times to generate the
++    block_table for the 30 layers in the model.
++    Therefore, we can group the layers in the model into 3 kv_cache_groups, each
++    of which contains 10 layers in the model.
++    The KVCacheManager allocates the block_table for each group based on its
++    kv_cache spec, and the model runner applies the block table to each layer
++    in the group.
++    For example:
++    1. A model only uses full attention. The pattern is
++    (num_hidden_layers * full), so there is only one group and the block table
++    is shared by all layers. It is already handled by
++    `_get_kv_cache_config_uniform_type`.
++    2. A model with 10 full attention layers and 20 sliding window
++    attention layers. There are 3 layers in the pattern (1 * full, 2 * sw), so
++    there are 3 kv_cache_groups, each of which represents 10 layers.
++
++    To simplify the implementation, we make the following assumptions:
++    1. Physical memory per block: Must be the same across all KV cache groups.
++    Breaking this assumption is non-trivial due to memory fragmentation concerns
++    when allocating blocks of different sizes.
++    2. Tokens per block (block_size): Currently, we directly use
++    `CacheConfig.block_size` for all layers. It can be extended to vary by KV
++    cache group, but within each KV cache group, all layers must share the same
++    block size.
++    3. Physical memory per token per layer: This property is decided by model
++    config. Currently we only support models that have the same physical memory
++    per token per layer for all layers. Can be relaxed with a simple extension,
++    but still need to keep physical memory per block the same for all groups.
++    4. Number of layers per group: Currently assumed the same for all layers.
++    Can be relaxed with a simple extension, but still need to keep physical
++    memory per block the same for all groups.
++    5. Attention type within groups: All layers in a group must share the same
++    attention type. One exception is that, when
++    `--disable-hybrid-kv-cache-manager` is true, the single group for full
++    attention layers may also include attention layers using sliding window or
++    LLaMA 4 local attention. See `unify_hybrid_kv_cache_specs` for more details.
++    6. Support for multiple attention types: The design for most components is
++    general to an arbitrary number of attention types. But
++    `find_longest_cache_hit` only supports one attention type or two
++    types of full-attention plus exactly one another type. The general
++    implementation of this function is feasible but we don't know how to
++    implement it cleanly yet.
++
++    As we assume tokens per block, physical memory per token per layer, and
++    number of layers per group are the same now, we can ensure that physical
++    memory per block is the same for all groups.
++
++    Args:
++        kv_cache_spec: The KVCacheSpec of each attention layer in the model
++    Returns:
++        The generated KVCacheGroupSpecs
++    """
++    # Group all layers by kv_cache_spec.
++    # E.g., 2 full attention layers and 3 sliding window attention layers,
++    # -> (full.0, full.1), (sw.0, sw.1, sw.2).
++    same_type_layers: dict[KVCacheSpec, list[str]] = defaultdict(list)
++    for layer_name, layer_spec in kv_cache_spec.items():
++        same_type_layers[layer_spec].append(layer_name)
++
++    # Split each group into smaller groups, to make the number of layers in each
++    # group identical. Add padding to the last group of each type if necessary.
++    # E.g., (full.0, full.1), (sw.0, sw.1, sw.2)
++    # split to 3 groups with 2 layers each:
++    # (full.0, full.1), (sw.0, sw.2), (sw.1, padding).
++    # FIXME(Chen): At the moment of writing this code (2025-06-02), all
++    # open-source hybrid model follows a n:1 pattern between different attention
++    # types (e.g., Gemma3 5:1 between sw and full, LLaMA4 3:1 between local and
++    # full), so we can use the "1" in the n:1 pattern as the group size, which
++    # is the minimum number of layers among all attention types. Need a better
++    # strategy if we want to support more complex patterns (e.g., 20 full + 30
++    # sw, where the group size should be 10).
++    group_size = min([len(layers) for layers in same_type_layers.values()])
++    grouped_layers = []
++    for layers in same_type_layers.values():
++        num_padding_layers = group_size - len(layers) % group_size
++        if num_padding_layers != group_size:
++            logger.warning(
++                "Add %d padding layers, may waste at most %.2f%% KV cache memory",  # noqa
++                num_padding_layers,
++                num_padding_layers / len(layers) * 100,
++            )
++        num_groups = cdiv(len(layers), group_size)
++        # In PP case, say if we have
++        # - stage 0: full.0, sw.0, sw.1
++        # - stage 1: full.1, sw.2, sw.3
++        # We should have 3 groups: (full.0, full.1), (sw.0, sw.2), (sw.1, sw.3)
++        # It can't be (full.0, full.1), (sw.0, sw.1), (sw.2, sw.3) because
++        # the 3 groups in stage 0 will be (full.0), (sw.0, sw.1), (empty group)
++        # and it will be padded to (full.0, padding), (sw.0, sw.1),
++        # (padding, padding) to ensure the number of layers in each group is
++        # the same and will cause memory waste.
++        # To avoid this, we assign layers[i::num_groups] to the i-th group
++        # instead of layers[i * group_size: (i + 1) * group_size]
++        for i in range(num_groups):
++            grouped_layers.append(layers[i::num_groups])
++    
++    return create_kv_cache_group_specs(kv_cache_spec, grouped_layers)
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 2d62c5ad1..fdb6037ed 100755
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -316,7 +316,6 @@ class Scheduler(SchedulerInterface):
+                 new_blocks = self.kv_cache_manager.allocate_slots(
+                     request,
+                     num_new_tokens,
+-                    num_draft_tokens=num_draft_tokens,
+                     num_lookahead_tokens=self.num_lookahead_tokens)
+                 if new_blocks is None:
+                     # The request cannot be scheduled.
+@@ -479,7 +478,9 @@ class Scheduler(SchedulerInterface):
+                 # KVTransfer: WAITING reqs have num_computed_tokens > 0
+                 # after async KV recvs are completed.
+                 else:
+-                    new_computed_blocks = KVCacheBlocks.create_empty()
++                    new_computed_blocks = (
++                        self.kv_cache_manager.create_empty_block_list()
++                    )
+                     num_new_local_computed_tokens = 0
+                     num_computed_tokens = request.num_computed_tokens
+ 
+@@ -621,7 +622,7 @@ class Scheduler(SchedulerInterface):
+             any_request = self.running[0]
+             num_common_prefix_blocks = (
+                 self.kv_cache_manager.get_num_common_prefix_blocks(
+-                    any_request, len(self.running)))
++                    any_request.request_id))
+ 
+         grammar_bitmask = self.structured_output_manager.grammar_bitmask(
+             self.requests,
+@@ -1071,7 +1072,6 @@ class Scheduler(SchedulerInterface):
+            self.cpu_npu_kv_cache_manager.free(request, Device.CPU)
+ 
+         self.kv_cache_manager.free(request)
+-        self.kv_cache_manager.free_block_hashes(request)
+         del self.requests[request.request_id]
+ 
+     def get_num_unfinished_requests(self) -> int:
+@@ -1056,7 +1056,7 @@ class Scheduler(SchedulerInterface):
+             return False, None
+         # assert len(self.kv_cache_config.kv_cache_groups
+         #            ) == 1, "KV connector only supports one KV cache group now"
+-        block_ids = self.kv_cache_manager.get_block_ids(request.request_id)[0]
++        block_ids = self.kv_cache_manager.get_block_ids(request.request_id)
+         return self.connector.request_finished(request, block_ids)
+ 
+     def _update_waiting_for_remote_kv(self, request: Request) -> bool:
+diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
+index cd24fb4bb..1998bc009 100644
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -1,19 +1,24 @@
+ # SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import itertools
+ from abc import ABC, abstractmethod
+ from collections import defaultdict
+-from typing import Callable
+ 
+ from vllm.utils import cdiv
+ from vllm.v1.core.block_pool import BlockPool
+-from vllm.v1.core.kv_cache_utils import BlockHashType, KVCacheBlock
+-from vllm.v1.kv_cache_interface import (FullAttentionSpec, KVCacheSpec,
+-                                        SlidingWindowSpec)
++from vllm.v1.core.kv_cache_utils import BlockHash, KVCacheBlock
++from vllm.v1.kv_cache_interface import (
++    FullAttentionSpec,
++    KVCacheSpec,
++    MambaSpec,
++    SlidingWindowSpec,
++)
+ from vllm.v1.request import Request
+ 
+ 
+ class SingleTypeKVCacheManager(ABC):
+     """
+-    An abstract base class for a manager that handle the kv cache management 
++    An abstract base class for a manager that handle the kv cache management
+     logic of one specific type of attention layer.
+     """
+ 
+@@ -21,54 +26,53 @@ class SingleTypeKVCacheManager(ABC):
+         self,
+         kv_cache_spec: KVCacheSpec,
+         block_pool: BlockPool,
+-        use_eagle: bool,
+-        num_kv_cache_groups: int,
+-        caching_hash_fn: Callable,
++        # use_eagle: bool,
++        # num_kv_cache_groups: int,
++        # caching_hash_fn: Callable,
++        kv_cache_group_id: int,
++        dcp_world_size: int = 1,
+         combine_block_num: int = 1,
+     ) -> None:
+         """
+-        Initializes the SpecializedManager.
++        Initializes the SingleTypeKVCacheManager.
+         Args:
+             kv_cache_spec: The kv_cache_spec for this manager.
+             block_pool: The block pool.
+-            use_eagle: Whether to use eagle.
+-            num_kv_cache_groups: The number of kv cache groups managed by this 
+-                manager.
+-            caching_hash_fn: The caching hash function.
++            kv_cache_group_id: The id of the kv cache group of this manager.
+         """
+-
+         self.block_size = kv_cache_spec.block_size
++        self.dcp_world_size = dcp_world_size
++        if self.dcp_world_size > 1:
++            self.block_size *= dcp_world_size
+         self.kv_cache_spec = kv_cache_spec
+         self.block_pool = block_pool
+ 
+-        # Needs special handling for find_longest_cache_hit if eagle is enabled
+-        self.use_eagle = use_eagle
+-
+         # Mapping from request ID to blocks to track the blocks allocated
+         # for each request, so that we can free the blocks when the request
+         # is finished.
+-        self.req_to_blocks: defaultdict[str,
+-                                        list[KVCacheBlock]] = defaultdict(list)
++        self.req_to_blocks: defaultdict[str, list[KVCacheBlock]] = defaultdict(list)
+ 
+         # {req_id: The number of cached blocks for this given request}
+         # This is used to track the number of cached blocks for each request.
+         # This is only used to track the RUNNING requests, we do not track the
+-        # data for reempted ones.
++        # data for preempted ones.
+         self.num_cached_block: dict[str, int] = {}
+ 
+-        self.num_kv_cache_groups = num_kv_cache_groups
+-        self.caching_hash_fn = caching_hash_fn
++        self.kv_cache_group_id = kv_cache_group_id
++        self._null_block = block_pool.null_block
++        # self.num_kv_cache_groups = num_kv_cache_groups
++        # self.caching_hash_fn = caching_hash_fn
+         self.combine_block_num = combine_block_num
+ 
+     def get_num_blocks_to_allocate(
+-            self, request_id: str, num_tokens: int,
+-            new_computed_blocks: list[KVCacheBlock]) -> int:
++        self, request_id: str, num_tokens: int, new_computed_blocks: list[KVCacheBlock]
++    ) -> int:
+         """
+         Get the number of blocks needed to be allocated for the request.
+ 
+         Args:
+             request_id: The request ID.
+-            num_tokens: The total number of tokens that need a slot (including 
++            num_tokens: The total number of tokens that need a slot (including
+                 tokens that are already allocated).
+             new_computed_blocks: The new computed blocks just hitting the
+                 prefix caching.
+@@ -78,20 +82,23 @@ class SingleTypeKVCacheManager(ABC):
+         """
+ 
+         num_required_blocks = cdiv(num_tokens, self.block_size)
+-        num_new_blocks = (num_required_blocks - len(new_computed_blocks) -
+-                          len(self.req_to_blocks[request_id]))
++        num_new_blocks = (
++            num_required_blocks
++            - len(new_computed_blocks)
++            - len(self.req_to_blocks[request_id])
++        )
+         # If a computed block of a request is an eviction candidate (in the
+         # free queue and ref_cnt == 0), it will be changed from a free block
+         # to a computed block when the request is allocated, so we also count
+         # it as needed to be allocated.
+-        num_evictable_computed_blocks = sum(blk.ref_cnt == 0
+-                                            for blk in new_computed_blocks)
+-        return ((num_new_blocks + num_evictable_computed_blocks) *
+-                self.num_kv_cache_groups)
++        num_evictable_computed_blocks = sum(
++            blk.ref_cnt == 0 and not blk.is_null for blk in new_computed_blocks
++        )
++        return num_new_blocks + num_evictable_computed_blocks
+ 
+     def save_new_computed_blocks(
+-            self, request_id: str,
+-            new_computed_blocks: list[KVCacheBlock]) -> None:
++        self, request_id: str, new_computed_blocks: list[KVCacheBlock]
++    ) -> None:
+         """
+         Add the new computed blocks to the request.
+ 
+@@ -110,15 +117,16 @@ class SingleTypeKVCacheManager(ABC):
+             # A running request. Should not have new computed blocks.
+             assert len(new_computed_blocks) == 0
+ 
+-    def allocate_new_blocks(self, request_id: str,
+-                            num_tokens: int) -> list[KVCacheBlock]:
++    def allocate_new_blocks(
++        self, request_id: str, num_tokens: int
++    ) -> list[KVCacheBlock]:
+         """
+-        Allocate new blocks for the request to give it at least `num_tokens` 
++        Allocate new blocks for the request to give it at least `num_tokens`
+         token slots.
+ 
+         Args:
+             request_id: The request ID.
+-            num_tokens: The total number of tokens that need a slot (including 
++            num_tokens: The total number of tokens that need a slot (including
+                 tokens that are already allocated).
+ 
+         Returns:
+@@ -132,38 +140,43 @@ class SingleTypeKVCacheManager(ABC):
+         if num_new_blocks <= 0:
+             return []
+         else:
+-            new_blocks = self.block_pool.get_new_blocks(
+-                num_new_blocks * self.num_kv_cache_groups)
++            new_blocks = self.block_pool.get_new_blocks(num_new_blocks)
+             req_blocks.extend(new_blocks)
+             return new_blocks
+ 
+-    def cache_blocks(self, request: Request, block_hashes: list[BlockHashType],
+-                     num_tokens: int) -> None:
++    def cache_blocks(self, request: Request, num_tokens: int) -> None:
+         """
+         Cache the blocks for the request.
+ 
+         Args:
+             request: The request.
+-            block_hashes: The block hashes of the request.
+-            num_tokens: The total number of tokens that need to be cached 
++            num_tokens: The total number of tokens that need to be cached
+                 (including tokens that are already cached).
+         """
+         num_cached_blocks = self.num_cached_block[request.request_id]
+         num_full_blocks = num_tokens // self.block_size
+ 
++        if num_cached_blocks >= num_full_blocks:
++            return
++
+         self.block_pool.cache_full_blocks(
+             request=request,
+             blocks=self.req_to_blocks[request.request_id],
+-            block_hashes=block_hashes,
+             num_cached_blocks=num_cached_blocks,
+             num_full_blocks=num_full_blocks,
+             block_size=self.block_size,
+-            hash_fn=self.caching_hash_fn,
++            kv_cache_group_id=self.kv_cache_group_id,
+         )
+ 
+         self.num_cached_block[request.request_id] = num_full_blocks
+ 
+     def free(self, request_id: str) -> None:
++        """
++        Free the blocks for the request.
++
++        Args:
++            request_id: The request ID.
++        """
+         # Default to [] in case a request is freed (aborted) before alloc.
+         req_blocks = self.req_to_blocks.pop(request_id, [])
+ 
+@@ -178,53 +191,69 @@ class SingleTypeKVCacheManager(ABC):
+         self.num_cached_block.pop(request_id, None)
+ 
+     @abstractmethod
+-    def get_num_common_prefix_blocks(self, request_id: str,
+-                                     num_running_requests: int) -> int:
++    def get_num_common_prefix_blocks(self, running_request_id: str) -> int:
+         """
+-        Get the number of common prefix blocks for a request.
++        Get the number of common prefix blocks for all requests with allocated
++        KV cache.
+ 
+         Args:
+-            request_id: The request ID.
+-            block_hashes: The block hashes of the request.
++            running_request_id: The request ID.
+ 
+         Returns:
+-            The number of common prefix blocks.
++            The number of common prefix blocks for all requests with allocated
++            KV cache.
+         """
+ 
+         raise NotImplementedError
+ 
++    @classmethod
+     @abstractmethod
+-    def find_longest_cache_hit(self, block_hashes: list[BlockHashType],
+-                               max_length: int) -> list[KVCacheBlock]:
++    def find_longest_cache_hit(
++        cls,
++        block_hashes: list[BlockHash],
++        max_length: int,
++        kv_cache_group_ids: list[int],
++        block_pool: BlockPool,
++        kv_cache_spec: KVCacheSpec,
++        use_eagle: bool,
++        dcp_world_size: int = 1,
++    ) -> tuple[list[KVCacheBlock], ...]:
+         """
+-        Get the longest cache hit prefix of the blocks that is not longer than 
+-        `max_length`. If no cache hit is found, return an empty list. 
+-        If eagle is enabled, drop the last matched block to force recompute the 
+-        last block to get the required hidden states for eagle drafting head. 
++        Get the longest cache hit prefix of the blocks that is not longer than
++        `max_length`. The prefix should be a common prefix hit for all the
++        kv cache groups in `kv_cache_group_ids`. If no cache hit is found,
++        return an empty list.
++        If eagle is enabled, drop the last matched block to force recompute the
++        last block to get the required hidden states for eagle drafting head.
+         Need to be customized for each attention type.
+ 
+         Args:
+             block_hashes: The block hashes of the request.
+             max_length: The maximum length of the cache hit prefix.
++            kv_cache_group_ids: The ids of the kv cache groups.
++            block_pool: The block pool.
++            kv_cache_spec: The kv cache spec.
++            use_eagle: Whether to use eagle.
+ 
+         Returns:
+-            A list of cached blocks with skipped blocks replaced by null block.
++            A list of cached blocks with skipped blocks replaced by null block
++            for each kv cache group in `kv_cache_group_ids`.
++            Return a list of length `len(kv_cache_group_ids)`, where the i-th
++            element is a list of cached blocks for the i-th kv cache group
++            in `kv_cache_group_ids`.
+             For example, sliding window manager should return a list like
+-            [NULL, NULL, KVCacheBlock(7), KVCacheBlock(8)] for block size 4 and 
+-            sliding window 8. 
++            ([NULL, NULL, KVCacheBlock(7), KVCacheBlock(8)]) for block size 4
++            and sliding window 8 and len(kv_cache_group_ids) = 1.
+         """
+ 
+         raise NotImplementedError
+ 
+     @abstractmethod
+-    def remove_skipped_blocks(self, request_id: str,
+-                              num_computed_tokens: int) -> None:
++    def remove_skipped_blocks(self, request_id: str, num_computed_tokens: int) -> None:
+         """
+-        Remove the blocks that are no longer needed from `blocks`. The removed 
+-        blocks should be replaced by null_block. Return the removed blocks in 
+-        eviction order, where the first returned block should be evicted first.
+-        Don't free the removed blocks in this function. Need to be customized 
+-        for each attention type.
++        Remove the blocks that are no longer needed from `blocks` and free the
++        blocks. The removed blocks should be replaced by null_block.
++        Need to be customized for each attention type.
+ 
+         Args:
+             request_id: The request ID.
+@@ -234,35 +263,55 @@ class SingleTypeKVCacheManager(ABC):
+ 
+ 
+ class FullAttentionManager(SingleTypeKVCacheManager):
+-
+-    def find_longest_cache_hit(self, block_hashes: list[BlockHashType],
+-                               max_length: int) -> list[KVCacheBlock]:
+-        computed_blocks: list[KVCacheBlock] = []
+-        max_num_blocks = max_length // self.block_size
+-        for i in range(max_num_blocks):
+-            block_hash = block_hashes[i]
++    @classmethod
++    def find_longest_cache_hit(
++        cls,
++        block_hashes: list[BlockHash],
++        max_length: int,
++        kv_cache_group_ids: list[int],
++        block_pool: BlockPool,
++        kv_cache_spec: KVCacheSpec,
++        use_eagle: bool,
++        dcp_world_size: int = 1,
++    ) -> tuple[list[KVCacheBlock], ...]:
++        assert isinstance(
++            kv_cache_spec, (FullAttentionSpec, )
++        ), (
++            "FullAttentionManager can only be used for full attention "
++            "and chunked local attention groups"
++        )
++        computed_blocks: tuple[list[KVCacheBlock], ...] = tuple(
++            [] for _ in range(len(kv_cache_group_ids))
++        )
++        block_size = kv_cache_spec.block_size
++        if dcp_world_size > 1:
++            block_size *= dcp_world_size
++        max_num_blocks = max_length // block_size
++        for block_hash in itertools.islice(block_hashes, max_num_blocks):
+             # block_hashes is a chain of block hashes. If a block hash is not
+             # in the cached_block_hash_to_id, the following block hashes are
+             # not computed yet for sure.
+-            if cached_block := self.block_pool.get_cached_block(block_hash):
+-                computed_blocks.append(cached_block)
++            if cached_block := block_pool.get_cached_block(
++                block_hash, kv_cache_group_ids
++            ):
++                for computed, cached in zip(computed_blocks, cached_block):
++                    computed.append(cached)
+             else:
+                 break
+-        if self.use_eagle and len(computed_blocks) > 0:
+-            computed_blocks.pop()
++        if use_eagle and computed_blocks[0]:
++            for computed in computed_blocks:
++                computed.pop()
+         return computed_blocks
+ 
+-    def remove_skipped_blocks(self, request_id: str,
+-                              num_computed_tokens: int) -> None:
++    def remove_skipped_blocks(self, request_id: str, num_computed_tokens: int) -> None:
+         # No need to remove blocks for full attention.
+         pass
+ 
+-    def get_num_common_prefix_blocks(self, request_id: str,
+-                                     num_running_requests: int) -> int:
+-        blocks = self.req_to_blocks[request_id]
++    def get_num_common_prefix_blocks(self, running_request_id: str) -> int:
++        blocks = self.req_to_blocks[running_request_id]
+         num_common_blocks = 0
+         for block in blocks:
+-            if block.ref_cnt == num_running_requests:
++            if block.ref_cnt == len(self.req_to_blocks):
+                 num_common_blocks += 1
+             else:
+                 break
+@@ -270,47 +319,67 @@ class FullAttentionManager(SingleTypeKVCacheManager):
+ 
+ 
+ class SlidingWindowManager(SingleTypeKVCacheManager):
+-
+-    def __init__(self, kv_cache_spec: SlidingWindowSpec, block_pool: BlockPool,
+-                 use_eagle: bool, **kwargs) -> None:
+-        super().__init__(kv_cache_spec, block_pool, use_eagle, **kwargs)
++    def __init__(
++        self, kv_cache_spec: SlidingWindowSpec, block_pool: BlockPool, **kwargs
++    ) -> None:
++        super().__init__(kv_cache_spec, block_pool, **kwargs)
+         self.sliding_window = kv_cache_spec.sliding_window
++        self._null_block = block_pool.null_block
++
++    @classmethod
++    def find_longest_cache_hit(
++        cls,
++        block_hashes: list[BlockHash],
++        max_length: int,
++        kv_cache_group_ids: list[int],
++        block_pool: BlockPool,
++        kv_cache_spec: KVCacheSpec,
++        use_eagle: bool,
++        dcp_world_size: int = 1,
++    ) -> tuple[list[KVCacheBlock], ...]:
++        assert isinstance(kv_cache_spec, SlidingWindowSpec), (
++            "SlidingWindowManager can only be used for sliding window groups"
++        )
++        assert dcp_world_size == 1, "DCP not support sliding window attn now."
++
+         # The number of contiguous blocks needed for prefix cache hit.
+         # -1 since the input token itself is also included in the window
+-        self.sliding_window_contiguous_blocks = cdiv(
+-            (kv_cache_spec.sliding_window - 1), self.block_size)
+-        if self.use_eagle:
++        sliding_window_contiguous_blocks = cdiv(
++            kv_cache_spec.sliding_window - 1, kv_cache_spec.block_size
++        )
++        if use_eagle:
+             # Need to drop the last matched block if eagle is enabled. For
+             # sliding window layer, we achieve this by increasing the number of
+             # contiguous blocks needed for prefix cache hit by one and dropping
+             # the last matched block.
+-            self.sliding_window_contiguous_blocks += 1
+-        self._null_block = block_pool.null_block
++            sliding_window_contiguous_blocks += 1
+ 
+-    def find_longest_cache_hit(self, block_hashes: list[BlockHashType],
+-                               max_length: int) -> list[KVCacheBlock]:
+         # TODO: reduce i by sliding_window_contiguous_blocks when cache miss, to
+         # optimize the time complexity from O(max_num_blocks) to
+         # O(max_num_blocks / sliding_window_contiguous_blocks +
+         # sliding_window_contiguous_blocks),
+         # which is good for low cache hit rate scenarios.
+-        max_num_blocks = max_length // self.block_size
+-        computed_blocks = [self._null_block] * max_num_blocks
++        max_num_blocks = max_length // kv_cache_spec.block_size
++        computed_blocks = tuple(
++            [block_pool.null_block] * max_num_blocks
++            for _ in range(len(kv_cache_group_ids))
++        )
+         num_contiguous_blocks = 0
+-
+         match_found = False
+         # Search from right to left and early stop when a match is found.
+         for i in range(max_num_blocks - 1, -1, -1):
+-            if cached_block := self.block_pool.get_cached_block(
+-                    block_hashes[i]):
+-                computed_blocks[i] = cached_block
++            if cached_block := block_pool.get_cached_block(
++                block_hashes[i], kv_cache_group_ids
++            ):
++                for computed, cached in zip(computed_blocks, cached_block):
++                    computed[i] = cached
+                 num_contiguous_blocks += 1
+-                if (num_contiguous_blocks
+-                        >= self.sliding_window_contiguous_blocks):
++                if num_contiguous_blocks >= sliding_window_contiguous_blocks:
+                     # Trim the trailing blocks.
+                     # E.g., [NULL, NULL, 8, 3, NULL, 9] -> [NULL, NULL, 8, 3]
+                     # when sliding_window_contiguous_blocks=2.
+-                    del computed_blocks[i + num_contiguous_blocks:]
++                    for computed in computed_blocks:
++                        del computed[i + num_contiguous_blocks :]
+                     match_found = True
+                     break
+             else:
+@@ -318,13 +387,14 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
+         if not match_found:
+             # The first `num_contiguous_blocks` is a cache hit even if
+             # `num_contiguous_blocks < sliding_window_contiguous_blocks`.
+-            del computed_blocks[num_contiguous_blocks:]
+-        if self.use_eagle and len(computed_blocks) > 0:
+-            computed_blocks.pop()
++            for computed in computed_blocks:
++                del computed[num_contiguous_blocks:]
++        if use_eagle and computed_blocks[0]:
++            for computed in computed_blocks:
++                computed.pop()
+         return computed_blocks
+ 
+-    def remove_skipped_blocks(self, request_id: str,
+-                              num_computed_tokens: int) -> None:
++    def remove_skipped_blocks(self, request_id: str, num_computed_tokens: int) -> None:
+         # Remove the blocks that are no longer be in the sliding window and
+         # skipped during the attention computation.
+         last_useful_token = num_computed_tokens - self.sliding_window + 1
+@@ -341,25 +411,286 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
+             blocks[i] = self._null_block
+         self.block_pool.free_blocks(removed_blocks)
+ 
+-    def get_num_common_prefix_blocks(self, request_id: str,
+-                                     num_running_requests: int) -> int:
++    def get_num_common_prefix_blocks(self, running_request_id: str) -> int:
+         """
+         NOTE(Chen): The prefix blocks are null blocks for sliding window layers.
+-        So it's not correct to count ref_cnt like FullAttentionManager. Return 
+-        0 here for correctness. Need to support cascade attention + sliding 
++        So it's not correct to count ref_cnt like FullAttentionManager. Return
++        0 here for correctness. Need to support cascade attention + sliding
+         window in the future.
+         """
+         return 0
+ 
+ 
++# class ChunkedLocalAttentionManager(SingleTypeKVCacheManager):
++#     def __init__(
++#         self, kv_cache_spec: ChunkedLocalAttentionSpec, block_pool: BlockPool, **kwargs
++#     ) -> None:
++#         super().__init__(kv_cache_spec, block_pool, **kwargs)
++#         self.attention_chunk_size = kv_cache_spec.attention_chunk_size
++#         self._null_block = block_pool.null_block
++
++#     @classmethod
++#     def find_longest_cache_hit(
++#         cls,
++#         block_hashes: list[BlockHash],
++#         max_length: int,
++#         kv_cache_group_ids: list[int],
++#         block_pool: BlockPool,
++#         kv_cache_spec: KVCacheSpec,
++#         use_eagle: bool,
++#         dcp_world_size: int = 1,
++#     ) -> tuple[list[KVCacheBlock], ...]:
++#         """
++#         For chunked local attention, we need to find the longest cache hit
++#         prefix of the blocks that is not longer than `max_length`. The prefix
++#         should be a common prefix hit for all the kv cache groups in
++#         `kv_cache_group_ids`. If no cache hit is found, return an empty list.
++#         note we mark as computed if the whole block is outside of the local
++#         window, and set the block as null. Examples:
++
++#         1. Attention chunk size of 8, block size of 4, max length of 15
++#         for next token at 15th (zero-indexed), 8th - 14th tokens are in
++#         the window(needs lookup), 0th - 7th are not in the window,
++#         so they are already marked as computed. We check the complete
++#         block3 (8th - 11th tokens), Assume block 3 is hit, we will return
++#         [null, null, block 3], otherwise, we return [null, null]
++
++#         2. Attention chunk size of 8, block size of 4, max length of 16
++#         for next token at 16th (zero-indexed), 0th - 15th tokens are not
++#         in the window, so they are already marked as computed.
++#         we return 4 blocks[null, null, null, null]
++
++#         Args:
++#             block_hashes: The block hashes of the request.
++#             max_length: The maximum length of the cache hit prefix.
++#             kv_cache_group_ids: The ids of the kv cache groups.
++#             block_pool: The block pool.
++#             kv_cache_spec: The kv cache spec.
++#             use_eagle: Whether to use eagle.
++
++#         Returns:
++#             A list of cached blocks
++#         """
++#         assert isinstance(kv_cache_spec, ChunkedLocalAttentionSpec), (
++#             "ChunkedLocalAttentionManager can only be used for "
++#             + "chunked local attention groups"
++#         )
++#         assert use_eagle is False, (
++#             "Hybrid KV cache is not supported for " + "eagle + chunked local attention."
++#         )
++#         assert dcp_world_size == 1, "DCP not support chunked local attn now."
++#         max_num_blocks = max_length // kv_cache_spec.block_size
++#         if max_length > 0:
++#             local_attention_start_idx = (
++#                 max_length
++#                 // kv_cache_spec.attention_chunk_size
++#                 * kv_cache_spec.attention_chunk_size
++#             )
++#         else:
++#             local_attention_start_idx = 0
++#         # we marked blocks out of window as computed
++#         # with null blocks, and blocks inside window based on cache lookup
++#         # result [null] [null] ... [null] [hit block 1 (1st block contain
++#         # last window)] [hit block 2] ... [hit block x]
++#         local_attention_start_block_idx = (
++#             local_attention_start_idx // kv_cache_spec.block_size
++#         )
++#         computed_blocks: tuple[list[KVCacheBlock], ...] = tuple(
++#             [block_pool.null_block] * local_attention_start_block_idx
++#             for _ in range(len(kv_cache_group_ids))
++#         )
++#         for i in range(local_attention_start_block_idx, max_num_blocks):
++#             block_hash = block_hashes[i]
++#             if cached_block := block_pool.get_cached_block(
++#                 block_hash, kv_cache_group_ids
++#             ):
++#                 for computed, cached in zip(computed_blocks, cached_block):
++#                     computed.append(cached)
++#             else:
++#                 break
++#         return computed_blocks
++
++#     def remove_skipped_blocks(self, request_id: str, num_computed_tokens: int) -> None:
++#         # Remove the blocks that are no longer be in the chunked attention
++#         # window and skipped during the attention computation.
++
++#         # [chunk 0][chunk 1]local_attention_start_idx ... current
++#         # we computed previous number of chunks to get the idx of
++#         # current chunk window starting offset,
++#         # e.g. for computed 1024 tokens, the 1024th token (0 indexed)
++#         # is in the second chunk, there are 1 prev chunk, the start idx
++#         # is 1024. for 1023, it will be 0.
++#         num_cached_block = self.num_cached_block.get(request_id, 0)
++#         local_attention_start_idx = (
++#             (num_computed_tokens)
++#             // self.attention_chunk_size
++#             * self.attention_chunk_size
++#         )
++#         first_useful_block_idx = local_attention_start_idx // self.block_size
++#         if num_cached_block > 0:
++#             # Make sure we don't delete the last cached block
++#             first_useful_block_idx = min(first_useful_block_idx, num_cached_block - 1)
++#         # if block size = 128, 0 -> block 0, 1024 (= 128 * 8) ->
++#         # block 8, 372 (= 128 * 2 + 116) -> block 2
++#         blocks = self.req_to_blocks[request_id]
++#         removed_blocks: list[KVCacheBlock] = []
++#         # we need to keep the last block to get the previous hash key
++#         for i in range(first_useful_block_idx - 1, -1, -1):
++#             if blocks[i] == self._null_block:
++#                 # If the block is already a null block, the blocks before it
++#                 # should also have been set to null blocks by the previous calls
++#                 # to this function.
++#                 break
++#             removed_blocks.append(blocks[i])
++#             blocks[i] = self._null_block
++#         self.block_pool.free_blocks(removed_blocks)
++
++#     def get_num_common_prefix_blocks(self, running_request_id: str) -> int:
++#         """
++#         cascade attention is not supported by chunked local attention.
++#         """
++#         return 0
++
++
++class MambaManager(SingleTypeKVCacheManager):
++    @classmethod
++    def find_longest_cache_hit(
++        cls,
++        block_hashes: list[BlockHash],
++        max_length: int,
++        kv_cache_group_ids: list[int],
++        block_pool: BlockPool,
++        kv_cache_spec: KVCacheSpec,
++        use_eagle: bool,
++        dcp_world_size: int = 1,
++    ) -> tuple[list[KVCacheBlock], ...]:
++        assert isinstance(kv_cache_spec, MambaSpec), (
++            "MambaManager can only be used for mamba groups"
++        )
++        assert dcp_world_size == 1, "DCP not support mamba now."
++        computed_blocks: tuple[list[KVCacheBlock], ...] = tuple(
++            [] for _ in range(len(kv_cache_group_ids))
++        )
++
++        max_num_blocks = max_length // kv_cache_spec.block_size
++        # Search from right to left and early stop when a match is found.
++        for i in range(max_num_blocks - 1, -1, -1):
++            if cached_block := block_pool.get_cached_block(
++                block_hashes[i], kv_cache_group_ids
++            ):
++                for computed, cached in zip(computed_blocks, cached_block):
++                    # the hit length logic later assumes:
++                    #  hit_length = len(hit_blocks_other_attn[0])
++                    #               * self.other_block_size
++                    # so we insert dummy blocks at the beginning:
++                    computed.extend([block_pool.null_block] * i)
++                    computed.append(cached)
++                break  # we just need the last match - early stopping
++
++        return computed_blocks
++
++    def remove_skipped_blocks(self, request_id: str, num_computed_tokens: int) -> None:
++        # Here unused blocks may be freed up for running requests.
++        # TODO(@s3woz) Free up all blocks that aren't needed by Mamba2
++        #  (for which find_longest_cache_hit returns block_pool.null_block)
++        pass
++
++    def get_num_common_prefix_blocks(self, running_request_id: str) -> int:
++        """
++        cascade attention is not supported by mamba
++        """
++        return 0
++
++    def get_num_blocks_to_allocate(
++        self, request_id: str, num_tokens: int, new_computed_blocks: list[KVCacheBlock]
++    ) -> int:
++        # Allocate extra `num_speculative_blocks` blocks for
++        # speculative decoding (MTP/EAGLE) with linear attention.
++        assert isinstance(self.kv_cache_spec, MambaSpec)
++        if self.kv_cache_spec.num_speculative_blocks > 0:
++            num_tokens += (
++                self.kv_cache_spec.block_size
++                * self.kv_cache_spec.num_speculative_blocks
++            )
++        return super().get_num_blocks_to_allocate(
++            request_id, num_tokens, new_computed_blocks
++        )
++
++    def allocate_new_blocks(
++        self, request_id: str, num_tokens: int
++    ) -> list[KVCacheBlock]:
++        # Allocate extra `num_speculative_blocks` blocks for
++        # speculative decoding (MTP/EAGLE) with linear attention.
++        assert isinstance(self.kv_cache_spec, MambaSpec)
++        if self.kv_cache_spec.num_speculative_blocks > 0:
++            num_tokens += (
++                self.kv_cache_spec.block_size
++                * self.kv_cache_spec.num_speculative_blocks
++            )
++        return super().allocate_new_blocks(request_id, num_tokens)
++
++
++# class CrossAttentionManager(SingleTypeKVCacheManager):
++#     """Manager for cross-attention KV cache in encoder-decoder models."""
++
++#     def save_new_computed_blocks(
++#         self, request_id: str, new_computed_blocks: list[KVCacheBlock]
++#     ) -> None:
++#         # We do not cache blocks for cross-attention to be shared between
++#         # requests, so  `new_computed_blocks` should always be empty.
++#         assert len(new_computed_blocks) == 0
++
++#     def cache_blocks(self, request: Request, num_tokens: int) -> None:
++#         # We do not cache blocks for cross-attention to be shared between
++#         # requests, so this method is not relevant.
++#         raise ValueError("Should not be called as prefix caching is disabled.")
++
++#     def get_num_common_prefix_blocks(self, running_request_id: str) -> int:
++#         # Cross-attention blocks contain request-specific encoder states
++#         # and are not shared between different requests
++#         return 0
++
++#     @classmethod
++#     def find_longest_cache_hit(
++#         cls,
++#         block_hashes: list[BlockHash],
++#         max_length: int,
++#         kv_cache_group_ids: list[int],
++#         block_pool: BlockPool,
++#         kv_cache_spec: KVCacheSpec,
++#         use_eagle: bool,
++#         dcp_world_size: int = 1,
++#     ) -> tuple[list[KVCacheBlock], ...]:
++#         assert isinstance(kv_cache_spec, CrossAttentionSpec), (
++#             "CrossAttentionManager can only be used for cross-attention groups"
++#         )
++#         # Cross-attention does not benefit from prefix caching since:
++#         # 1. Encoder states are unique per request (different audio/image
++#         #    inputs)
++#         # 2. Encoder states are computed once per request, not incrementally
++#         # 3. No reusable prefix exists between different multimodal inputs
++#         # Return empty blocks to indicate no cache hits
++#         raise NotImplementedError("CrossAttentionManager does not support caching")
++
++#     def remove_skipped_blocks(self, request_id: str, num_computed_tokens: int) -> None:
++#         # Cross-attention blocks represent encoder states which are needed
++#         # for the entire decoding process, so no blocks should be skipped
++#         pass
++
++
+ spec_manager_map: dict[type[KVCacheSpec], type[SingleTypeKVCacheManager]] = {
+     FullAttentionSpec: FullAttentionManager,
++    # MLAAttentionSpec: FullAttentionManager,
+     SlidingWindowSpec: SlidingWindowManager,
++    # ChunkedLocalAttentionSpec: ChunkedLocalAttentionManager,
++    MambaSpec: MambaManager,
++    # CrossAttentionSpec: CrossAttentionManager,
+ }
+ 
+ 
+-def get_manager_for_kv_cache_spec(kv_cache_spec: KVCacheSpec,
+-                                  **kwargs) -> SingleTypeKVCacheManager:
++def get_manager_for_kv_cache_spec(
++    kv_cache_spec: KVCacheSpec, **kwargs
++) -> SingleTypeKVCacheManager:
+     manager_class = spec_manager_map[type(kv_cache_spec)]
+     manager = manager_class(kv_cache_spec, **kwargs)
+     return manager
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index 5bd55fd96..7d4080d5c 100755
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -24,7 +24,9 @@ from vllm.transformers_utils.config import (
+     maybe_register_config_serialize_by_value)
+ from vllm.utils import make_zmq_socket, resolve_obj_by_qualname, zmq_socket_ctx
+ from vllm.v1.core.kv_cache_utils import (get_kv_cache_config,
+-                                         unify_kv_cache_configs)
++                                         unify_kv_cache_configs,
++                                         generate_scheduler_kv_cache_config,
++                                         get_kv_cache_configs)
+ from vllm.v1.core.sched.interface import SchedulerInterface
+ from vllm.v1.core.sched.output import SchedulerOutput
+ from vllm.v1.core.sched.scheduler import Scheduler as V1Scheduler
+@@ -179,33 +181,35 @@ class EngineCore:
+         # Get all kv cache needed by the model
+         kv_cache_specs = self.model_executor.get_kv_cache_specs()
+ 
+-        # Profiles the peak memory usage of the model to determine how much
+-        # memory can be allocated for kv cache.
+-        available_gpu_memory = self.model_executor.determine_available_memory()
++        has_kv_cache = any(kv_cache_spec for kv_cache_spec in kv_cache_specs)
++        if has_kv_cache:
++            if os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1":
++                dp_group = getattr(self, "dp_group", None)
++                assert dp_group is not None
++                self.available_gpu_memory_for_kv_cache = \
++                    ParallelConfig.sync_kv_cache_memory_size(dp_group, -1)
++                available_gpu_memory = [
++                    self.available_gpu_memory_for_kv_cache
++                ] * len(kv_cache_specs)
++            else:
++                # Profiles the peak memory usage of the model to determine how
++                # much memory can be allocated for kv cache.
++                available_gpu_memory = (
++                    self.model_executor.determine_available_memory())
++                self.available_gpu_memory_for_kv_cache = \
++                    available_gpu_memory[0]
++        else:
++            # Attention free models don't need memory for kv cache
++            available_gpu_memory = [0] * len(kv_cache_specs)
+ 
+         assert len(kv_cache_specs) == len(available_gpu_memory)
+-        # Get the kv cache tensor size
+-        kv_cache_configs = [
+-            get_kv_cache_config(vllm_config, kv_cache_spec_one_worker,
+-                                available_gpu_memory_one_worker)
+-            for kv_cache_spec_one_worker, available_gpu_memory_one_worker in
+-            zip(kv_cache_specs, available_gpu_memory)
+-        ]
+-
+-        # Since we use a shared centralized controller, we need the
+-        # `kv_cache_config` to be consistent across all workers to make sure
+-        # all the memory operators can be applied to all workers.
+-        unify_kv_cache_configs(kv_cache_configs)
+-
+-        # All workers have the same kv_cache_config except layer names, so use
+-        # an arbitrary one to initialize the scheduler.
+-        assert all([
+-            cfg.num_blocks == kv_cache_configs[0].num_blocks
+-            for cfg in kv_cache_configs
+-        ])
+-        num_gpu_blocks = kv_cache_configs[0].num_blocks
++
++        kv_cache_configs = get_kv_cache_configs(vllm_config, kv_cache_specs,
++                                                available_gpu_memory)
++        scheduler_kv_cache_config = generate_scheduler_kv_cache_config(
++            kv_cache_configs)
++        num_gpu_blocks = scheduler_kv_cache_config.num_blocks
+         num_cpu_blocks = 0
+-        scheduler_kv_cache_config = kv_cache_configs[0]
+ 
+         # Initialize kv cache and warmup the execution
+         self.model_executor.initialize_from_config(kv_cache_configs)
+@@ -215,6 +219,50 @@ class EngineCore:
+                      "warmup model) took %.2f seconds"), elapsed)
+         return num_gpu_blocks, num_cpu_blocks, scheduler_kv_cache_config
+ 
++    # def _initialize_kv_caches(
++    #         self, vllm_config: VllmConfig) -> tuple[int, int, KVCacheConfig]:
++    #     start = time.time()
++
++    #     # Get all kv cache needed by the model
++    #     kv_cache_specs = self.model_executor.get_kv_cache_specs()
++
++    #     # Profiles the peak memory usage of the model to determine how much
++    #     # memory can be allocated for kv cache.
++    #     available_gpu_memory = self.model_executor.determine_available_memory()
++
++    #     assert len(kv_cache_specs) == len(available_gpu_memory)
++
++    #     # Get the kv cache tensor size
++    #     kv_cache_configs = [
++    #         get_kv_cache_config(vllm_config, kv_cache_spec_one_worker,
++    #                             available_gpu_memory_one_worker)
++    #         for kv_cache_spec_one_worker, available_gpu_memory_one_worker in
++    #         zip(kv_cache_specs, available_gpu_memory)
++    #     ]
++
++    #     # Since we use a shared centralized controller, we need the
++    #     # `kv_cache_config` to be consistent across all workers to make sure
++    #     # all the memory operators can be applied to all workers.
++    #     unify_kv_cache_configs(kv_cache_configs)
++
++    #     # All workers have the same kv_cache_config except layer names, so use
++    #     # an arbitrary one to initialize the scheduler.
++    #     assert all([
++    #         cfg.num_blocks == kv_cache_configs[0].num_blocks
++    #         for cfg in kv_cache_configs
++    #     ])
++    #     num_gpu_blocks = kv_cache_configs[0].num_blocks
++    #     num_cpu_blocks = 0
++    #     scheduler_kv_cache_config = kv_cache_configs[0]
++
++    #     # Initialize kv cache and warmup the execution
++    #     self.model_executor.initialize_from_config(kv_cache_configs)
++
++    #     elapsed = time.time() - start
++    #     logger.info(("init engine (profile, create kv cache, "
++    #                  "warmup model) took %.2f seconds"), elapsed)
++    #     return num_gpu_blocks, num_cpu_blocks, scheduler_kv_cache_config
++
+     def add_request(self, request: EngineCoreRequest):
+         """Add request to the scheduler."""
+ 
+diff --git a/vllm/v1/kv_cache_interface.py b/vllm/v1/kv_cache_interface.py
+index 2747fc7fa..0e5b02814 100644
+--- a/vllm/v1/kv_cache_interface.py
++++ b/vllm/v1/kv_cache_interface.py
+@@ -2,6 +2,7 @@
+ 
+ import copy
+ from dataclasses import dataclass
++from math import prod
+ from typing import Optional
+ 
+ import torch
+@@ -14,7 +15,7 @@ from vllm.utils import cdiv, get_dtype_size
+ logger = init_logger(__name__)
+ 
+ 
+-@dataclass
++@dataclass(unsafe_hash=True)
+ class KVCacheSpec:
+     """
+     A base class for specifying the KV cache format of one layer.
+@@ -67,7 +68,7 @@ class KVCacheSpec:
+         return copy.deepcopy(specs[0])
+ 
+ 
+-@dataclass
++@dataclass(unsafe_hash=True)
+ class AttentionSpec(KVCacheSpec):
+     num_kv_heads: int
+     head_size: int
+@@ -82,7 +83,7 @@ class AttentionSpec(KVCacheSpec):
+                 * get_dtype_size(self.dtype)
+ 
+ 
+-@dataclass
++@dataclass(unsafe_hash=True)
+ class FullAttentionSpec(AttentionSpec):
+     sliding_window: Optional[int] = None
+     """
+@@ -123,7 +124,7 @@ class FullAttentionSpec(AttentionSpec):
+         return merged_spec
+ 
+ 
+-@dataclass
++@dataclass(unsafe_hash=True)
+ class SlidingWindowSpec(AttentionSpec):
+     sliding_window: int
+ 
+@@ -153,7 +154,36 @@ class SlidingWindowSpec(AttentionSpec):
+         return (cdiv(num_tokens, self.block_size) + 1) * self.page_size_bytes
+ 
+ 
+-@dataclass
++@dataclass(unsafe_hash=True)
++class MambaSpec(KVCacheSpec):
++    shapes: tuple[tuple[int, ...], ...]
++    dtypes: tuple[torch.dtype]
++    page_size_padded: Optional[int] = None
++    mamba_type: str = "mamba2"
++    num_speculative_blocks: int = 0
++
++    @property
++    def type_id(self) -> str:
++        return f"mamba2_{self.page_size_padded}"  # noqa  # FIXME
++
++    @property
++    def page_size_bytes(self) -> int:
++        page_size = sum(
++            prod(shape) * get_dtype_size(dtype)
++            for (shape, dtype) in zip(self.shapes, self.dtypes))
++        if self.page_size_padded is not None:
++            assert self.page_size_padded >= page_size
++            return self.page_size_padded
++        return page_size
++
++    def max_memory_usage_bytes(self, vllm_config: VllmConfig) -> int:
++        # We allocate 1 block for each request now, so max_memory_usage_bytes is
++        # the same as page_size_bytes.
++        # Need to update this when supporting prefix caching.
++        return self.page_size_bytes
++
++
++@dataclass(unsafe_hash=True)
+ class KVCacheTensor:
+     """
+     A dataclass for specifying how the workers should initialize the KV cache
+@@ -161,9 +191,10 @@ class KVCacheTensor:
+     be extended to support multiple layers sharing the same memory pool.
+     """
+     size: int  # The size of KV cache Tensor in bytes
++    shared_by: list[str]  # layer names that share the same KV cache tensor
+ 
+ 
+-@dataclass
++@dataclass(unsafe_hash=True)
+ class KVCacheGroupSpec:
+     """
+     Represents a group of model layers that share the same KV cache block table.
+@@ -175,7 +206,7 @@ class KVCacheGroupSpec:
+     kv_cache_spec: KVCacheSpec
+ 
+ 
+-@dataclass
++@dataclass(unsafe_hash=True)
+ class KVCacheConfig:
+     """
+     The KV cache configuration of a model.
+@@ -206,3 +237,70 @@ class KVCacheConfig:
+     there are 3 groups, each of which represents 10 layers in the model.
+     """
+     kv_cache_groups: list[KVCacheGroupSpec]
++
++
++@dataclass(unsafe_hash=True)
++class UniformTypeKVCacheSpecs(KVCacheSpec):
++    """
++    A KV cache spec for multiple layers with the same type of attention. Here,
++    same types means always need the same number of token slots. For example,
++    sliding window attentions with different window sizes are not the same type
++    and should not be merged into one UniformTypeKVCacheSpecs.
++    """
++
++    kv_cache_specs: dict[str, KVCacheSpec]
++
++    @property
++    def page_size_bytes(self) -> int:
++        return sum(spec.page_size_bytes for spec in self.kv_cache_specs.values())
++
++    def max_memory_usage_bytes(self, vllm_config: VllmConfig) -> int:
++        max_num_pages = max(
++            cdiv(spec.max_memory_usage_bytes(vllm_config), spec.page_size_bytes)
++            for spec in self.kv_cache_specs.values()
++        )
++        return max_num_pages * self.page_size_bytes
++
++    @classmethod
++    def is_uniform_type(cls, kv_cache_specs: dict[str, KVCacheSpec]) -> bool:
++        """
++        Whether all layers have the same type of KV cache spec.
++        """
++        block_sizes = set(spec.block_size for spec in kv_cache_specs.values())
++        if len(block_sizes) > 1:
++            # Different block sizes, not uniform.
++            return False
++        one_spec = next(iter(kv_cache_specs.values()))
++        if isinstance(one_spec, FullAttentionSpec):
++            return all(
++                isinstance(spec, FullAttentionSpec) for spec in kv_cache_specs.values()
++            )
++        elif isinstance(one_spec, SlidingWindowSpec):
++            return all(
++                isinstance(spec, SlidingWindowSpec)
++                and spec.sliding_window == one_spec.sliding_window
++                for spec in kv_cache_specs.values()
++            )
++        elif isinstance(one_spec, MambaSpec):
++            return all(
++                isinstance(spec, MambaSpec)
++                and spec.num_speculative_blocks == one_spec.num_speculative_blocks
++                for spec in kv_cache_specs.values()
++            )
++        else:
++            # NOTE(Chen): Please add new branches for new KV cache spec types.
++            raise NotImplementedError(
++                f"Unsupported KV cache spec type: {type(one_spec)}"
++            )
++
++    @classmethod
++    def from_specs(cls, kv_cache_specs: dict[str, KVCacheSpec]) -> Self | None:
++        """
++        Return a SameTypeKVCacheSpecs object if all layers have the same type
++        of KV cache spec. Return None if not.
++        """
++        if cls.is_uniform_type(kv_cache_specs):
++            block_size = next(iter(kv_cache_specs.values())).block_size
++            return cls(block_size=block_size, kv_cache_specs=kv_cache_specs)
++        else:
++            return None
+diff --git a/vllm/v1/utils.py b/vllm/v1/utils.py
+index 0758747a8..256a4cb8e 100644
+--- a/vllm/v1/utils.py
++++ b/vllm/v1/utils.py
+@@ -196,6 +196,7 @@ def bind_kv_cache(
+     kv_caches: dict[str, torch.Tensor],
+     forward_context: dict[str, "Attention"],
+     runner_kv_caches: list[torch.Tensor],
++    num_attn_module: int | None = 1,
+ ) -> None:
+     """
+     Bind the allocated KV cache to both ModelRunner and forward context so
+@@ -204,13 +205,13 @@ def bind_kv_cache(
+     This function:
+       1) Fills the ModelRunner's kv cache list (`runner_kv_caches`) with
+          kv_caches.
+-      2) Associates each attention layer in the `forward_context` with its 
++      2) Associates each attention layer in the `forward_context` with its
+          corresponding KV cache in kv_caches.
+ 
+     Args:
+         kv_caches: The allocated kv_caches with layer names as keys.
+-        forward_context: The global forward context containing all Attention 
+-        layers with layer names as keys.
++        forward_context: The global forward context containing all Attention
++            layers with layer names as keys.
+         runner_kv_caches: The kv_cache declared by ModelRunner.
+     """
+     # Bind kv_caches to ModelRunner
+@@ -219,7 +220,7 @@ def bind_kv_cache(
+     # Convert kv_caches dict to a list of tensors in the order of layer_index.
+     index2name = defaultdict(list)
+     for layer_name in kv_caches:
+-        index2name[extract_layer_index(layer_name)].append(layer_name)
++        index2name[extract_layer_index(layer_name, num_attn_module)].append(layer_name)
+ 
+     for layer_index in sorted(index2name.keys()):
+         layer_names = index2name[layer_index]
+diff --git a/vllm/v1/worker/block_table.py b/vllm/v1/worker/block_table.py
+index 9a43e073d..04b20fbc7 100644
+--- a/vllm/v1/worker/block_table.py
++++ b/vllm/v1/worker/block_table.py
+@@ -1,37 +1,75 @@
+ # SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
+ import numpy as np
+ import torch
+ 
++# from vllm.distributed import get_dcp_group
+ from vllm.logger import init_logger
+ from vllm.utils import cdiv
++# from vllm.v1.utils import CpuGpuBuffer
+ 
+ logger = init_logger(__name__)
+ 
+ 
+ class BlockTable:
+-
+     def __init__(
+         self,
++        block_size: int,
+         max_num_reqs: int,
+         max_num_blocks_per_req: int,
+         max_num_batched_tokens: int,
+         pin_memory: bool,
+         device: torch.device,
++        kernel_block_size: int,
+     ):
++        """
++        Args:
++            block_size: Block size used for KV cache memory allocation
++            max_num_reqs: Maximum number of concurrent requests supported.
++            max_num_blocks_per_req: Maximum number of blocks per request.
++            max_num_batched_tokens: Maximum number of tokens in a batch.
++            pin_memory: Whether to pin memory for faster GPU transfers.
++            device: Target device for the block table.
++            kernel_block_size: The block_size of underlying attention kernel.
++                Will be the same as `block_size` if `block_size` is supported
++                by the attention kernel.
++        """
+         self.max_num_reqs = max_num_reqs
+-        self.max_num_blocks_per_req = max_num_blocks_per_req
+         self.max_num_batched_tokens = max_num_batched_tokens
+         self.pin_memory = pin_memory
+         self.device = device
+ 
++        if kernel_block_size == block_size:
++            # Standard case: allocation and computation use same block size
++            # No block splitting needed, direct mapping
++            self.block_size = block_size
++            self.blocks_per_kv_block = 1
++            self.use_hybrid_blocks = False
++        else:
++            # Hybrid case: allocation block size differs from kernel block size
++            # Memory blocks are subdivided to match kernel requirements
++            # Example: 32-token memory blocks with 16-token kernel blocks
++            # → Each memory block corresponds to 2 kernel blocks
++            if block_size % kernel_block_size != 0:
++                raise ValueError(
++                    f"kernel_block_size {kernel_block_size} must divide "
++                    f"kv_manager_block_size size {block_size} evenly"
++                )
++
++            self.block_size = kernel_block_size
++            self.blocks_per_kv_block = block_size // kernel_block_size
++            self.use_hybrid_blocks = True
++
++        self.max_num_blocks_per_req = max_num_blocks_per_req * self.blocks_per_kv_block
++
+         self.block_table = torch.zeros(
+-            (max_num_reqs, max_num_blocks_per_req),
++            (max_num_reqs, self.max_num_blocks_per_req),
+             device=self.device,
+             dtype=torch.int32,
+         )
+         self.block_table_cpu = torch.zeros(
+-            (max_num_reqs, max_num_blocks_per_req),
++            (max_num_reqs, self.max_num_blocks_per_req),
+             device="cpu",
+             dtype=torch.int32,
+             pin_memory=pin_memory,
+@@ -48,6 +86,21 @@ class BlockTable:
+                                         dtype=torch.int64,
+                                         device=self.device)
+ 
++        if self.use_hybrid_blocks:
++            self._kernel_block_arange = np.arange(0, self.blocks_per_kv_block).reshape(
++                1, -1
++            )
++        else:
++            self._kernel_block_arange = None
++
++        # try:
++        #     self.dcp_world_size = get_dcp_group().world_size
++        #     self.dcp_rank = get_dcp_group().rank_in_group
++        # except AssertionError:
++            # DCP might not be initialized in testing
++        self.dcp_world_size = 1
++        self.dcp_rank = 0
++
+     def append_row(
+         self,
+         block_ids: list[int],
+@@ -55,10 +108,14 @@ class BlockTable:
+     ) -> None:
+         if not block_ids:
+             return
++
++        if self.use_hybrid_blocks:
++            block_ids = self._map_to_kernel_blocks(np.array(block_ids))
++
+         num_blocks = len(block_ids)
+         start = self.num_blocks_per_row[row_idx]
+         self.num_blocks_per_row[row_idx] += num_blocks
+-        self.block_table_np[row_idx, start:start + num_blocks] = block_ids
++        self.block_table_np[row_idx, start : start + num_blocks] = block_ids
+ 
+     def add_row(self, block_ids: list[int], row_idx: int) -> None:
+         self.num_blocks_per_row[row_idx] = 0
+@@ -66,29 +123,101 @@ class BlockTable:
+ 
+     def move_row(self, src: int, tgt: int) -> None:
+         num_blocks = self.num_blocks_per_row[src]
+-        self.block_table_np[tgt, :num_blocks] = self.block_table_np[
+-            src, :num_blocks]
++        block_table_np = self.block_table_np
++        block_table_np[tgt, :num_blocks] = block_table_np[src, :num_blocks]
+         self.num_blocks_per_row[tgt] = num_blocks
+ 
+     def swap_row(self, src: int, tgt: int) -> None:
+-        num_blocks_src = self.num_blocks_per_row[src]
+-        num_blocks_tgt = self.num_blocks_per_row[tgt]
+-        self.num_blocks_per_row[src] = num_blocks_tgt
+-        self.num_blocks_per_row[tgt] = num_blocks_src
++        src_tgt, tgt_src = [src, tgt], [tgt, src]
++        self.num_blocks_per_row[src_tgt] = self.num_blocks_per_row[tgt_src]
++        self.block_table_np[src_tgt] = self.block_table_np[tgt_src]
+ 
+-        self.block_table_np[[src, tgt]] = self.block_table_np[[tgt, src]]
++    def compute_slot_mapping(
++        self, req_indices: np.ndarray, positions: np.ndarray
++    ) -> None:
++        # E.g., [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
++        # -> [0, 0, K, K, K + 1, K + 1, K + 2, 2 * K, 2 * K, 2 * K + 1]
++        # where K is the max_num_blocks_per_req and the block size is 2.
++        # NOTE(woosuk): We can't simply use `token_indices // block_size`
++        # here because M (max_model_len) is not necessarily divisible by
++        # block_size.
++        if self.dcp_world_size > 1:
++            # Note(hc): The DCP implement store kvcache with an interleave
++            # style, the kvcache for the token whose token_idx is i is
++            # always stored on the GPU whose dcp_rank equals i % cp_world_size:
+ 
+-    def commit(self, num_reqs: int) -> None:
+-        self.block_table[:num_reqs].copy_(self.block_table_cpu[:num_reqs],
+-                                          non_blocking=True)
++            # Use a "virtual block" which equals to world_size * block_size
++            # for block_table_indices calculation.
++            virtual_block_size = self.block_size * self.dcp_world_size
++            block_table_indices = (
++                req_indices * self.max_num_blocks_per_req
++                + positions // virtual_block_size
++            )
++
++            block_numbers = self.block_table_np.ravel()[block_table_indices]
++            # Use virtual_block_size for mask calculation, which marks local
++            # tokens.
++            virtual_block_offsets = positions % virtual_block_size
++            mask = virtual_block_offsets % self.dcp_world_size == self.dcp_rank
++            # Calculate local block_offsets
++            block_offsets = virtual_block_offsets // self.dcp_world_size
++            # Calculate slot_mapping
++            slot_mapping = block_numbers * self.block_size + block_offsets
++            # Write final slots, use -1 for not-local
++            self.slot_mapping_np[: req_indices.shape[0]] = np.where(
++                mask, slot_mapping, -1
++            )
++        else:
++            block_table_indices = (
++                req_indices * self.max_num_blocks_per_req + np.minimum(positions // self.block_size, self.max_num_blocks_per_req - 1)
++            )
++
++            block_numbers = self.block_table_np.ravel()[block_table_indices]
++            block_offsets = positions % self.block_size
++            np.add(
++                block_numbers * self.block_size,
++                block_offsets,
++                out=self.slot_mapping_np[: req_indices.shape[0]],
++            )
++
++    def commit_block_table(self, num_reqs: int) -> None:
++        self.block_table[:num_reqs].copy_(self.block_table_cpu[:num_reqs], non_blocking=True)
++
++    def commit_slot_mapping(self, num_tokens: int) -> None:
++        self.slot_mapping[:num_tokens].copy_(self.slot_mapping_cpu[:num_tokens], non_blocking=True)
+ 
+     def clear(self) -> None:
+         self.block_table.fill_(0)
+         self.block_table_cpu.fill_(0)
+ 
+-    def get_device_tensor(self) -> torch.Tensor:
+-        """Ruturns the device tensor of the block table."""
+-        return self.block_table
++    def _map_to_kernel_blocks(self, kv_manager_block_ids: np.ndarray) -> np.ndarray:
++        """Convert kv_manager_block_id IDs to kernel block IDs.
++
++        Example:
++            # kv_manager_block_ids: 32 tokens,
++            # Kernel block size: 16 tokens
++            # blocks_per_kv_block = 2
++            >>> kv_manager_block_ids = np.array([0, 1, 2])
++            >>> Result: [0, 1, 2, 3, 4, 5]
++
++            # Each kv_manager_block_id maps to 2 kernel block id:
++            # kv_manager_block_id 0 → kernel block id [0, 1]
++            # kv_manager_block_id 1 → kernel block id [2, 3]
++            # kv_manager_block_id 2 → kernel block id [4, 5]
++        """
++        if not self.use_hybrid_blocks:
++            return kv_manager_block_ids
++
++        kernel_block_ids = (
++            kv_manager_block_ids.reshape(-1, 1) * self.blocks_per_kv_block
++            + self._kernel_block_arange
++        )
++
++        return kernel_block_ids.reshape(-1)
++
++    def get_device_tensor(self, num_reqs: int) -> torch.Tensor:
++        """Returns the device tensor of the block table."""
++        return self.block_table[:num_reqs]
+ 
+     def get_cpu_tensor(self) -> torch.Tensor:
+         """Returns the CPU tensor of the block table."""
+@@ -98,23 +227,65 @@ class BlockTable:
+         """Returns the numpy array of the block table."""
+         return self.block_table_np
+ 
++    # def _make_buffer(
++    #     self, *size: int | torch.SymInt, dtype: torch.dtype
++    # ) -> CpuGpuBuffer:
++    #     return CpuGpuBuffer(
++    #         *size, dtype=dtype, device=self.device, pin_memory=self.pin_memory
++    #     )
++
+ 
+ class MultiGroupBlockTable:
+     """The BlockTables for each KV cache group."""
+ 
+-    def __init__(self, max_num_reqs: int, max_model_len: int,
+-                 max_num_batched_tokens: int, pin_memory: bool,
+-                 device: torch.device, block_size: int) -> None:
++    def __init__(
++        self,
++        max_num_reqs: int,
++        max_model_len: int,
++        max_num_batched_tokens: int,
++        pin_memory: bool,
++        device: torch.device,
++        block_sizes: list[int],
++        kernel_block_sizes: list[int],
++        num_speculative_tokens: int = 0,
++    ) -> None:
++        # Note(hc): each dcp rank only store
++        # (max_model_len//dcp_world_size) tokens in kvcache,
++        # so the block_size which used for calc max_num_blocks_per_req
++        # must be multiplied by dcp_world_size.
++        # try:
++        #     dcp_world_size = get_dcp_group().world_size
++        # except AssertionError:
++        #     # DCP might not be initialized in testing
++        dcp_world_size = 1
++
++        if len(kernel_block_sizes) != len(block_sizes):
++            raise ValueError(
++                f"kernel_block_sizes length ({len(kernel_block_sizes)}) "
++                f"must match block_sizes length ({len(block_sizes)})"
++            )
++
+         self.block_tables = [
+-            BlockTable(max_num_reqs, cdiv(max_model_len, block_size),
+-                       max_num_batched_tokens, pin_memory, device)
++            BlockTable(
++                block_size,
++                max_num_reqs,
++                max(
++                    cdiv(max_model_len, block_size * dcp_world_size),
++                    1 + num_speculative_tokens,
++                ),
++                max_num_batched_tokens,
++                pin_memory,
++                device,
++                kernel_block_size,
++            )
++            for block_size, kernel_block_size in zip(block_sizes, kernel_block_sizes)
+         ]
+ 
+-    def append_row(self, block_ids: list[list[int]], row_idx: int) -> None:
++    def append_row(self, block_ids: tuple[list[int], ...], row_idx: int) -> None:
+         for i, block_table in enumerate(self.block_tables):
+             block_table.append_row(block_ids[i], row_idx)
+ 
+-    def add_row(self, block_ids: list[list[int]], row_idx: int) -> None:
++    def add_row(self, block_ids: tuple[list[int], ...], row_idx: int) -> None:
+         for i, block_table in enumerate(self.block_tables):
+             block_table.add_row(block_ids[i], row_idx)
+ 
+@@ -126,9 +297,19 @@ class MultiGroupBlockTable:
+         for block_table in self.block_tables:
+             block_table.swap_row(src, tgt)
+ 
+-    def commit(self, num_reqs: int) -> None:
++    def compute_slot_mapping(
++        self, req_indices: np.ndarray, positions: np.ndarray
++    ) -> None:
++        for block_table in self.block_tables:
++            block_table.compute_slot_mapping(req_indices, positions)
++
++    def commit_block_table(self, num_reqs: int) -> None:
++        for block_table in self.block_tables:
++            block_table.commit_block_table(num_reqs)
++
++    def commit_slot_mapping(self, num_tokens: int) -> None:
+         for block_table in self.block_tables:
+-            block_table.commit(num_reqs)
++            block_table.commit_slot_mapping(num_tokens)
+ 
+     def clear(self) -> None:
+         for block_table in self.block_tables:
+diff --git a/vllm/v1/worker/gpu_input_batch.py b/vllm/v1/worker/gpu_input_batch.py
+index 7628272ee..50829e1ef 100644
+--- a/vllm/v1/worker/gpu_input_batch.py
++++ b/vllm/v1/worker/gpu_input_batch.py
+@@ -62,7 +62,9 @@ class InputBatch:
+         device: torch.device,
+         pin_memory: bool,
+         vocab_size: int,
+-        block_size: int,
++        block_sizes: list[int],
++        kernel_block_sizes: list[int],
++        num_speculative_tokens: int = 0,
+     ):
+         self.max_num_reqs = max_num_reqs
+         self.max_model_len = max_model_len
+@@ -104,7 +106,9 @@ class InputBatch:
+             max_num_batched_tokens=max_num_batched_tokens,
+             pin_memory=pin_memory,
+             device=device,
+-            block_size=block_size,
++            block_sizes=block_sizes,
++            kernel_block_sizes=kernel_block_sizes,
++            num_speculative_tokens=num_speculative_tokens,
+         )
+ 
+         # Sampling-related.
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index 0eeb936cc..c4579872b 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -26,6 +26,7 @@ from vllm.distributed.parallel_state import (
+     prepare_communication_buffer_for_model)
+ from vllm.forward_context import get_forward_context, set_forward_context
+ from vllm.logger import init_logger
++from vllm.model_executor.models import ModelRegistry
+ from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding
+ from vllm.model_executor.model_loader import TensorizerLoader, get_model
+ from vllm.multimodal import MULTIMODAL_REGISTRY
+@@ -41,7 +42,7 @@ from vllm.v1.attention.backends.utils import CommonAttentionMetadata
+ from vllm.v1.core.encoder_cache_manager import compute_encoder_budget
+ from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
+                                         KVCacheConfig, KVCacheSpec,
+-                                        SlidingWindowSpec)
++                                        SlidingWindowSpec, MambaSpec)
+ from vllm.v1.outputs import (EMPTY_MODEL_RUNNER_OUTPUT, LogprobsTensors,
+                              ModelRunnerOutput)
+ from vllm.v1.sample.metadata import SamplingMetadata
+@@ -182,7 +183,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             device=self.device,
+             pin_memory=self.pin_memory,
+             vocab_size=self.model_config.get_vocab_size(),
+-            block_size=self.cache_config.block_size,
++            block_sizes=[self.cache_config.block_size],
++            kernel_block_sizes=[128],  # NPU uses fixed kernel block size of 128
+         )
+ 
+         self.use_cuda_graph = (self.vllm_config.compilation_config.level
+@@ -1936,7 +1938,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+ 
+     def initialize_attn_backend(self, kv_cache_config: KVCacheConfig) -> None:
+         """
+-        Initialize the attention backends and attention metadata builders.
++        Initialize the attention backends.
+         """
+         assert len(self.attn_backends) == 0 and len(
+             self.attn_metadata_builders
+@@ -1945,16 +1947,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 kv_cache_config.kv_cache_groups):
+             kv_cache_spec = kv_cache_group_spec.kv_cache_spec
+             if not isinstance(kv_cache_spec, AttentionSpec):
+-                raise NotImplementedError(
+-                    "Only AttentionSpec is supported for now.")
+-            attn_backend_i = get_attn_backend(
+-                kv_cache_spec.head_size,
+-                self.dtype,
+-                kv_cache_spec.dtype,
+-                kv_cache_spec.block_size,
+-                self.model_config.is_attention_free,
+-                use_mla=kv_cache_spec.use_mla,
+-            )
++                # raise NotImplementedError(
++                #     "Only AttentionSpec is supported for now.")
++                from omni.layers.attention.backend.gdn_attn import GDNAttentionBackend
++                attn_backend_i = GDNAttentionBackend
++            else:
++                attn_backend_i = get_attn_backend(
++                    kv_cache_spec.head_size,
++                    self.dtype,
++                    kv_cache_spec.dtype,
++                    kv_cache_spec.block_size,
++                    self.model_config.is_attention_free,
++                    use_mla=kv_cache_spec.use_mla,
++                )
+             if attn_backend_i is None:
+                 error_msg = (
+                     f"Error with get_attn_backend: {kv_cache_spec.head_size=}, "
+@@ -1978,10 +1983,23 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                         f"{attn_backend_name}, FlashAttention version is "
+                         f"{flash_attn_version}.")
+ 
++            self.attn_backends.append(attn_backend_i)
++
++    def initialize_attn_metadata_builders(self, kv_cache_config: KVCacheConfig) -> None:
++        """
++        Initialize the attention metadata builders.
++        """
++        assert len(
++            self.attn_metadata_builders
++        ) == 0, "Attention metadata builders are already initialized"
++        for i, kv_cache_group_spec in enumerate(
++                kv_cache_config.kv_cache_groups):
++            kv_cache_spec = kv_cache_group_spec.kv_cache_spec
+             block_table_i = self.input_batch.block_table[i]
++            attn_backend_i = self.attn_backends[i]
++
+             attn_metadata_builder_i = attn_backend_i.get_builder_cls()(
+                 weakref.proxy(self), kv_cache_spec, block_table_i)
+-            self.attn_backends.append(attn_backend_i)
+             self.attn_metadata_builders.append(attn_metadata_builder_i)
+ 
+     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
+@@ -1997,6 +2015,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 "supported yet.")
+         self.kv_cache_config = kv_cache_config
+         self.initialize_attn_backend(kv_cache_config)
++        self.initialize_attn_metadata_builders(kv_cache_config)
+ 
+         kv_caches: dict[str, torch.Tensor] = {}
+ 
+@@ -2041,6 +2060,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+         if has_kv_transfer_group():
+             get_kv_transfer_group().register_kv_caches(kv_caches)
+ 
++
+     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
+         """
+         Generates the KVCacheSpec by parsing the kv cache format from each
+@@ -2050,36 +2070,225 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             format. Layers that do not need KV cache are not included.
+         """
+ 
+-        layers = get_layers_from_vllm_config(self.vllm_config, Attention)
+         block_size = self.vllm_config.cache_config.block_size
+         use_mla = self.vllm_config.model_config.use_mla
++        cache_dtype_str = self.vllm_config.cache_config.cache_dtype
+         kv_cache_spec: dict[str, KVCacheSpec] = {}
+-        for layer_name, attn_module in layers.items():
+-            # TODO: Support other attention modules, e.g., cross-attention
+-            if attn_module.attn_type == AttentionType.DECODER:
+-                if attn_module.sliding_window is not None:
+-                    kv_cache_spec[layer_name] = SlidingWindowSpec(
+-                        block_size=block_size,
+-                        num_kv_heads=attn_module.num_kv_heads,
+-                        head_size=attn_module.head_size,
+-                        dtype=self.kv_cache_dtype,
+-                        sliding_window=attn_module.sliding_window,
+-                        use_mla=use_mla)
++        attn_layers = get_layers_from_vllm_config(self.vllm_config, object)
++        for layer_name, attn_module in attn_layers.items():
++            if isinstance(attn_module, Attention):
++                # if (
++                #     kv_tgt_layer := attn_module.kv_sharing_target_layer_name
++                # ) is not None:
++                #     # The layer doesn't need its own KV cache and will use that of
++                #     # the target layer. We skip creating a KVCacheSpec for it, so
++                #     # that KV cache management logic will act as this layer does
++                #     # not exist, and doesn't allocate KV cache for the layer. This
++                #     # enables the memory saving of cross-layer kv sharing, allowing
++                #     # a given amount of memory to accommodate longer context lengths
++                #     # or enable more requests to be processed simultaneously.
++                #     self.shared_kv_cache_layers[layer_name] = kv_tgt_layer
++                #     continue
++
++                # TODO(lucas): move the attention specs into the model layers like
++                # the attention backends
++                if attn_module.attn_type == AttentionType.DECODER:
++                    if attn_module.sliding_window is not None:
++                        assert not use_mla, "MLA is not supported for slidingwindow"
++                        kv_cache_spec[layer_name] = SlidingWindowSpec(
++                            block_size=block_size,
++                            num_kv_heads=attn_module.num_kv_heads,
++                            head_size=attn_module.head_size,
++                            dtype=self.kv_cache_dtype,
++                            sliding_window=attn_module.sliding_window,
++                            use_mla=use_mla,
++                        )
++                    # elif self.attention_chunk_size is not None and isinstance(
++                    #     attn_module, ChunkedLocalAttention
++                    # ):
++                    #     kv_cache_spec[layer_name] = ChunkedLocalAttentionSpec(
++                    #         block_size=block_size,
++                    #         num_kv_heads=attn_module.num_kv_heads,
++                    #         head_size=attn_module.head_size,
++                    #         dtype=self.kv_cache_dtype,
++                    #         attention_chunk_size=self.attention_chunk_size,
++                    #     )
++                    else:
++                        kv_cache_spec[layer_name] = FullAttentionSpec(
++                            block_size=block_size,
++                            num_kv_heads=attn_module.num_kv_heads,
++                            head_size=attn_module.head_size,
++                            dtype=self.kv_cache_dtype,
++                            use_mla=use_mla,
++                        )
++                # elif attn_module.attn_type == AttentionType.ENCODER_DECODER:
++                #     kv_cache_spec[layer_name] = CrossAttentionSpec(
++                #         block_size=block_size,
++                #         num_kv_heads=attn_module.num_kv_heads,
++                #         head_size=attn_module.head_size,
++                #         dtype=self.kv_cache_dtype,
++                #     )
++                elif attn_module.attn_type in (
++                    AttentionType.ENCODER,
++                    AttentionType.ENCODER_ONLY,
++                ):
++                    # encoder-only attention does not need KV cache.
++                    continue
+                 else:
+-                    kv_cache_spec[layer_name] = FullAttentionSpec(
+-                        block_size=block_size,
+-                        num_kv_heads=attn_module.num_kv_heads,
+-                        head_size=attn_module.head_size,
+-                        dtype=self.kv_cache_dtype,
+-                        use_mla=use_mla)
+-            elif attn_module.attn_type in (AttentionType.ENCODER,
+-                                           AttentionType.ENCODER_ONLY):
+-                # encoder-only attention does not need KV cache.
+-                continue
+-            elif attn_module.attn_type == AttentionType.ENCODER_DECODER:
+-                raise NotImplementedError
+-            else:
+-                raise ValueError(
+-                    f"Unknown attention type: {attn_module.attn_type}")
++                    raise ValueError(f"Unknown attention type: {attn_module.attn_type}")
++
++            # elif isinstance(attn_module, MLAAttention):
++            #     kv_cache_spec[layer_name] = MLAAttentionSpec(
++            #         block_size=block_size,
++            #         num_kv_heads=1,
++            #         head_size=attn_module.head_size,
++            #         dtype=self.kv_cache_dtype,
++            #         cache_dtype_str=cache_dtype_str,
++            #     )
++
++            else:  # Assume it must be Mamba, configure it correctly
++                cache_config = self.vllm_config.cache_config
++                model_config = self.vllm_config.model_config
++                parallel_config = self.vllm_config.parallel_config
++
++                if cache_config.cache_dtype == "auto":
++                    kv_cache_dtype = model_config.dtype
++                else:
++                    kv_cache_dtype = STR_DTYPE_TO_TORCH_DTYPE[cache_config.cache_dtype]
++
++                # get attention page size (for 1 token)
++                attn_page_size_1_token = FullAttentionSpec(
++                    block_size=1,
++                    num_kv_heads=model_config.get_num_kv_heads(parallel_config),
++                    head_size=model_config.get_head_size(),
++                    dtype=kv_cache_dtype,
++                    use_mla=use_mla,
++                ).page_size_bytes
++
++                model_cls, _ = ModelRegistry.resolve_model_cls(
++                    model_config.architectures[0],
++                )
++
++                # get mamba page size
++                mamba_page_size = MambaSpec(
++                    shapes=model_cls.get_mamba_state_shape_from_config(self.vllm_config),
++                    dtypes=model_cls.get_mamba_state_dtype_from_config(self.vllm_config),
++                    block_size=model_config.max_model_len,
++                ).page_size_bytes
++
++                # Attention backend constraints:
++                # - FlashAttention (FA) requires block size to be multiple of 16
++                # - MLA (Multi-head Latent Attention) requires larger alignment:
++                #   * CUTLASS_MLA backend: 128-byte alignment
++                #   * Other MLA backends: 64-byte alignment
++                if model_config.use_mla:
++                    # use_cutlass_mla = envs.VLLM_ATTENTION_BACKEND == "CUTLASS_MLA"
++                    kernel_block_alignment_size = 128  # if use_cutlass_mla else 64
++                else:
++                    kernel_block_alignment_size = 16
++
++                if cache_config.enable_prefix_caching:
++                    # With prefix caching, select attention block size to
++                    # optimize for mamba kernel performance
++
++                    # mamba SSD kernel uses a chunk_size, e.g. 256
++                    # Align the block to the kernel: use lowest multiple of chunk_size
++                    # of attention tokens that would fit mamba_page_size:
++                    # e.g. for mamba page size = 788kB
++                    #          attn_1_token = 2kB -> fits ~394 tokens
++                    #      then round up to a mulitple of 256 -> 512 tokens
++                    # End result:
++                    #  attn_block_size = 512
++                    #  mamba_block_size = 512 (aligned to a multiple of chunk_size)
++                    # TODO(tdoublep): this constraint can be relaxed fairly
++                    # easily by changing the way we layout chunks in the
++                    # mamba2 kernels.
++
++                    from math import gcd
++
++                    def lcm(a, b):
++                        return a * b // gcd(a, b)
++
++                    base_chunk_size = model_config.get_mamba_chunk_size()
++                    attn_tokens_per_mamba_state = cdiv(mamba_page_size, attn_page_size_1_token)
++
++                    chunk_size = lcm(base_chunk_size, kernel_block_alignment_size)
++                    attn_block_size = chunk_size * cdiv(attn_tokens_per_mamba_state, chunk_size)
++                    cache_config.mamba_block_size = attn_block_size
++                else:
++                    # Without prefix caching, select minimum valid attention block size
++                    # to minimize mamba state padding
++
++                    # Calculate minimum attention block size that satisfies both:
++                    # 1. Backend alignment requirements (kernel_block_alignment_size)
++                    # 2. Mamba page size compatibility (attn_page_size >= mamba_page_size)
++                    attn_block_size = kernel_block_alignment_size * cdiv(
++                        mamba_page_size, kernel_block_alignment_size * attn_page_size_1_token
++                    )
++
++                # override attention block size if either (a) the
++                # user has not set it or (b) the user has set it
++                # too small.
++                if cache_config.block_size is None or cache_config.block_size < attn_block_size:
++                    cache_config.block_size = attn_block_size
++                    logger.info(
++                        "Setting attention block size to %d tokens "
++                        "to ensure that attention page size is >= mamba page size.",
++                        attn_block_size,
++                    )
++
++                # compute new attention page size
++                attn_page_size = cache_config.block_size * attn_page_size_1_token
++
++                assert attn_page_size >= mamba_page_size
++
++                if attn_page_size == mamba_page_size:
++                    # don't need to pad mamba page size
++                    return
++
++                # pad mamba page size to exactly match attention
++                if (
++                    cache_config.mamba_page_size_padded is None
++                    or cache_config.mamba_page_size_padded != attn_page_size
++                ):
++                    self.vllm_config.cache_config.mamba_page_size_padded = attn_page_size
++                    mamba_padding_pct = (
++                        100 * (attn_page_size - mamba_page_size) / mamba_page_size
++                    )
++                    logger.info(
++                        "Padding mamba page size by %.2f%% to ensure "
++                        "that mamba page size and attention page size are "
++                        "exactly equal.",
++                        mamba_padding_pct,
++                    )
++
++                if (
++                    self.vllm_config.speculative_config is not None
++                    and self.vllm_config.model_config.hf_config.model_type
++                    not in ["qwen3_next"]
++                ):
++                    raise NotImplementedError(
++                        "Mamba with speculative decoding is not supported yet."
++                    )
++                mamba_block_size = self.vllm_config.cache_config.mamba_block_size
++                page_size_padded = self.vllm_config.cache_config.mamba_page_size_padded
++                kv_cache_spec[layer_name] = MambaSpec(
++                    shapes=attn_module.get_state_shape(),
++                    dtypes=attn_module.get_state_dtype(),
++                    block_size=mamba_block_size,
++                    page_size_padded=page_size_padded,
++                    mamba_type=attn_module.mamba_type,
++                    num_speculative_blocks=(
++                        self.speculative_config.num_speculative_tokens
++                        if self.speculative_config
++                        else 0
++                    ),
++                )
++
++        # ds_indexer_layers = get_layers_from_vllm_config(
++        #     self.vllm_config, DeepseekV32IndexerCache
++        # )
++        # for layer_name, ds_indexer_module in ds_indexer_layers.items():
++        #     kv_cache_spec[layer_name] = ds_indexer_module.get_kv_cache_spec()
+ 
+         return kv_cache_spec
+diff --git a/vllm/v1/worker/utils.py b/vllm/v1/worker/utils.py
+index 91548a52c..0c84ea954 100644
+--- a/vllm/v1/worker/utils.py
++++ b/vllm/v1/worker/utils.py
+@@ -1,8 +1,14 @@
+ # SPDX-License-Identifier: Apache-2.0
+ from typing import Optional
++from dataclasses import dataclass
+ 
+ import torch
+ 
++from vllm.attention.backends.abstract import AttentionBackend
++from vllm.config import VllmConfig
++# from vllm.v1.attention.backends.utils import AttentionMetadataBuilder
++from vllm.v1.kv_cache_interface import KVCacheSpec
++
+ 
+ def sanity_check_mm_encoder_outputs(
+     mm_embeddings: object,
+@@ -72,3 +78,33 @@ def gather_mm_placeholders(
+         return placeholders
+ 
+     return placeholders[is_embed]
++
++
++# @dataclass
++# class AttentionGroup:
++#     backend: type[AttentionBackend]
++#     # When ubatching is enabled we will have a metadata builder for each ubatch
++#     # so that if they use internal persistant buffers for cudagraphs, and they
++#     # won't have to worry about conflicting with the other ubatches.
++#     metadata_builders: list[object]
++#     layer_names: list[str]
++#     kv_cache_spec: KVCacheSpec
++
++#     @staticmethod
++#     def create_with_metadata_builders(
++#         backend: type[AttentionBackend],
++#         layer_names: list[str],
++#         kv_cache_spec: KVCacheSpec,
++#         vllm_config: VllmConfig,
++#         device: torch.device,
++#         num_metadata_builders: int = 1,
++#     ) -> "AttentionGroup":
++#         metadata_builders = [
++#             backend.get_builder_cls()(kv_cache_spec, layer_names, vllm_config, device)
++#             for _ in range(num_metadata_builders)
++#         ]
++#         return AttentionGroup(backend, metadata_builders, layer_names, kv_cache_spec)
++
++#     def get_metadata_builder(self, ubatch_id: int = 0):
++#         assert len(self.metadata_builders) > ubatch_id
++#         return self.metadata_builders[ubatch_id]

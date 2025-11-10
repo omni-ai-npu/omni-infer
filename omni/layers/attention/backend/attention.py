@@ -43,6 +43,13 @@ from omni.layers.rotary_embedding import QwenMRotaryEmbedding
 from omni.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
 from omni.models.config_loader.loader import model_extra_config
 
+class MultipleOf:
+    base: int
+
+    def __init__(self, base: int):
+        self.base = base
+
+
 NZ_DIM = 16
 
 class AscendAttentionState(Enum):
@@ -143,7 +150,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         self.dtype = runner.dtype
         self.device = runner.device
         self.kv_cache_spec = kv_cache_spec
-        self.block_size = runner.block_size
+        self.block_size = block_table.block_size
         self.block_table = block_table
 
         self.decode_num_tokens = torch.zeros(
@@ -262,7 +269,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
               common_prefix_len,
               graph_pad_size=-1):
 
-        block_table = self.block_table.get_device_tensor()[:num_reqs]
+        block_table = self.block_table.get_device_tensor(num_reqs)
 
         seq_lens = self.runner.seq_lens_cpu[:num_reqs]
         query_lens = seq_lens - self.runner.input_batch.num_computed_tokens_cpu_tensor[:num_reqs]
@@ -331,11 +338,13 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                 cos, sin = None, None
             else:
                 cos, sin = self.runner.model.language_model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
+        elif hasattr(self.runner.model.model.layers[0], "self_attn"):
+            cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
         else:
             if self.is_spec_metadata:
                 cos, sin = self.runner.drafter.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
             else:
-                cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(input_positions)
+                cos, sin = None, None
 
         is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
                            self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'
@@ -366,7 +375,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             graph_block_tables = torch.zeros((max_pad_size, self.runner.graph_block_tables.shape[1]))
         block_table = graph_block_tables.to(
             device=self.runner.device,
-            dtype=self.runner.input_batch.block_table[0].get_device_tensor().dtype
+            dtype=self.runner.input_batch.block_table[0].get_device_tensor(max_pad_size).dtype
         )
 
         query_lens = torch.ones(max_pad_size, dtype=torch.long, device=self.runner.device, pin_memory=True)
@@ -382,6 +391,10 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                 cos, sin = None, None
             else:
                 cos, sin = self.runner.model.language_model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
+        elif hasattr(self.runner.model.model.layers[0], 'self_attn'):
+            cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
+        elif hasattr(self.runner.model.model.layers[3], 'self_attn'):  # Qwen3-Next
+            cos, sin = self.runner.model.model.layers[3].self_attn.rotary_emb.get_cos_sin(fake_positions)
         else:
             if self.is_spec_metadata:
                 cos, sin = self.runner.drafter.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(fake_positions)
@@ -806,6 +819,7 @@ class AscendAttentionBackend(AttentionBackend):
             block_size: int,
             num_kv_heads: int,
             head_size: int,
+            cache_dtype_str: str = "auto"
     ) -> Tuple[int, ...]:
         if model_extra_config.operator_opt_config.use_tnd_pa:
             return (2, num_blocks, num_kv_heads * head_size // NZ_DIM, block_size, NZ_DIM)
@@ -853,3 +867,8 @@ class AscendAttentionBackend(AttentionBackend):
         if not int(os.getenv("NO_NPU_MOCK", "0")) and device != "cpu":
             torch_npu.npu_format_cast(layer_kv_caches, 2)
         return (layer_kv_caches[0], layer_kv_caches[1])
+
+    @staticmethod
+    def get_supported_kernel_block_size() -> list[int | MultipleOf]:
+        return [128]
+    

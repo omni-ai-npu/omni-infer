@@ -1,0 +1,39 @@
+From 3fc964433a84bad785d9d0656fd56195462321b8 Mon Sep 17 00:00:00 2001
+From: Isotr0py <mozf@mail2.sysu.edu.cn>
+Date: Mon, 14 Jul 2025 23:36:43 +0800
+Subject: [PATCH] [Misc] Clean up Aimv2 config registration in Ovis config
+ (#20921)
+
+Signed-off-by: Isotr0py <2037008807@qq.com>
+---
+ vllm/transformers_utils/configs/ovis.py | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/vllm/transformers_utils/configs/ovis.py b/vllm/transformers_utils/configs/ovis.py
+index c2728f0ed64c..021d402a71f4 100644
+--- a/vllm/transformers_utils/configs/ovis.py
++++ b/vllm/transformers_utils/configs/ovis.py
+@@ -73,8 +73,6 @@ def __init__(
+ IMAGE_ATOM_ID = -300
+ IMAGE_INDICATOR_IDS = [-301, -302, -303, -304, -305]
+ 
+-AutoConfig.register("aimv2", AIMv2Config)
+-
+ 
+ # ----------------------------------------------------------------------
+ #                     Visual Tokenizer Configuration
+@@ -105,9 +103,11 @@ def __init__(self,
+                 f"expect `backbone_config` to be instance of PretrainedConfig or dict, but got {type(backbone_config)} type"
+             if not isinstance(backbone_config, PretrainedConfig):
+                 model_type = backbone_config['model_type']
+-                backbone_config.pop('model_type')
+-                backbone_config = AutoConfig.for_model(model_type,
+-                                                       **backbone_config)
++                if model_type != "aimv2":
++                    backbone_config.pop('model_type')
++                    backbone_config = AutoConfig.for_model(model_type, **backbone_config)
++                else:
++                    backbone_config = AIMv2Config(**backbone_config)
+         self.backbone_config = backbone_config
+         self.hidden_stride = hidden_stride
+ 

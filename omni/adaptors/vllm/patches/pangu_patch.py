@@ -53,6 +53,8 @@ def patch_pangu():
                 qk_dim = get_attr_by_names(self.hf_text_config, qk_dim_names, 0)
                 if qk_rope_dim and qk_dim:
                     return qk_rope_dim + qk_dim
+                
+        return self.hf_text_config.head_dim
 
     # for mtp
     from vllm.config import SpeculativeConfig

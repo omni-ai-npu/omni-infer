@@ -34,7 +34,7 @@ from vllm.logger import logger
 from vllm.model_executor.model_loader import get_model
 from vllm.sequence import IntermediateTensors
 from vllm.utils import (DeviceMemoryProfiler, is_pin_memory_available,
-                        LayerBlockType, LazyLoader, cdiv)
+                        LayerBlockType, LazyLoader, cdiv, get_dtype_size)
 from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
                                         KVCacheConfig, KVCacheSpec)
 from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
@@ -56,6 +56,10 @@ from omni.adaptors.vllm.spec_decode.post_drafter import PostDrafter
 from omni.adaptors.vllm.worker.cache_engine import CacheEngine
 from omni.adaptors.vllm.utils import get_attr_by_names
 
+from vllm.config import VllmConfig, get_layers_from_vllm_config
+from omni.layers.attention.linear.abstract import MambaBase
+from vllm.v1.kv_cache_interface import MambaSpec, UniformTypeKVCacheSpecs
+
 if TYPE_CHECKING:
     import xgrammar as xgr  # type: ignore[import-untyped]
     from vllm.v1.core.sched.output import SchedulerOutput
@@ -65,6 +69,7 @@ else:
 _GLOBAL_STEP = 0
 MAX_GEAR_NUM = 6
 NPU_GENERATOR_OFFSET_STEP = 12 # ascend npu, move 12 every one generation, which is 4 on cuda.
+LLMDATADIST_ALIGNMENT_BYTES = 2 * 1024 * 1024
 
 def _get_pad_size(num_seqs):
     tp_size = get_tensor_model_parallel_world_size()
@@ -114,7 +119,7 @@ class NPUModelRunner(GPUModelRunner):
         super().__init__(vllm_config, device)
         self.cache_engine = None
         self.head_size = self.model_config.get_head_size()
-        self.block_size = vllm_config.cache_config.block_size
+        self.block_size = 128  # NPU kernel block size, not KV block size
 
         self.num_attn_layers = self.model_config.get_num_layers_by_block_type(
             vllm_config.parallel_config, LayerBlockType.attention)
@@ -347,7 +352,7 @@ class NPUModelRunner(GPUModelRunner):
 
         # OPTIMIZATION: Start copying the block table first.
         # This way, we can overlap the copy with the following CPU operations.
-        self.input_batch.block_table.commit(num_reqs)
+        self.input_batch.block_table.commit_block_table(num_reqs)
 
         # Get the number of scheduled tokens for each request.
         num_scheduled_tokens = np.array([
@@ -381,20 +386,8 @@ class NPUModelRunner(GPUModelRunner):
         self.seq_lens_np[:num_reqs] = self.input_batch.num_computed_tokens_cpu[:num_reqs] + num_scheduled_tokens
 
         # Calculate the slot mapping for each KV cache group.
-        for kv_cache_group_id, kv_cache_group_spec in enumerate(self.kv_cache_config.kv_cache_groups):
-            block_size = kv_cache_group_spec.kv_cache_spec.block_size
-            block_table: BlockTable = self.input_batch.block_table[kv_cache_group_id]
-            # NOTE(runze): since each request has at most M blocks, the offset is at most M-1
-            block_table_indices = (
-                req_indices * block_table.max_num_blocks_per_req +
-                np.minimum(positions_np // block_size, block_table.max_num_blocks_per_req - 1))
-            block_table_cpu = block_table.get_cpu_tensor()
-            block_numbers = block_table_cpu.flatten()[block_table_indices].numpy()
-            block_offsets = positions_np % block_size
-            np.add(
-                block_numbers * block_size,
-                block_offsets,
-                out=block_table.slot_mapping_np[:total_num_scheduled_tokens])
+        self.input_batch.block_table.compute_slot_mapping(req_indices, positions_np)
+        self.input_batch.block_table.commit_slot_mapping(total_num_scheduled_tokens)
 
         # check and set attention state
         can_decode = self.vllm_config.kv_transfer_config is None or self.vllm_config.kv_transfer_config.kv_role == "kv_consumer"
@@ -446,13 +439,30 @@ class NPUModelRunner(GPUModelRunner):
                     kv_cache_group_spec.kv_cache_spec,
                     self.attn_metadata_builders[kv_cache_group_id],
                 )
-            attn_metadata_i = self.attn_metadata_builders[kv_cache_group_id].build(
-                num_reqs=num_reqs,
-                num_actual_tokens=total_num_scheduled_tokens,
-                max_query_len=max_num_scheduled_tokens,
-                common_prefix_len=None,
-                **extra_builder_kwargs,
-            )
+            if not isinstance(kv_cache_group_spec.kv_cache_spec, MambaSpec):
+                attn_metadata_i = self.attn_metadata_builders[kv_cache_group_id].build(
+                    num_reqs=num_reqs,
+                    num_actual_tokens=total_num_scheduled_tokens,
+                    max_query_len=max_num_scheduled_tokens,
+                    common_prefix_len=None,
+                    **extra_builder_kwargs,
+                )  
+            else:
+                from vllm.v1.attention.backends.utils import CommonAttentionMetadata
+                query_start_loc = np.pad(cu_num_tokens, pad_width=(1, 0), mode='constant', constant_values=0)
+                common_attn_metadata = CommonAttentionMetadata(
+                    query_start_loc=torch.from_numpy(query_start_loc), seq_lens=self.seq_lens)
+
+                attn_metadata_i = (
+                    self.attn_metadata_builders[kv_cache_group_id].build(
+                        num_reqs=num_reqs,
+                        num_actual_tokens=total_num_scheduled_tokens,   
+                        max_query_len=max_num_scheduled_tokens,
+                        common_attn_metadata=common_attn_metadata,
+                        num_computed_tokens_cpu_tensor=self.input_batch.num_computed_tokens_cpu_tensor,
+                        **extra_builder_kwargs,
+                    )
+                )
             if kv_cache_group_id == 0:
                 self.full_attn_metadata = attn_metadata_i
 
@@ -537,7 +547,7 @@ class NPUModelRunner(GPUModelRunner):
                 req_indices * block_table.max_num_blocks_per_req +
                 positions[:total_num_scheduled_tokens] // block_size
             )
-            block_table_cpu = block_table.get_device_tensor()
+            block_table_cpu = block_table.get_device_tensor(num_reqs)
             block_numbers = block_table_cpu.flatten()[block_table_indices]
             block_offsets = positions[:total_num_scheduled_tokens] % block_size
             block_table.slot_mapping[:total_num_scheduled_tokens] = block_numbers * block_size + block_offsets
@@ -1079,14 +1089,41 @@ class NPUModelRunner(GPUModelRunner):
             builder = self.attn_metadata_builders[kv_cache_group_id]
             if not isinstance(builder, DummyAttentionMetadataBuilder):
                 raise ValueError(f"{builder} does not implement DummyAttentionMetadataBuilder")
-            attn_metadata_i = builder.build_dummy(num_tokens, self.max_batch_size)
-            if model_extra_config.operator_opt_config.mtp_remove_redundant_kv:
-                num_speculative_tokens = 0 if not self.speculative_config else self.speculative_config.num_speculative_tokens
-                mtp_idx = torch.arange(1, self.max_batch_size, 1 + num_speculative_tokens, dtype=torch.int64).npu()
-                new_block_table = torch.index_select(attn_metadata_i.decode.block_table, dim=0, index=mtp_idx)
-                new_seq_lens = torch.index_select(attn_metadata_i.decode.seq_lens, dim=0, index=mtp_idx)
-                attn_metadata_i.decode.block_table = new_block_table
-                attn_metadata_i.decode.seq_lens = new_seq_lens
+
+            if not isinstance(kv_cache_group_spec.kv_cache_spec, MambaSpec):
+                attn_metadata_i = builder.build_dummy(num_tokens, self.max_batch_size)
+                if model_extra_config.operator_opt_config.mtp_remove_redundant_kv:
+                    num_speculative_tokens = 0 if not self.speculative_config else self.speculative_config.num_speculative_tokens
+                    mtp_idx = torch.arange(1, self.max_batch_size, 1 + num_speculative_tokens, dtype=torch.int64).npu()
+                    new_block_table = torch.index_select(attn_metadata_i.decode.block_table, dim=0, index=mtp_idx)
+                    new_seq_lens = torch.index_select(attn_metadata_i.decode.seq_lens, dim=0, index=mtp_idx)
+                    attn_metadata_i.decode.block_table = new_block_table
+                    attn_metadata_i.decode.seq_lens = new_seq_lens
+            else:
+                from vllm.v1.attention.backends.utils import CommonAttentionMetadata
+                num_scheduled_tokens = np.array([1 for _ in range(self.max_batch_size)], dtype=np.int32)
+                cu_num_tokens = np.cumsum(num_scheduled_tokens)
+                query_start_loc = np.pad(cu_num_tokens, pad_width=(1, 0), mode='constant', constant_values=0)
+                common_attn_metadata = CommonAttentionMetadata(
+                    query_start_loc=torch.from_numpy(query_start_loc), seq_lens=torch.ones(self.max_batch_size, dtype=torch.int64, device=self.device))
+                extra_builder_kwargs = {'graph_pad_size': 0}
+
+                self.attn_metadata_builders[kv_cache_group_id]._num_decodes = self.max_batch_size
+                self.attn_metadata_builders[kv_cache_group_id]._num_prefills = 0
+                self.attn_metadata_builders[kv_cache_group_id]._num_decode_tokens = self.max_batch_size
+                self.attn_metadata_builders[kv_cache_group_id]._num_prefill_tokens = 0
+
+                attn_metadata_i = (
+                    self.attn_metadata_builders[kv_cache_group_id].build(
+                        num_reqs=self.max_batch_size,
+                        num_actual_tokens=self.max_batch_size,   
+                        max_query_len=num_tokens,
+                        common_attn_metadata=common_attn_metadata,
+                        num_computed_tokens_cpu_tensor=self.input_batch.num_computed_tokens_cpu_tensor,
+                        **extra_builder_kwargs,
+                    )
+                )
+
             if self.enable_torchair_graph_mode:
                 builder.mark_static_for_attn_metadata(attn_metadata_i)
             for layer_name in kv_cache_group_spec.layer_names:
@@ -1140,8 +1177,10 @@ class NPUModelRunner(GPUModelRunner):
             hidden_states = self._dummy_run(self.max_batch_size * get_dp_group().world_size)
         elif model_extra_config.parall_config.enable_attn_ffn_disaggregation:
             hidden_states = self._dummy_run(self.max_num_reqs)
-        else:
+        elif self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_producer":
             hidden_states = self._dummy_run(self.max_num_tokens)
+        else:
+            hidden_states = self._dummy_run(self.max_batch_size)
 
         NPUPlatform.synchronize()
         del hidden_states
@@ -1181,6 +1220,8 @@ class NPUModelRunner(GPUModelRunner):
         kv_caches: Dict[str, torch.Tensor] = {}
         cpu_caches: Dict[str, torch.Tensor] = {}
         self.kv_cache_config = kv_cache_config
+
+        # Initialize input batch for attn backend
         self.input_batch = InputBatch(
             max_num_reqs=self.max_num_reqs,
             max_model_len=self.model_config.max_model_len,
@@ -1188,7 +1229,8 @@ class NPUModelRunner(GPUModelRunner):
             device=self.device,
             pin_memory=is_pin_memory_available(),
             vocab_size=self.model_config.get_vocab_size(),
-            block_size=self.cache_config.block_size
+            block_sizes=[kv_cache_group.kv_cache_spec.block_size for kv_cache_group in kv_cache_config.kv_cache_groups],
+            kernel_block_sizes=[kv_cache_group.kv_cache_spec.block_size for kv_cache_group in kv_cache_config.kv_cache_groups],
         )
         self.input_batch.token_ids_cpu_tensor = torch.zeros(
             (self.max_num_reqs, self.model_config.max_model_len),
@@ -1197,48 +1239,415 @@ class NPUModelRunner(GPUModelRunner):
             pin_memory=False,
         )
         self.input_batch.token_ids_cpu = self.input_batch.token_ids_cpu_tensor.numpy()
+
+        # Initialize attn backend
         self.initialize_attn_backend(kv_cache_config)
+
+        # Reinitialize input batch
+        self.may_reinitialize_input_batch(kv_cache_config)
+        self.input_batch.token_ids_cpu_tensor = torch.zeros(
+            (self.max_num_reqs, self.model_config.max_model_len),
+            device="cpu",
+            dtype=torch.int64,
+            pin_memory=False,
+        )
+        self.input_batch.token_ids_cpu = self.input_batch.token_ids_cpu_tensor.numpy()
+        
+        # Initialize KV caches
+        kv_caches = self.initialize_kv_cache_tensors(kv_cache_config)  # TODO readd preemption swap handling
+
+        # Initialize attn metadata builders
+        self.initialize_attn_metadata_builders(kv_cache_config)
+
         preemption_mode = self.vllm_config.scheduler_config.preemption_mode
-
-        for i, kv_cache_group in enumerate(kv_cache_config.kv_cache_groups):
-            kv_cache_spec = kv_cache_group.kv_cache_spec
-            for layer_name in kv_cache_group.layer_names:
-                tensor_config = kv_cache_config.tensors[layer_name]
-                if tensor_config.size % kv_cache_spec.page_size_bytes != 0:
-                    raise RuntimeError("tensor_config.size must be divisible by kv_cache_spec.page_size_bytes")
-                num_blocks = tensor_config.size // kv_cache_spec.page_size_bytes
-                if isinstance(kv_cache_spec, AttentionSpec):
-                    kv_cache_shape = self.attn_backends[i].get_kv_cache_shape(
-                        num_blocks, kv_cache_spec.block_size,
-                        kv_cache_spec.num_kv_heads, kv_cache_spec.head_size)
-                    kv_caches[layer_name] = self.attn_backends[i].init_kv_cache_each_layer(kv_cache_shape, self.dtype,
-                                                                                           self.device,
-                                                                                           self.model_config,
-                                                                                           self.enable_torchair_graph_mode)
-                    if preemption_mode and preemption_mode == "swap":
-                        cpu_num_blocks = int(self.vllm_config.cache_config.swap_space_bytes //
-                                          kv_cache_spec.page_size_bytes // len(kv_cache_config.tensors))
-                        cpu_kv_cache_shape = self.attn_backends[i].get_kv_cache_shape(
-                            cpu_num_blocks, kv_cache_spec.block_size,
-                            kv_cache_spec.num_kv_heads, kv_cache_spec.head_size)
-                        cpu_caches[layer_name] = self.attn_backends[i].init_kv_cache_each_layer(cpu_kv_cache_shape, self.dtype,
-                                                                                           "cpu",
-                                                                                           self.model_config,
-                                                                                           self.enable_torchair_graph_mode)
-                else:
-                    raise ValueError("Unknown KV cache spec type.")
-
         if preemption_mode and preemption_mode == "swap":
             self.cache_engine = CacheEngine(self.attn_backends, self.kv_cache_config, gpu_cache=kv_caches, cpu_cache=cpu_caches)
 
+        if has_kv_transfer_group():
+            get_kv_transfer_group().register_kv_caches(kv_caches)
+
+    def may_reinitialize_input_batch(self, kv_cache_config: KVCacheConfig) -> None:
+        """
+        Re-initialize the input batch if the block sizes are different from
+        `[self.cache_config.block_size]`. This usually happens when there
+        are multiple KV cache groups.
+
+        Args:
+            kv_cache_config: The KV cache configuration.
+        """
+        block_sizes = [
+            kv_cache_group.kv_cache_spec.block_size
+            for kv_cache_group in kv_cache_config.kv_cache_groups
+        ]
+
+        # Generate kernel_block_sizes that matches each block_size
+        kernel_block_sizes = self._prepare_kernel_block_sizes(kv_cache_config)
+
+        if block_sizes != [self.cache_config.block_size] or kernel_block_sizes != [
+            self.cache_config.block_size
+        ]:
+            assert self.cache_config.cpu_offload_gb == 0, (
+                "Cannot re-initialize the input batch when CPU weight "
+                "offloading is enabled. See https://github.com/vllm-project/vllm/pull/18298 "  # noqa: E501
+                "for more details."
+            )
+            self.input_batch = InputBatch(
+                max_num_reqs=self.max_num_reqs,
+                max_model_len=max(self.model_config.max_model_len, self.max_encoder_len) if hasattr(self, "max_encoder_len") else self.model_config.max_model_len,
+                max_num_batched_tokens=self.max_num_tokens,
+                device=self.device,
+                pin_memory=is_pin_memory_available(),
+                vocab_size=self.model_config.get_vocab_size(),
+                block_sizes=block_sizes,
+                kernel_block_sizes=kernel_block_sizes,
+                num_speculative_tokens=(
+                    self.vllm_config.speculative_config.num_speculative_tokens
+                    if self.vllm_config.speculative_config
+                    else 0
+                ),
+            )
+
+    def _prepare_kernel_block_sizes(self, kv_cache_config: KVCacheConfig) -> list[int]:
+        """
+        Generate kernel_block_sizes that matches each block_size.
+
+        For attention backends that support virtual block splitting,
+        use the supported block sizes from the backend.
+        For other backends (like Mamba), use the same block size (no splitting).
+
+        Args:
+            kv_cache_config: The KV cache configuration.
+
+        Returns:
+            list[int]: List of kernel block sizes for each cache group.
+        """
+        kernel_block_sizes = []
+        for kv_cache_group_id, kv_cache_group in enumerate(
+            kv_cache_config.kv_cache_groups
+        ):
+            kv_cache_spec = kv_cache_group.kv_cache_spec
+            if isinstance(kv_cache_spec, UniformTypeKVCacheSpecs):
+                # All layers in the UniformTypeKVCacheSpecs have the same type,
+                # Pick an arbitrary one to dispatch.
+                kv_cache_spec = next(iter(kv_cache_spec.kv_cache_specs.values()))
+            if isinstance(kv_cache_spec, AttentionSpec):
+                # This is an attention backend that supports virtual
+                # block splitting. Get the supported block sizes from
+                # all backends in the group.
+                kv_manager_block_size = kv_cache_group.kv_cache_spec.block_size
+                selected_kernel_size = self._select_common_block_size(
+                    kv_manager_block_size, kv_cache_group_id
+                )
+                kernel_block_sizes.append(selected_kernel_size)
+            elif isinstance(kv_cache_spec, MambaSpec):
+                # This is likely Mamba or other non-attention cache,
+                # no splitting.
+                kernel_block_sizes.append(kv_cache_spec.block_size)
+            else:
+                raise NotImplementedError(
+                    f"unknown kv cache spec {kv_cache_group.kv_cache_spec}"
+                )
+        return kernel_block_sizes
+
+    def _select_common_block_size(
+        self, kv_manager_block_size: int, kv_cache_group_id: int
+    ) -> int:
+        """
+        Select common block size for all backends.
+
+        Args:
+            kv_manager_block_size: Block size of KV cache
+            kv_cache_group_id: KV cache group id
+
+        Returns:
+            Block size supported by all backends,
+            prioritizing cache_config.block_size
+
+        Raises:
+            ValueError: If no common block size found
+        """
+        all_backend_supports = []
+
+        for attn_backend in self.attn_backends[kv_cache_group_id:kv_cache_group_id+1]:
+            compatible_sizes = self._find_compatible_block_sizes(
+                kv_manager_block_size, attn_backend, return_all=True
+            )
+            supported_sizes = sorted(list(set(compatible_sizes)), reverse=True)
+            all_backend_supports.append(set(supported_sizes))
+
+        common_supported_sizes = set.intersection(*all_backend_supports)
+
+        if not common_supported_sizes:
+            error_msg = f"No common block size for {kv_manager_block_size}. "
+            for i, attn_backend in enumerate(self.attn_backends):
+                supported = all_backend_supports[i]
+                error_msg += (
+                    f"Backend {attn_backend} supports: {sorted(supported)}. "
+                )
+            raise ValueError(error_msg)
+
+        if self.cache_config.block_size in common_supported_sizes:
+            return self.cache_config.block_size
+
+        return max(common_supported_sizes)
+
+    def _allocate_kv_cache_tensors(
+        self, kv_cache_config: KVCacheConfig
+    ) -> dict[str, torch.Tensor]:
+        """
+        Initializes the KV cache buffer with the correct size. The buffer needs
+        to be reshaped to the desired shape before being used by the models.
+
+        Args:
+            kv_cache_config: The KV cache config
+        Returns:
+            dict[str, torch.Tensor]: A map between layer names to their
+            corresponding memory buffer for KV cache.
+        """
+        kv_cache_raw_tensors: dict[str, torch.Tensor] = {}
+
+        layer_to_spec_map = {
+            layer_name: group.kv_cache_spec
+            for group in kv_cache_config.kv_cache_groups
+            for layer_name in group.layer_names
+        }
+
+        for kv_cache_tensor in kv_cache_config.tensors:
+            for layer_name in kv_cache_tensor.shared_by:
+                if layer_name in kv_cache_raw_tensors:
+                    continue
+
+                spec = layer_to_spec_map[layer_name]
+
+                if isinstance(spec, AttentionSpec):
+                    cache_size = kv_cache_tensor.size // 2
+                    
+                    k_tensor = self._create_aligned_tensor(cache_size)
+                    v_tensor = self._create_aligned_tensor(cache_size)
+                    
+                    kv_cache_raw_tensors[layer_name] = (k_tensor, v_tensor)
+
+                elif isinstance(spec, MambaSpec):
+                    # For Mamba, we allocate later
+                    kv_cache_raw_tensors[layer_name] = kv_cache_tensor.size
+                else:
+                    raise NotImplementedError
+
+        layer_names = set()
+        for group in kv_cache_config.kv_cache_groups:
+            for layer_name in group.layer_names:
+                # if layer_name in self.runner_only_attn_layers:
+                #     continue
+                layer_names.add(layer_name)
+        assert layer_names == set(kv_cache_raw_tensors.keys()), (
+            "Some layers are not correctly initialized"
+        )
+        return kv_cache_raw_tensors
+
+    def initialize_kv_cache_tensors(
+        self, kv_cache_config: KVCacheConfig
+    ) -> dict[str, torch.Tensor]:
+        """
+        Initialize the memory buffer for KV cache.
+
+        Args:
+            kv_cache_config: The KV cache config
+        Returns:
+            Dict[str, torch.Tensor]: A map between layer names to their
+            corresponding memory buffer for KV cache.
+        """
+        # Initialize the memory buffer for KV cache
+        kv_cache_raw_tensors = self._allocate_kv_cache_tensors(kv_cache_config)
+        # Change the memory buffer to the desired shape
+        kv_caches = self._reshape_kv_cache_tensors(
+            kv_cache_config, kv_cache_raw_tensors
+        )
+
+        # # Set up cross-layer KV cache sharing
+        # for layer_name, target_layer_name in self.shared_kv_cache_layers.items():
+        #     logger.debug("%s reuses KV cache of %s", layer_name, target_layer_name)
+        #     kv_caches[layer_name] = kv_caches[target_layer_name]
+
+        num_attn_module = (
+            2 if self.model_config.hf_config.model_type == "longcat_flash" else 1
+        )
         if not int(os.getenv("NO_NPU_MOCK", "0")):
             bind_kv_cache(
                 kv_caches,
                 self.vllm_config.compilation_config.static_forward_context,
-                self.kv_caches)
+                self.kv_caches,
+                num_attn_module,
+            )
+        return kv_caches
 
-        if has_kv_transfer_group():
-            get_kv_transfer_group().register_kv_caches(kv_caches)
+    # def _kv_cache_spec_attn_group_iterator(self):
+    #     if not self.kv_cache_config.kv_cache_groups:
+    #         return
+    #     for attn_groups in self.attn_groups:
+    #         yield from attn_groups
+
+    def _find_compatible_block_sizes(
+        self,
+        kv_manager_block_size: int,
+        backend_cls,
+        return_all: bool = False,
+    ) -> list[int]:
+        """
+        Find compatible block sizes for a backend.
+
+        Args:
+            kv_manager_block_size: Physical block size of KV cache
+            backend_cls: Attention backend class
+            return_all: Return all compatible sizes if True, max size if False
+
+        Returns:
+            Compatible block size(s) based on return_all parameter
+
+        Raises:
+            ValueError: If no compatible block size found
+        """
+        supported_block_size = backend_cls.get_supported_kernel_block_size()
+        compatible_sizes = []
+
+        for block_size in supported_block_size:
+            if isinstance(block_size, int):
+                if kv_manager_block_size % block_size == 0:
+                    compatible_sizes.append(block_size)
+            elif (
+                kv_manager_block_size % block_size.base == 0
+            ):
+                compatible_sizes.append(kv_manager_block_size)
+
+        if not compatible_sizes:
+            raise ValueError(f"No compatible block size for {kv_manager_block_size}")
+
+        return compatible_sizes if return_all else [max(compatible_sizes)]
+
+    def _align_memory(self, tensor: torch.Tensor) -> torch.Tensor:
+        data_ptr = tensor.data_ptr()
+        alignment = LLMDATADIST_ALIGNMENT_BYTES
+        aligned_addr = (data_ptr + alignment - 1) // alignment * alignment
+        offset_bytes = aligned_addr - data_ptr
+        offset_elements = offset_bytes // tensor.element_size()
+        return tensor[int(offset_elements):]
+
+    def _create_aligned_tensor(self, size_in_bytes: int) -> torch.Tensor:
+        """
+        Creates a tensor of a specific size with its memory address
+        aligned to LLMDATADIST_ALIGNMENT_BYTES.
+        """
+        # Over-allocate by the alignment amount
+        aligned_size = size_in_bytes + LLMDATADIST_ALIGNMENT_BYTES
+        tensor = torch.zeros(aligned_size, dtype=torch.int8, device=self.device)
+        # Find the aligned slice within it
+        aligned_tensor = self._align_memory(tensor)
+        return aligned_tensor[:size_in_bytes]
+    
+    def _reshape_kv_cache_tensors(
+        self,
+        kv_cache_config: KVCacheConfig,
+        kv_cache_raw_tensors: dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        """
+        Reshape the KV cache tensors to the desired shape and dtype.
+
+        Args:
+            kv_cache_config: The KV cache config
+            kv_cache_raw_tensors: The KV cache buffer of each layer, with
+                correct size but uninitialized shape.
+        Returns:
+            Dict[str, torch.Tensor]: A map between layer names to their
+            corresponding memory buffer for KV cache.
+        """
+        kv_caches: dict[str, torch.Tensor] = {}
+        has_attn, has_mamba = False, False
+        for group, attn_backend in zip(kv_cache_config.kv_cache_groups, self.attn_backends):
+            kv_cache_spec = group.kv_cache_spec
+            for layer_name in group.layer_names:
+                # if layer_name in self.runner_only_attn_layers:
+                #     continue
+                raw_tensor = kv_cache_raw_tensors[layer_name]
+                if isinstance(kv_cache_spec, AttentionSpec):
+                    assert isinstance(raw_tensor, tuple)
+                    raw_k, raw_v = raw_tensor
+                    num_blocks = (raw_k.numel() + raw_v.numel()) // kv_cache_spec.page_size_bytes
+                    
+                    has_attn = True
+                    kv_manager_block_size = kv_cache_spec.block_size
+                    kernel_size_list = self._find_compatible_block_sizes(
+                        kv_manager_block_size, attn_backend, return_all=False
+                    )
+                    kernel_size = kernel_size_list[0]
+                    num_blocks_per_kv_block = kv_manager_block_size // kernel_size
+                    kernel_num_blocks = num_blocks * num_blocks_per_kv_block
+
+                    kv_cache_shape = (
+                        kernel_num_blocks,
+                        kernel_size,
+                        kv_cache_spec.num_kv_heads * kv_cache_spec.head_size,
+                    )
+                    dtype = kv_cache_spec.dtype
+                    
+                    # Reshape each tensor individually
+                    k_cache = raw_k.view(dtype).view(kv_cache_shape)
+                    v_cache = raw_v.view(dtype).view(kv_cache_shape)
+                    kv_caches[layer_name] = (k_cache, v_cache)
+                    
+                    # Ensure they are contiguous and aligned
+                    assert k_cache.is_contiguous() and v_cache.is_contiguous()
+                    assert k_cache.data_ptr() % LLMDATADIST_ALIGNMENT_BYTES == 0
+                    assert v_cache.data_ptr() % LLMDATADIST_ALIGNMENT_BYTES == 0
+                elif isinstance(kv_cache_spec, MambaSpec):
+                    has_mamba = True
+                    numel = kv_cache_raw_tensors[layer_name]
+                    num_blocks = numel // kv_cache_spec.page_size_bytes
+                    state_tensors = []
+                    for shape, dtype in zip(kv_cache_spec.shapes, kv_cache_spec.dtypes):
+                        dtype_size = get_dtype_size(dtype)
+                        target_shape = (num_blocks, *shape)
+
+                        # Make contiguous and aligned tensor
+                        final_size_bytes = np.prod(target_shape) * dtype_size
+                        aligned_contiguous_tensor = self._create_aligned_tensor(final_size_bytes)
+                        final_tensor = aligned_contiguous_tensor.view(dtype).view(target_shape)
+
+                        assert final_tensor.is_contiguous()
+                        assert final_tensor.data_ptr() % LLMDATADIST_ALIGNMENT_BYTES == 0
+                        state_tensors.append(final_tensor)
+
+                    kv_caches[layer_name] = state_tensors
+                else:
+                    raise NotImplementedError
+
+        # NOTE: NPU kernels need contiguous layout
+        # if has_attn and has_mamba:
+        #     self._update_hybrid_attention_mamba_layout(kv_caches)
+
+        return kv_caches
+
+    def _update_hybrid_attention_mamba_layout(
+            self, kv_caches: dict[str, torch.Tensor]) -> None:
+        """
+        Update the layout of attention layers from (2, num_blocks, ...) to
+        (num_blocks, 2, ...).
+
+        Args:
+            kv_caches: The KV cache buffer of each layer.
+        """
+        for kv_cache_group_id, kv_cache_group_spec in enumerate(self.kv_cache_config.kv_cache_groups):
+            kv_cache_spec = kv_cache_group_spec.kv_cache_spec
+            for layer_name in kv_cache_group_spec.layer_names:
+                kv_cache = kv_caches[layer_name]
+                if (isinstance(kv_cache_spec, AttentionSpec)
+                        and kv_cache.shape[0] == 2):
+                    assert kv_cache.shape[1] != 2, \
+                        "Fail to determine whether the layout is " \
+                        "(2, num_blocks, ...) or (num_blocks, 2, ...) for " \
+                        f"a tensor of shape {kv_cache.shape}"
+                    hidden_size = kv_cache.shape[2:].numel()
+                    kv_cache.as_strided_(size=kv_cache.shape,
+                                            stride=(hidden_size, 2 * hidden_size,
+                                                    *kv_cache.stride()[2:]))
 
     def initialize_omni_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         from omni.accelerators.cache.omni_cache import create_omni_cache
@@ -1334,7 +1743,38 @@ class NPUModelRunner(GPUModelRunner):
                 use_mla=use_mla
             )
             return kv_cache_spec
-        return super().get_kv_cache_spec()
+        kv_cache_spec = super().get_kv_cache_spec()
+
+        mamba_layers = get_layers_from_vllm_config(self.vllm_config, MambaBase)
+        if len(mamba_layers) > 0:
+            if (self.vllm_config.speculative_config is not None
+                    and self.vllm_config.model_config.hf_config.model_type
+                    not in ["qwen3_next"]):
+                raise NotImplementedError(
+                    "Mamba with speculative decoding is not supported yet.")
+            if self.vllm_config.cache_config.enable_prefix_caching:
+                raise NotImplementedError(
+                    "Prefix caching is not supported for Mamba yet.")
+            max_model_len = self.vllm_config.model_config.max_model_len
+
+            page_size_padded = (
+                self.vllm_config.cache_config.mamba_page_size_padded)
+
+            # Set block_size to max_model_len, so that mamba model will always
+            # have only one block in the KV cache.
+            for layer_name, mamba_module in mamba_layers.items():
+                kv_cache_spec[layer_name] = MambaSpec(
+                    shapes=mamba_module.get_state_shape(),
+                    dtypes=mamba_module.get_state_dtype(),
+                    block_size=max_model_len,
+                    page_size_padded=page_size_padded,
+                    mamba_type=mamba_module.mamba_type,
+                    num_speculative_blocks=(
+                        self.speculative_config.num_speculative_tokens
+                        if self.speculative_config else 0),
+                )
+
+        return kv_cache_spec
 
     def _get_max_token_num(self, is_enable_dp, num_tokens):
         if is_enable_dp:

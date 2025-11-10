@@ -60,14 +60,14 @@ class ModelParallelConfig:
 @dataclass
 class ModelOperatorOptConfig:
     enable_kv_rmsnorm_rope_cache: bool = True
-    prefill_moe_all_to_all: bool = True
+    prefill_moe_all_to_all: bool = False
     moe_multi_stream_tune: bool = False
     best_ep: bool = False
     merge_qkv: bool = False
     two_stage_comm: bool = False
     gmm_nz: bool = False
     unquant_bmm_nz: bool = False
-    decode_moe_dispatch_combine: bool = True
+    decode_moe_dispatch_combine: bool = False
     use_super_kernel: bool = False
     enable_prefill_micro_batch: bool = False
     use_mlaprolog: bool = False

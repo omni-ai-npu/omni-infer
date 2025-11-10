@@ -680,36 +680,39 @@ class DecodeConnectorWorker:
             # If local_block_ids is a list of lists (e.g., [[], []]), omni-attention is used
             # local_block_ids[0] is a list of local block ids for uncompressed layers
             # local_block_ids[1] is a list of local block ids for compressed layers
-            elif isinstance(meta.local_block_ids[0], list):
-                # If local_block_ids[0] is a list of lists, we need to ensure that remote_block_ids
-                # is a list of lists as well, where each sublist corresponds to the local_block
-                meta.remote_block_ids = [meta.remote_block_ids] * len(meta.local_block_ids)
-                # If local_block_ids[0] is empty, skip pulling kv for the request
-                if len(meta.local_block_ids[0]) == 0:
-                    if self.tp_rank == 0:
-                        logger.info(f" ***** Request {req_id} has 0 local blocks, skip load kv.")
-                    continue
-                # remote_block_ids in P is less than local_block_ids[0] in D, 
-                # leaded by lookahead num, which is used by eagle and multi step
-                elif len(meta.remote_block_ids[0]) < len(meta.local_block_ids[0]):
-                    meta.local_block_ids[0] = meta.local_block_ids[0][:len(meta.remote_block_ids[0])]
-                    logger.debug("look ahead token num is greater than 0")
-                # If remote_block_ids in P is more than local_block_ids[0] in D, we only need the last N remote blocks
-                elif len(meta.remote_block_ids[0]) > len(meta.local_block_ids[0]):
-                    meta.remote_block_ids[0] = meta.remote_block_ids[0][-len(meta.local_block_ids[0]):]
-                if self.tp_rank == 0:
-                    logger.info(
-                        " ***** start_load_kv for request %s "
-                        "Num local_block_ids: %s. Num remote_block_ids: %s.",
-                        req_id,
-                        len(meta.local_block_ids[0]),
-                        len(meta.remote_block_ids[0])
-                    )
-            # handle the unexpected case where local_block_ids is not a list of int or list of lists
-            else:
-                logger.error(f"Unexpected type for meta.local_block_ids[0]: {type(meta.local_block_ids[0])}")
-                raise RuntimeError(f"Unexpected type for meta.local_block_ids[0]: {type(meta.local_block_ids[0])}")
+            # TODO: Redo OmniAttn processing and non-OmniAttn preprocessing for new KV cache layout
+            # elif isinstance(meta.local_block_ids[0], list):
+            #     # If local_block_ids[0] is a list of lists, we need to ensure that remote_block_ids
+            #     # is a list of lists as well, where each sublist corresponds to the local_block
+            #     meta.remote_block_ids = [meta.remote_block_ids] * len(meta.local_block_ids)
+            #     # If local_block_ids[0] is empty, skip pulling kv for the request
+            #     if len(meta.local_block_ids[0]) == 0:
+            #         if self.tp_rank == 0:
+            #             logger.info(f" ***** Request {req_id} has 0 local blocks, skip load kv.")
+            #         continue
+            #     # remote_block_ids in P is less than local_block_ids[0] in D, 
+            #     # leaded by lookahead num, which is used by eagle and multi step
+            #     elif len(meta.remote_block_ids[0]) < len(meta.local_block_ids[0]):
+            #         meta.local_block_ids[0] = meta.local_block_ids[0][:len(meta.remote_block_ids[0])]
+            #         logger.debug("look ahead token num is greater than 0")
+            #     # If remote_block_ids in P is more than local_block_ids[0] in D, we only need the last N remote blocks
+            #     elif len(meta.remote_block_ids[0]) > len(meta.local_block_ids[0]):
+            #         meta.remote_block_ids[0] = meta.remote_block_ids[0][-len(meta.local_block_ids[0]):]
+            #     if self.tp_rank == 0:
+            #         logger.info(
+            #             " ***** start_load_kv for request %s "
+            #             "Num local_block_ids: %s. Num remote_block_ids: %s.",
+            #             req_id,
+            #             len(meta.local_block_ids[0]),
+            #             len(meta.remote_block_ids[0])
+            #         )
+            # # handle the unexpected case where local_block_ids is not a list of int or list of lists
+            # else:
+            #     logger.error(f"Unexpected type for meta.local_block_ids[0]: {type(meta.local_block_ids[0])}")
+            #     raise RuntimeError(f"Unexpected type for meta.local_block_ids[0]: {type(meta.local_block_ids[0])}")
             cluster_ids = self.datadist_manager.get_real_remote_cluster_ids(meta)
+
+            print(f"{self.multi_rank_pull_kv=} {self.multi_thread_pull_kv=} {meta.remote_block_ids=}")
             if self.multi_rank_pull_kv:
                 # If multi_rank_pull_kv is enabled, each DP rank will pull kv from multiple P ranks
                 # and the cluster_ids are obtained from registered_link_infos

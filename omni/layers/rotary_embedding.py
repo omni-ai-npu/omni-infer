@@ -189,7 +189,8 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
                  base: int = 10000,
                  is_neox_style: bool = False,
                  dtype: torch.dtype = None,
-                 q_hidden_size=8192):
+                 q_hidden_size=8192,
+                 partial_rotary_factor = 1):
         super().__init__()
         self.dtype = dtype if dtype is not None else torch.get_default_dtype()
         self.rotary_dim = rotary_dim
@@ -209,6 +210,8 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         cache = cache.to(dtype)
         self.cos_sin_cache: torch.Tensor
         self.register_buffer("cos_sin_cache", cache, persistent=False)
+
+        self.partial_rotary_factor = partial_rotary_factor
 
     def _compute_cos_sin_cache_alt(self) -> torch.Tensor:
         """Compute the cos and sin cache."""
@@ -249,6 +252,25 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         x1, x2 = torch.chunk(x, 2, -1)
         x_new = torch.cat((-x2, x1), dim=-1)
         output = cos * x + sin * x_new
+        return output
+    
+    # applies rotation along the first rotary_dim many components and fixes else degrees.
+    def apply_partial_rotary_pos_emb(self, x, cos, sin):
+        partial_rotary_factor = self.partial_rotary_factor
+
+        # calculating slice sizes
+        last_dim_size = x.shape[-1]
+        size_partial = round(partial_rotary_factor * last_dim_size)
+        assert size_partial == cos.shape[-1]
+        size_other_than_partial = last_dim_size - size_partial
+
+        # slicing
+        x_partial, x_other_than_partial = torch.split(x, [size_partial, size_other_than_partial], dim=-1)
+    
+        # rotating  rotary_dim many components
+        x_partial = self.apply_rotary_pos_emb(x_partial, cos, sin)
+        
+        output = torch.cat((x_partial, x_other_than_partial), dim=-1)
         return output
 
     def apply_rotary_emb_torch(
@@ -300,9 +322,14 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
         key = key.view(*key.shape[:-1], -1, self.head_size).contiguous()
         cos = cos.unsqueeze(-2)
         sin = sin.unsqueeze(-2)
-        q_embed = self.apply_rotary_pos_emb(query, cos, sin)
-        k_embed = self.apply_rotary_pos_emb(key, cos, sin)
+        if self.partial_rotary_factor == 1:
+            q_embed = self.apply_rotary_pos_emb(query, cos, sin)
+            k_embed = self.apply_rotary_pos_emb(key, cos, sin)
+        elif self.partial_rotary_factor < 1:
+            q_embed = self.apply_partial_rotary_pos_emb(query, cos, sin)
+            k_embed = self.apply_partial_rotary_pos_emb(key, cos, sin)
         return q_embed.flatten(-2), k_embed.flatten(-2)
+
 
     # use torch_npu fused ops
     def _forward_fused_ops(self, position_ids, query, key, layer_name: Optional[str] = None):
@@ -365,6 +392,9 @@ class RotaryEmbeddingTorchNpu(torch.nn.Module):
 
 
     def forward(self, position_ids, query, key, layer_name: Optional[str] = None):
+        if self.partial_rotary_factor < 1:
+            q_embed, k_embed = self._forward_ascend_ops_and_small_ops(position_ids, query, key)
+            return q_embed, k_embed
         # adapt chatglm : dim = head_size / 2
         if self.rotary_dim < self.head_size:
             q_embed, k_embed = self._forward_native(position_ids, query, key)
@@ -908,13 +938,14 @@ def get_rope(
                     base,
                     is_neox_style,
                     dtype,
+                    partial_rotary_factor = partial_rotary_factor
                 )
         else:
             scaling_type = rope_scaling["type"]
             raise ValueError(f"Unknown RoPE scaling type {scaling_type}, only support linear and dynamic now")
     else:
         rotary_emb = RotaryEmbeddingTorchNpu(head_size, rotary_dim, max_position, base,
-                                             is_neox_style)
+                                             is_neox_style, partial_rotary_factor = partial_rotary_factor)
     _ROPE_DICT[key] = rotary_emb
     return rotary_emb
 
