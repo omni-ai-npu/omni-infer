@@ -16,6 +16,7 @@ typedef void (*omni_zmq_msg_callback_t)(struct omni_zmq_handler_s *handler,
 
 typedef struct omni_zmq_handler_s
 {
+    struct omni_zmq_handler_s *next;
     void *zmq_context;
     void *zmq_socket;
     ngx_int_t index;
@@ -23,7 +24,6 @@ typedef struct omni_zmq_handler_s
     ngx_str_t zmq_address;
     ngx_str_t subscribe_topic;
     omni_zmq_msg_callback_t message_callback;
-    ngx_log_t *log;
     ngx_cycle_t *cycle;
     ngx_connection_t *zmq_connection;
     ngx_event_t *zmq_event;
@@ -37,4 +37,4 @@ ngx_int_t omni_zmq_handler_init(ngx_cycle_t *cycle,
                                 ngx_str_t subscribe_topic,
                                 omni_zmq_msg_callback_t callback);
 
-void omni_zmq_handler_exit(omni_zmq_handler_t *handler);
+void omni_zmq_handler_exit(void);
