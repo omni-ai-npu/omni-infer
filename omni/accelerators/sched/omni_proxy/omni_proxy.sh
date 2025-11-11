@@ -21,6 +21,7 @@ omni_proxy_decode_max_num_seqs="32"
 omni_proxy_prefill_starvation_timeout="400"
 omni_proxy_schedule_algo="default"
 stream_ops="off"
+omni_proxy_max_tokens_weight=""
 
 dry_run=false
 stop=false
@@ -44,6 +45,7 @@ print_help() {
     echo "  --omni-proxy-pd-policy <policy> sequential or parallel (default: sequential)"
     echo "  --omni-proxy-model-path <path>  Path to model directory (default: unset)"
     echo "  --omni-proxy-max-batch-num-token <N>      max_batch_num_token (default: 32000)"
+    echo "  --omni-proxy-max-tokens-weight <N>        max_tokens_weight coefficient (default: 0)"
     echo "  --stream-ops <add|set_opt|off>             Set stream_ops directive (default: off), set add to enforce turning on streaming and stream_options, set set_opt to only turn on stream_options when streaming is on"
     echo "  --omni-proxy-schedule-algo <algo>       default or earliest_batch (default: default)"
     echo "  --omni-proxy-prefill-max-num-seqs <N>      prefill_max_num_seqs (default: 32)"
@@ -120,6 +122,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --omni-proxy-max-batch-num-token)
             omni_proxy_max_batch_num_token="$2"
+            shift 2
+            ;;
+        --omni-proxy-max-tokens-weight)
+            omni_proxy_max_tokens_weight="$2"
             shift 2
             ;;
         --omni-proxy-prefill-max-num-seqs)
@@ -326,6 +332,11 @@ function generate_nginx_conf() {
         omni_proxy_schedule_algo_directive="            omni_proxy_schedule_algo $omni_proxy_schedule_algo;"
     fi
 
+    local omni_proxy_max_tokens_weight_directive=""
+    if [[ -n "$omni_proxy_max_tokens_weight" ]]; then
+        omni_proxy_max_tokens_weight_directive="            omni_proxy_max_tokens_weight $omni_proxy_max_tokens_weight;"
+    fi
+
     cat > "$nginx_conf_file" <<EOF
 load_module /usr/local/nginx/modules/ngx_http_omni_proxy_module.so;
 load_module /usr/local/nginx/modules/ngx_http_set_request_id_module.so;
@@ -378,6 +389,7 @@ $(gen_upstream_block "decode_endpoints" "$decode_endpoints")
             omni_proxy_decode_max_num_seqs $omni_proxy_decode_max_num_seqs;
             omni_proxy_prefill_starvation_timeout $omni_proxy_prefill_starvation_timeout;
 ${omni_proxy_schedule_algo_directive}
+${omni_proxy_max_tokens_weight_directive}
 EOF
 
     if [[ -n "$omni_proxy_model_path" ]]; then
