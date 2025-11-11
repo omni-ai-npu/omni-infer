@@ -236,7 +236,7 @@ def _fused_recurrent_gated_delta_rule_ref(
         q_t = q[0][t].to(torch.float32) #[bs, C, D]
         k_t = k[0][t].to(torch.float32) #[bs, C, D]
         v_t = v[0][t].to(torch.float32) #[bs, C, E]
-        g_t = q[0][t].to(torch.float32) #[bs, C]
+        g_t = g[0][t].to(torch.float32) #[bs, C]
         beta_t = beta[0][t].to(torch.float32) #[bs, C]
         S = g_t.view(bs, C, 1, 1) * S
         x = torch.einsum('abc,abcd->abd', k_t, S) #[bs, C, E]
