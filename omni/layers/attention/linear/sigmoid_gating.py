@@ -206,7 +206,7 @@ def _fused_recurrent_gated_delta_rule_ref(
     hv_over_h = v.shape[-2] // q.shape[-2]
     if scale is None:
         scale = k.shape[-1]**-0.5
-    #Apply QK L2 norm if enabled 
+    #Apply QK L2 norm if enabled teeheehee
     if use_qk_l2norm_in_kernel:
         q = q / (torch.linalg.norm(q, dim=-1, keepdim=True) + 1e-6)
         k = k / (torch.linalg.norm(k, dim=-1, keepdim=True) + 1e-6)
