@@ -7,10 +7,10 @@ index 548efa3d0..96e274f06 100755
                          source, self.default_sampling_params)
  
 +
-+    async def is_guided_decoding_request(self, request: ChatCompletionRequest):
++    def is_guided_decoding_request(self, request: ChatCompletionRequest):
 +        return request.guided_json is not None or request.guided_regex is not None \
 +            or request.guided_choice is not None or request.guided_grammar is not None \
-+            or request.structural_tag is not None or request.guided_whitespace_pattern is not None
++            or request.structural_tag is not None or request.guided_whitespace_pattern is not None or request.response_format is not None or request.guided_decoding_backend is not None
 +
 +
      async def create_chat_completion(
