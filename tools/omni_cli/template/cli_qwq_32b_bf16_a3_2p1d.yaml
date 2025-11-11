@@ -41,7 +41,6 @@ all:
               max-num-seqs: 12
               max-num-batched-tokens: 61440
               no-enable-prefix-caching: ''
-              speculative-config: '{"method":"eagle","num_speculative_tokens":1,"model":"/tmp/qwq-32b-eagle"}'   
             gpu-util: '0.8'
             kv-transfer-config:
               engine_id: 0
@@ -52,10 +51,10 @@ all:
               kv_role: kv_consumer
               kv_port: ${KV_PORT}
               kv_connector_extra_config:
-                  global_rank_table_path: ${GLOBAL_RANK_TABLE_FILE_PATH}
-                  local_rank_table_path: ${LOCAL_RANK_TABLE_FILE_PATH}
-                  prefill_pod_num: ${PREFILL_POD_NUM}
-                  decode_pod_num: ${DECODE_POD_NUM}
+                global_rank_table_path: ${GLOBAL_RANK_TABLE_FILE_PATH}
+                local_rank_table_path: ${LOCAL_RANK_TABLE_FILE_PATH}
+                prefill_pod_num: ${PREFILL_POD_NUM}
+                decode_pod_num: ${DECODE_POD_NUM}
             log-dir: $LOG_PATH
             master-ip: $HOST_IP
             master-port: $MASTER_PORT
@@ -173,7 +172,6 @@ all:
               max-num-batched-tokens: 61440
               max-num-seqs: 12
               no-enable-prefix-caching: ''
-              speculative-config: '{"method":"eagle","num_speculative_tokens":1,"model":"/tmp/qwq-32b-eagle"}' 
             gpu-util: '0.65'
             kv-transfer-config:
               engine_id: 0
@@ -184,10 +182,10 @@ all:
               kv_role: kv_producer
               kv_port: ${KV_PORT}
               kv_connector_extra_config:
-                  global_rank_table_path: ${GLOBAL_RANK_TABLE_FILE_PATH}
-                  local_rank_table_path: ${LOCAL_RANK_TABLE_FILE_PATH}
-                  prefill_pod_num: ${PREFILL_POD_NUM}
-                  decode_pod_num: ${DECODE_POD_NUM}
+                global_rank_table_path: ${GLOBAL_RANK_TABLE_FILE_PATH}
+                local_rank_table_path: ${LOCAL_RANK_TABLE_FILE_PATH}
+                prefill_pod_num: ${PREFILL_POD_NUM}
+                decode_pod_num: ${DECODE_POD_NUM}
             log-dir: $LOG_PATH
             master-ip: $HOST_IP
             master-port: $MASTER_PORT
@@ -303,7 +301,6 @@ all:
               max-num-batched-tokens: 61440
               max-num-seqs: 12
               no-enable-prefix-caching: ''
-              speculative-config: '{"method":"eagle","num_speculative_tokens":1,"model":"/tmp/qwq-32b-eagle"}'
             gpu-util: '0.65'
             kv-transfer-config:
               engine_id: 1
@@ -314,10 +311,10 @@ all:
               kv_role: kv_producer
               kv_port: ${KV_PORT}
               kv_connector_extra_config:
-                  global_rank_table_path: ${GLOBAL_RANK_TABLE_FILE_PATH}
-                  local_rank_table_path: ${LOCAL_RANK_TABLE_FILE_PATH}
-                  prefill_pod_num: ${PREFILL_POD_NUM}
-                  decode_pod_num: ${DECODE_POD_NUM}
+                global_rank_table_path: ${GLOBAL_RANK_TABLE_FILE_PATH}
+                local_rank_table_path: ${LOCAL_RANK_TABLE_FILE_PATH}
+                prefill_pod_num: ${PREFILL_POD_NUM}
+                decode_pod_num: ${DECODE_POD_NUM}
             log-dir: $LOG_PATH
             master-ip: $HOST_IP
             master-port: $MASTER_PORT
