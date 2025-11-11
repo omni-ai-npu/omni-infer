@@ -9,8 +9,8 @@ all:
           ansible_ssh_private_key_file: /path/to/key
           ansible_user: root
           args:
-            decode-lb-sdk: pd_score_balance
-            prefill-lb-sdk: pd_score_balance
+            decode-lb-sdk: least_conn
+            prefill-lb-sdk: least_conn
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: ds2p1d_c0
           env:
