@@ -11,14 +11,14 @@ def patch_pangu():
         if not hasattr(self.hf_text_config, "model_type"):
             return False
         elif self.hf_text_config.model_type in \
-            ('deepseek_v2', 'deepseek_v3', 'deepseek_v32', 'deepseek_mtp', 'pangu_ultra_moe', 'longcat_flash'):
+            ('deepseek_v2', 'deepseek_v3', 'deepseek_v32', 'deepseek_mtp', 'pangu_ultra_moe', 'longcat_flash', 'kimi_k2'):
 
             return kv_lora_dim is not None
         elif self.hf_text_config.model_type == 'eagle':
             # if the model is an EAGLE module, check for the
             # underlying architecture
             return self.hf_text_config.model.model_type in \
-                ('deepseek_v2', 'deepseek_v3', 'deepseek_v32', 'pangu_ultra_moe', 'longcat_flash') \
+                ('deepseek_v2', 'deepseek_v3', 'deepseek_v32', 'pangu_ultra_moe', 'longcat_flash', 'kimi_k2') \
                 and kv_lora_dim is not None
         return False
 
@@ -61,7 +61,7 @@ def patch_pangu():
 
     @staticmethod
     def hf_config_override(hf_config: PretrainedConfig) -> PretrainedConfig:
-        if hf_config.model_type in ["deepseek_v3", "deepseek_v32"]:
+        if hf_config.model_type in ["deepseek_v3", "deepseek_v32", "kimi_k2"]:
             hf_config.model_type = "deepseek_mtp"
         if hf_config.model_type == "deepseek_mtp":
             n_predict = getattr(hf_config, "num_nextn_predict_layers", None)
@@ -106,7 +106,7 @@ def patch_pangu():
             # mtp acceleration for more models besides deepseek_v3
             if self.target_model_config and \
                 (self.target_model_config.hf_text_config.model_type \
-                        in ["deepseek_v3", "deepseek_v32"] or
+                        in ["deepseek_v3", "deepseek_v32", "kimi_k2"] or
                     self.target_model_config.hf_text_config.model_type \
                         == "mimo" or
                     self.target_model_config.hf_text_config.model_type \

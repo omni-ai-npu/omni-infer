@@ -63,7 +63,6 @@ if __name__ == "__main__":
         config = json.load(f)
 
     config["quantization_config"] = quant_config
-    config["model_type"] = "deepseek_v3"
 
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=4)
