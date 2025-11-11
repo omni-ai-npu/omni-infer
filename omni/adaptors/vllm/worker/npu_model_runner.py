@@ -1225,7 +1225,7 @@ class NPUModelRunner(GPUModelRunner):
             for layer_name in kv_cache_group.layer_names:
                 same_type_layers[kv_cache_group.kv_cache_spec].append(layer_name)
         
-        new_kv_cache_groups: list()
+        new_kv_cache_groups = list()
         for kv_cache_spec, layer_names in same_type_layers.items():
             new_kv_cache_groups.append(KVCacheGroupSpec(layer_names, kv_cache_spec))
         kv_cache_config.kv_cache_groups = new_kv_cache_groups
