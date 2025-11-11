@@ -3,6 +3,7 @@
 
 #include "omni_zmq_handler.h"
 #include <string.h>
+#include "omni_utils.h"
 
 static void omni_zmq_dummy_write_handler(ngx_event_t *ev)
 {
@@ -200,7 +201,7 @@ ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler)
         return NGX_ERROR;
     }
 
-    handler->zmq_connection = ngx_get_connection(zmq_fd, handler->log);
+    handler->zmq_connection = ngx_get_connection(zmq_fd, ngx_cycle->log);
     if (!handler->zmq_connection)
     {
         ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
@@ -219,11 +220,11 @@ ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler)
 
     handler->zmq_connection->read->handler = omni_zmq_event_handler;
     handler->zmq_connection->read->data = handler;
-    handler->zmq_connection->read->log = handler->log;
+    handler->zmq_connection->read->log = ngx_cycle->log;
 
     handler->zmq_connection->write->handler = omni_zmq_dummy_write_handler;
     handler->zmq_connection->write->data = handler;
-    handler->zmq_connection->write->log = handler->log;
+    handler->zmq_connection->write->log = ngx_cycle->log;
     handler->zmq_connection->write->ready = 1;
 
     handler->zmq_event = handler->zmq_connection->read;
@@ -249,10 +250,6 @@ ngx_int_t omni_zmq_handler_init(ngx_cycle_t *cycle,
                                 ngx_str_t subscribe_topic,
                                 omni_zmq_msg_callback_t callback)
 {
-    ngx_int_t saved_index = handler->index;
-    ngx_memzero(handler, sizeof(omni_zmq_handler_t));
-    handler->index = saved_index;
-    handler->log = cycle->log;
     handler->cycle = cycle;
     handler->zmq_address = zmq_address;
     handler->subscribe_topic = subscribe_topic;
@@ -262,7 +259,11 @@ ngx_int_t omni_zmq_handler_init(ngx_cycle_t *cycle,
     return omni_zmq_handler_reinit(handler);
 }
 
-void omni_zmq_handler_exit(omni_zmq_handler_t *handler)
+void omni_zmq_handler_exit(void)
 {
-    omni_zmq_cleanup_resources(handler);
+    omni_zmq_handler_t *handler = omni_get_local_state()->kv_handler_list;
+    while (handler != NULL) {
+        omni_zmq_cleanup_resources(handler);
+        handler = handler->next;
+    }
 }

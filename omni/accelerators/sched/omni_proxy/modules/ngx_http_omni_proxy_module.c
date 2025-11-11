@@ -153,7 +153,7 @@ static inline omni_req_t *omni_get_req(ngx_http_request_t *r)
 {
     omni_req_context_t *ctx = omni_get_req_ctx(r);
     if (ctx == NULL){
-        ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0, 
+        ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0,
             "omni_get_req: Failed to get request context for a request that should have one, not a omni req.");
         return NULL;
     }
@@ -2078,18 +2078,18 @@ static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
     KVEventBatch *batch = parse_kv_event_batch(message, length);
     if (!batch)
     {
-        ngx_log_error(NGX_LOG_INFO, handler->log, 0, "Failed to parse KV event batch");
+        ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0, "Failed to parse KV event batch");
         return;
     }
 
-    ngx_log_error(NGX_LOG_INFO, handler->log, 0, "[Worker %d] Received KV event batch with %d events",
+    ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0, "[Worker %d] Received KV event batch with %d events",
         ngx_worker, batch->events_count);
 
     omni_upstream_prefill_t *prefill = &g_state->prefill_states[handler->index];
     // assert(!prefill->radix_tree==null)
     if (!prefill->radix_tree)
     {
-        ngx_log_error(NGX_LOG_EMERG, handler->log, 0,
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
                       "omni_proxy_kv_event_handler: Radix tree for prefill %d is not initialized; shared state corrupted. Aborting.",
                       handler->index);
 
@@ -2137,13 +2137,13 @@ static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
                     uint64_t h = (uint64_t)hashes[k];
                     if (omni_radix_tree_remove(prefill->radix_tree, h) == NGX_OK)
                     {
-                        ngx_log_error(NGX_LOG_INFO, handler->log, 0,
+                        ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
                                       "Removed block hash %" PRIu64 " from radix tree (prefill %d)",
                                       h, handler->index);
                     }
                     else
                     {
-                        ngx_log_error(NGX_LOG_DEBUG, handler->log, 0,
+                        ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
                                       "Block hash %" PRIu64 " not found in radix tree (prefill %d)",
                                       h, handler->index);
                     }
@@ -2157,7 +2157,7 @@ static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
             omni_radix_tree_destroy(prefill->radix_tree);
             prefill->radix_tree = omni_radix_tree_init(g_state->shm);
             if (prefill->radix_tree == NULL) {
-                ngx_log_error(NGX_LOG_EMERG, handler->log, 0,
+                ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
                               "Failed to create radix hash_tree in KV_EVENT_ALL_BLOCKS_CLEARED");
             }
             break;
@@ -2187,14 +2187,12 @@ static ngx_int_t omni_proxy_init_kv_listener(ngx_cycle_t *cycle)
         }
         cnt++;
 
-        prefill->kv_handler.index = i;
-
         if (cnt % ccf->worker_processes == ngx_worker)
         {
             if (prefill->radix_tree == NULL)
             {
                 ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
-                              "radix hash_tree is NULL, idx=%ud", i);
+                              "radix hash_tree is NULL, idx=%d", i);
                 return NGX_ERROR;
             }
 
@@ -2211,7 +2209,18 @@ static ngx_int_t omni_proxy_init_kv_listener(ngx_cycle_t *cycle)
             ngx_str_t addr = {last - buf, buf};
 
             ngx_str_t topic = ngx_string("");
-            omni_zmq_handler_init(cycle, &prefill->kv_handler, addr, topic, omni_proxy_kv_event_handler);
+            omni_zmq_handler_t *kv_handler = ngx_pcalloc(cycle->pool, sizeof(omni_zmq_handler_t));
+            if (kv_handler == NULL) {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, 0, "kv_handler alloc fail, idx=%d", i);
+                return NGX_ERROR;
+            }
+            kv_handler->index = i;
+            ngx_int_t ret = omni_zmq_handler_init(cycle, kv_handler, addr, topic, omni_proxy_kv_event_handler);
+            if (ret != NGX_OK) {
+                return ret;
+            }
+            kv_handler->next = local_state.kv_handler_list;
+            local_state.kv_handler_list = kv_handler;
         }
     }
 }
@@ -2271,6 +2280,8 @@ static void omni_proxy_exit_process(ngx_cycle_t *cycle)
     {
         omni_tokenizer_worker_exit(&local_state.tokenize_worker);
     }
+
+    omni_zmq_handler_exit();
 
     ngx_log_error(NGX_LOG_INFO, cycle->log, 0,
                   "Omni proxy process exited, tokenizer worker cleaned up");
