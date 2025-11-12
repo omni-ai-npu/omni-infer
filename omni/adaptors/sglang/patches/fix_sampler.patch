@@ -1,0 +1,43 @@
+diff --git a/python/sglang/srt/layers/sampler.py b/python/sglang/srt/layers/sampler.py
+index 75644b588..407f86800 100644
+--- a/python/sglang/srt/layers/sampler.py
++++ b/python/sglang/srt/layers/sampler.py
+@@ -150,6 +150,9 @@ class Sampler(nn.Module):
+ 
+         return batch_next_token_ids
+ 
++def masked_zero(x, msk):
++    msk = 1 - msk.to(torch.int32)
++    x *= msk.to(x.dtype)
+ 
+ def top_k_top_p_min_p_sampling_from_probs_torch(
+     probs: torch.Tensor,
+@@ -161,15 +164,14 @@ def top_k_top_p_min_p_sampling_from_probs_torch(
+     """A top-k, top-p and min-p sampling implementation with native pytorch operations."""
+     probs_sort, probs_idx = probs.sort(dim=-1, descending=True)
+     probs_sum = torch.cumsum(probs_sort, dim=-1)
+-    probs_sort[
++    masked_zero(probs_sort,
+         torch.arange(0, probs.shape[-1], device=probs.device).view(1, -1)
+-        >= top_ks.view(-1, 1)
+-    ] = 0.0
+-    probs_sort[(probs_sum - probs_sort) > top_ps.view(-1, 1)] = 0.0
++        >= top_ks.view(-1, 1))
++    masked_zero(probs_sort, (probs_sum - probs_sort) > top_ps.view(-1, 1))
+ 
+     if need_min_p_sampling:
+         min_p_thresholds = probs_sort[:, 0] * min_ps
+-        probs_sort[probs_sort < min_p_thresholds.view(-1, 1)] = 0.0
++        masked_zero(probs_sort, probs_sort < min_p_thresholds.view(-1, 1))
+ 
+     sampled_index = torch.multinomial(probs_sort, num_samples=1)
+     # int32 range is enough to represent the token ids
+@@ -193,7 +195,7 @@ def top_p_normalize_probs_torch(
+     # See also top_k_top_p_min_p_sampling_from_probs_torch
+     probs_sort, probs_idx = probs.sort(dim=-1, descending=True)
+     probs_sum = torch.cumsum(probs_sort, dim=-1)
+-    probs_sort[(probs_sum - probs_sort) > top_ps.view(-1, 1)] = 0.0
++    masked_zero(probs_sort, (probs_sum - probs_sort) > top_ps.view(-1, 1))
+     probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))
+     return torch.zeros_like(probs_sort).scatter_(-1, probs_idx, probs_sort)
+
