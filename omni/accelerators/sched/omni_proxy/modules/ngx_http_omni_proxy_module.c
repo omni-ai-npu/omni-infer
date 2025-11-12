@@ -296,12 +296,12 @@ static inline void omni_proxy_cleanup_req(omni_req_t *req)
             omni_upstream_prefill_t *ps =
                 &g_state->prefill_states[req->prefill_upstream_endpoint_idx];
 
-            ps->num_running--;
+            ngx_atomic_fetch_add(&ps->num_running, -1);
             ngx_atomic_fetch_add(&ps->comm.ref, -1);
 
             if (ps->num_tokens >= req->metrics.prompt_num_tokens)
             {
-                ps->num_tokens -= req->metrics.prompt_num_tokens;
+                ngx_atomic_fetch_add(&ps->num_tokens, -req->metrics.prompt_num_tokens);
             }
             else
             {
@@ -323,12 +323,12 @@ static inline void omni_proxy_cleanup_req(omni_req_t *req)
             omni_upstream_decode_t *ds =
                 &g_state->decode_states[req->decode_upstream_endpoint_idx];
 
-            ds->num_running--;
+            ngx_atomic_fetch_add(&ds->num_running, -1);
             ngx_atomic_fetch_add(&ds->comm.ref, -1);
 
-            if (ds->num_tokens >= req->metrics.prompt_num_tokens)
+            if (ds->num_tokens >= req->metrics.prompt_num_tokens + req->metrics.decoded_tokens)
             {
-                ds->num_tokens -= req->metrics.prompt_num_tokens + req->metrics.decoded_tokens;
+                ngx_atomic_fetch_add(&ds->num_tokens, -(req->metrics.prompt_num_tokens + req->metrics.decoded_tokens));
             }
             else
             {
@@ -689,9 +689,9 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     // check policy
     if (g_state->pd_policy == PD_SEQUENTIAL)
     {
-        us->num_running--;
+        ngx_atomic_fetch_add(&us->num_running, -1);
         ngx_atomic_fetch_add(&us->comm.ref, -1);
-        us->num_tokens -= req->metrics.prompt_num_tokens;
+        ngx_atomic_fetch_add(&us->num_tokens, -req->metrics.prompt_num_tokens);
 
         omni_phase_transition_all(req, PHASE_PREFILLING, PHASE_DECODE_WAITING_SCHEDULE);
         req->metrics.time_enter_wait_decode = ngx_current_msec;

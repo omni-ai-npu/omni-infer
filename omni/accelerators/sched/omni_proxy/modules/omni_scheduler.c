@@ -770,8 +770,8 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf
             selected_prefill->num_queue++;
         }
 
-        selected_prefill->num_running++;
-        selected_prefill->num_tokens += req->metrics.prompt_num_tokens;
+        ngx_atomic_fetch_add(&selected_prefill->num_running, 1);
+        ngx_atomic_fetch_add(&selected_prefill->num_tokens, req->metrics.prompt_num_tokens);
         ngx_atomic_fetch_add(&selected_prefill->comm.ref, 1);
 
         omni_global_phase_change_to(req, PHASE_PREFILL_WAITING_SCHEDULE, PHASE_PREFILL_SCHEDULED);
@@ -849,8 +849,8 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs, ngx_http_omni_loc_conf_
 
         req->decode_upstream_endpoint_idx = selected;
         gs->last_selected_decode = selected + 1;
-        gs->decode_states[selected].num_running++;
-        gs->decode_states[selected].num_tokens += req->metrics.prompt_num_tokens;
+        ngx_atomic_fetch_add(&gs->decode_states[selected].num_running, 1);
+        ngx_atomic_fetch_add(&gs->decode_states[selected].num_tokens, req->metrics.prompt_num_tokens);
         ngx_atomic_fetch_add(&gs->decode_states[selected].comm.ref, 1);
 
         omni_global_phase_change_to(req, PHASE_DECODE_WAITING_SCHEDULE, PHASE_DECODE_SCHEDULED);
