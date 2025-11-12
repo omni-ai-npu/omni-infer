@@ -82,8 +82,14 @@
       export HCCL_OP_EXPANSION_MODE="AIV"
       export GLOO_SOCKET_IFNAME={{ansible_env.GLOO_SOCKET_IFNAME}}
       export MLP_TP_SIZE=4
+      export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"
       # export PYTHONPATH=${CODE_PATH}/omniinfer/infer_engines/sglang/python:${CODE_PATH}/omniinfer:$PYTHONPATH
       export IS_PREFILL=1
+      export SGLANG_DISAGGREGATION_THREAD_POOL_SIZE=6
+      export SGLANG_DISAGGREGATION_QUEUE_SIZE=2
+      export SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION=128
+      export ASCEND_CONNECT_TIMEOUT=30000
+      export ASCEND_TRANSFER_TIMEOUT=30000
 
       rm -rf .torchair_cache/
       python3 -m sglang.launch_server \
@@ -102,11 +108,11 @@
         --port $API_PORT \
         --trust-remote-code \
         --tp-size 16 \
-        --mem-fraction-static 0.90 \
+        --mem-fraction-static 0.80 \
         --disaggregation-transfer-backend mooncake \
         --disable-radix-cache \
-        --max-prefill-tokens 30000 \
-        --max-total-tokens 30000 \
+        --max-prefill-tokens 43000 \
+        --max-total-tokens 43000 \
         --speculative-algorithm MTP \
         --speculative-num-steps 1 \
         --speculative-num-draft-tokens 1 \
@@ -127,6 +133,9 @@
       export GLOO_SOCKET_IFNAME={{ansible_env.GLOO_SOCKET_IFNAME}}
       # export PYTHONPATH=${CODE_PATH}/omniinfer/infer_engines/sglang/python:${CODE_PATH}/omniinfer:$PYTHONPATH
       export MLP_TP_SIZE=4
+      export PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"
+      export ASCEND_CONNECT_TIMEOUT=30000
+      export ASCEND_TRANSFER_TIMEOUT=30000
       # export USE_SUPER_KERNEL=1
 
       dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)

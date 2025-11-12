@@ -22,3 +22,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/omni_placement.patch
 git apply --whitespace=nowarn $PATCH_ROOT/promote_forward_batch_init_stage.patch
 git apply --whitespace=nowarn $PATCH_ROOT/overlap_mtp.patch
 git apply --whitespace=nowarn $PATCH_ROOT/fix_sampler.patch
+git apply --whitespace=nowarn $PATCH_ROOT/send_kvcache_multi_rank.patch

@@ -1,0 +1,130 @@
+diff --git a/python/sglang/srt/disaggregation/mooncake/conn.py b/python/sglang/srt/disaggregation/mooncake/conn.py
+index 210c998b0..3be9ae6a3 100644
+--- a/python/sglang/srt/disaggregation/mooncake/conn.py
++++ b/python/sglang/srt/disaggregation/mooncake/conn.py
+@@ -10,6 +10,7 @@ import socket
+ import struct
+ import threading
+ import time
++import math
+ from collections import defaultdict
+ from functools import cache
+ from typing import Dict, List, Optional, Tuple, Union
+@@ -151,6 +152,8 @@ class MooncakeKVManager(BaseKVManager):
+         self.kv_args = args
+         self.local_ip = get_local_ip_auto()
+         self.is_mla_backend = is_mla_backend
++        self.enable_mla_multi_rank = not server_args.disable_mooncake_mla_multi_rank
++        self.session_failures_threshold = server_args.mooncake_session_failures_threshold
+         self.disaggregation_mode = disaggregation_mode
+         self.init_engine()
+         # for p/d multi node infer
+@@ -358,6 +361,13 @@ class MooncakeKVManager(BaseKVManager):
+ 
+             return self._transfer_data(mooncake_session_id, transfer_blocks)
+ 
++        if self.enable_mla_multi_rank:
++            layers_cnt = len(layers_params)
++            layers_cnt_per_rank = math.ceil(layers_cnt / self.attn_tp_size)
++            if self.attn_tp_rank * layers_cnt_per_rank >= layers_cnt:
++                return 0
++        layers_params = layers_params[self.attn_tp_rank * layers_cnt_per_rank : min((self.attn_tp_rank + 1) * layers_cnt_per_rank, layers_cnt)]
++
+         futures = [
+             executor.submit(
+                 process_layer,
+@@ -587,7 +597,7 @@ class MooncakeKVManager(BaseKVManager):
+                 dst_ranks_infos = []
+                 local_rank = self.kv_args.engine_rank
+                 for req in reqs_to_be_processed:
+-                    if not req.is_dummy:
++                    if self.enable_mla_multi_rank or not req.is_dummy:
+                         # Early exit if the request has failed
+                         with self.session_lock:
+                             if req.mooncake_session_id in self.failed_sessions:
+@@ -648,7 +658,7 @@ class MooncakeKVManager(BaseKVManager):
+                             with self.session_lock:
+                                 self.session_failures[req.mooncake_session_id] += 1
+                                 # Failures should never happen if the session is not dead, if the session fails once, mark it as failed
+-                                if self.session_failures[req.mooncake_session_id] >= 1:
++                                if self.session_failures[req.mooncake_session_id] >= self.session_failures_threshold:
+                                     self.failed_sessions.add(req.mooncake_session_id)
+                                     logger.error(
+                                         f"Session {req.mooncake_session_id} failed."
+@@ -669,13 +679,16 @@ class MooncakeKVManager(BaseKVManager):
+ 
+                         if kv_chunk.is_last:
+                             # Only the last chunk we need to send the aux data
+-                            ret = self.send_aux(
+-                                req.mooncake_session_id,
+-                                kv_chunk.prefill_aux_index,
+-                                target_rank_registration_info.dst_aux_ptrs,
+-                                req.dst_aux_index,
+-                            )
+-                            polls.append(True if ret == 0 else False)
++                            if self.enable_mla_multi_rank and self.attn_tp_rank != 0:
++                                polls.append(True)
++                            else:
++                                ret = self.send_aux(
++                                    req.mooncake_session_id,
++                                    kv_chunk.prefill_aux_index,
++                                    target_rank_registration_info.dst_aux_ptrs,
++                                    req.dst_aux_index,
++                                )
++                                polls.append(True if ret == 0 else False)
+                             dst_ranks_infos.append(
+                                 (req.endpoint, req.dst_port, req.room)
+                             )
+@@ -772,9 +785,10 @@ class MooncakeKVManager(BaseKVManager):
+                             self.prefill_response_tracker[bootstrap_room]
+                         )
+                         # first straight stream_output not build batch
+-                        self.scheduler.stream_output_first_token(bootstrap_room)
++                        if not self.enable_mla_multi_rank or (self.enable_mla_multi_rank and prefill_rank == 0):
++                            self.scheduler.stream_output_first_token(bootstrap_room)
+                         if (
+-                            self.is_mla_backend
++                            not self.enable_mla_multi_rank and self.is_mla_backend
+                             or arrived_response_num == expected_response_num
+                         ):
+                             self.update_status(bootstrap_room, KVPoll.Success)
+@@ -1220,7 +1234,7 @@ class MooncakeKVReceiver(BaseKVReceiver):
+                         target_tp_rank, self.target_dp_group, target_pp_rank
+                     )
+                     if bootstrap_info is not None:
+-                        if self.kv_mgr.is_mla_backend:
++                        if self.kv_mgr.is_mla_backend and not self.kv_mgr.enable_mla_multi_rank:
+                             # For MLA: target_tp_rank is the selected real rank, others are dummy ranks
+                             bootstrap_info["is_dummy"] = not bool(
+                                 target_tp_rank == self.target_tp_rank
+diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
+index b7a30301f..7eba576c5 100644
+--- a/python/sglang/srt/server_args.py
++++ b/python/sglang/srt/server_args.py
+@@ -256,6 +256,8 @@ class ServerArgs:
+     enable_triton_kernel_moe: bool = False
+     enable_flashinfer_mxfp4_moe: bool = False
+     scheduler_recv_interval: int = 1
++    disable_mooncake_mla_multi_rank: bool = False
++    mooncake_session_failures_threshold: int = 100
+ 
+     # Debug tensor dumps
+     debug_tensor_dump_output_folder: Optional[str] = None
+@@ -2043,6 +2045,17 @@ class ServerArgs:
+             action="store_true",
+             help="(Deprecated) Enabling DeepEP MoE implementation for EP MoE.",
+         )
++        parser.add_argument(
++            "--disable-mooncake-mla-multi-rank",
++            action="store_true",
++            help="Disable mooncake multi-rank kv_cache sending for mla.",
++        )
++        parser.add_argument(
++            "--mooncake-session-failures-threshold",
++            type=int,
++            default=ServerArgs.mooncake_session_failures_threshold,
++            help="The threshold for mooncake session failure times.",
++        )
+ 
+     @classmethod
+     def from_cli_args(cls, args: argparse.Namespace):
