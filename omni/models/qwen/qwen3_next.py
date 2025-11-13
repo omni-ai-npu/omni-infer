@@ -406,8 +406,8 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
 
         self.out_proj = RowParallelFlashCommLinear(self.value_dim,
                                                 self.hidden_size,
-                                                tp_size=get_tp_group().world_size,
-                                                tp_rank=get_tp_group().rank,
+                                                tp_size=self.tp_size,
+                                                tp_rank=self.tp_rank,
                                                 bias=False,
                                                 quant_config=quant_config,
                                                 prefix=f"{prefix}.out_proj")
@@ -776,6 +776,7 @@ class Qwen3NextAttention(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         tp_size = get_tensor_model_parallel_world_size()
+        tp_rank = get_tensor_model_parallel_rank()
         self.total_num_heads = config.num_attention_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
@@ -803,7 +804,7 @@ class Qwen3NextAttention(nn.Module):
             self.total_num_heads * (1 + self.attn_output_gate),
             self.total_num_kv_heads,
             tp_size=tp_size,
-            tp_rank=get_tp_group().rank,
+            tp_rank=tp_rank,
             bias=getattr(config, "qkv_bias", False),
             quant_config=quant_config,
             prefix=f"{prefix}.qkv_proj",
@@ -813,7 +814,7 @@ class Qwen3NextAttention(nn.Module):
             self.total_num_heads * self.head_dim,
             config.hidden_size,
             tp_size=tp_size,
-            tp_rank=get_tp_group().rank,
+            tp_rank=tp_rank,
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.o_proj"
