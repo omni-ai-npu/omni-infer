@@ -37,6 +37,7 @@ from vllm.model_executor.parameter import (
 )
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.distributed import get_tp_group, get_dp_group, get_ep_group
+from vllm.model_executor.layers.quantization.compressed_tensors.utils import should_ignore_layer
 
 from omni.layers.fused_mlp import FusedMLP, FusedMLPMethodBase, W8A8DynamicFusedMLPMethod
 from omni.layers.linear import (
@@ -102,7 +103,7 @@ class NpuW8A8DynamicConfig(QuantizationConfig):
     def get_quant_method(self, layer: torch.nn.Module,
                          prefix: str) -> Optional["QuantizeMethodBase"]:
         if isinstance(layer, FlashCommLinearBase) or isinstance(layer, LinearBase):
-            if is_layer_skipped(prefix, self.ignored_layers):
+            if is_layer_skipped(prefix, self.ignored_layers) or should_ignore_layer(prefix, self.ignore):
                 return UnquantizedFlashCommLinearMethod()
             return NpuW8A8DynamicLinearMethod(self)
         elif isinstance(layer, FusedMLP):
