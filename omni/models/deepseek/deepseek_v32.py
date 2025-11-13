@@ -22,18 +22,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from transformers import DeepseekV3Config
 from vllm.compilation.decorators import support_torch_compile
 from .deepseek_v3 import DeepseekV3ForCausalLM
-
-
-class DeepseekV32Config(DeepseekV3Config):
-    model_type = "deepseek_v32"
-    keys_to_ignore_at_inference = ["past_key_values"]
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
 
 @support_torch_compile
 class DeepseekV32ForCausalLM(DeepseekV3ForCausalLM):
