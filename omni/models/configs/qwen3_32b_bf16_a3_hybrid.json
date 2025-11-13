@@ -1,0 +1,6 @@
+{
+    "model_parallel_config": {},
+    "operator_optimizition_config": {
+        "use_tnd_pa": true
+    }
+}

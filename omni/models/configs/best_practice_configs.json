@@ -396,5 +396,15 @@
       "pd_disaggregation": true,
       "prefill_config_file": "ds_r1_w4a8c16_a3_4p1d_p.json",
       "decode_config_file": "ds_r1_w4a8c16_a3_4p1d_d.json"
+   },
+   {
+      "model": "qwen3",
+      "hardware": "A3",
+      "precision": "bf16",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,        
+      "pd_disaggregation": false,
+      "prefill_config_file": "qwen3_32b_bf16_a3_hybrid.json",
+      "decode_config_file": "qwen3_32b_bf16_a3_hybrid.json"
    }
 ]

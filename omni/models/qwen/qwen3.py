@@ -75,6 +75,7 @@ from omni.layers.linear import (
 from omni.layers.rotary_embedding import get_rope, QwenRotaryEmbedding
 from omni.layers.fused_mlp import FusedMLP
 from omni.layers.attention.backend.attention import AscendAttentionState
+from omni.models.config_loader.loader import model_extra_config
 
 # if use weight nz, this config must be True
 torch.npu.config.allow_internal_format = True
@@ -297,9 +298,9 @@ class Qwen3DecoderLayer(nn.Module):
             cos=cos,
             sin=sin
         )
-
-        torch_npu.npu_prefetch(self.mlp.gate_up_proj.weight, hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
-        torch_npu.npu_prefetch(self.mlp.down_proj.weight, hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
+        if model_extra_config.operator_opt_config.use_prefetch:
+            torch_npu.npu_prefetch(self.mlp.gate_up_proj.weight, hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
+            torch_npu.npu_prefetch(self.mlp.down_proj.weight, hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
         
         if self.tp_size > 1:
             hidden_states = tensor_model_parallel_all_reduce(hidden_states)
@@ -311,7 +312,7 @@ class Qwen3DecoderLayer(nn.Module):
             hidden_states, residual)
         hidden_states = self.mlp(hidden_states, x_transform=None, reduce_type=None)
 
-        if next_attn_weights is not None:
+        if model_extra_config.operator_opt_config.use_prefetch and next_attn_weights is not None:
             torch_npu.npu_prefetch(next_attn_weights['qkv_proj_weight'], hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
             torch_npu.npu_prefetch(next_attn_weights['o_proj_weight'], hidden_states, MAX_PREFETCH_SIZE * 1024 * 1024)
         
