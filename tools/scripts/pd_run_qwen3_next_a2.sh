@@ -300,7 +300,7 @@ export VLLM_LLMDATADIST_ZMQ_PORT
 #export KV_CACHE_MOD
 #export FORWARD_TIME
 
-export ASCEND_PLATFORM=A2
+# export ASCEND_PLATFORM=A2
 export HCCL_INTRA_ROCE_ENABLE=1
 export HCCL_INTRA_PCIE_ENABLE=0
 if [ $ascend_rt_set -eq 1 ]; then
