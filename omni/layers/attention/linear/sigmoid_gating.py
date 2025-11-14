@@ -184,21 +184,98 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
 
 # --- NEW PURE PYTORCH REFERENCE IMPLEMENTATION THAT SUPPORTS GE GRAPH ---
 
+# def _fused_recurrent_gated_delta_rule_ref(
+#     q: torch.Tensor,
+#     k: torch.Tensor,
+#     v: torch.Tensor,
+#     g: torch.Tensor,
+#     beta: torch.Tensor,
+#     scale: float,
+#     initial_state: torch.Tensor,
+#     inplace_final_state: bool,
+#     cu_seqlens: torch.LongTensor,
+#     ssm_state_indices: torch.Tensor,
+#     num_accepted_tokens: torch.Tensor,
+#     use_qk_l2norm_in_kernel: bool,
+# ) -> tuple[torch.Tensor, torch.Tensor]:
+#     assert inplace_final_state == True
+#     eq_len = cu_seqlens is None
+#     contiguous_states = ssm_state_indices is None
+#     bs = q.shape[0] if eq_len else len(cu_seqlens) - 1
+#     T = q.shape[1] // bs
+#     hv_over_h = v.shape[-2] // q.shape[-2]
+#     if scale is None:
+#         scale = k.shape[-1]**-0.5
+#     #Apply QK L2 norm if enabled teeheehee
+#     if use_qk_l2norm_in_kernel:
+#         q = q / (torch.linalg.norm(q, dim=-1, keepdim=True) + 1e-6)
+#         k = k / (torch.linalg.norm(k, dim=-1, keepdim=True) + 1e-6)
+#     q = q * scale
+#     g = g.exp()
+#     q = q.repeat(1, 1, 1, hv_over_h).reshape(v.shape)
+#     k = k.repeat(1, 1, 1, hv_over_h).reshape(v.shape)
+#     indices_0 = torch.arange(bs, device=q.device) * T
+#     if not contiguous_states:
+#         if num_accepted_tokens is None:
+#             indices = ssm_state_indices[indices_0]
+#         else:
+#             indices = ssm_state_indices[indices_0 + num_accepted_tokens - 1]
+#     else:
+#         indices = indices_0 if eq_len else cu_seqlens[:-1]
+#     S = initial_state[indices].to(torch.float32) #[bs, C, D, E]
+#     #reshape for tensor operation
+#     A, tbs, C, D = q.shape
+#     E = v.shape[-1]
+#     q = q.reshape(A, bs, T, C, D).transpose(1, 2) #[A, T, bs, C, D]
+#     k = k.reshape(A, bs, T, C, D).transpose(1, 2) #[A, T, bs, C, D]
+#     v = v.reshape(A, bs, T, C, E).transpose(1, 2) #[A, T, bs, C, E]
+#     g = g.reshape(A, bs, T, C).transpose(1, 2) #[A, T, bs, C]
+#     beta = beta.reshape(A, bs, T, C).transpose(1, 2) #[A, T, bs, C]
+#     o = []
+#     for t in range(T):
+#         q_t = q[0][t].to(torch.float32) #[bs, C, D]
+#         k_t = k[0][t].to(torch.float32) #[bs, C, D]
+#         v_t = v[0][t].to(torch.float32) #[bs, C, E]
+#         g_t = g[0][t].to(torch.float32) #[bs, C]
+#         beta_t = beta[0][t].to(torch.float32) #[bs, C]
+#         S = g_t.view(bs, C, 1, 1) * S
+#         x = torch.einsum('abc,abcd->abd', k_t, S) #[bs, C, E]
+#         y = beta_t.unsqueeze(-1) * (v_t - x) #[bs, C, E]
+#         S_ = k_t.unsqueeze(-1) * y.unsqueeze(-2) #[bs, C, D, E]
+#         S = S + S_ #[bs, C, D, E]
+#         o_t = torch.einsum('abc,abcd->abd', q_t, S) #[bs, C, E]
+#         if not contiguous_states:
+#             indices = ssm_state_indices[indices_0 + t]
+#         else:
+#             indices = cu_seqlens[:-1] + t if eq_len else indices_0 + t
+#         torch_npu.npu_scatter_nd_update_(initial_state, indices.unsqueeze(1), S.to(torch.bfloat16))
+#         o.append(o_t.to(torch.bfloat16))
+#     o = torch.cat(o, dim = 1)
+#     o = o.contiguous().reshape(A, tbs, C, E)
+#     return o, initial_state
+
+
 def _fused_recurrent_gated_delta_rule_ref(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    g: torch.Tensor,
+    initial_state: torch.Tensor,
     beta: torch.Tensor,
     scale: float,
-    initial_state: torch.Tensor,
-    inplace_final_state: bool,
     cu_seqlens: torch.LongTensor,
     ssm_state_indices: torch.Tensor,
     num_accepted_tokens: torch.Tensor,
-    use_qk_l2norm_in_kernel: bool,
+    g: torch.Tensor,
+    gk: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    assert inplace_final_state == True
+    cu_seqlens = torch.tensor([0]) + cu_seqlens
+    initial_state = initial_state.transpose(-1,-2)
+    q = q.unsqueeze(0)
+    k = k.unsqueeze(0)
+    v = v.unsqueeze(0)
+    beta = beta.unsqueeze(0)
+    g = g.unsqueeze(0)
+
     eq_len = cu_seqlens is None
     contiguous_states = ssm_state_indices is None
     bs = q.shape[0] if eq_len else len(cu_seqlens) - 1
@@ -206,10 +283,10 @@ def _fused_recurrent_gated_delta_rule_ref(
     hv_over_h = v.shape[-2] // q.shape[-2]
     if scale is None:
         scale = k.shape[-1]**-0.5
-    #Apply QK L2 norm if enabled teeheehee
-    if use_qk_l2norm_in_kernel:
-        q = q / (torch.linalg.norm(q, dim=-1, keepdim=True) + 1e-6)
-        k = k / (torch.linalg.norm(k, dim=-1, keepdim=True) + 1e-6)
+    # #Apply QK L2 norm if enabled teeheehee
+    # if use_qk_l2norm_in_kernel:
+    #     q = q / (torch.linalg.norm(q, dim=-1, keepdim=True) + 1e-6)
+    #     k = k / (torch.linalg.norm(k, dim=-1, keepdim=True) + 1e-6)
     q = q * scale
     g = g.exp()
     q = q.repeat(1, 1, 1, hv_over_h).reshape(v.shape)
@@ -252,7 +329,7 @@ def _fused_recurrent_gated_delta_rule_ref(
         o.append(o_t.to(torch.bfloat16))
     o = torch.cat(o, dim = 1)
     o = o.contiguous().reshape(A, tbs, C, E)
-    return o, initial_state
+    return o, initial_state.transpose(-1,-2)
 
 # --- MODIFIED fused_recurrent_gated_delta_rule_fwd FUNCTION ---
 # This function now calls the pure PyTorch reference implementation.
@@ -260,30 +337,28 @@ def fused_recurrent_gated_delta_rule_fwd(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    g: torch.Tensor,
+    initial_state: torch.Tensor,
     beta: torch.Tensor,
     scale: float,
-    initial_state: torch.Tensor,
-    inplace_final_state: bool = True,
     cu_seqlens: Optional[torch.LongTensor] = None,
-    ssm_state_indices: Optional[torch.Tensor] = None,
-    num_accepted_tokens: Optional[torch.Tensor] = None,
-    use_qk_l2norm_in_kernel: bool = False,
+    ssm_state_indices: Optional[torch.LongTensor] = None,
+    num_accepted_tokens: Optional[torch.LongTensor] = None,
+    g: torch.Tensor,
+    gk: Optional[torch.LongTensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     # Call the pure PyTorch reference implementation
     return _fused_recurrent_gated_delta_rule_ref(
         q=q,
         k=k,
         v=v,
-        g=g,
+        initial_state=initial_state,
         beta=beta,
         scale=scale,
-        initial_state=initial_state,
-        inplace_final_state=inplace_final_state,
         cu_seqlens=cu_seqlens,
         ssm_state_indices=ssm_state_indices,
         num_accepted_tokens=num_accepted_tokens,
-        use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+        g=g,
+        gk=gk,
     )
 
 
@@ -294,28 +369,25 @@ class FusedRecurrentFunction(torch.autograd.Function):
                 q: torch.Tensor,
                 k: torch.Tensor,
                 v: torch.Tensor,
-                g: torch.Tensor,
+                initial_state: torch.Tensor,
                 beta: torch.Tensor,
                 scale: float,
-                initial_state: torch.Tensor,
-                inplace_final_state: bool = True,
                 cu_seqlens: Optional[torch.LongTensor] = None,
-                ssm_state_indices: Optional[torch.Tensor] = None,
-                num_accepted_tokens: Optional[torch.Tensor] = None,
-                use_qk_l2norm_in_kernel: bool = False):
+                ssm_state_indices: Optional[torch.LongTensor] = None,
+                num_accepted_tokens: Optional[torch.LongTensor] = None,
+                g: torch.Tensor,
+                gk: Optional[torch.LongTensor] = None,):
         o, final_state = fused_recurrent_gated_delta_rule_fwd(
             q=q.contiguous(),
             k=k.contiguous(),
             v=v.contiguous(),
-            g=g.contiguous(),
+            initial_state=initial_state,
             beta=beta.contiguous(),
             scale=scale,
-            initial_state=initial_state,
-            inplace_final_state=inplace_final_state,
             cu_seqlens=cu_seqlens,
             ssm_state_indices=ssm_state_indices,
             num_accepted_tokens=num_accepted_tokens,
-            use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+            g=g.contiguous(),
         )
 
         return o, final_state
@@ -325,15 +397,14 @@ def fused_recurrent_gated_delta_rule(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor = None,
-    scale: float = None,
-    initial_state: torch.Tensor = None,
-    inplace_final_state: bool = True,
+    initial_state: torch.Tensor,
+    beta: torch.Tensor,
+    scale: float,
     cu_seqlens: Optional[torch.LongTensor] = None,
-    ssm_state_indices: Optional[torch.Tensor] = None,
-    num_accepted_tokens: Optional[torch.Tensor] = None,
-    use_qk_l2norm_in_kernel: bool = False,
+    ssm_state_indices: Optional[torch.LongTensor] = None,
+    num_accepted_tokens: Optional[torch.LongTensor] = None,
+    g: torch.Tensor,
+    gk: Optional[torch.LongTensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     r"""
     Args:
@@ -413,14 +484,13 @@ def fused_recurrent_gated_delta_rule(
         q,
         k,
         v,
-        g,
+        initial_state,
         beta,
         scale,
-        initial_state,
-        inplace_final_state,
         cu_seqlens,
         ssm_state_indices,
         num_accepted_tokens,
-        use_qk_l2norm_in_kernel,
+        g,
+        gk,
     )
     return o, final_state

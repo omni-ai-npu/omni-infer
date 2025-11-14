@@ -308,7 +308,7 @@ def torch_chunk_gated_delta_rule(
     core_attn_out = core_attn_out[:, :, :sequence_length]
     core_attn_out = core_attn_out.transpose(1,
                                             2).contiguous().to(initial_dtype)
-    return core_attn_out, last_recurrent_state
+    return core_attn_out, last_recurrent_state.transpose(-1,-2)
 
 
 class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
