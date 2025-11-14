@@ -1179,6 +1179,10 @@ class Qwen3NextModel(nn.Module):
             if name.startswith("mtp."):
                 continue
 
+            ### The weight_scale often has shape (n,1)
+            if 'weight_scale' in name:
+                loaded_weight = loaded_weight.view(-1)
+
             for param_name, weight_name, shard_id in stacked_params_mapping:
                 if weight_name not in name:
                     continue
