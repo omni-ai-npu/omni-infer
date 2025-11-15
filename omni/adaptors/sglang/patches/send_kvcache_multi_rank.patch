@@ -1,5 +1,5 @@
 diff --git a/python/sglang/srt/disaggregation/mooncake/conn.py b/python/sglang/srt/disaggregation/mooncake/conn.py
-index 210c998b0..3be9ae6a3 100644
+index 210c998b0..c08805904 100644
 --- a/python/sglang/srt/disaggregation/mooncake/conn.py
 +++ b/python/sglang/srt/disaggregation/mooncake/conn.py
 @@ -10,6 +10,7 @@ import socket
@@ -28,7 +28,7 @@ index 210c998b0..3be9ae6a3 100644
 +            layers_cnt_per_rank = math.ceil(layers_cnt / self.attn_tp_size)
 +            if self.attn_tp_rank * layers_cnt_per_rank >= layers_cnt:
 +                return 0
-+        layers_params = layers_params[self.attn_tp_rank * layers_cnt_per_rank : min((self.attn_tp_rank + 1) * layers_cnt_per_rank, layers_cnt)]
++            layers_params = layers_params[self.attn_tp_rank * layers_cnt_per_rank : min((self.attn_tp_rank + 1) * layers_cnt_per_rank, layers_cnt)]
 +
          futures = [
              executor.submit(
