@@ -123,6 +123,10 @@ def register_model():
         "omni.models.pangu.modeling_openpangu_vl:OpenPanguVLForConditionalGeneration",
     )
 
+    ModelRegistry.register_model(
+        "GptOssForCausalLM",
+        "omni.models.openai.gpt_oss:GptOssForCausalLM")
+
     if (
         int(os.getenv("RANDOM_MODE", default='0')) or
         int(os.getenv("CAPTURE_MODE", default='0')) or

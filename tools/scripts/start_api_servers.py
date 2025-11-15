@@ -96,6 +96,12 @@ def start_single_node_api_servers(
     no_enable_prefix_caching=False,
     num_speculative_tokens=1,
     no_enable_chunked_prefill=False,
+    reasoning_parser=None,
+    enable_auto_tool_choice=False,
+    tool_call_parser=None,
+    chat_template=None,
+    tool_parser_plugin=None,
+    dtype=None
 ):
     """Start multiple VLLM API servers with specified configurations."""
 
@@ -164,6 +170,18 @@ def start_single_node_api_servers(
             cmd.extend(["--no-enable-prefix-caching"])
         if no_enable_chunked_prefill:
             cmd.extend(["--no-enable-chunked-prefill"])
+        if reasoning_parser:
+            cmd.extend(["--reasoning-parser", str(reasoning_parser)])
+        if enable_auto_tool_choice:
+            cmd.extend(["--enable-auto-tool-choice"])
+        if tool_call_parser:
+            cmd.extend(["--tool-call-parser", str(tool_call_parser)])
+        if chat_template:
+            cmd.extend(["--chat-template", str(chat_template)])
+        if tool_parser_plugin:
+            cmd.extend(["--tool-parser-plugin", str(tool_parser_plugin)])
+        if dtype:
+            cmd.extend(["--dtype", str(dtype)])
 
         logger_path = os.path.join(log_dir, f"server_{rank}.log")
         existed_logger_files = [f for f in glob.glob(logger_path + "*") if re.search(f"server_{rank}\.log(\.\d+)?$", f)]
@@ -289,6 +307,12 @@ if __name__ == "__main__":
     parser.add_argument("--no-enable-prefix-caching", default=False, action="store_true")
     parser.add_argument("--no-enable-chunked-prefill", default=False, action="store_true")
     parser.add_argument("--num-speculative-tokens", type=int, default=1)
+    parser.add_argument("--reasoning-parser", type=str, help="Name of reasoning parser")
+    parser.add_argument("--enable-auto-tool-choice", default=False, action="store_true")
+    parser.add_argument("--tool-call-parser", type=str, help="Name of tool call parser")
+    parser.add_argument("--chat-template", type=str, help="Path of chat template")
+    parser.add_argument("--tool-parser-plugin", type=str, help="Path of reasoning parser")
+    parser.add_argument("--dtype", type=str, help="Data type of model")
 
     args = parser.parse_args()
     if not args.num_dp:
@@ -319,7 +343,13 @@ if __name__ == "__main__":
         additional_config=args.additional_config,
         enable_mtp=args.enable_mtp,
         num_speculative_tokens=args.num_speculative_tokens,
-        no_enable_chunked_prefill=args.no_enable_chunked_prefill
+        no_enable_chunked_prefill=args.no_enable_chunked_prefill,
+        reasoning_parser=args.reasoning_parser,
+        enable_auto_tool_choice=args.enable_auto_tool_choice,
+        tool_call_parser=args.tool_call_parser,
+        chat_template=args.chat_template,
+        tool_parser_plugin=args.tool_parser_plugin,
+        dtype=args.dtype
     )
 
     # Register SIGINT handler for Ctrl+C

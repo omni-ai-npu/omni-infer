@@ -1208,6 +1208,8 @@ class NPUModelRunner(GPUModelRunner):
 
         with DeviceMemoryProfiler() if not int(os.getenv("NO_NPU_MOCK", "0")) else nullcontext() as m:  # noqa: SIM117
             self.model = get_model(vllm_config=self.vllm_config)
+            if hasattr(self.model, "process_weights_after_loading") and callable(getattr(self.model, "process_weights_after_loading")):
+                self.model.process_weights_after_loading()
             if self.lora_config:
                 self.model = self.load_lora_model(self.model, self.model_config, self.scheduler_config,
                                                   self.lora_config, self.device)

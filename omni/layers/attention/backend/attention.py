@@ -465,7 +465,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
             logits_soft_cap: Optional[float] = None,
             attn_type: str = AttentionType.DECODER,
             use_irope: bool = False,
-            kv_stream = None
+            kv_stream = None,
+            attn_sinks: torch.Tensor = None
     ) -> None:
         self.num_heads = num_heads
         self.head_size = head_size
@@ -480,6 +481,9 @@ class AscendAttentionBackendImpl(AttentionImpl):
                                         device=current_platform.device_type)
         self.alibi_slopes = alibi_slopes
         self.attn_type = attn_type
+        self.attn_sinks = attn_sinks
+        if self.attn_sinks is not None:
+            torch._dynamo.mark_static(self.attn_sinks)
 
         if self.num_heads % self.num_kv_heads != 0:
             raise RuntimeError("self.num_heads must be divisible by self.num_kv_heads")
@@ -503,10 +507,276 @@ class AscendAttentionBackendImpl(AttentionImpl):
         self.kv_stream = kv_stream
 
     def forward(self, *args, **kwargs):
+        if self.attn_sinks is not None:
+            if self.use_tnd_pa:
+                return self.forward_sink_pa(*args, **kwargs)
+            else:
+                return self.forward_sink(*args, **kwargs)
         if self.use_tnd_pa:
             return self.forward_pa(*args, **kwargs)
         else:
             return self.forward_vanilla(*args, **kwargs)
+
+    def forward_sink(
+            self,
+            layer: AttentionLayer,
+            query: torch.Tensor,
+            key: torch.Tensor,
+            value: torch.Tensor,
+            kv_cache: Tuple,
+            attn_metadata: AscendMetadata,
+            output: Optional[torch.Tensor] = None,
+            trace_flag: bool = True,
+    ) -> torch.Tensor:
+        num_tokens = query.shape[0]
+        attn_type = self.attn_type
+        if output is None:
+            output = torch.empty(num_tokens,
+                                 self.num_heads,
+                                 self.head_size,
+                                 dtype=query.dtype,
+                                 device=query.device)
+        if attn_metadata is None:
+            return output.view(num_tokens, self.hidden_size)
+        if not (layer._k_scale_float == 1.0 and layer._v_scale_float == 1.0):
+            raise RuntimeError("layer._k_scale_float and layer._v_scale_float must both be 1.0")
+        if attn_type != AttentionType.DECODER:
+            raise NotImplementedError("Encoder self-attention and "
+                                        "encoder/decoder cross-attention "
+                                        "are not implemented for "
+                                        "PallasAttentionBackendImpl")
+
+        query = query.view(-1, self.num_heads, self.head_size).contiguous()
+        key = key.view(-1, self.num_kv_heads, self.head_size).contiguous()
+        value = value.view(-1, self.num_kv_heads, self.head_size).contiguous()
+
+                # update kv cache
+        if kv_cache[0].numel() > 0 or kv_cache[1].numel():
+            self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
+
+            block_size = self.key_cache.shape[1]
+
+            cast_key = key.reshape(-1, 1, self.num_kv_heads * self.head_size)
+            cast_value = value.reshape(-1, 1, self.num_kv_heads * self.head_size)
+
+            if attn_metadata.attn_state != AscendAttentionState.DecodeOnly:
+                # if prefill does not use paged attention,
+                # (1) saving keys and values into kv_cache, and
+                # (2) GQA
+                # can run simultaneously in two streams
+                if self.kv_stream is not None and not hasattr(layer, 'quant_method') and attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
+                    stream_for_reshape_and_cache = self.kv_stream
+                    self.kv_stream.wait_stream(torch.npu.current_stream())
+                else:
+                    stream_for_reshape_and_cache = torch.npu.current_stream()
+                with torch.npu.stream(stream_for_reshape_and_cache):
+                    torch_npu._npu_reshape_and_cache(
+                        key,
+                        value,
+                        self.key_cache.view(self.key_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
+                        self.value_cache.view(self.value_cache.shape[0], block_size, self.num_kv_heads, self.head_size),
+                        attn_metadata.slot_mapping.int()
+                    )
+            else:
+                torch_npu.scatter_update_(self.key_cache, attn_metadata.slot_indices, cast_key, -2)
+                torch_npu.scatter_update_(self.value_cache, attn_metadata.slot_indices, cast_value, -2)
+
+        if self.attn_sinks is not None:
+            sinks = self.attn_sinks.view(self.num_heads)
+        else:
+            sinks = None
+
+        if self.sliding_window is None:
+            sparse_mode = 3
+            pre_tokens = torch.iinfo(torch.int32).max
+        else:
+            sparse_mode = 4
+            pre_tokens = self.sliding_window
+
+        if hasattr(layer, 'quant_method'):
+            pass
+        # V0-Style scheduler situation.
+        elif attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
+            actual_seq_qlen = attn_metadata.query_lens.cumsum(dim=0)
+            actual_seq_kvlen = attn_metadata.seq_lens.cumsum(dim=0)
+            attn_output = torch_npu.npu_fused_infer_attention_score_v2(
+                query[:actual_seq_qlen[-1], :],
+                key[:actual_seq_qlen[-1], :],
+                value[:actual_seq_qlen[-1], :],
+                num_query_heads=self.num_heads,
+                num_key_value_heads=self.num_kv_heads,
+                input_layout="TND",
+                softmax_scale=self.scale,
+                sparse_mode=sparse_mode,
+                pre_tokens=pre_tokens,
+                next_tokens=0,
+                actual_seq_qlen=actual_seq_qlen,
+                actual_seq_kvlen=actual_seq_kvlen,
+                atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                learnable_sink=sinks
+            )[0]
+            output[:actual_seq_qlen[-1], :].copy_(attn_output)
+        elif attn_metadata.attn_state == AscendAttentionState.DecodeOnly:
+            num_batch = attn_metadata.seq_lens.shape[0]
+            query = query.view(num_batch, -1, self.num_heads * self.head_size)
+            block_tables = attn_metadata.block_tables
+            attn_output = None
+
+            query = query.view(-1, self.num_heads, self.head_size)
+            block_num, block_size = self.key_cache.shape[0], self.key_cache.shape[1]
+            self.key_cache = self.key_cache.view(block_num, block_size, self.num_kv_heads * self.head_size)
+            self.value_cache = self.value_cache.view(block_num, block_size, self.num_kv_heads * self.head_size)
+            if self.enable_graph_mode:
+                attn_output, _ = tng.ops.npu_fused_infer_attention_score_v2(
+                    torch.transpose(query.view(num_batch, -1, self.num_heads, self.head_size), 1, 2),
+                    self.key_cache,              # block_num, 128, 8 * 64
+                    self.value_cache,            # block_num, 128, 8 * 64
+                    num_query_heads=self.num_heads, # 64
+                    num_key_value_heads=self.num_kv_heads, # 8
+                    input_layout="BNSD",
+                    softmax_scale=self.scale,  # 1/8
+                    actual_seq_qlen=attn_metadata.query_lens,
+                    actual_seq_kvlen=attn_metadata.seq_lens,  # []
+                    block_table=block_tables,  # 64,32
+                    block_size=block_size,     # = 128
+                    pre_tokens=pre_tokens,
+                    next_tokens=0,
+                    sparse_mode=sparse_mode,
+                    atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                    learnable_sink=sinks                # (64,)
+                )
+            else:
+                attn_output, _ = torch_npu.npu_fused_infer_attention_score_v2(
+                    query,                  # 64, 64, 64
+                    self.key_cache,              # block_num, 128, 8 * 64
+                    self.value_cache,            # block_num, 128, 8 * 64
+                    num_query_heads=self.num_heads, # 64
+                    num_key_value_heads=self.num_kv_heads, # 8
+                    input_layout="TND",
+                    softmax_scale=self.scale,  # 1/8
+                    actual_seq_qlen=attn_metadata.query_lens.cumsum(dim=0), # [1,2,....,64] = [1,1,...,1].cumsum()
+                    actual_seq_kvlen=attn_metadata.seq_lens,  # []
+                    block_table=block_tables,  # 64,32
+                    block_size=block_size,     # = 128
+                    pre_tokens=pre_tokens,
+                    next_tokens=0,
+                    sparse_mode=sparse_mode,
+                    atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                    learnable_sink=sinks                # (64,)
+                )
+
+            output = output.view_as(attn_output)
+            output.copy_(attn_output)
+        else:
+            # attn with sink are not implemented chunked prefill.
+            raise NotImplementedError("Attention with sink are not implemented chunked prefill.")
+
+        return output.view(num_tokens, self.hidden_size)
+
+    def forward_sink_pa(
+            self,
+            layer: AttentionLayer,
+            query: torch.Tensor,
+            key: torch.Tensor,
+            value: torch.Tensor,
+            kv_cache: Tuple,
+            attn_metadata: AscendMetadata,
+            output: Optional[torch.Tensor] = None,
+            trace_flag: bool = True,
+    ) -> torch.Tensor:
+        num_tokens = query.shape[0]
+        if output is None:
+            output = torch.empty(num_tokens,
+                                 self.num_heads,
+                                 self.head_size,
+                                 dtype=query.dtype,
+                                 device=query.device)
+
+        if attn_metadata is None:
+            return output.view(num_tokens, self.hidden_size)
+
+        if not (layer._k_scale_float == 1.0 and layer._v_scale_float == 1.0):
+            raise RuntimeError("layer._k_scale_float and layer._v_scale_float must both be 1.0")
+        attn_type = self.attn_type
+        if attn_type != AttentionType.DECODER:
+            raise NotImplementedError("Encoder self-attention and "
+                                        "encoder/decoder cross-attention "
+                                        "are not implemented for "
+                                        "PallasAttentionBackendImpl")
+        # View q k v to TND.
+        query = query.view(-1, self.num_heads, self.head_size).contiguous()
+        key = key.view(-1, self.num_kv_heads, self.head_size).contiguous()
+        value = value.view(-1, self.num_kv_heads, self.head_size).contiguous()
+        num_batch = attn_metadata.seq_lens.shape[0]
+        # value = value.contiguous()
+
+        # update kv cache
+        if kv_cache[0].numel() > 0 or kv_cache[1].numel():
+            block_size = kv_cache[0].shape[-2]
+            assert block_size == 128, f"{block_size}"
+            torch_npu.npu_scatter_pa_kv_cache(
+                key,
+                value,
+                kv_cache[0],
+                kv_cache[1],
+                attn_metadata.slot_mapping
+            )
+
+        if self.attn_sinks is not None:
+            sinks = self.attn_sinks.view(self.num_heads)
+        else:
+            sinks = None
+
+        if self.sliding_window is None:
+            sparse_mode = 3
+            pre_tokens = torch.iinfo(torch.int32).max
+        else:
+            sparse_mode = 4
+            pre_tokens = self.sliding_window
+
+        if (self.enable_graph_mode and attn_metadata.attn_state == AscendAttentionState.DecodeOnly) or (self.is_hybrid_chunked_prefill_graph_mode and attn_metadata.attn_state == AscendAttentionState.ChunkedPrefill):
+            attn_output = tng.ops.npu_fused_infer_attention_score_v2(
+                torch.transpose(query.view(num_batch, -1, self.num_heads, self.head_size), 1, 2),
+                kv_cache[0].view(-1, self.num_kv_heads, self.head_size // NZ_DIM, block_size, NZ_DIM),
+                kv_cache[1].view(-1, self.num_kv_heads, self.head_size // NZ_DIM, block_size, NZ_DIM),
+                num_query_heads=self.num_heads,
+                num_key_value_heads=self.num_kv_heads,
+                input_layout="BNSD",
+                softmax_scale=self.scale,
+                block_table=attn_metadata.block_tables,
+                block_size=block_size,
+                sparse_mode=sparse_mode,
+                atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                actual_seq_kvlen=attn_metadata.seq_lens,
+                inner_precise=1,
+                pre_tokens=pre_tokens,
+                next_tokens=0,
+                learnable_sink=sinks
+            )[0]
+        else:
+            attn_output = torch_npu.npu_fused_infer_attention_score_v2(
+                query,
+                kv_cache[0].view(-1, self.num_kv_heads, self.head_size // NZ_DIM, block_size, NZ_DIM),
+                kv_cache[1].view(-1, self.num_kv_heads, self.head_size // NZ_DIM, block_size, NZ_DIM),
+                num_query_heads=self.num_heads,
+                num_key_value_heads=self.num_kv_heads,
+                input_layout="TND",
+                softmax_scale=self.scale,
+                block_table=attn_metadata.block_tables,
+                block_size=block_size,
+                sparse_mode=sparse_mode,
+                atten_mask=AscendAttentionBackendImpl.SHARE_MASK_TRIL_SPARSE,
+                actual_seq_qlen=attn_metadata.query_lens.cumsum(dim=0),
+                actual_seq_kvlen=attn_metadata.seq_lens,
+                pre_tokens=pre_tokens,
+                next_tokens=0,
+                learnable_sink=sinks
+            )[0]
+
+        output = output.view_as(attn_output)
+        output.copy_(attn_output)
+
+        return output.view(num_tokens, self.hidden_size)
 
     def forward_pa(
             self,
