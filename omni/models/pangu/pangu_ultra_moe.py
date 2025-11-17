@@ -73,9 +73,6 @@ from omni.layers.utils import ConditionalTNGScope
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64
 
-if model_extra_config.operator_opt_config.unquant_bmm_nz:
-    # if use weight nz, this config must be True
-    torch.npu.config.allow_internal_format = True
 
 class ParallelPanguUltraMoEMLP(nn.Module):
 
@@ -760,7 +757,7 @@ class PanguUltraMoEForCausalLM(nn.Module):
 
     def get_model(self):
         if model_extra_config.task_config.hardware_platform.startswith("A2") and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
-            from omni.models.pangu.pangu_ultra_moe import PanguUltraMoEModel as PanguUltraMoEModel_A2
+            from omni.models.pangu.pangu_ultra_moe_a2 import PanguUltraMoEModel as PanguUltraMoEModel_A2
             return PanguUltraMoEModel_A2(vllm_config=self.vllm_config, prefix="model")
         else:
             return PanguUltraMoEModel(vllm_config=self.vllm_config, prefix="model")

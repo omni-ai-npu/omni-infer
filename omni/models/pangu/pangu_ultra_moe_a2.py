@@ -71,7 +71,6 @@ from omni.models.config_loader.loader import model_extra_config
 
 """MLP 模块激活拆分长度，按64G显存拆分，需要根据序列长度以及性能确认最佳拆分长度"""
 SEQ_SPLIT_LENGTH = 4096
-SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64 if model_extra_config.operator_opt_config.prefill_moe_all_to_all else 256
 
 
 class ParallelPanguUltraMoEMLP(nn.Module):
@@ -366,6 +365,7 @@ class PanguUltraMoEDecoderLayer(nn.Module):
             residual = torch.nn.functional.pad(
                 residual, (0, 0, 0, pad_size)
             )
+            SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64 if model_extra_config.operator_opt_config.prefill_moe_all_to_all else 256
             hidden_states_list = hidden_states.split(SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER)
             residual_list = residual.split(SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER)
             hidden_state_out = []

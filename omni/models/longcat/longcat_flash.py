@@ -63,9 +63,7 @@ from omni.models.config_loader.loader import model_extra_config
 from omni.models.longcat.longcat_moe import LongcatFlashMoE
 from omni.layers.attention.deepseek_mla import DeepseekMLA
 from omni.models.deepseek.deepseek_v3 import ParallelDeepseekMLP
-if model_extra_config.operator_opt_config.unquant_bmm_nz:
-    # if use weight nz, this config must be True
-    torch.npu.config.allow_internal_format = True
+
 
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
 SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER = 64

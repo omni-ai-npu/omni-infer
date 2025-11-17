@@ -4,7 +4,7 @@
 from dataclasses import dataclass, field, fields, asdict
 import json
 import os
-import torch.distributed
+import torch
 
 from vllm.logger import logger
 import omni.adaptors.vllm.envs as envs
@@ -105,47 +105,38 @@ class ModelOperatorOptConfig:
 
     enable_mlp_seq_split: bool = False # 模型大 + 权重大 + 长序列场景下会OOM，需要切分长度时打开以避免OOM，默认切分大小为4096
 
+    def __post_init__(self):
+
+        # Check the dependencies of use_prefetch and prefetch_Mb
+        if not self.use_prefetch:
+            self.expert_gate_up_prefetch = 0
+            self.expert_down_prefetch = 0
+            self.attn_prefetch = 0
+            logger.warning(f"[WARNING] When enable_prefetch is false, prefetch_Mb must be set to 0.")
+
+            
+        if os.getenv("ENABLE_OMNI_CACHE", "0") == "1":
+            self.use_omni_cache = True
+
+        # Check for mutually exclusive configuration options
+        if self.enable_pipeline_comm and \
+                self.enable_round_pipeline_comm:
+            raise ValueError(
+                "Conflicting communication configuration: "
+                "'enable_pipeline_comm' and 'enable_round_pipeline_comm' cannot both be True. "
+                "Please disable one of these communication modes."
+            )
+        
+        if self.unquant_bmm_nz:
+            # if use weight nz, this config must be True
+            torch.npu.config.allow_internal_format = True
+
 @dataclass 
 class ModelExtraConfig:
     parall_config: ModelParallelConfig = field(default_factory = ModelParallelConfig)
     operator_opt_config: ModelOperatorOptConfig = field(default_factory = ModelOperatorOptConfig)
     task_config: TaskConfig = field(default_factory = TaskConfig)
 
-    def __post_init__(self):
-
-        # Check the dependencies of use_prefetch and prefetch_Mb
-        if not self.operator_opt_config.use_prefetch:
-            self.operator_opt_config.expert_gate_up_prefetch = 0
-            self.operator_opt_config.expert_down_prefetch = 0
-            self.operator_opt_config.attn_prefetch = 0
-            logger.warning(f"[WARNING] When enable_prefetch is false, prefetch_Mb must be set to 0.")
-        
-
-        if self.operator_opt_config.enable_round_pipeline_comm:
-            # Determine NPU count based on hardware platform
-            npu_device_count = 8 if self.task_config.hardware_platform.startswith("A2") else 16
-            num_nodes = torch.distributed.get_world_size() // npu_device_count
-            
-            # Validate that exactly 4 nodes are used for round pipeline communication
-            if num_nodes != 4:
-                raise ValueError(
-                    "Invalid node configuration: "
-                    f"Expected exactly 4 nodes when using round pipeline communication, "
-                    f"but found {num_nodes} nodes (calculated from {torch.distributed.get_world_size()} "
-                    f"world size and {npu_device_count} NPUs per node)."
-                )
-            
-        if os.getenv("ENABLE_OMNI_CACHE", "0") == "1":
-            self.operator_opt_config.use_omni_cache = True
-
-        # Check for mutually exclusive configuration options
-        if self.operator_opt_config.enable_pipeline_comm and \
-                self.operator_opt_config.enable_round_pipeline_comm:
-            raise ValueError(
-                "Conflicting communication configuration: "
-                "'enable_pipeline_comm' and 'enable_round_pipeline_comm' cannot both be True. "
-                "Please disable one of these communication modes."
-            )
 
 
 def filter_dict_by_dataclass(dataclass_type, data_dict):
@@ -208,11 +199,17 @@ def parse_hf_config(hf_config):
 
     if hasattr(hf_config, "quantization_config") and hf_config.quantization_config['format'].strip() == 'int-quantized':
         weights_type = hf_config.quantization_config["config_groups"]["group_0"]["weights"]["num_bits"]
+        if isinstance(weights_type, dict):
+            num_bits_values = weights_type.values()
+            weights_type = min(num_bits_values)
+
         input_activations_type = hf_config.quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"]
+        if isinstance(input_activations_type, dict):
+            num_bits_values = input_activations_type.values()
+            input_activations_type = min(num_bits_values)
+        
         kv_cache_scheme_type = hf_config.quantization_config["kv_cache_scheme"]
         quant_type = f"w{weights_type}a{input_activations_type}"
-        if isinstance(weights_type, dict) and weights_type.get('mlp.experts', None) == 4:
-            quant_type = "w4a8"
         if kv_cache_scheme_type == "Opti-C8":
             quant_type = quant_type+"_fa_c8"
     else:
@@ -296,7 +293,7 @@ def _get_best_practice_config(task_config):
     return config_data
 
 
-def _init_model_extra_config(task_config) -> ModelExtraConfig:
+def _init_model_extra_config(task_config):
 
     config_data = _get_best_practice_config(task_config)
 
@@ -316,11 +313,7 @@ model_extra_config = ModelExtraConfig()
 
 def _validate_config():
     global model_extra_config
-    if not model_extra_config.task_config.enable_graph_mode:
-        apply_eager_mode_config(model_extra_config.operator_opt_config)
-        logger.warning(
-            f"[WARNING] Eager mode disables all these optimization configurations by default."
-        )
+    apply_eager_mode_config(model_extra_config)
     apply_fusion_pass(model_extra_config)
 
 
@@ -333,7 +326,11 @@ def update_task_config(**kwargs):
             if hasattr(task_config, key):
                 setattr(task_config, key, value)
                 logger.info(f"{key} loads from vllm config: {value}")
-    task_config.model_name, task_config.quant_type = parse_hf_config(kwargs['hf_config'])
+    hf_config = kwargs.get('hf_config')
+    if hf_config is None:
+        raise KeyError("hf_config is required for update_task_config")
+
+    task_config.model_name, task_config.quant_type = parse_hf_config(hf_config)
     _init_model_extra_config(task_config)
     _validate_config()
 
