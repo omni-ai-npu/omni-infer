@@ -7,7 +7,7 @@
     "operator_optimization_config": {
         "enable_kv_rmsnorm_rope_cache": true,
         "prefill_moe_all_to_all": false,
-        "moe_multi_stream_tune": true,
+        "moe_multi_stream_tune": false,
         "fa_quant": true,
         "best_ep": false,
         "merge_qkv": false,
@@ -21,8 +21,8 @@
         "mtp_remove_redundant_kv": true,
         "enable_gmm_swiglu_quant": true,
         "use_prefetch": true,
-        "expert_gate_up_prefetch": 40,
-        "expert_down_prefetch": 20,
-        "attn_prefetch": 96
+        "expert_gate_up_prefetch": 80,
+        "expert_down_prefetch": 40,
+        "attn_prefetch": 40
     }
 }

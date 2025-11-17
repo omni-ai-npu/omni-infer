@@ -909,7 +909,7 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
                                             max_num_deployed_expert: int,
                                             is_prefill: bool,
                                             is_route_expert: bool,
-                                            ):
+                                            next_attention_weights: Optional[dict]=None):
     expert_parallel_size = get_ep_group().world_size
 
     if expert_parallel_size > 1:
@@ -980,6 +980,16 @@ def fused_experts_moe_dispatch_combine(layer: torch.nn.Module,
         else:
             hidden_states = torch.zeros_like(expand_x).to(torch.bfloat16)
             ep_recv_counts = torch.zeros_like(ep_recv_counts)
+
+
+        # prefetch weights for attention next layer
+        if model_extra_config.operator_opt_config.attn_prefetch > 0 and next_attention_weights is not None and next_attention_weights['q_a_proj_weight'] is not None:
+            attn_prefetch_size = model_extra_config.operator_opt_config.attn_prefetch * 1024 * 1024
+            attn_prefetch_flag = hidden_states_experts
+            torch_npu.npu_prefetch(next_attention_weights['q_a_proj_weight'], attn_prefetch_flag, attn_prefetch_size)
+            torch_npu.npu_prefetch(next_attention_weights['kv_a_proj_with_mqa_weight'], attn_prefetch_flag, attn_prefetch_size)
+            torch_npu.npu_prefetch(next_attention_weights['q_b_proj_weight'], attn_prefetch_flag, attn_prefetch_size)
+            torch_npu.npu_prefetch(next_attention_weights['W_UK'], attn_prefetch_flag, attn_prefetch_size)
 
         # moeCombine
         kwargs = {

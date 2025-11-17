@@ -310,6 +310,10 @@ class DeepseekMoE(nn.Module):
                     if self.ep_size > 64:
                         self.w2_prefetch_size = model_extra_config.operator_opt_config.expert_down_prefetch * 1024 * 1024
 
+            if self.shared_experts is not None and self.redundancy_shared_expert_num > 0:
+                self.w13_prefetch_size = model_extra_config.operator_opt_config.expert_gate_up_prefetch * 1024 * 1024
+                self.w2_prefetch_size = model_extra_config.operator_opt_config.expert_down_prefetch * 1024 * 1024
+
             self.tuning_config = None
             if not model_extra_config.operator_opt_config.gmm_nz:
                 self.tuning_config = model_extra_config.task_config.decode_gear_list[:1]
@@ -326,12 +330,12 @@ class DeepseekMoE(nn.Module):
         is_prefill = attn_metadata is None or (hasattr(attn_metadata, "prefill") and attn_metadata.prefill is not None) or \
                     (hasattr(attn_metadata, "is_pd_seperate_d") and not attn_metadata.is_pd_seperate_d)
         if model_extra_config.parall_config.enable_attn_ffn_disaggregation:
-            return self.forward_separate_expert_decode(hidden_states, residual, attn_metadata)
+            return self.forward_separate_expert_decode(hidden_states, residual, attn_metadata, next_attention_weights)
         elif self.redundancy_shared_expert_num > 0:
             if is_prefill:
                 return self.forward_separate_expert_prefill(hidden_states, residual, attn_metadata)
             else:
-                return self.forward_separate_expert_decode(hidden_states, residual, attn_metadata)
+                return self.forward_separate_expert_decode(hidden_states, residual, attn_metadata, next_attention_weights)
         else:
             if not self.is_init_gate:
                 self.gate.weight.data = torch_npu.npu_format_cast(self.gate.weight.data, 2)
@@ -710,12 +714,21 @@ class DeepseekMoE(nn.Module):
     def forward_separate_expert_decode(self,
                                        hidden_states: torch.Tensor,
                                        residual: torch.Tensor,
-                                       attn_metadata: AttentionMetadata) -> torch.Tensor:
+                                       attn_metadata: AttentionMetadata,
+                                       next_attention_weights: Optional[dict]=None) -> torch.Tensor:
         router_logits, _ = self.gate.forward(hidden_states.float())
         
         # Here, we do a 2D to 3D conversion, and then convert back to 2D to trigger the fusion rule, fusing add rms and cast into AddRmsNormCast.
         hidden_states_3d = hidden_states.unsqueeze(1)
         hidden_states = hidden_states_3d.squeeze(1)
+
+        # expert weight prefetch
+        if model_extra_config.operator_opt_config.use_prefetch and self.w13_prefetch_size > 0:
+            w13_weight = self.experts.w13_weight if self.experts is not None else self.shared_experts.gate_up_proj.weight
+            torch_npu.npu_prefetch(w13_weight, router_logits, self.w13_prefetch_size)
+        if model_extra_config.operator_opt_config.use_prefetch and self.w2_prefetch_size > 0:
+            w2_weight = self.experts.w2_weight if self.experts is not None else self.shared_experts.down_proj.weight
+            torch_npu.npu_prefetch(w2_weight, router_logits, self.w2_prefetch_size)
 
         topk_weights, topk_ids, _ = FusedMoE.select_experts(hidden_states, router_logits,
                                                             self.top_k, self.use_grouped_topk,
@@ -754,7 +767,8 @@ class DeepseekMoE(nn.Module):
                                                                 topk_ids,
                                                                 max_num_deployed_expert=max_num_deployed_expert,
                                                                 is_prefill=False,
-                                                                is_route_expert=self.experts is not None)
+                                                                is_route_expert=self.experts is not None,
+                                                                next_attention_weights=next_attention_weights)
         return hidden_states, residual
 
     def forward_separate_expert_prefill(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata) -> torch.Tensor:
