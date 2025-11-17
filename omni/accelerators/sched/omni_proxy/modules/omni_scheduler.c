@@ -582,7 +582,7 @@ static void update_prefill_weights(omni_req_group_t *group)
     }
 }
 
-static void update_decode_weights(omni_req_group_t *group)
+static void update_decode_weights(omni_req_group_t *group, uint32_t max_tokens_weight)
 {
     uint32_t max_total_tokens = 1;
 
@@ -590,8 +590,8 @@ static void update_decode_weights(omni_req_group_t *group)
         omni_req_info_t *info = &group->requests[i];
         if (!info->in_use) continue;
         omni_req_t *req = omni_info_to_req(info);
-        if ((req->metrics.prompt_num_tokens + req->metrics.max_tokens) > max_total_tokens) {
-            max_total_tokens = req->metrics.prompt_num_tokens + req->metrics.max_tokens;
+        if ((req->metrics.prompt_num_tokens + max_tokens_weight * req->metrics.max_tokens) > max_total_tokens) {
+            max_total_tokens = req->metrics.prompt_num_tokens + max_tokens_weight * req->metrics.max_tokens;
         }
     }
 
@@ -599,7 +599,7 @@ static void update_decode_weights(omni_req_group_t *group)
         omni_req_info_t *info = &group->requests[i];
         if (!info->in_use) continue;
         omni_req_t *req = omni_info_to_req(info);
-        info->weight = ((double)req->metrics.prompt_num_tokens + (double)req->metrics.max_tokens)/ max_total_tokens;
+        info->weight = ((double)req->metrics.prompt_num_tokens + (double)max_tokens_weight * (double)req->metrics.max_tokens)/ max_total_tokens;
     }
 
     omni_sort_compact_group(group);
@@ -611,12 +611,13 @@ static void update_decode_weights(omni_req_group_t *group)
         }
         omni_req_t *req = omni_info_to_req(info);
         ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0,
-                      "[Decode-Sort] Order %uD: slot=%uD total_tokens=%uD prompt_num_tokens=%uD max_tokens=%uD weight=%.2f",
+                      "[Decode-Sort] Order %uD: slot=%uD total_tokens=%uD prompt_num_tokens=%uD max_tokens=%uD max_tokens_weight=%uD weight=%.2f",
                       idx,
                       info->slot_index,
-                      req->metrics.prompt_num_tokens + req->metrics.max_tokens,
+                      req->metrics.prompt_num_tokens + max_tokens_weight * req->metrics.max_tokens,
                       req->metrics.prompt_num_tokens,
                       req->metrics.max_tokens,
+                      max_tokens_weight,
                       info->weight);
     }
 }
@@ -769,8 +770,8 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf
             selected_prefill->num_queue++;
         }
 
-        selected_prefill->num_running++;
-        selected_prefill->num_tokens += req->metrics.prompt_num_tokens;
+        ngx_atomic_fetch_add(&selected_prefill->num_running, 1);
+        ngx_atomic_fetch_add(&selected_prefill->num_tokens, req->metrics.prompt_num_tokens);
         ngx_atomic_fetch_add(&selected_prefill->comm.ref, 1);
 
         omni_global_phase_change_to(req, PHASE_PREFILL_WAITING_SCHEDULE, PHASE_PREFILL_SCHEDULED);
@@ -809,7 +810,7 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs, ngx_http_omni_loc_conf_
     // TODO: Here we can do some estimation of pull kv finish time to make sure pull kv
     // workloads are balanced
 
-    update_decode_weights(group);
+    update_decode_weights(group, olcf->max_tokens_weight);
 
     for (size_t i = 0; i < group->watermark; i++)
     {
@@ -848,8 +849,8 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs, ngx_http_omni_loc_conf_
 
         req->decode_upstream_endpoint_idx = selected;
         gs->last_selected_decode = selected + 1;
-        gs->decode_states[selected].num_running++;
-        gs->decode_states[selected].num_tokens += req->metrics.prompt_num_tokens;
+        ngx_atomic_fetch_add(&gs->decode_states[selected].num_running, 1);
+        ngx_atomic_fetch_add(&gs->decode_states[selected].num_tokens, req->metrics.prompt_num_tokens);
         ngx_atomic_fetch_add(&gs->decode_states[selected].comm.ref, 1);
 
         omni_global_phase_change_to(req, PHASE_DECODE_WAITING_SCHEDULE, PHASE_DECODE_SCHEDULED);

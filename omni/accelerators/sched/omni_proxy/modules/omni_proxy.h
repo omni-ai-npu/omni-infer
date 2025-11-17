@@ -33,6 +33,7 @@ typedef struct
     ngx_uint_t max_batch_num_token;
     ngx_uint_t prefill_max_num_seqs;
     ngx_uint_t decode_max_num_seqs;
+    ngx_uint_t max_tokens_weight;
     ngx_uint_t prefill_starvation_timeout;
     ngx_flag_t health_status_enabled;
     ngx_uint_t schedule_algo;
