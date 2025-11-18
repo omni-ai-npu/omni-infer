@@ -16,7 +16,6 @@ import torch
 import torch_npu, torchair
 torch._dynamo.config.capture_scalar_outputs = True
 from vllm.triton_utils import tl, tldevice, triton
-from torch_npu import npu_recurrent_gated_delta_rule
 
 PAD_SLOT_ID = -1
 
@@ -210,19 +209,20 @@ def fused_recurrent_gated_delta_rule_fwd(
     beta = beta.reshape(T, Nv)
     g = g.reshape(T, Nv)
     # Call the NPU reference implementation
-    return npu_recurrent_gated_delta_rule(
-        query=q,
-        key=k,
-        value=v,
-        state=initial_state,
-        beta=beta,
+    o = torch_npu.npu_recurrent_gated_delta_rule(
+        query=q.to(torch.bfloat16),
+        key=k.to(torch.bfloat16),
+        value=v.to(torch.bfloat16),
+        state=initial_state.to(torch.bfloat16),
+        beta=beta.to(torch.bfloat16),
         scale=scale,
-        actual_seq_lengths=cu_seqlens[1:],
-        ssm_state_indices=ssm_state_indices,
-        num_accepted_tokens=num_accepted_tokens,
-        g=g,
+        actual_seq_lengths=cu_seqlens[1:].to(torch.int32),
+        ssm_state_indices=ssm_state_indices.to(torch.int32),
+        num_accepted_tokens= None if num_accepted_tokens is None else num_accepted_tokens.to(torch.int32),
+        g=None if g is None else g.to(torch.bfloat32),
         gk=None,
     )
+    return o, initial_state  # Placeholder for final_state
 
 
 class FusedRecurrentFunction(torch.autograd.Function):
