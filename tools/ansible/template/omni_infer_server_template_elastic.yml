@@ -241,6 +241,8 @@
           --access-log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_access.log \
           --core-num 4 \
           --start-core-index 16 \
+          --prefill-pod-size "$PREFILL_POD_NUM" \
+          --decode-pod-size "$DECODE_POD_NUM" \
           --omni-proxy-pd-policy sequential \
           --omni-proxy-model-path $MODEL_PATH
       else
@@ -299,6 +301,8 @@
           --access-log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_access.log \
           --core-num 4 \
           --start-core-index 16 \
+          --prefill-pod-size "$PREFILL_POD_NUM" \
+          --decode-pod-size "$DECODE_POD_NUM" \
           --omni-proxy-pd-policy sequential \
           --omni-proxy-model-path $MODEL_PATH \
           --reload
@@ -407,6 +411,8 @@
       {{ docker_exec_cmd }}
       -e PREFILL_LB_SDK=$PREFILL_LB_SDK
       -e DECODE_LB_SDK=$DECODE_LB_SDK
+      -e PREFILL_POD_NUM=$PREFILL_POD_NUM
+      -e DECODE_POD_NUM=$DECODE_POD_NUM
       -e USE_OMNI_PROXY=$USE_OMNI_PROXY
       -e MODEL_PATH=$MODEL_PATH
       -d $DOCKER_NAME_C
@@ -658,6 +664,15 @@
         PREFILL_POD_NUM: >-
           {{
             groups['P'] |
+            map('extract', hostvars) |
+            map(attribute='host_ip') |
+            unique |
+            length
+          }}
+        
+        DECODE_POD_NUM: >-
+          {{
+            groups['D'] |
             map('extract', hostvars) |
             map(attribute='host_ip') |
             unique |

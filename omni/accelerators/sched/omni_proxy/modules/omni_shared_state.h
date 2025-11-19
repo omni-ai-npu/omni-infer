@@ -218,6 +218,9 @@ typedef struct omni_global_state_s
     int has_tokenizer;
     omni_proxy_pd_policy_t pd_policy;
 
+    ngx_uint_t prefill_pod_size;
+    ngx_uint_t decode_pod_size;
+
     omni_request_pool_t request_pool;
     omni_req_group_t groups[PHASE_MAX];
     uint16_t num_prefill_endpoints;

@@ -419,6 +419,9 @@ static ngx_int_t omni_proxy_handler(ngx_http_request_t *r)
 
     req->metrics.time_received = ngx_current_msec;
 
+    g_state->decode_pod_size = olcf->decode_pod_size;
+    g_state->prefill_pod_size = olcf->prefill_pod_size;
+
     struct timeval tv;
     gettimeofday(&tv, NULL);
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
@@ -1587,6 +1590,8 @@ static void *ngx_http_omni_create_loc_conf(ngx_conf_t *cf)
     conf->decode_max_num_seqs = NGX_CONF_UNSET_UINT;
     conf->max_tokens_weight = NGX_CONF_UNSET_UINT;
     conf->prefill_starvation_timeout = NGX_CONF_UNSET_UINT;
+    conf->prefill_pod_size = NGX_CONF_UNSET_UINT;
+    conf->decode_pod_size = NGX_CONF_UNSET_UINT;
     conf->schedule_algo = NGX_CONF_UNSET_UINT;
     conf->health_status_enabled = NGX_CONF_UNSET;
     conf->stream_ops = (ngx_prefill_stream_op_e) NGX_CONF_UNSET_UINT;
@@ -1619,6 +1624,9 @@ static char *ngx_http_omni_merge_loc_conf(ngx_conf_t *cf, void *parent, void *ch
     ngx_conf_merge_uint_value(conf->max_tokens_weight, prev->max_tokens_weight, 0);
     ngx_conf_merge_uint_value(conf->prefill_starvation_timeout, prev->prefill_starvation_timeout, 400);
     ngx_conf_merge_uint_value(conf->schedule_algo, prev->schedule_algo, 0);
+
+    ngx_conf_merge_uint_value(conf->prefill_pod_size, prev->prefill_pod_size, 1);
+    ngx_conf_merge_uint_value(conf->decode_pod_size, prev->decode_pod_size, 1);    
 
     if (conf->metrics_enabled == NGX_CONF_UNSET)
     {
@@ -2698,6 +2706,20 @@ static ngx_command_t omni_proxy_commands[] = {
      NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_omni_loc_conf_t, schedule_algo),
      ngx_http_omni_schedule_algos},
+
+    {ngx_string("prefill_pod_size"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_num_slot,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_omni_loc_conf_t, prefill_pod_size),
+     NULL},
+    
+    {ngx_string("decode_pod_size"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_num_slot,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_omni_loc_conf_t, decode_pod_size),
+     NULL},
 
     {ngx_string("stream_ops"),
      NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,

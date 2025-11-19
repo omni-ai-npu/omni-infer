@@ -5,6 +5,7 @@
 #include <omni_metrics.h>
 #include <omni_proxy.h>
 #include <time.h>
+#include <stdlib.h>
 #define DECODE_INSTANCE_GROUP_SIZE 16
 
 // Label definitions
@@ -513,11 +514,8 @@ ngx_str_t omni_health_status_export_json(omni_global_state_t *gs, ngx_pool_t *po
         }
     }
 
-    ngx_uint_t x = healthy_prefill_count;
-    ngx_uint_t m = 1;
-    ngx_uint_t y = healthy_decode_count / gs->num_decode_endpoints;
-    ngx_uint_t n = gs->num_decode_endpoints / DECODE_INSTANCE_GROUP_SIZE;
-
+    ngx_uint_t num_health_prefill_instance = healthy_prefill_count / gs->prefill_pod_size;
+    ngx_uint_t num_health_decode_instance = healthy_decode_count / (DECODE_INSTANCE_GROUP_SIZE * gs->decode_pod_size);
 
     ngx_uint_t code;
     ngx_str_t status;
@@ -525,7 +523,7 @@ ngx_str_t omni_health_status_export_json(omni_global_state_t *gs, ngx_pool_t *po
     ngx_uint_t total_upstreams = gs->num_prefill_endpoints + gs->num_decode_endpoints;
     ngx_uint_t total_healthy = healthy_prefill_count + healthy_decode_count;
 
-    if (x == 0 || y == 0) {
+    if (num_health_prefill_instance == 0 || num_health_decode_instance == 0) {
         code = 503;
         ngx_str_set(&status, "service failed");
     } else if (total_healthy == total_upstreams) {
@@ -540,7 +538,7 @@ ngx_str_t omni_health_status_export_json(omni_global_state_t *gs, ngx_pool_t *po
     p = ngx_snprintf(p, end - p, "    \"code\": %ui,\n", code);
     p = ngx_snprintf(p, end - p, "    \"status\": \"%V\",\n", &status);
     p = ngx_snprintf(p, end - p, "    \"timestamp\": \"%s\",\n", time_buf);
-    p = ngx_snprintf(p, end - p, "    \"summary\": \"%uiP%ui-%uiD%ui\",\n", x, m, y, n);
+    p = ngx_snprintf(p, end - p, "    \"summary\": \"%uiP%ui-%uiD%ui\",\n", num_health_prefill_instance, gs->prefill_pod_size, num_health_decode_instance, gs->decode_pod_size);
     p = ngx_snprintf(p, end - p, "    \"total_prefill_servers\": %d,\n", gs->num_prefill_endpoints);
     p = ngx_snprintf(p, end - p, "    \"health_prefill_servers\": %d,\n", healthy_prefill_count);
     p = ngx_snprintf(p, end - p, "    \"total_decode_servers\": %d,\n", gs->num_decode_endpoints);
@@ -598,7 +596,7 @@ ngx_str_t omni_health_status_export_json(omni_global_state_t *gs, ngx_pool_t *po
         p = ngx_snprintf(p, end - p, "            \"role\": \"decode\",\n");
         p = ngx_snprintf(p, end - p, "            \"index\": %d,\n", index);
         p = ngx_snprintf(p, end - p, "            \"port\": %ui,\n", gs->decode_states[i].comm.address.port);
-        if (gs->prefill_states[i].healthy == 1){
+        if (gs->decode_states[i].healthy == 1){
             p = ngx_snprintf(p, end - p, "            \"fault_message\": \"healthy\",\n");
         } else {
             p = ngx_snprintf(p, end - p, "            \"fault_message\": \"unhealthy\",\n");

@@ -35,6 +35,8 @@ typedef struct
     ngx_uint_t decode_max_num_seqs;
     ngx_uint_t max_tokens_weight;
     ngx_uint_t prefill_starvation_timeout;
+    ngx_uint_t prefill_pod_size;
+    ngx_uint_t decode_pod_size;
     ngx_flag_t health_status_enabled;
     ngx_uint_t schedule_algo;
     ngx_prefill_stream_op_e stream_ops;

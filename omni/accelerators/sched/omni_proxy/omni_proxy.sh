@@ -20,6 +20,8 @@ omni_proxy_prefill_max_num_seqs="32"
 omni_proxy_decode_max_num_seqs="32"
 omni_proxy_prefill_starvation_timeout="400"
 omni_proxy_schedule_algo="default"
+prefill_pod_size="1"
+decode_pod_size="1"
 stream_ops="off"
 omni_proxy_max_tokens_weight=""
 
@@ -51,6 +53,8 @@ print_help() {
     echo "  --omni-proxy-prefill-max-num-seqs <N>      prefill_max_num_seqs (default: 32)"
     echo "  --omni-proxy-decode-max-num-seqs <N>       decode_max_num_seqs (default: 32)"
     echo "  --omni-proxy-prefill-starvation-timeout <N> prefill_starvation_timeout (default: 400)"
+    echo "  --prefill-pod-size <N>          Number of machines per prefill instance (default: 1)"
+    echo "  --decode-pod-size <N>           Number of machines per decode instance (default: 1)"
     echo "  --dry-run                       Only generate nginx config, do not start nginx"
     echo "  --stop                          Stop nginx"
     echo "  --reload                        Reload nginx config without restarting"
@@ -138,6 +142,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --omni-proxy-prefill-starvation-timeout)
             omni_proxy_prefill_starvation_timeout="$2"
+            shift 2
+            ;;
+        --prefill-pod-size)
+            prefill_pod_size="$2"
+            shift 2
+            ;;
+        --decode-pod-size)
+            decode_pod_size="$2"
             shift 2
             ;;
         --stream-ops)
@@ -388,6 +400,8 @@ $(gen_upstream_block "decode_endpoints" "$decode_endpoints")
             omni_proxy_prefill_max_num_seqs $omni_proxy_prefill_max_num_seqs;
             omni_proxy_decode_max_num_seqs $omni_proxy_decode_max_num_seqs;
             omni_proxy_prefill_starvation_timeout $omni_proxy_prefill_starvation_timeout;
+            prefill_pod_size $prefill_pod_size;
+            decode_pod_size $decode_pod_size;
 ${omni_proxy_schedule_algo_directive}
 ${omni_proxy_max_tokens_weight_directive}
 EOF
