@@ -219,7 +219,7 @@ def fused_recurrent_gated_delta_rule_fwd(
         actual_seq_lengths=cu_seqlens[1:].to(torch.int32),
         ssm_state_indices=ssm_state_indices.to(torch.int32),
         num_accepted_tokens= None if num_accepted_tokens is None else num_accepted_tokens.to(torch.int32),
-        g=None if g is None else g.to(torch.bfloat32),
+        g=None if g is None else g.to(torch.float32),
         gk=None,
     )
     return o, initial_state  # Placeholder for final_state
