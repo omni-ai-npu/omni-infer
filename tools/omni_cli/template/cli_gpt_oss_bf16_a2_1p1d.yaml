@@ -1,0 +1,216 @@
+all:
+  children:
+    C:
+      hosts:
+        c0:
+          DOCKER_IMAGE_ID: image-repository:tag
+          ansible_host: 127.0.0.1
+          ansible_ssh_common_args: -o StrictHostKeyChecking=no -o IdentitiesOnly=yes
+          ansible_ssh_private_key_file: /path/to/key
+          ansible_user: root
+          args:
+            decode-lb-sdk: pd_score_balance
+            prefill-lb-sdk: pd_score_balance
+          ascend_rt_visible_devices: 0,1,2,3,4,5,6,7
+          container_name: gptoss_proxy_c0
+          env:
+            API_PORT: 7000
+            CODE_PATH: /workspace/omniinfer
+            LOG_PATH: /tmp/log_path
+            ROLE: proxy
+
+    D:
+      hosts:
+        d0:
+          DOCKER_IMAGE_ID: image-repository:tag
+          ansible_host: 127.0.0.2
+          ansible_ssh_common_args: -o StrictHostKeyChecking=no -o IdentitiesOnly=yes
+          ansible_ssh_private_key_file: /path/to/key
+          ansible_user: root
+          args:
+            additional-config:
+              graph_model_compile_config:
+                level: 1
+                use_ge_graph_cached: false
+                block_num_floating_range: 50
+              decode_gear_list: [128]
+              enable_sink_fia: true
+              enable_window_fia: true
+              enable_kvcache_nz: true
+            base-api-port: $API_PORT
+            extra-args:
+              max-num-batched-tokens: 40960
+              disable-log-requests: ''
+              enable-expert-parallel: ''
+              enforce-eager: ''
+              max-num-seqs: 128
+            gpu-util: '0.88'
+            kv-transfer-config:
+              engine_id: 1
+              kv_buffer_device: npu
+              kv_connector: AscendHcclConnectorV1
+              kv_parallel_size: 2
+              kv_rank: $KV_RANK
+              kv_role: kv_consumer
+            log-dir: $LOG_PATH
+            master-ip: $HOST_IP
+            master-port: $MASTER_PORT
+            max-model-len: $MODEL_LEN_MAX_DECODE
+            model-path: $MODEL_PATH
+            num-dp: 1
+            num-servers: 1
+            served-model-name: gpt-oss
+            server-offset: $SERVER_OFFSET
+            tp: 8
+          ascend_rt_visible_devices: 0,1,2,3,4,5,6,7
+          container_name: gptoss_decode_d0
+          env:
+            API_PORT: 9100
+            MOE_DISPATCH_COMBINE: 1
+            INF_NAN_NIDE_FORCE_DISABLE: 1
+            SCALE_PARALLEL: 1
+            HCCL_OP_EXPANSION_MODE: AIV
+            ASCEND_GLOBAL_LOG_LEVEL: 3
+            ASCEND_AICPU_PATH: /usr/local/Ascend/ascend-toolkit/latest
+            ASCEND_HOME_PATH: /usr/local/Ascend/ascend-toolkit/latest
+            ASCEND_LAUNCH_BLOCKING: 0
+            ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
+            ASCEND_OPP_PATH: /usr/local/Ascend/ascend-toolkit/latest/opp
+            ASCEND_TOOLKIT_HOME: /usr/local/Ascend/ascend-toolkit/latest
+            CODE_PATH: /workspace/omniinfer
+            DECODE_POD_NUM: 1
+            DECODE_SERVER_LIST: 0,1,2,3,4,5,6,7
+            GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
+            GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
+            GLOO_SOCKET_IFNAME: enp67s0f5
+            HCCL_BUFFSIZE: 1000
+            HCCL_CONNECT_TIMEOUT: 1800
+            HCCL_EXEC_TIMEOUT: 1800
+            HCCL_INTRA_PCIE_ENABLE: 0
+            HCCL_INTRA_ROCE_ENABLE: 1
+            HOST_IP: 127.0.0.2
+            KV_RANK: 1
+            LCCL_DETERMINISTIC: 0
+            LCCL_PARALLEL: 0
+            LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
+            LOG_PATH: /tmp/log_path
+            MASTER_PORT: 8000
+            MODEL_LEN_MAX_DECODE: 4096
+            MODEL_PATH: /data/models/gpt-oss-120b-BF16
+            OMNI_REUSE_PREFILLED_TOKENS: 1
+            OMNI_SKIP_DECODE_TOKENIZE: 1
+            PREFILL_POD_NUM: 1
+            PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
+            RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/decode_config/local_*.json)
+            ROLE: decode
+            SERVER_IP_LIST: 127.0.0.2
+            SERVER_OFFSET: 0
+            SHLVL: 1
+            SOCKET_IFNAME: enp67s0f5
+            TASK_QUEUE_ENABLE: 2
+            TNG_HOST_COPY: 1
+            TOOLCHAIN_HOME: /usr/local/Ascend/ascend-toolkit/latest/toolkit/
+            TP_SOCKET_IFNAME: enp67s0f5
+            USING_LCCL_COM: 0
+            VLLM_ENABLE_MC2: 1
+            VLLM_LLMDATADIST_ZMQ_PORT: 5668
+            VLLM_LOGGING_LEVEL: INFO
+            VLLM_USE_V1: 1
+            VLLM_WORKER_MULTIPROC_METHOD: fork
+          host_ip: 127.0.0.2
+          master_node: d0
+    P:
+      hosts:
+        p0:
+          DOCKER_IMAGE_ID: image-repository:tag
+          ansible_host: 127.0.0.1
+          ansible_ssh_common_args: -o StrictHostKeyChecking=no -o IdentitiesOnly=yes
+          ansible_ssh_private_key_file: /path/to/key
+          ansible_user: root
+          args:
+            base-api-port: $API_PORT
+            additional-config:
+              enable_sink_fia: true
+              enable_window_fia: true
+              enable_kvcache_nz: true
+            extra-args:
+              max-num-batched-tokens: 40960
+              disable-log-requests: ''
+              enable-expert-parallel: ''
+              enforce-eager: ''
+              max-num-seqs: 64
+            gpu-util: '0.88'
+            kv-transfer-config:
+              engine_id: 0
+              kv_buffer_device: npu
+              kv_connector: AscendHcclConnectorV1
+              kv_parallel_size: 2
+              kv_rank: $KV_RANK
+              kv_role: kv_producer
+            log-dir: $LOG_PATH
+            master-ip: $HOST_IP
+            master-port: $MASTER_PORT
+            max-model-len: $MODEL_LEN_MAX_PREFILL
+            model-path: $MODEL_PATH
+            num-dp: 1
+            num-servers: 1
+            served-model-name: gpt-oss
+            server-offset: $SERVER_OFFSET
+            tp: 8
+          ascend_rt_visible_devices: 0,1,2,3,4,5,6,7
+          container_name: gptoss_prefill_p0
+          env:
+            API_PORT: 9000
+            MOE_DISPATCH_COMBINE: 1
+            INF_NAN_NIDE_FORCE_DISABLE: 1
+            SCALE_PARALLEL: 1
+            HCCL_OP_EXPANSION_MODE: AIV
+            ASCEND_GLOBAL_LOG_LEVEL: 3
+            ASCEND_AICPU_PATH: /usr/local/Ascend/ascend-toolkit/latest
+            ASCEND_HOME_PATH: /usr/local/Ascend/ascend-toolkit/latest
+            ASCEND_LAUNCH_BLOCKING: 0
+            ASCEND_OPP_PATH: /usr/local/Ascend/ascend-toolkit/latest/opp
+            ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
+            ASCEND_TOOLKIT_HOME: /usr/local/Ascend/ascend-toolkit/latest
+            CODE_PATH: /workspace/omniinfer
+            DECODE_POD_NUM: 1
+            GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
+            GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
+            GLOO_SOCKET_IFNAME: enp67s0f5
+            HCCL_CONNECT_TIMEOUT: 1800
+            HCCL_EXEC_TIMEOUT: 1800
+            HCCL_INTRA_PCIE_ENABLE: 0
+            HCCL_INTRA_ROCE_ENABLE: 1
+            HOST_IP: 127.0.0.1
+            KV_RANK: 0
+            LCCL_DETERMINISTIC: 0
+            LCCL_PARALLEL: 0
+            LOG_PATH: /tmp/log_path
+            MASTER_PORT: 8000
+            MODEL_LEN_MAX_PREFILL: 4096
+            MODEL_PATH: /data/models/gpt-oss-120b-BF16
+            OMNI_REUSE_PREFILLED_TOKENS: 1
+            OMNI_SKIP_DECODE_TOKENIZE: 1
+            PREFILL_POD_NUM: 1
+            PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7
+            PREFILL_TENSOR_PARALLEL_SIZE: 8
+            PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
+            RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$(echo  $PREFILL_SERVER_LIST | tr -d ",").json)
+            ROLE: prefill
+            SERVER_IP_LIST: 127.0.0.1
+            SERVER_OFFSET: 0
+            SHLVL: 1
+            SOCKET_IFNAME: enp67s0f5
+            TASK_QUEUE_ENABLE: 2
+            TNG_HOST_COPY: 1
+            TOOLCHAIN_HOME: /usr/local/Ascend/ascend-toolkit/latest/toolkit/
+            TP_SOCKET_IFNAME: enp67s0f5
+            USING_LCCL_COM: 0
+            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            VLLM_LOGGING_LEVEL: INFO
+            VLLM_USE_V1: 1
+            VLLM_WORKER_MULTIPROC_METHOD: fork
+          host_ip: 127.0.0.1
+          master_node: p0
