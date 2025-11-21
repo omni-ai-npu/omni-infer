@@ -333,7 +333,7 @@ def fused_recurrent_gated_delta_rule_fwd(
         num_accepted_tokens,
         use_qk_l2norm_in_kernel,
     )
-    return o, initial_state 
+    return o, final_state
 
 
 class FusedRecurrentFunction(torch.autograd.Function):
