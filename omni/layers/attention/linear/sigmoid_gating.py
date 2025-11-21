@@ -196,6 +196,7 @@ def _fused_recurrent_gated_delta_rule_ref(
     num_accepted_tokens: torch.Tensor,
     use_qk_l2norm_in_kernel: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    initial_state = initial_state.contiguous().transpose(-1,-2)
     assert inplace_final_state == True
     eq_len = cu_seqlens is None
     contiguous_states = ssm_state_indices is None
@@ -250,7 +251,7 @@ def _fused_recurrent_gated_delta_rule_ref(
         o.append(o_t.to(torch.bfloat16))
     o = torch.cat(o, dim = 1)
     o = o.contiguous().reshape(A, tbs, C, E)
-    return o, initial_state
+    return o, initial_state.contiguous().transpose(-1,-2)
 
 # --- npu implementation of fused_recurrent_gated_delta_rule_fwd FUNCTION ---
 def _fused_recurrent_gated_delta_rule_npu(
