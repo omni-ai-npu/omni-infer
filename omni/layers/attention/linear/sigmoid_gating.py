@@ -181,9 +181,7 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
         # p_g += HV
         # p_beta += HV * (V if IS_BETA_HEADWISE else 1)
 
-
-# --- NEW PURE PYTORCH REFERENCE IMPLEMENTATION THAT SUPPORTS GE GRAPH ---
-
+# --- self-defined torch implementation of fused_recurrent_gated_delta_rule_fwd FUNCTION ---
 def _fused_recurrent_gated_delta_rule_ref(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -198,6 +196,7 @@ def _fused_recurrent_gated_delta_rule_ref(
     num_accepted_tokens: torch.Tensor,
     use_qk_l2norm_in_kernel: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    initial_state = initial_state.contiguous().transpose(-1,-2)
     assert inplace_final_state == True
     eq_len = cu_seqlens is None
     contiguous_states = ssm_state_indices is None
@@ -252,10 +251,60 @@ def _fused_recurrent_gated_delta_rule_ref(
         o.append(o_t.to(torch.bfloat16))
     o = torch.cat(o, dim = 1)
     o = o.contiguous().reshape(A, tbs, C, E)
-    return o, initial_state
+    return o, initial_state.contiguous().transpose(-1,-2)
+
+# --- npu implementation of fused_recurrent_gated_delta_rule_fwd FUNCTION ---
+def _fused_recurrent_gated_delta_rule_npu(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    scale: float,
+    initial_state: torch.Tensor,
+    inplace_final_state: bool = True,
+    cu_seqlens: Optional[torch.LongTensor] = None,
+    ssm_state_indices: Optional[torch.Tensor] = None,
+    num_accepted_tokens: Optional[torch.Tensor] = None,
+    use_qk_l2norm_in_kernel: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    #Apply QK L2 norm if enabled teeheehee
+    if use_qk_l2norm_in_kernel:
+        q = q / (torch.linalg.norm(q, dim=-1, keepdim=True) + 1e-6)
+        k = k / (torch.linalg.norm(k, dim=-1, keepdim=True) + 1e-6)
+    _, T, Nk, Dk = q.shape
+    _, _, Nv, Dv = v.shape
+    q = q.reshape(T, Nk, Dk)
+    k = k.reshape(T, Nk, Dk)
+    v = v.reshape(T, Nv, Dv)
+    beta = beta.reshape(T, Nv)
+    g = g.reshape(T, Nv)
+    actual_seq_lengths = cu_seqlens[1:] - cu_seqlens[:-1] if cu_seqlens is not None else None
+    # Call the NPU reference implementation
+    o = torch_npu.npu_recurrent_gated_delta_rule(
+        query=q.to(torch.bfloat16),
+        key=k.to(torch.bfloat16),
+        value=v.to(torch.bfloat16),
+        state=initial_state.to(torch.bfloat16),
+        beta=beta.to(torch.bfloat16),
+        scale=scale,
+        actual_seq_lengths=actual_seq_lengths.to(torch.int32),
+        ssm_state_indices=ssm_state_indices.to(torch.int32),
+        num_accepted_tokens= None if num_accepted_tokens is None else num_accepted_tokens.to(torch.int32),
+        g=None if g is None else g.to(torch.float32),
+        gk=None,
+    )
+    return o, initial_state  # Placeholder for final_state
+
+def get_gdn_based_on_env():
+    env_value = os.getenv("TORCH_NPU_USE_PARALLEL_TCPSTORE", "False").strip().lower()
+    if env_value in ("true", "1", "yes", "on"):
+        return _fused_recurrent_gated_delta_rule_npu  # Package is available
+    else:
+        return _fused_recurrent_gated_delta_rule_ref  # Use self-defined reference implementation
+
 
 # --- MODIFIED fused_recurrent_gated_delta_rule_fwd FUNCTION ---
-# This function now calls the pure PyTorch reference implementation.
 def fused_recurrent_gated_delta_rule_fwd(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -270,21 +319,22 @@ def fused_recurrent_gated_delta_rule_fwd(
     num_accepted_tokens: Optional[torch.Tensor] = None,
     use_qk_l2norm_in_kernel: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    # Call the pure PyTorch reference implementation
-    return _fused_recurrent_gated_delta_rule_ref(
-        q=q,
-        k=k,
-        v=v,
-        g=g,
-        beta=beta,
-        scale=scale,
-        initial_state=initial_state,
-        inplace_final_state=inplace_final_state,
-        cu_seqlens=cu_seqlens,
-        ssm_state_indices=ssm_state_indices,
-        num_accepted_tokens=num_accepted_tokens,
-        use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+    gdn = get_gdn_based_on_env()
+    o, final_state = gdn(
+        q,
+        k,
+        v,
+        g,
+        beta,
+        scale,
+        initial_state,
+        inplace_final_state,
+        cu_seqlens,
+        ssm_state_indices,
+        num_accepted_tokens,
+        use_qk_l2norm_in_kernel,
     )
+    return o, final_state
 
 
 class FusedRecurrentFunction(torch.autograd.Function):
