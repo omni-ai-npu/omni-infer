@@ -118,6 +118,7 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
+            TIKTOKEN_ENCODINGS_BASE: ${CODE_PATH}/omni/models/openai/tiktoken_encodings
           host_ip: 127.0.0.1
           master_node: d0
     P:
@@ -212,5 +213,6 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
+            TIKTOKEN_ENCODINGS_BASE: ${CODE_PATH}/omni/models/openai/tiktoken_encodings
           host_ip: 127.0.0.1
           master_node: p0

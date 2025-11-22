@@ -125,10 +125,12 @@ class NPUModelRunner(GPUModelRunner):
             self.use_rejection_sampler = vllm_config.additional_config.get("use_rejection_sampler", False)
             self.use_penalty = vllm_config.additional_config.get("use_penalty", False)
             self.topk = vllm_config.additional_config.get("rejection_sampler_topk", -1)
+            self.use_process_before_sample = vllm_config.additional_config.get("use_process_before_sample", False)
         else:
             self.use_rejection_sampler = False
             self.use_penalty = False
             self.topk = -1
+            self.use_process_before_sample = False
         num_tokens_per_reqs_decode = 1 if not self.use_spec_decode else (1 + self.speculative_config.num_speculative_tokens)
         self.num_tokens_per_reqs_decode = num_tokens_per_reqs_decode
         self.decode_max_num_tokens = self.max_num_reqs * self.num_tokens_per_reqs_decode
@@ -958,6 +960,12 @@ class NPUModelRunner(GPUModelRunner):
                 chunk_next_indices = None
             start_5 = time.time()
 
+            if self.use_process_before_sample:
+                sampler_output = self.model.process_before_sample(
+                    logits=logits,
+                    sampling_metadata=sampling_metadata,
+                    req_ids = self.input_batch.req_ids)
+
             # Sample the next token and get logprobs if needed.
             if not self.use_spec_decode:
                 sampler_output = self.sampler(logits=logits, sampling_metadata=sampling_metadata)
@@ -1216,6 +1224,9 @@ class NPUModelRunner(GPUModelRunner):
             self.drafter_list = []
             if hasattr(self, "drafter"):
                 self.drafter.load_model(self.model)
+
+            if not hasattr(self.model, "process_before_sample") or not callable(getattr(self.model, "process_before_sample")):
+                self.use_process_before_sample = False
 
         if not int(os.getenv("NO_NPU_MOCK", "0")):
             logger.info("Loading model weights took %.4f GB", m.consumed_memory / float(2**30))

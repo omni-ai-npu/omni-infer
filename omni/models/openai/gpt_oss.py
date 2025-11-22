@@ -787,6 +787,37 @@ class GptOssForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             if isinstance(module, GptOssExperts):
                 module.process_weights_after_loading()
 
+    def process_before_sample(
+            self,
+            logits: torch.Tensor,
+            sampling_metadata: SamplingMetadata,
+            req_ids: list[str],
+    ) -> torch.Tensor:
+        past_token_lists = sampling_metadata.output_token_ids
+        for i, past_tokens_ids in enumerate(past_token_lists):
+            # Current processing is only applicable to Chat requests in OpenAI's Harmony format.
+            if not req_ids[i].startswith('chat'):
+                continue
+            # The first three tokens must be <|channel|>analysis<|message|> in open ai harmony format.
+            if len(past_tokens_ids) == 0:
+                logits[i, 200005] = torch.finfo(logits.dtype).max
+            if len(past_tokens_ids) == 1:
+                logits[i, 35644] = torch.finfo(logits.dtype).max
+            if len(past_tokens_ids) == 2:
+                logits[i, 200008] = torch.finfo(logits.dtype).max
+
+            if len(past_tokens_ids) >= 3:
+                # Rule 1: [<|channel|>(200005), final(17196)] → must be followed by <|message|>(200008)
+                if past_tokens_ids[-2] == 200005 and past_tokens_ids[-1] == 17196:
+                    logits[i, 200008] = torch.finfo(logits.dtype).max
+                # Rule 2: <|message|>(200008) → Avoid directly returning <|return|>(200002)
+                if past_tokens_ids[-1] == 200008:
+                    logits[i, 200002] = float("-inf")
+                # Rule 3: <|call|>(200012) → must be followed by <|start|>(200006)
+                if past_tokens_ids[-1] == 200012:
+                    logits[i, 200006] = torch.finfo(logits.dtype).max
+        return logits
+
     def sample(
             self,
             logits: Optional[torch.Tensor],

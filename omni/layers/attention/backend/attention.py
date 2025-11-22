@@ -684,6 +684,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
             output: Optional[torch.Tensor] = None,
             trace_flag: bool = True,
     ) -> torch.Tensor:
+        # unsupport enable_c8
+        NZ_DIM = 16
         num_tokens = query.shape[0]
         if output is None:
             output = torch.empty(num_tokens,
