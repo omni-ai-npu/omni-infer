@@ -181,9 +181,7 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
         # p_g += HV
         # p_beta += HV * (V if IS_BETA_HEADWISE else 1)
 
-
-# --- NEW PURE PYTORCH REFERENCE IMPLEMENTATION THAT SUPPORTS GE GRAPH ---
-
+# --- self-defined torch implementation of fused_recurrent_gated_delta_rule_fwd FUNCTION ---
 def _fused_recurrent_gated_delta_rule_ref(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -198,98 +196,115 @@ def _fused_recurrent_gated_delta_rule_ref(
     num_accepted_tokens: torch.Tensor,
     use_qk_l2norm_in_kernel: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    assert(cu_seqlens is not None)
-    assert(inplace_final_state)
-    assert(use_qk_l2norm_in_kernel)
-
-    # Determine input dimensions
-    if cu_seqlens is not None:
-        # For variable length, B=1 and T is the total number of tokens
-        _, T, H, K = q.shape
-        N_sequences = len(cu_seqlens) - 1
-
-    HV = v.shape[2]
-    V_dim = v.shape[-1]
-
-    # Initialize output tensor with the same shape as v
-    o = torch.empty_like(v, device=q.device)
-
-    # Initialize final state tensor
-    if inplace_final_state:
-        pass 
-    else:
-        # If not in-place, create a new tensor for the final state.
-        # The shape should match initial_state.
-        assert(False)
-        final_state = torch.empty_like(initial_state, device=q.device)
-
-    # Check if beta is applied per-head or per-value
-    is_beta_headwise = beta.ndim == v.ndim
-
-    n_idx = torch.arange(0, N_sequences, device=q.device, dtype=torch.int64)
-    seq_start_idx = torch.gather(cu_seqlens.to(n_idx.device), 0, n_idx)
-    seq_end_idx = torch.gather(cu_seqlens.to(n_idx.device), 0, n_idx+1)
-    current_seq_len = seq_end_idx - seq_start_idx
-
-    state_slot_idx = torch.gather(ssm_state_indices.to(n_idx.device), 0, n_idx)
-    h_state = initial_state[state_slot_idx].clone()
-    
-    q_t = q[0, seq_start_idx]
-    k_t = k[0, seq_start_idx]
-    v_t = v[0, seq_start_idx]
-    g_t = g[0, seq_start_idx]
-    beta_t = beta[0, seq_start_idx]
+    initial_state = initial_state.contiguous().transpose(-1,-2)
+    assert inplace_final_state == True
+    eq_len = cu_seqlens is None
+    contiguous_states = ssm_state_indices is None
+    bs = q.shape[0] if eq_len else len(cu_seqlens) - 1
+    T = q.shape[1] // bs
+    hv_over_h = v.shape[-2] // q.shape[-2]
+    if scale is None:
+        scale = k.shape[-1]**-0.5
+    #Apply QK L2 norm if enabled teeheehee
     if use_qk_l2norm_in_kernel:
-        q_t = q_t / (torch.linalg.norm(q_t, dim=-1, keepdim=True) + 1e-6)
-        k_t = k_t / (torch.linalg.norm(k_t, dim=-1, keepdim=True) + 1e-6)
-    q_t = q_t * scale
-
-    # Loop over each head-value group (HV)
-    hv_idx = torch.arange(0, HV, device=h_state.device, dtype=torch.int64)
-    # State for current head-value group: [K, V]
-    h_state_hv = h_state[:, hv_idx]
-
-    # Map the head-value group index (hv_idx) to the query/key head index (i_h)
-    i_h_for_hv = hv_idx // (HV // H)
-    k_t_for_hv = k_t[:, i_h_for_hv]  # Shape: [K]
-    q_t_for_hv = q_t[:, i_h_for_hv]  # Shape: [K]
-
-    # 1. Decay previous state: h_state_hv *= exp(g_t[hv_idx])
-    h_state_hv = h_state_hv * torch.exp(g_t[:,hv_idx]).unsqueeze(-1).unsqueeze(-1)
-
-    # 2. Calculate v' (part 1): v_prime = v - sum(h * k)
-    v_prime_part = torch.sum(h_state_hv * k_t_for_hv.unsqueeze(-1), dim=2)
-    v_prime = v_t[:, hv_idx] - v_prime_part  # Shape: [V]
-
-    # 3. Apply beta to v': v_prime *= beta_t
-    if is_beta_headwise:
-        v_prime = v_prime.type(torch.bfloat16) * beta_t[:, hv_idx].unsqueeze(-1).type(torch.bfloat16)
+        q = q / (torch.linalg.norm(q, dim=-1, keepdim=True) + 1e-6)
+        k = k / (torch.linalg.norm(k, dim=-1, keepdim=True) + 1e-6)
+    q = q * scale
+    g = g.exp()
+    q = q.repeat(1, 1, 1, hv_over_h).reshape(v.shape)
+    k = k.repeat(1, 1, 1, hv_over_h).reshape(v.shape)
+    indices_0 = torch.arange(bs, device=q.device) * T
+    if not contiguous_states:
+        if num_accepted_tokens is None:
+            indices = ssm_state_indices[indices_0]
+        else:
+            indices = ssm_state_indices[indices_0 + num_accepted_tokens - 1]
     else:
-        # beta_t is [HV], so beta_t[hv_idx] is a scalar
-        v_prime = v_prime.type(torch.bfloat16) * beta_t[:, hv_idx].unsqueeze(-1).type(torch.bfloat16)
+        indices = indices_0 if eq_len else cu_seqlens[:-1]
+    S = initial_state[indices].to(torch.float32) #[bs, C, D, E]
+    #reshape for tensor operation
+    A, tbs, C, D = q.shape
+    E = v.shape[-1]
+    q = q.reshape(A, bs, T, C, D).transpose(1, 2) #[A, T, bs, C, D]
+    k = k.reshape(A, bs, T, C, D).transpose(1, 2) #[A, T, bs, C, D]
+    v = v.reshape(A, bs, T, C, E).transpose(1, 2) #[A, T, bs, C, E]
+    g = g.reshape(A, bs, T, C).transpose(1, 2) #[A, T, bs, C]
+    beta = beta.reshape(A, bs, T, C).transpose(1, 2) #[A, T, bs, C]
+    o = []
+    for t in range(T):
+        q_t = q[0][t].to(torch.float32) #[bs, C, D]
+        k_t = k[0][t].to(torch.float32) #[bs, C, D]
+        v_t = v[0][t].to(torch.float32) #[bs, C, E]
+        g_t = g[0][t].to(torch.float32) #[bs, C]
+        beta_t = beta[0][t].to(torch.float32) #[bs, C]
+        S = g_t.view(bs, C, 1, 1) * S
+        x = torch.einsum('abc,abcd->abd', k_t, S) #[bs, C, E]
+        y = beta_t.unsqueeze(-1) * (v_t - x) #[bs, C, E]
+        S_ = k_t.unsqueeze(-1) * y.unsqueeze(-2) #[bs, C, D, E]
+        S = S + S_ #[bs, C, D, E]
+        o_t = torch.einsum('abc,abcd->abd', q_t, S) #[bs, C, E]
+        if not contiguous_states:
+            indices = ssm_state_indices[indices_0 + t]
+        else:
+            indices = cu_seqlens[:-1] + t if eq_len else indices_0 + t
+        torch_npu.npu_scatter_nd_update_(initial_state, indices.unsqueeze(1), S.to(torch.bfloat16))
+        o.append(o_t.to(torch.bfloat16))
+    o = torch.cat(o, dim = 1)
+    o = o.contiguous().reshape(A, tbs, C, E)
+    return o, initial_state.contiguous().transpose(-1,-2)
 
-    # 4. Update state with new information: h += k @ v'
-    h_state_hv = h_state_hv + torch.matmul(k_t_for_hv.unsqueeze(3), v_prime.unsqueeze(2)).type(torch.bfloat16)
+# --- npu implementation of fused_recurrent_gated_delta_rule_fwd FUNCTION ---
+def _fused_recurrent_gated_delta_rule_npu(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    scale: float,
+    initial_state: torch.Tensor,
+    inplace_final_state: bool = True,
+    cu_seqlens: Optional[torch.LongTensor] = None,
+    ssm_state_indices: Optional[torch.Tensor] = None,
+    num_accepted_tokens: Optional[torch.Tensor] = None,
+    use_qk_l2norm_in_kernel: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    #Apply QK L2 norm if enabled teeheehee
+    if use_qk_l2norm_in_kernel:
+        q = q / (torch.linalg.norm(q, dim=-1, keepdim=True) + 1e-6)
+        k = k / (torch.linalg.norm(k, dim=-1, keepdim=True) + 1e-6)
+    _, T, Nk, Dk = q.shape
+    _, _, Nv, Dv = v.shape
+    q = q.reshape(T, Nk, Dk)
+    k = k.reshape(T, Nk, Dk)
+    v = v.reshape(T, Nv, Dv)
+    beta = beta.reshape(T, Nv)
+    g = g.reshape(T, Nv)
+    actual_seq_lengths = cu_seqlens[1:] - cu_seqlens[:-1] if cu_seqlens is not None else None
+    # Call the NPU reference implementation
+    o = torch_npu.npu_recurrent_gated_delta_rule(
+        query=q.to(torch.bfloat16),
+        key=k.to(torch.bfloat16),
+        value=v.to(torch.bfloat16),
+        state=initial_state.to(torch.bfloat16),
+        beta=beta.to(torch.bfloat16),
+        scale=scale,
+        actual_seq_lengths=actual_seq_lengths.to(torch.int32),
+        ssm_state_indices=ssm_state_indices.to(torch.int32),
+        num_accepted_tokens= None if num_accepted_tokens is None else num_accepted_tokens.to(torch.int32),
+        g=None if g is None else g.to(torch.float32),
+        gk=None,
+    )
+    return o, initial_state  # Placeholder for final_state
 
-    # 5. Compute output: o = sum(h * q)
-    o_t_hv = torch.sum(h_state_hv.type(torch.bfloat16) * q_t_for_hv.unsqueeze(-1).type(torch.bfloat16), dim=2)
-    
-    # Store the updated state for the current head-value group
-    
-    idx_2d = torch.cartesian_prod(n_idx, hv_idx)
-    torch_npu.npu_scatter_nd_update_(h_state, idx_2d, h_state_hv.type(torch.bfloat16).view(-1, h_state_hv.shape[-2], h_state_hv.shape[-1]))
-
-    # --- Store the output in the correct position ---
-    torch_npu.npu_scatter_nd_update_(o.view(*o.shape[1:]), seq_start_idx.unsqueeze(1), o_t_hv.type(torch.bfloat16))
-    
-    # After processing all tokens in a sequence, store the final state
-    torch_npu.npu_scatter_nd_update_(initial_state, state_slot_idx.unsqueeze(1), h_state.type(torch.bfloat16))
-
-    return o, initial_state
+def get_gdn_based_on_env():
+    env_value = os.getenv("TORCH_NPU_USE_GDN_DECODE_OP", "False").strip().lower()
+    if env_value in ("true", "1", "yes", "on"):
+        return _fused_recurrent_gated_delta_rule_npu  # Package is available
+    else:
+        return _fused_recurrent_gated_delta_rule_ref  # Use self-defined reference implementation
 
 
 # --- MODIFIED fused_recurrent_gated_delta_rule_fwd FUNCTION ---
-# This function now calls the pure PyTorch reference implementation.
 def fused_recurrent_gated_delta_rule_fwd(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -304,21 +319,22 @@ def fused_recurrent_gated_delta_rule_fwd(
     num_accepted_tokens: Optional[torch.Tensor] = None,
     use_qk_l2norm_in_kernel: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    # Call the pure PyTorch reference implementation
-    return _fused_recurrent_gated_delta_rule_ref(
-        q=q,
-        k=k,
-        v=v,
-        g=g,
-        beta=beta,
-        scale=scale,
-        initial_state=initial_state,
-        inplace_final_state=inplace_final_state,
-        cu_seqlens=cu_seqlens,
-        ssm_state_indices=ssm_state_indices,
-        num_accepted_tokens=num_accepted_tokens,
-        use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+    gdn = get_gdn_based_on_env()
+    o, final_state = gdn(
+        q,
+        k,
+        v,
+        g,
+        beta,
+        scale,
+        initial_state,
+        inplace_final_state,
+        cu_seqlens,
+        ssm_state_indices,
+        num_accepted_tokens,
+        use_qk_l2norm_in_kernel,
     )
+    return o, final_state
 
 
 class FusedRecurrentFunction(torch.autograd.Function):

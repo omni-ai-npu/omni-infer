@@ -23,6 +23,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Dict, Optional, Union, Any, List
 from contextlib import nullcontext
+from collections import defaultdict
 
 import numpy as np
 import torch
@@ -44,6 +45,7 @@ from vllm.v1.worker.gpu_input_batch import InputBatch
 from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
 from vllm.v1.worker.block_table import BlockTable
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+from vllm.v1.kv_cache_interface import KVCacheGroupSpec
 
 from omni.models.config_loader.loader import model_extra_config, call_config_updater
 from omni.adaptors.vllm.forward_context import set_forward_context
@@ -1217,6 +1219,17 @@ class NPUModelRunner(GPUModelRunner):
             kv_cache_config: Configuration for the KV cache, including the KV
             cache size of each layer
         """
+        #zhj: merge groups with the same kv_cache_spec
+        same_type_layers: dict[KVCacheSpec, list[str]] = defaultdict(list)
+        for kv_cache_group in kv_cache_config.kv_cache_groups:
+            for layer_name in kv_cache_group.layer_names:
+                same_type_layers[kv_cache_group.kv_cache_spec].append(layer_name)
+        
+        new_kv_cache_groups = list()
+        for kv_cache_spec, layer_names in same_type_layers.items():
+            new_kv_cache_groups.append(KVCacheGroupSpec(layer_names, kv_cache_spec))
+        kv_cache_config.kv_cache_groups = new_kv_cache_groups
+        
         kv_caches: Dict[str, torch.Tensor] = {}
         cpu_caches: Dict[str, torch.Tensor] = {}
         self.kv_cache_config = kv_cache_config

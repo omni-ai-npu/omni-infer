@@ -152,7 +152,7 @@
       "hardware": "A3",
       "precision": "w4a8",
       "prefill_node_num": 2,
-      "decode_node_num": 1,     
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "kimi_k2_w4a8c16_a3_2p1d_p.json",
       "decode_config_file": "kimi_k2_w4a8c16_a3_2p1d_d.json"
@@ -162,7 +162,7 @@
       "hardware": "A3",
       "precision": "w4a8_fa_c8",
       "prefill_node_num": 20,
-      "decode_node_num": 1,     
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "kimi_k2_w4a8c8_a3_20p1d_p.json",
       "decode_config_file": "kimi_k2_w4a8c8_a3_20p1d_d.json"
@@ -172,7 +172,7 @@
       "hardware": "A3",
       "precision": "w4a8",
       "prefill_node_num": 4,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "pangu_718b_w4a8c16_a3_4p1d_p.json",
       "decode_config_file": "pangu_718b_w4a8c16_a3_4p1d_d.json"
@@ -182,7 +182,7 @@
       "hardware": "A3",
       "precision": "w4a8",
       "prefill_node_num": 18,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "pangu_718b_w4a8c16_a3_18p1d_p.json",
       "decode_config_file": "pangu_718b_w4a8c16_a3_18p1d_d.json"
@@ -192,17 +192,17 @@
       "hardware": "A3",
       "precision": "w8a8",
       "prefill_node_num": 4,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "pangu_718b_w8a8c16_a3_4p1d_p.json",
       "decode_config_file": "pangu_718b_w8a8c16_a3_4p1d_d.json"
    },
-      {
+   {
       "model": "pangu_ultra_moe",
       "hardware": "A3",
       "precision": "w8a8",
       "prefill_node_num": 18,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "pangu_718b_w8a8c8_a3_18p1d_p.json",
       "decode_config_file": "pangu_718b_w8a8c8_a3_18p1d_d.json"
@@ -212,7 +212,7 @@
       "hardware": "A3",
       "precision": "w8a8",
       "prefill_node_num": 1,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "qwen3_235b_w8a8c16_a3_2p1d_p.json",
       "decode_config_file": "qwen3_235b_w8a8c16_a3_2p1d_d.json"
@@ -222,7 +222,7 @@
       "hardware": "A3",
       "precision": "w8a8",
       "prefill_node_num": 2,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "qwen3_235b_w8a8c16_a3_2p1d_p.json",
       "decode_config_file": "qwen3_235b_w8a8c16_a3_2p1d_d.json"
@@ -232,7 +232,7 @@
       "hardware": "A3",
       "precision": "w8a8",
       "prefill_node_num": 8,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "qwen3_235b_w8a8c16_a3_2p1d_p.json",
       "decode_config_file": "qwen3_235b_w8a8c16_a3_2p1d_d.json"
@@ -242,7 +242,7 @@
       "hardware": "A3",
       "precision": "bf16",
       "prefill_node_num": 1,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "qwen3_235b_w8a8c16_a3_2p1d_p.json",
       "decode_config_file": "qwen3_235b_w8a8c16_a3_2p1d_d.json"
@@ -252,7 +252,7 @@
       "hardware": "A3",
       "precision": "bf16",
       "prefill_node_num": 2,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "qwen3_235b_w8a8c16_a3_2p1d_p.json",
       "decode_config_file": "qwen3_235b_w8a8c16_a3_2p1d_d.json"
@@ -262,7 +262,7 @@
       "hardware": "A3",
       "precision": "bf16",
       "prefill_node_num": 8,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "qwen3_235b_w8a8c16_a3_2p1d_p.json",
       "decode_config_file": "qwen3_235b_w8a8c16_a3_2p1d_d.json"
@@ -292,7 +292,7 @@
       "hardware": "A3",
       "precision": "bf16",
       "prefill_node_num": 1,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "ling_bf16_a3_1p1d_p.json",
       "decode_config_file": "ling_bf16_a3_1p1d_d.json"
@@ -302,7 +302,7 @@
       "hardware": "A3",
       "precision": "bf16",
       "prefill_node_num": 1,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "ling_bf16_a3_1p1d_p.json",
       "decode_config_file": "ling_bf16_a3_1p1d_d.json"
@@ -312,9 +312,19 @@
       "hardware": "A2",
       "precision": "bf16",
       "prefill_node_num": 1,
-      "decode_node_num": 1,        
+      "decode_node_num": 1,
       "pd_disaggregation": true,
       "prefill_config_file": "qwen3_next_bf16_a2_1p1d_p.json",
       "decode_config_file": "qwen3_next_bf16_a2_1p1d_d.json"
+   },
+   {
+      "model": "qwen3-next",
+      "hardware": "A3",
+      "precision": "bf16",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "qwen3_next_bf16_a3_1p1d_p.json",
+      "decode_config_file": "qwen3_next_bf16_a3_1p1d_d.json"
    }
 ]
