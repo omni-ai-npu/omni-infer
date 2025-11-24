@@ -242,7 +242,7 @@ class AscendSamplerV1(SamplerV1):
                     q = self.generate_random_sequence(
                         logits, sampling_metadata, spec_metadata,
                     )
-                    res = torch_npu.npu_top_k_top_p_sample(logits, k, p, q)
+                    res = torch_npu.npu_top_k_top_p_sample(logits, k, p, q.to(torch.float32))
                     return res[0]
             else:
                 return apply_top_k_top_p(

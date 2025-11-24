@@ -416,11 +416,7 @@ class DeepseekMoE(nn.Module):
     def _forward_decode_norm(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
         if model_extra_config.operator_opt_config.moe_multi_stream_tune and \
             model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
-            if model_extra_config.operator_opt_config.use_super_kernel:
-                with tng.scope.super_kernel(self.prefix, 'stream-fusion=1'):
-                    return self._forward_decode_dispatch_combine(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
-            else:
-                return self._forward_decode_dispatch_combine(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
+            return self._forward_decode_dispatch_combine(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
         if model_extra_config.operator_opt_config.moe_multi_stream_tune:
             with tng.scope.npu_stream_switch('21'):
                 hidden_states = tng.scope.npu_wait_tensor(hidden_states, hidden_states)
@@ -501,15 +497,21 @@ class DeepseekMoE(nn.Module):
     def _forward_decode_dispatch_combine(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
         is_prefill = attn_metadata is None or (hasattr(attn_metadata, "prefill") and attn_metadata.prefill is not None) or \
                     (hasattr(attn_metadata, "is_pd_seperate_d") and not attn_metadata.is_pd_seperate_d)
-        router_logits, _ = self.gate.forward(hidden_states.float())
+        hidden_states_float = hidden_states.float()
+        router_logits, _ = self.gate.forward(hidden_states_float)
         # Here, we do a 2D to 3D conversion, and then convert back to 2D to trigger the fusion rule, fusing add rms and cast into AddRmsNormCast.
         hidden_states_3d = hidden_states.unsqueeze(1)
         hidden_states = hidden_states_3d.squeeze(1)
 
         with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
-            hidden_states = tng.scope.npu_wait_tensor(hidden_states, router_logits)
+            hidden_states = tng.scope.npu_wait_tensor(hidden_states, hidden_states_float)
+            x_quant, x_scale = torch_npu.npu_dynamic_quant(hidden_states)
+            hidden_states_quant = {"x_int8": x_quant, "pertoken_scale": x_scale}
+
+        with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
+            x_quant = tng.scope.npu_wait_tensor(x_quant, router_logits)
             # shared_experts w13
-            gate_up_share, _ = self.shared_experts.gate_up_proj.forward(hidden_states)
+            gate_up_share, _ = self.shared_experts.gate_up_proj.forward(hidden_states_quant)
         wait_gate = gate_up_share if isinstance(gate_up_share, torch.Tensor) else gate_up_share[0]
         
         # expert weight prefetch
@@ -683,6 +685,8 @@ class DeepseekMoE(nn.Module):
         }
         kwargs.update(stage3_kwargs)
 
+        hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
+
         with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
             if isinstance(intermediate_hiddenstates_share, dict):
                 intermediate_hiddenstates_share['x_int8'] = tng.scope.npu_wait_tensor(intermediate_hiddenstates_share.get('x_int8'), hidden_states_experts)
@@ -699,8 +703,6 @@ class DeepseekMoE(nn.Module):
                     torch_npu.npu_prefetch(next_attention_weights['kv_a_proj_with_mqa_weight'], attn_prefetch_flag, attn_prefetch_size)
                 torch_npu.npu_prefetch(next_attention_weights['q_b_proj_weight'], attn_prefetch_flag, attn_prefetch_size)
                 torch_npu.npu_prefetch(next_attention_weights['W_UK'], attn_prefetch_flag, attn_prefetch_size)
-
-        hidden_states_route = torch_npu.npu_moe_distribute_combine_v2(**kwargs)
 
         if shared_output is not None:
             final_hidden_states = (hidden_states_route, shared_output)

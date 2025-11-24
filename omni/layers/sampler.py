@@ -797,7 +797,7 @@ class AscendTopKTopPSamplerV1(TopKTopPSampler):
             p = p.type(torch.bfloat16)
             k = k.type(torch.int32)
             q = generate_random_sequence(logits, generators, self.dsa_stream)
-            res = torch_npu.npu_top_k_top_p_sample(logits, k, p, q)
+            res = torch_npu.npu_top_k_top_p_sample(logits, k, p, q.to(torch.float32))
             return res[0]
 
 def _apply_penalties_v1(logits: torch.Tensor, prompt_mask: torch.Tensor,

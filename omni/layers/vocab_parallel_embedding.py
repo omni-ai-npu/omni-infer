@@ -2,6 +2,7 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import torch
+import torch_npu
 from torch.nn.parameter import Parameter
 from typing import Optional, Tuple
 from vllm.model_executor.layers.vocab_parallel_embedding import (
@@ -238,3 +239,7 @@ class ParallelLMHead(VocabParallelEmbedding):
         if logits is not None:
             logits = logits[..., :self.org_vocab_size]
         return logits
+    
+    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
+        super().weight_loader(param, loaded_weight)
+        param.data = torch_npu.npu_format_cast(param.data, 29)

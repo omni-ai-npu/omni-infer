@@ -81,6 +81,8 @@ class ModelOperatorOptConfig:
     use_prefetch: bool = True # 是否开启预取
     expert_gate_up_prefetch: int = 50 # 默认预取大小为 50Mb；如果是权重是BF16型，设置为 30Mb
     expert_down_prefetch: int = 28 # 当权重是w8a8且ep_size > 64 时，默认预取大小为 28Mb，否则为0
+    dense_mlp_prefetch: int = 56 # 默认预取大小为 56Mb
+    lm_head_prefetch: int = 135 # 默认预取大小为 135Mb
     attn_prefetch: int = 96 # 默认预取大小为 96Mb
 
     enable_round_pipeline_comm: bool = False

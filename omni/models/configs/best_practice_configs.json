@@ -62,6 +62,16 @@
    {
       "model": "deepseek_v3",
       "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 7,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_r1_w8a8c16_a3_7p1d_p.json",
+      "decode_config_file": "ds_r1_w8a8c16_a3_7p1d_d.json"
+   },
+   {
+      "model": "deepseek_v3",
+      "hardware": "A3",
       "precision": "w4a8",
       "prefill_node_num": 8,
       "decode_node_num": 1,
@@ -257,7 +267,7 @@
       "prefill_config_file": "pangu_718b_w8a8c16_a3_6p1d_p.json",
       "decode_config_file": "pangu_718b_w8a8c16_a3_6p1d_d.json"
    },
-      {
+   {
       "model": "pangu_ultra_moe",
       "hardware": "A3",
       "precision": "w8a8",

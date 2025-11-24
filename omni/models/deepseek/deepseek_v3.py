@@ -29,6 +29,7 @@ from typing import Iterable, List, Optional, Set, Tuple, Union
 import torch
 from torch import nn
 import torch.nn.functional as F
+import torch_npu
 from transformers import PretrainedConfig
 import torch.distributed as dist
 import torchair as tng
@@ -75,7 +76,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
     get_mlp_tp_group,
     GroupCoordinator
 )
-
+from omni.layers.utils import ConditionalTNGScope
 from omni.layers.moe.fused_moe.layer import FusedMoE
 from omni.layers.moe.deepseek_moe import DeepseekMoE 
 from omni.layers.attention.deepseek_mla import DeepseekMLA 
@@ -254,30 +255,35 @@ class DeepseekDecoderLayer(nn.Module):
         is_prefill = attn_metadata is None or attn_metadata.prefill is not None
 
         if not self.is_ffn_die:
-            # Self Attention
-            if residual is None:
-                residual = hidden_states
-                hidden_states = self.input_layernorm(hidden_states)
-            else:
-                # Adapt: adapt for w8a8 dynamic, do quant
-                # Combines residual add and rmsnorm
-                quant_symbol = (self.quant_symbol and not model_extra_config.operator_opt_config.use_mlaprolog and not model_extra_config.operator_opt_config.enable_dsa)
-                hidden_states, residual = self.input_layernorm(
-                    hidden_states, residual, quant_symbol=quant_symbol)
-                # Adapt end.
-            hidden_states = self.self_attn(
-                positions=positions,
-                hidden_states=hidden_states,
-                kv_cache=kv_cache,
-                attn_metadata=attn_metadata,
-            )
-
-            if self.is_moe == True and not is_prefill and model_extra_config.operator_opt_config.use_super_kernel:
-                with tng.scope.super_kernel(self.mlp.prefix, 'stream-fusion=1'):
-                    hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-            else:
+            with ConditionalTNGScope(super_kernel=not is_prefill and model_extra_config.operator_opt_config.use_super_kernel,
+                                     scope="superkernel_decode_layer"):
+                # Self Attention
+                if residual is None:
+                    residual = hidden_states
+                    hidden_states = self.input_layernorm(hidden_states)
+                else:
+                    # Adapt: adapt for w8a8 dynamic, do quant
+                    # Combines residual add and rmsnorm
+                    quant_symbol = (self.quant_symbol and not model_extra_config.operator_opt_config.use_mlaprolog and not model_extra_config.operator_opt_config.enable_dsa)
+                    hidden_states, residual = self.input_layernorm(
+                        hidden_states, residual, quant_symbol=quant_symbol)
+                    # Adapt end.
+            with ConditionalTNGScope(super_kernel=not is_prefill and model_extra_config.operator_opt_config.use_super_kernel,
+                                     scope="superkernel_decode_layer"):
+                hidden_states = self.self_attn(
+                    positions=positions,
+                    hidden_states=hidden_states,
+                    kv_cache=kv_cache,
+                    attn_metadata=attn_metadata,
+                )
+            with ConditionalTNGScope(super_kernel=not is_prefill and model_extra_config.operator_opt_config.use_super_kernel,
+                                     scope="superkernel_decode_layer"):
+                if model_extra_config.operator_opt_config.use_prefetch:
+                    if self.is_moe:
+                        torch_npu.npu_prefetch(self.mlp.gate.weight, hidden_states, model_extra_config.operator_opt_config.dense_mlp_prefetch * 1024 * 1024)
+                    else:
+                        torch_npu.npu_prefetch(self.mlp.gate_up_proj.weight, hidden_states, model_extra_config.operator_opt_config.dense_mlp_prefetch * 1024 * 1024)
                 hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-            # hidden : tokens * 7168
 
         # Perform full hidden splitting to avoid OOM
         if (get_dp_group().world_size  > 1  or DeepseekDecoderLayer.is_split_hidden_states) and is_prefill \
@@ -317,7 +323,9 @@ class DeepseekDecoderLayer(nn.Module):
             elif self.is_ffn_die:
                 pass
             else:
-                hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata)
+                with ConditionalTNGScope(super_kernel=not is_prefill and model_extra_config.operator_opt_config.use_super_kernel,
+                                    scope="superkernel_decode_layer"):
+                    hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata)
 
         return hidden_states, residual
 
@@ -472,7 +480,8 @@ class DeepseekV3Model(nn.Module):
             kv_caches: List[torch.Tensor],
             attn_metadata: AttentionMetadata,
             intermediate_tensors: Optional[IntermediateTensors],
-            max_num_tokens=None
+            max_num_tokens=None,
+            lm_head=None
     ) -> Union[torch.Tensor, IntermediateTensors]:
         attn_metadata_first = self.get_layer_attn_metadata(attn_metadata, 0)
 
@@ -489,7 +498,7 @@ class DeepseekV3Model(nn.Module):
             len(attn_metadata_first.prefill.seq_lens) > 1:
             return self.forward_micro_batch(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors, max_num_tokens)
         else:
-            return self.forward_normal(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors)
+            return self.forward_normal(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors, lm_head)
 
     def forward_normal(
             self,
@@ -498,6 +507,7 @@ class DeepseekV3Model(nn.Module):
             kv_caches: List[torch.Tensor],
             attn_metadata: AttentionMetadata,
             intermediate_tensors: Optional[IntermediateTensors],
+            lm_head=None
     ) -> Union[torch.Tensor, IntermediateTensors]:
         attn_metadata_first = self.get_layer_attn_metadata(attn_metadata, 0)
         is_prefill = attn_metadata is None or (attn_metadata_first is not None and attn_metadata_first.prefill is not None)
@@ -570,6 +580,8 @@ class DeepseekV3Model(nn.Module):
             hidden_states = self.norm(hidden_states)
 
         hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
+        if model_extra_config.operator_opt_config.use_prefetch:
+            torch_npu.npu_prefetch(lm_head.weight, hidden_states, model_extra_config.operator_opt_config.lm_head_prefetch * 1024 * 1024)
 
         if model_extra_config.parall_config.attn_sp_size > 1 and attn_metadata_first is not None:
             # reverse sp split
@@ -578,7 +590,7 @@ class DeepseekV3Model(nn.Module):
             hidden_states = torch.cat([outputs_list[i] for i in prefill_meta.sp_reverse_index], dim=0)
 
         return hidden_states
-
+    
     def forward_micro_batch(
             self,
             input_ids: torch.Tensor,
@@ -875,14 +887,14 @@ class DeepseekV3ForCausalLM(nn.Module):
                                    attn_metadata, intermediate_tensors)
         else:
             hidden_states = self.model(input_ids, positions, kv_caches,
-                                   attn_metadata, intermediate_tensors, self.max_num_token)
+                                   attn_metadata, intermediate_tensors, self.max_num_token, self.lm_head)
         
         if self.is_ffn_die:
             logits = torch.zeros(size=(hidden_states.shape[0], 
                                     self.config.vocab_size), 
                                     dtype=hidden_states.dtype, 
                                     device=hidden_states.device)
-        else: 
+        else:
             if attn_metadata is None:
                 logits = self.compute_lmhead(hidden_states[-1:, ...], None)
             else:

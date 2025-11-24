@@ -540,11 +540,14 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                     self.runner.max_num_tokens)
 
                 # Prepare kv index for prefill get kv_latent from kv_cache
-                kv_index_list = []
-                if block_table is not None and block_table.numel() > 0:
-                    for seq_lens, block_tables in zip(seq_kvlen_group, block_groups):
-                        kv_index = self.get_kv_index(seq_lens, block_tables)
-                        kv_index_list.append(kv_index)
+                if self.runner.attn_state == AscendAttentionState.ChunkedPrefill:
+                    kv_index_list = []
+                    if block_table is not None and block_table.numel() > 0:
+                        for seq_lens, block_tables in zip(seq_kvlen_group, block_groups):
+                            kv_index = self.get_kv_index(seq_lens, block_tables)
+                            kv_index_list.append(kv_index)
+                else:     
+                    kv_index_list = None           
 
                 seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
                 seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
@@ -678,40 +681,26 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             omni_block_table, omni_slot_mapping, omni_seq_lens = compute_omni_attn_metadata(
                 self.kv_cache_spec,
                 self.block_table,
-                num_actual_tokens,
                 num_decodes,
                 num_decode_tokens,
                 num_prefills,
                 self.runner.input_batch.num_prompt_tokens[:num_reqs],
-                self.runner.seq_lens_np[:num_reqs] - self.runner.input_batch.num_computed_tokens_cpu[:num_reqs],
                 self.runner.seq_lens_np[:num_reqs],
                 self.runner.device,
-                use_spec_decode=self.runner.use_spec_decode,
+                ref_d.block_table.shape,
             )
+
+            if omni_seq_lens is None:
+                omni_seq_lens = torch.clamp(ref_d.seq_lens, min=0, max=self.kv_cache_spec.max_compressed_len)
 
             input_positions, cos, sin, best_topk = \
                 ref_d.input_positions, ref_d.cos, ref_d.sin, ref_d.best_topk
-            num_tokens_per_req = num_decode_tokens // num_decodes
-            block_table = torch.zeros_like(ref_d.block_table)
-            seq_lens = (input_positions + 1).to(dtype=torch.int64)
-            slot_mapping = torch.full_like(ref.slot_mapping, PAD_SLOT_ID)
-            slot_mapping[:num_actual_tokens].copy_(omni_slot_mapping, non_blocking=True)
-
-            if num_tokens_per_req > 1:
-                omni_block_table = omni_block_table.repeat_interleave(num_tokens_per_req, dim=0)
-            m, n = omni_block_table.shape
-            block_table[:m, :n].copy_(omni_block_table, non_blocking=True)
-
-            if num_tokens_per_req == 1:
-                seq_lens.clamp_(min=0, max=self.kv_cache_spec.max_compressed_len)
-            else:
-                seq_lens[:num_actual_tokens].copy_(omni_seq_lens, non_blocking=True)
 
             self.generate_activate_mask(num_actual_tokens, num_actual_tokens + graph_pad_size)
             decode_metadata = AscendMLADecodeMetadata(
                 input_positions=input_positions,
-                block_table=block_table,
-                seq_lens=seq_lens,
+                block_table=omni_block_table,
+                seq_lens=omni_seq_lens,
                 mc2_mask=self.mc2_mask,
                 cos=cos.clone(),
                 sin=sin.clone(),
@@ -721,7 +710,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
 
         return self.metadata_cls(
             num_actual_tokens=num_actual_tokens,
-            slot_mapping=slot_mapping,
+            slot_mapping=omni_slot_mapping,
             num_decodes=num_decodes,
             num_decode_tokens=num_decode_tokens,
             num_prefills=num_prefills,
