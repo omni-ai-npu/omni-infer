@@ -45,6 +45,7 @@ KV_ROLE="kv_producer"
 KV_RANK=0
 KV_ENGINE_ID=0
 KV_PARALLEL_SIZE=2
+PRINT_SCREEN=0
 
 GPU_UTIL=0.9
 EXTRA_ARGS=""
@@ -103,6 +104,7 @@ print_help() {
     echo "  --hccl-op-expansion-mode         vLLM framework: HCCL_OP_EXPANSION_MODE"
     echo "  --hccl-buffsize                  vLLM framework: HCCL_BUFFSIZE"
     echo "  --num-speculative-tokens         vLLM framework: Speculative decoding parameter, number of speculative tokens per step (default: $NUM_SPECULATIVE_TOKENS)"
+    echo "  --print-screen             vLLM framework: this parameter only takes effect when the VLLM_LOGGING_CONFIG_PATH active"
     exit 0
 }
 
@@ -241,6 +243,9 @@ parse_long_option() {
             ;;
         --num-speculative-tokens)
             NUM_SPECULATIVE_TOKENS="$2"
+            ;;
+       --print-screen)
+            PRINT_SCREEN="$2"
             ;;
         --help)
             print_help
@@ -396,6 +401,7 @@ echo "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: $RAY_EXPERIMENTAL_NOSET_
 echo "RAY_CGRAPH_get_timeout: $RAY_CGRAPH_get_timeout"
 echo "TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
 echo "LLM_WAITING_OUT: $LLM_WAITING_OUT"
+echo "PRINT_SCREEN: $PRINT_SCREEN"
 echo "=================="
 
 # Execute Python script
@@ -404,6 +410,10 @@ common_operations() {
   local mtp_args=""
   if [ "$NUM_SPECULATIVE_TOKENS" -ne 0 ]; then
     mtp_args="--enable-mtp --num-speculative-tokens $NUM_SPECULATIVE_TOKENS"
+  fi
+  local print_screen_args=""
+  if [ "$PRINT_SCREEN" -eq 1 ]; then
+    print_screen_args="--print-screen"
   fi
 
   python start_api_servers.py \
@@ -422,6 +432,7 @@ common_operations() {
     --gpu-util "$GPU_UTIL" \
     --additional-config "$ADDITIONAL_CONFIG" \
     $mtp_args \
+    $print_screen_args \
     --extra-args "$EXTRA_ARGS"
 }
 

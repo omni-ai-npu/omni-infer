@@ -96,6 +96,7 @@ def start_single_node_api_servers(
     no_enable_prefix_caching=False,
     num_speculative_tokens=1,
     no_enable_chunked_prefill=False,
+    print_screen = False
 ):
     """Start multiple VLLM API servers with specified configurations."""
 
@@ -183,11 +184,17 @@ def start_single_node_api_servers(
             tmp_file.close()
 
             env["VLLM_LOGGING_CONFIG_PATH"] = tmp_file_name
-            stdout = subprocess.DEVNULL
-            stderr = subprocess.DEVNULL
+            if print_screen:
+                stdout = sys.stdout
+                stderr = sys.stdout
+            else:
+                stdout = subprocess.DEVNULL
+                stderr = subprocess.DEVNULL
             # occupy space
             log_file = tmp_file
         else:
+            if print_screen:
+                print(f"print_screen only takes effect when the VLLM_LOGGING_CONFIG_PATH is active")
             # Open a single log file for combined stdout and stderr
             log_file = open(logger_path, "w")
 
@@ -289,6 +296,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-enable-prefix-caching", default=False, action="store_true")
     parser.add_argument("--no-enable-chunked-prefill", default=False, action="store_true")
     parser.add_argument("--num-speculative-tokens", type=int, default=1)
+    parser.add_argument("--print-screen", default=False, action="store_true")
 
     args = parser.parse_args()
     if not args.num_dp:
@@ -319,7 +327,8 @@ if __name__ == "__main__":
         additional_config=args.additional_config,
         enable_mtp=args.enable_mtp,
         num_speculative_tokens=args.num_speculative_tokens,
-        no_enable_chunked_prefill=args.no_enable_chunked_prefill
+        no_enable_chunked_prefill=args.no_enable_chunked_prefill,
+        print_screen = args.print_screen
     )
 
     # Register SIGINT handler for Ctrl+C
