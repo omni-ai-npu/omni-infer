@@ -232,6 +232,7 @@
       # rm -rf /workspace/profiling_generate
 
       export TIKTOKEN_ENCODINGS_BASE=${CODE_PATH}/omniinfer/omni/models/openai/tiktoken_encodings
+      export TOKENIZER_PROC_POOL=0
 
       echo "TP=${PREFILL_TENSOR_PARALLEL_SIZE}" > ${LOG_PATH}/run_prefill.log
       echo "PREFILL_POD_NUM=${PREFILL_POD_NUM}" >> ${LOG_PATH}/run_prefill.log
@@ -258,7 +259,7 @@
           "kv_role": "kv_producer",
           "kv_rank": '"${KV_RANK}"',
           "engine_id": '"${KV_RANK}"',
-          "kv_parallel_size": '"${KV_PARALLEL_SIZE}"'
+          "kv_parallel_size": '"${DECODE_TENSOR_PARALLEL_SIZE}"'
         }' \
         --log-dir "${LOG_PATH}" >> ${LOG_PATH}/run_prefill.log 2>&1 &
 
@@ -271,7 +272,7 @@
       export ASCEND_GLOBAL_LOG_LEVEL=3
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       EXTRA_ARGS='--max-num-batched-tokens 40960 --disable-log-requests --max-num-seqs 128 --enforce-eager --enable-expert-parallel'
-      ADDITIONAL_CONFIG='{"graph_model_compile_config":{"level":1,  "use_ge_graph_cached":false, "block_num_floating_range":50}, "decode_gear_list": [ 128 ], "enable_sink_fia": true, "enable_window_fia": true, "enable_kvcache_nz": true}'
+      ADDITIONAL_CONFIG='{"graph_model_compile_config":{"level":1,  "use_ge_graph_cached":true, "block_num_floating_range":50}, "decode_gear_list": [ 128 ], "enable_sink_fia": true, "enable_window_fia": true, "enable_kvcache_nz": true}'
       DP=1
 
       if [ $DECODE_POD_NUM -gt 1 ]; then
@@ -337,6 +338,7 @@
       # rm -rf /workspace/profiling_generate
 
       export TIKTOKEN_ENCODINGS_BASE=${CODE_PATH}/omniinfer/omni/models/openai/tiktoken_encodings
+      export TOKENIZER_PROC_POOL=0
 
       cd ${CODE_PATH}/omniinfer/tools/scripts
       python start_api_servers.py \
@@ -360,8 +362,8 @@
           "kv_buffer_device": "npu",
           "kv_role": "kv_consumer",
           "kv_rank": '"${PREFILL_POD_NUM}"',
-          "engine_id": 0,
-          "kv_parallel_size": '"${KV_PARALLEL_SIZE}"'
+          "engine_id": '"${PREFILL_POD_NUM}"',
+          "kv_parallel_size": '"${DECODE_TENSOR_PARALLEL_SIZE}"'
         }' \
         --reasoning-parser openai_gptoss \
         --enable-auto-tool-choice \
@@ -477,6 +479,7 @@
       -e MODEL_PATH=$MODEL_PATH
       -e MODEL_LEN_MAX_PREFILL=$MODEL_LEN_MAX_PREFILL
       -e PREFILL_SERVER_LIST=$PREFILL_SERVER_LIST
+      -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE
       -e PREFILL_TENSOR_PARALLEL_SIZE=$PREFILL_TENSOR_PARALLEL_SIZE
       -e IP=$IP
       -e HOST_IP=$HOST_IP

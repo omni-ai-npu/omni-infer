@@ -31,7 +31,7 @@ all:
             additional-config:
               graph_model_compile_config:
                 level: 1
-                use_ge_graph_cached: false
+                use_ge_graph_cached: true
                 block_num_floating_range: 50
               decode_gear_list: [128]
               enable_sink_fia: true
@@ -46,11 +46,11 @@ all:
               max-num-seqs: 128
             gpu-util: '0.88'
             kv-transfer-config:
-              engine_id: 1
+              engine_id: $PREFILL_POD_NUM
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: 2
-              kv_rank: $KV_RANK
+              kv_parallel_size: $DECODE_TENSOR_PARALLEL_SIZE
+              kv_rank: $PREFILL_POD_NUM
               kv_role: kv_consumer
             log-dir: $LOG_PATH
             master-ip: $HOST_IP
@@ -80,6 +80,7 @@ all:
             CODE_PATH: /workspace/omniinfer
             DECODE_POD_NUM: 1
             DECODE_SERVER_LIST: 0,1,2,3,4,5,6,7
+            DECODE_TENSOR_PARALLEL_SIZE: 8
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp67s0f5
@@ -119,6 +120,7 @@ all:
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             TIKTOKEN_ENCODINGS_BASE: ${CODE_PATH}/omni/models/openai/tiktoken_encodings
+            TOKENIZER_PROC_POOL: 0
           host_ip: 127.0.0.2
           master_node: d0
     P:
@@ -143,10 +145,10 @@ all:
               max-num-seqs: 64
             gpu-util: '0.88'
             kv-transfer-config:
-              engine_id: 0
+              engine_id: $KV_RANK
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: 2
+              kv_parallel_size: $DECODE_TENSOR_PARALLEL_SIZE
               kv_rank: $KV_RANK
               kv_role: kv_producer
             log-dir: $LOG_PATH
@@ -196,6 +198,7 @@ all:
             PREFILL_POD_NUM: 1
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7
             PREFILL_TENSOR_PARALLEL_SIZE: 8
+            DECODE_TENSOR_PARALLEL_SIZE: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
             RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$(echo  $PREFILL_SERVER_LIST | tr -d ",").json)
@@ -214,5 +217,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             TIKTOKEN_ENCODINGS_BASE: ${CODE_PATH}/omni/models/openai/tiktoken_encodings
+            TOKENIZER_PROC_POOL: 0
           host_ip: 127.0.0.1
           master_node: p0
