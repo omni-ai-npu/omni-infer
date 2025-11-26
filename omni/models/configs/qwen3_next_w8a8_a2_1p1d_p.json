@@ -8,7 +8,7 @@
         "prefill_moe_all_to_all": true,
         "two_stage_comm":true,
         "gmm_nz": true,
-        "unquant_bmm_nz": true,
+        "pd_seperate_prefill": true,
         "prefill_enable_mla_alltoall_local": false
     }
 }
