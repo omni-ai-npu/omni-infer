@@ -7,6 +7,8 @@ from math import log
 
 import torch
 import torch.nn.functional as F
+import torch_npu
+import omni_custom_ops
 from einops import rearrange
 from torch import nn
 from torch.library import Library
@@ -246,24 +248,10 @@ def torch_chunk_gated_delta_rule(
     block_size = 1
     attn_inv = torch.eye(chunk_size, dtype=attn.dtype, device=attn.device).repeat((tuple(attn.shape)[:-2] + (1, 1)))
     attn = attn_inv - attn
-    for i in range(lg):
-        block_num = chunk_size // block_size
-        prod = attn @ attn_inv
-        attn_inv_block = attn_inv.view(tuple(attn.shape)[:-2] + (block_num, block_size, block_num, block_size)).transpose(-2, -3)
-        prod_block = prod.view(tuple(attn.shape)[:-2] + (block_num, block_size, block_num, block_size)).transpose(-2, -3)
-        r0 = torch.arange(block_num // 2, device=attn.device) * 2
-        r1 = r0 + 1
-        attn_inv_block[:, :, :, r1, r0, :, :] = -attn_inv_block[..., r1, r1, :, :] @ prod_block[..., r1, r0, :, :]
-        attn_inv = attn_inv_block.transpose(-2, -3).view(tuple(attn_inv_block.shape)[:-4] + (chunk_size, chunk_size))
-        block_size *= 2
-    attn = attn_inv
+    attn = torch_npu.npu_lower_triangular_inverse(attn)
 
     value = attn @ v_beta
     k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1))
-
-    last_recurrent_state = (torch.zeros(batch_size, num_v_heads,
-                                        k_head_dim, v_head_dim).to(value) if
-                            initial_state is None else initial_state.to(value))
 
     core_attn_out = torch.zeros_like(value)
     mask = torch.triu(torch.ones(chunk_size,
@@ -286,29 +274,28 @@ def torch_chunk_gated_delta_rule(
     v_new_out = torch.zeros_like(value)
     attn_inter_out = torch.zeros_like(value)
 
-    # for each chunk
-    for i in range(0, sequence_length_padded // chunk_size):
-        v_i = value[:, :, i]
-        attn = attn_score[:, :, i]
-        v_prime_attn_inter = (k_cumdecay_qgexp[:, :, i]) @ last_recurrent_state
-        v_prime = v_prime_attn_inter[:, :, :chunk_size]
-        attn_inter = v_prime_attn_inter[:, :, chunk_size:]
-        v_new = v_i - v_prime
-        v_new_out[:, :, i] = v_new
-        attn_inter_out[:, :, i] = attn_inter
-        last_recurrent_state *= gexp[:, :, i, -1, :, None]
-        last_recurrent_state += (kgexp[:, :, i]).transpose(-1, -2) @ v_new
+    initial_state_ = (torch.zeros(batch_size, num_v_heads, v_head_dim, k_head_dim).to(value) if initial_state is None else initial_state.to(value))
+    actual_seqlens = torch.tensor([sequence_length_padded], device=qgexp.device, dtype=torch.int32)
+    attn_inter_out, v_new_out = torch.ops.custom.npu_chunk_gated_delta_rule_recurrence(
+        initial_state_.to(torch.float32),
+        kgexp.squeeze(0),
+        value.squeeze(0),
+        k_cumdecay.squeeze(0),
+        qgexp.squeeze(0),
+        gexp.squeeze(0),
+        actual_seqlens
+    )
     core_attn_out = attn_inter_out + attn_score @ v_new_out
 
     if not output_final_state:
-        last_recurrent_state = None
+        initial_state_ = None
     core_attn_out = core_attn_out.reshape(core_attn_out.shape[0],
                                           core_attn_out.shape[1], -1,
                                           core_attn_out.shape[-1])
     core_attn_out = core_attn_out[:, :, :sequence_length]
     core_attn_out = core_attn_out.transpose(1,
                                             2).contiguous().to(initial_dtype)
-    return core_attn_out, last_recurrent_state.transpose(-1,-2)
+    return core_attn_out, initial_state_
 
 
 class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):

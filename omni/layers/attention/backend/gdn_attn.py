@@ -177,6 +177,10 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             spec_token_masks = None
             spec_state_indices_tensor = None
             non_spec_state_indices_tensor = self.block_table.block_table[:, 0]
+            if num_decodes == 0:
+                non_spec_state_indices_tensor[num_prefills:] = 0
+            if num_prefills == 0:
+                non_spec_state_indices_tensor[num_decodes:] = 0
             spec_query_start_loc = None
             non_spec_query_start_loc = query_start_loc
             num_accepted_tokens = None
