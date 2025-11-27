@@ -297,7 +297,7 @@ def _fused_recurrent_gated_delta_rule_npu(
     return o, initial_state  # Placeholder for final_state
 
 def get_gdn_based_on_env():
-    env_value = os.getenv("TORCH_NPU_USE_GDN_DECODE_OP", "False").strip().lower()
+    env_value = os.getenv("TORCH_NPU_USE_GDN_DECODE_OP", "true").strip().lower()
     if env_value in ("true", "1", "yes", "on"):
         return _fused_recurrent_gated_delta_rule_npu  # Package is available
     else:
