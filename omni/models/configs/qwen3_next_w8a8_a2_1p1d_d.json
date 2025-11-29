@@ -8,11 +8,10 @@
         "moe_multi_stream_tune": true,
         "two_stage_comm": true,
         "gmm_nz": true,
-        "unquant_bmm_nz": true,
         "decode_moe_dispatch_combine": false,
         "use_super_kernel":true,
         "use_prefetch": true,
-        "expert_gate_up_prefetch": 30,
+        "expert_gate_up_prefetch": 50,
         "expert_down_prefetch": 0
     }
 }
