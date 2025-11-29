@@ -1,0 +1,30 @@
+{
+    "formatters": {
+        "vllm": {
+            "class": "vllm.logging_utils.NewLineFormatter",
+            "datefmt": "%m-%d %H:%M:%S",
+            "format": "%(levelname)s %(asctime)s [%(filename)s:%(lineno)d] %(message)s"
+        }
+    },
+    "handlers": {
+        "vllm": {
+            "class": "logging.StreamHandler",
+            "formatter": "vllm",
+            "level": "DEBUG",
+            "stream": "ext://sys.stdout"
+        }
+    },
+    "loggers": {
+        "vllm": {
+            "handlers": ["vllm"],
+            "level": "${VLLM_LOGGING_LEVEL:-INFO}",
+            "propagate": false
+        },
+        "vllm.npu_model_runner": {
+            "level": "${VLLM_RUNNER_LOGGING_LEVEL:-INFO}",
+            "propagate": true
+        }
+    },
+    "version": 1,
+    "disable_existing_loggers": false
+}

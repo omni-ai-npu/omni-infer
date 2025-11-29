@@ -30,7 +30,7 @@ import torch_npu
 import torch.distributed as dist
 from vllm.config import CompilationLevel, VllmConfig
 from vllm.distributed.parallel_state import get_pp_group, get_tensor_model_parallel_world_size, get_dp_group, get_tensor_model_parallel_rank
-from vllm.logger import logger
+from vllm.logger import init_logger
 from vllm.model_executor.model_loader import get_model
 from vllm.sequence import IntermediateTensors
 from vllm.utils import (DeviceMemoryProfiler, is_pin_memory_available,
@@ -61,6 +61,8 @@ if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
 else:
     xgr = LazyLoader("xgr", globals(), "xgrammar")
+    
+logger = init_logger("vllm.npu_model_runner")
 
 _GLOBAL_STEP = 0
 MAX_GEAR_NUM = 6
@@ -386,7 +388,9 @@ class NPUModelRunner(GPUModelRunner):
         if num_reqs <= 0:
             raise RuntimeError("num_reqs must be greater than 0")
         num_input_tokens = total_num_scheduled_tokens
-        logger.warning(f"current num reqs = {num_reqs}, num_input_tokens = {num_input_tokens}")
+        tp_rank = get_tensor_model_parallel_rank()
+        if tp_rank == 0:
+            logger.warning(f"current num reqs = {num_reqs}, num_input_tokens = {num_input_tokens}")
 
         # OPTIMIZATION: Start copying the block table first.
         # This way, we can overlap the copy with the following CPU operations.
@@ -722,9 +726,9 @@ class NPUModelRunner(GPUModelRunner):
                 cost_model = end_model - start_time
                 cost_os_env = start_time - start_os_env
                 cost_debug = start_debug - start_os_env
-                logger.info(f" ***** model forward: {cost_model:.6f}, os env: {cost_os_env:.6f}, debug: {cost_debug:.6f}")
+                logger.debug(f" ***** model forward: {cost_model:.6f}, os env: {cost_os_env:.6f}, debug: {cost_debug:.6f}")
             else:
-                logger.info("Start running eager model.")
+                logger.debug("Start running eager model.")
                 forward_results = self.model(
                     input_ids=input_ids,
                     positions=positions,
@@ -1030,7 +1034,7 @@ class NPUModelRunner(GPUModelRunner):
 
         cost_output = time.time() - start_9
         cost = cost_upd_states + cost_proc_reqs + cost_logits + cost_bitmask + cost_sampler + cost_disc + cost_drafter + cost_device_output + cost_output
-        logger.info(f" ***** execute model cost:{cost:.6f}="
+        logger.debug(f" ***** execute model cost:{cost:.6f}="
                     f"{cost_upd_states:.6f}+{cost_proc_reqs:.6f}+{cost_logits:.6f}+{cost_bitmask:.6f}"
                     f"+{cost_disc:.6f}+{cost_sampler:.6f}+{cost_drafter:.6f}+{cost_device_output:.6f}+{cost_output:.6f}")
 
@@ -1137,15 +1141,12 @@ class NPUModelRunner(GPUModelRunner):
         with set_forward_context(attn_metadata, self.vllm_config):
             use_compile = self.enable_torchair_graph_mode
             if use_compile:
-                logger.debug("Start running dummy compiled model.")
                 if not self.dummy_model_mark_static:
                     if isinstance(self.model, GraphCompileConfiguration):
                         self.model.mark_static_for_graph(input_ids, positions, attn_metadata, self.kv_caches)
                     else:
                         mark_static_for_graph_default(input_ids, inputs_embeds, positions, self.kv_caches)
                     self.dummy_model_mark_static = True
-            else:
-                logger.debug("Start running dummy eager model.")
             forward_results = self.model(
                 input_ids=input_ids,
                 positions=positions,

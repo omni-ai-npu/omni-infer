@@ -68,10 +68,28 @@ def use_vllm_logging_config_path():
     return int(os.getenv("VLLM_CONFIGURE_LOGGING", "1")) and config_path and os.path.exists(config_path)
 
 def replace_logger_file(config_json, logger_file_path):
+    set_file_handler = False
     for handler_name, handler_config in config_json.get("handlers", {}).items():
         if "filename" in handler_config:
             handler_config["filename"] = logger_file_path
-    return config_json
+            set_file_handler = True
+    return config_json, set_file_handler
+
+def replace_env(config_str):
+    def replacer(match):
+        var, default = match.groups()
+        return os.getenv(var, default or "")
+    return re.sub(r'\$\{([^:}]+)(?::-(.*?))?\}', replacer, config_str)
+
+def set_env_logger_file(config_json):
+    if isinstance(config_json, dict):
+        return {k: set_env_logger_file(v) for k, v in config_json.items()}
+    elif isinstance(config_json, list):
+        return [set_env_logger_file(v) for v in config_json]
+    elif isinstance(config_json, str):
+        return replace_env(config_json)
+    else:
+        return config_json
 
 
 def start_single_node_api_servers(
@@ -175,26 +193,38 @@ def start_single_node_api_servers(
         if use_vllm_logging_config_path():
             with open(os.getenv("VLLM_LOGGING_CONFIG_PATH"), "r") as f:
                 config_json = json.load(f)
-            config_json = replace_logger_file(config_json, logger_path)
+            config_json, set_file_handler = replace_logger_file(config_json, logger_path)
+            if not set_file_handler:
+                config_json = set_env_logger_file(config_json)
             print(f"Use VLLM_LOGGING_CONFIG: {config_json}")
 
             tmp_file_name = tempfile.mkstemp()[1]
             tmp_file = open(tmp_file_name, "w")
             json.dump(config_json, tmp_file)
             tmp_file.close()
-
+            
             env["VLLM_LOGGING_CONFIG_PATH"] = tmp_file_name
-            if print_screen:
-                stdout = sys.stdout
-                stderr = sys.stdout
+            
+            if set_file_handler:
+                if print_screen:
+                    stdout = sys.stdout
+                    stderr = sys.stdout
+                else:
+                    stdout = subprocess.DEVNULL
+                    stderr = subprocess.DEVNULL
+                # occupy space
+                log_file = tmp_file
             else:
-                stdout = subprocess.DEVNULL
-                stderr = subprocess.DEVNULL
-            # occupy space
-            log_file = tmp_file
+                if print_screen:
+                    print(f"print_screen only takes effect when the VLLM_LOGGING_CONFIG_PATH is active and FileHandler is setted")
+                # Open a single log file for combined stdout and stderr
+                log_file = open(logger_path, "w")
+
+                stdout = log_file
+                stderr = subprocess.STDOUT  # Redirect stderr to stdout (same log file)
         else:
             if print_screen:
-                print(f"print_screen only takes effect when the VLLM_LOGGING_CONFIG_PATH is active")
+                print(f"print_screen only takes effect when the VLLM_LOGGING_CONFIG_PATH is active and FileHandler is setted")
             # Open a single log file for combined stdout and stderr
             log_file = open(logger_path, "w")
 
