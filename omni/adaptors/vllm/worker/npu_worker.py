@@ -72,6 +72,9 @@ class NPUWorker(WorkerBase):
             # Additional parameters for compatibility with vllm
             **kwargs):
         """Initialize the worker for Ascend."""
+        if envs.VLLM_LOGGING_CONFIG_PATH:
+            from vllm.logger import _configure_vllm_root_logger
+            _configure_vllm_root_logger()
 
         if envs.VLLM_ENABLE_V1_MULTIPROCESSING:
             if envs.VLLM_USE_RAY_SPMD_WORKER:
