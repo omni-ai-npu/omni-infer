@@ -43,6 +43,7 @@ SCHEDULER_LINK_BATCH_SIZE = 32
 SCHEDULER_LINK_INTERVAL = 0.5
 KV_CACHE_RETRY_TIMES = 3
 KV_CACHE_RETRY_WAIT_SECOND = 2
+SYNC_KV_TIMEOUT = int(os.environ.get("SYNC_KV_TIMEOUT", 1800000))
 
 RETRYABLE_CODES = [
     LLMStatusCode.LLM_REPEAT_REQUEST,
@@ -137,8 +138,8 @@ class LLMDataDistManager:
         llm_config.enable_switch_role = True
         llm_config.enable_cache_manager = True
 
-        # RoCE timeout is 31s， prevent pull kv timeout
-        llm_config.sync_kv_timeout = 31000
+        # RoCE timeout is 1800s， prevent pull kv timeout
+        llm_config.sync_kv_timeout = SYNC_KV_TIMEOUT
 
         llm_config.enable_remote_cache_accessible = True
         options = llm_config.generate_options()

@@ -157,3 +157,29 @@ index b3e65917d..7628272ee 100644
          # Copy the prompt token ids and output token ids.
          num_prompt_tokens = len(request.prompt_token_ids)
          self.num_prompt_tokens[req_index] = num_prompt_tokens
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index 9b848fac5..66c050801 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -1068,11 +1068,18 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+         # so we receive it in that format.
+         grammar_bitmask = torch.from_numpy(grammar_bitmask)
+
++        # start adapt
++        device_type = logits.device.type
++        dtype = logits.dtype
++        logits_cpu = logits.float().to("cpu")
+         xgr.apply_token_bitmask_inplace(
+-            logits,
+-            grammar_bitmask.to(self.device, non_blocking=True),
++            logits_cpu,
++            grammar_bitmask,
+             indices=out_indices,
+         )
++        logits.data = logits_cpu.to(device_type).to(dtype)
++        # end adapt
++
+
+     def sync_and_slice_intermediate_tensors(
+             self, num_tokens: int, intermediate_tensors: IntermediateTensors,
+
