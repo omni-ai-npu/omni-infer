@@ -456,7 +456,7 @@ class NPUModelRunner(GPUModelRunner):
         # calculate max_batch_size and padding size
         graph_pad_size = 0
         if self.enable_torchair_graph_mode and attn_state == AscendAttentionState.DecodeOnly and len(self.decode_gear_list) > 1:
-            self.max_batch_size = self._get_max_token_num(self.vllm_config.parallel_config.data_parallel_size > 1, num_reqs)
+            self.max_batch_size = self._get_max_token_num(self.vllm_config.parallel_config.data_parallel_size > 1, total_num_scheduled_tokens)
         if attn_state == AscendAttentionState.DecodeOnly:
             if total_num_scheduled_tokens > self.max_batch_size:
                 raise RuntimeError("num_reqs is bigger than max_batch_size")
