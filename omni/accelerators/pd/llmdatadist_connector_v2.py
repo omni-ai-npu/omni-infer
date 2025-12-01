@@ -47,6 +47,9 @@ GET_META_MSG = b"get_meta_msg"
 thread_dump_path = os.environ.get("VLLM_THREAD_DUMP_PATH", "/tmp/vllm_thread_info")
 BLOCK_RELEASE_DELAY = int(os.environ.get("BLOCK_RELEASE_DELAY", 600))  # seconds, use to free blocks when the request is finished for a long time 
 LLMDATADIST_BASE_PORT = int(os.environ.get("VLLM_LLMDATADIST_BASE_PORT", 15567))
+HEARTBEAT_INTERVAL = 5
+CLUSTER_HEARTBEAT_TIMEOUT = 60
+HEARTBEAT_IPC_PATH = f"ipc:///tmp/prefill_llmdatadist_connector_ipc"
 
 from omni.accelerators.pd.llmdatadist_manager_v1 import LLMDataDistManager, LLMDataDistConfig
 
@@ -110,7 +113,7 @@ class LLMDataDistConnector(KVConnectorBase_V1):
 
         if vllm_config.model_config.is_deepseek_mla:
             vllm_config.kv_transfer_config.kv_parallel_size = 1
-            logger.info("Set kv_parallel_size to 1 when use deepseek mla model.")
+            logger.info(f"Set kv_parallel_size to 1 when use deepseek mla model. {role=}")
 
         local_host_ip = get_local_ip()
         local_host_port = LLMDATADIST_BASE_PORT
@@ -280,8 +283,23 @@ class PrefillConnectorWorker:
         self.host_ip = host_ip
         self.host_port = host_port
         self.rank = get_tensor_model_parallel_rank()
+        self.remote_hb_info_lock = threading.Lock()
+        self.remote_hb_info = {}
+        self.ctx = zmq.Context()
+        self.hb_ipc_client_sockets = {}
+        # check whether omni attention is enabled
+        manager_cls = LLMDataDistManager
+        if vllm_config.additional_config and "enable_omni_attn" in vllm_config.additional_config:
+            # do import only when necessary
+            from omni.accelerators.cache import OmniBiGroupDataDistManager, check_omni_attn_cmd_arg
+            use_omni_attn_mgr = check_omni_attn_cmd_arg(vllm_config.additional_config)
+            if use_omni_attn_mgr:
+                manager_cls = OmniBiGroupDataDistManager
+                logger.warning(f"PrefillingConnector is using Omni datadist manager for KV transfer.")
+        datadist_host_port = LLMDATADIST_BASE_PORT
+        self.datadist_manager = manager_cls(vllm_config, self.host_ip, datadist_host_port)
+
         if self.rank == 0:
-            self.ctx = zmq.Context()
             self.input_socket = self.ctx.socket(zmq.constants.PULL)
             self.input_socket.bind(f"tcp://{self.host_ip}:{self.host_port}")
             logger.info(f"ConnectWorker bind tcp://{self.host_ip}:{self.host_port}")
@@ -292,20 +310,68 @@ class PrefillConnectorWorker:
             self.thread.start()
             dump_thread_to_file(self.thread, thread_name, thread_dump_path)
 
-        # check whether omni attention is enabled
-        manager_cls = LLMDataDistManager
-        if vllm_config.additional_config and "enable_omni_attn" in vllm_config.additional_config:
-            # do import only when necessary
-            from omni.accelerators.cache import OmniBiGroupDataDistManager, check_omni_attn_cmd_arg
-            use_omni_attn_mgr = check_omni_attn_cmd_arg(vllm_config.additional_config)
-            if use_omni_attn_mgr:
-                manager_cls = OmniBiGroupDataDistManager
-                logger.warning(f"PrefillingConnector is using Omni datadist manager for KV transfer.")
-        local_host_port = LLMDATADIST_BASE_PORT
-        self.datadist_manager = manager_cls(vllm_config, self.host_ip, local_host_port)
+            hb_port = int(os.environ.get("VLLM_LLMDATADIST_HEARTBEAT_PORT", int(datadist_host_port) - 1))
+            self.hb_socket = self.ctx.socket(zmq.PUB)
+            self.hb_socket.bind(f"tcp://{self.host_ip}:{hb_port}")
+            logger.info(f"Prefill create heartbeat publisher: tcp://{self.host_ip}:{hb_port}")
+
+            self.thread = threading.Thread(target=self.heartbeat_timer_func, daemon=True, name="prefill_heartbeat_thread")
+            self.thread.start()
+        else:
+            self.thread = threading.Thread(target=self.heartbeat_server_func, daemon=True, name="prefill_heartbeat_server_thread")
+            self.thread.start()
 
         # initialize the dict to save requests finish time
         self.requests_finish_time = dict()
+
+    def heartbeat_timer_func(self):
+        logger.info(f"start heart beat thread {threading.current_thread().name}")
+        while True:
+            cur_time = int(time.time())
+            # check remote still alive
+            tmp_hb_info = []
+            with self.remote_hb_info_lock:
+                for remote_cluster_id in self.remote_hb_info:
+                    if self.remote_hb_info[remote_cluster_id] + CLUSTER_HEARTBEAT_TIMEOUT < cur_time:
+                        tmp_hb_info.append(remote_cluster_id)
+                for remote_cluster_id in tmp_hb_info:
+                    self.remote_hb_info.pop(remote_cluster_id, None)
+
+            for remote_cluster_id in tmp_hb_info:
+                # cluster id of other instance needs
+                ip_port, tp_size, tp_rank = self.datadist_manager.cluster_id_to_ip_port(int(remote_cluster_id))
+                logger.warning(f"remote heartbeat timeout: {ip_port=}, {remote_cluster_id=}")
+                port = int(ip_port.split(":")[1])
+                if port == 0:
+                    self.datadist_manager.force_unlink(int(remote_cluster_id))
+                else:
+                    rank = port
+                    remote_ipc = HEARTBEAT_IPC_PATH + f"_{rank}"
+                    if remote_ipc not in self.hb_ipc_client_sockets.keys():
+                        socket = self.ctx.socket(zmq.PUSH)
+                        socket.connect(remote_ipc)
+                        self.hb_ipc_client_sockets[remote_ipc] = socket
+                        logger.info(f"create ipc socket connect to {remote_ipc}")
+                    else:
+                        socket = self.hb_ipc_client_sockets[remote_ipc]
+                    socket.send_string(f"{remote_cluster_id}")
+
+            # send heartbeat
+            logger.debug(f"prefill publish heartbeat {self.datadist_manager.data_dist_config.host_cluster_id}")
+            self.hb_socket.send_string(f"prefill_hb:{self.datadist_manager.data_dist_config.host_cluster_id}")
+            time.sleep(HEARTBEAT_INTERVAL)
+
+    def heartbeat_server_func(self):
+        self.ipc_socket = self.ctx.socket(zmq.PULL)
+        ipc_path = HEARTBEAT_IPC_PATH + f"_{self.rank}"
+        self.ipc_socket.bind(ipc_path)
+        logger.info(f"create ipc socket {ipc_path}")
+        while True:
+            data = self.ipc_socket.recv_string()
+            logger.info(f"hb server receive ipc data: {data}")
+            if data and isinstance(data, int):
+                self.datadist_manager.force_unlink(int(data))
+                logger.info(f"force unlink: {data}")
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.datadist_manager.register_memory(kv_caches)
@@ -362,8 +428,20 @@ class PrefillConnectorWorker:
                     message = self.input_socket.recv_string()
                     id_list = json.loads(message)  # Parse the received JSON string into a list
                     logger.debug("Received: %s", id_list)
-                    with self._transfer_lock:
-                        self.receive_req_list.extend(id_list)
+                    if id_list[0].startswith("decode_hb:"):
+                        cluster_id_str = id_list[0].split(":", 1)[1]
+                        try:
+                            cluster_id = int(cluster_id_str)
+                            ip_port, tp_size, tp_rank = self.datadist_manager.cluster_id_to_ip_port(cluster_id)
+                            logger.debug(f"get heartbeat {ip_port=}, {cluster_id_str=}")
+                            # update timestamp
+                            with self.remote_hb_info_lock:
+                                self.remote_hb_info[cluster_id_str] = int(time.time())
+                        except ValueError:
+                            logger.warning(f"Invalid heartbeat: {cluster_id_str}")
+                    else:
+                        with self._transfer_lock:
+                            self.receive_req_list.extend(id_list)
             except Exception as e:
                 logger.error("get pulled kv req list failed: %s", e)
 
@@ -532,7 +610,12 @@ class DecodeConnectorWorker:
         self.host_ip = host_ip
 
         self.ctx = zmq.Context()
+        self.zmq_socket_map_lock = threading.Lock()
         self.zmq_socket_map = {}
+        self.hb_server_info = {}
+        thread_name = f"decode_worker_hb_{self.datadist_manager.data_dist_config.local_rank}"
+        self.heartbeat_thread = threading.Thread(target=self.heartbeat_timer_func, daemon=True, name=thread_name)
+        self.heartbeat_thread.start()
 
         if self.async_pull_kv:
             # dp_rank = vllm_config.parallel_config.data_parallel_rank_local
@@ -557,6 +640,55 @@ class DecodeConnectorWorker:
                                                     name=thread_name)
                 self.sync_thread.start()
                 dump_thread_to_file(self.sync_thread, thread_name, thread_dump_path)
+
+    def heartbeat_timer_func(self):
+        logger.info(f"start heartbeat thread {threading.current_thread().name}")
+        while True:
+            # recv hb and check remote still alive
+            tmp_link_infos = []
+            tmp_sub_ips = []
+            with self.datadist_manager.registered_link_infos_lock:
+                for host_cluster_id, dp_rank, d_rank in self.datadist_manager.registered_link_infos:
+                    remote_ip_port, tp_size, tp_rank = self.datadist_manager.cluster_id_to_ip_port(host_cluster_id[1])
+                    hb_sub_ip = remote_ip_port.split(":")[0]
+                    hb_sub_port = int(os.environ.get("VLLM_LLMDATADIST_HEARTBEAT_PORT", int(remote_ip_port.split(":")[1]) - 1))
+                    hb_ip_port = f"tcp://" + hb_sub_ip + f":{hb_sub_port}"
+                    if hb_ip_port in self.hb_server_info.keys():
+                        socket, ts = self.hb_server_info[hb_ip_port]
+                        try:
+                            data = socket.recv_string(flags=zmq.NOBLOCK)
+                            if data:
+                                # update timestamp
+                                self.hb_server_info[hb_ip_port] = (socket, int(time.time()))
+                                logger.debug(f"get heartbeat: {hb_ip_port=}, {data=}")
+                        except zmq.error.Again:
+                            if ts + CLUSTER_HEARTBEAT_TIMEOUT < int(time.time()):
+                                self.hb_server_info.pop(hb_ip_port, None)
+                                logger.info(f"remote heartbeat timeout: {hb_ip_port=}, {host_cluster_id=}")
+                                tmp_link_infos.append((host_cluster_id, dp_rank, d_rank))
+                                tmp_sub_ips.append(hb_sub_ip)
+                    else:
+                        # create new sub socket
+                        socket = self.ctx.socket(zmq.SUB)
+                        socket.connect(hb_ip_port)
+                        socket.setsockopt_string(zmq.SUBSCRIBE, "prefill_hb")
+                        self.hb_server_info[hb_ip_port] = (socket, int(time.time()))
+                        logger.info(f"subscribe to {hb_ip_port=}")
+
+            for host_cluster_id, dp_rank, d_rank in tmp_link_infos:
+                self.datadist_manager.close_link(host_cluster_id, dp_rank, d_rank)
+
+            with self.zmq_socket_map_lock:
+                self.zmq_socket_map = {ip_port: value
+                    for ip_port, value in self.zmq_socket_map.items() 
+                    if ip_port.replace("tcp://", "").split(":")[0] not in tmp_sub_ips}
+
+            #send heartbeat to each remote 
+            for ip_port in self.zmq_socket_map.keys():
+                json_data = json.dumps([f"decode_hb:{self.datadist_manager.data_dist_config.cluster_id}"])
+                self.zmq_socket_map[ip_port].send_string(json_data)
+                logger.debug(f"decode send hb to {ip_port=}")
+            time.sleep(HEARTBEAT_INTERVAL)
 
     def sync_pulled_tp_kvcache_and_send(self):
         while True:
@@ -803,13 +935,14 @@ class DecodeConnectorWorker:
 
 
     def _send_pulled_kv_req_list(self, path, data):
-        if path in self.zmq_socket_map:
-            socket = self.zmq_socket_map[path]
-        else:
-            socket = self.ctx.socket(zmq.PUSH)
-            socket.connect(path)
-            self.zmq_socket_map[path] = socket
-            logger.info(f"create new socket path:{path}")
+        with self.zmq_socket_map_lock:
+            if path in self.zmq_socket_map:
+                socket = self.zmq_socket_map[path]
+            else:
+                socket = self.ctx.socket(zmq.PUSH)
+                socket.connect(path)
+                self.zmq_socket_map[path] = socket
+                logger.info(f"create new socket path:{path}")
 
         try:
             json_data = json.dumps(data)

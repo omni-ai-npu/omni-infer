@@ -3,6 +3,7 @@
 
 import json
 import time
+import threading
 from collections import defaultdict, namedtuple
 from functools import cached_property
 
@@ -201,21 +202,24 @@ class LLMDataDistManager:
         # the look-up table for pull kv, managed by each dp process
         # { key: (host_cluster_id, prefill_dp_rank, d_rank), value:[prompt_cluster_id_list] }
         self.registered_link_infos = {}
+        self.registered_link_infos_lock = threading.Lock()
 
     def get_real_remote_cluster_ids(self, meta, tp_rank=0):
         # remote_cluster_id: (timestamp, ip1, ip2, ...)
         remote_id_key = tuple(meta.remote_cluster_id) if isinstance(meta.remote_cluster_id, list) else meta.remote_cluster_id
         
         key = (remote_id_key, meta.remote_dp_rank, self.rank)
-        remote_cluster_ids = self.registered_link_infos.get(key, None)
+        with self.registered_link_infos_lock:
+            remote_cluster_ids = self.registered_link_infos.get(key, None)
         
         if remote_cluster_ids is None:
             old_key = None
-            for (reg_key, reg_dp_rank, reg_rank) in list(self.registered_link_infos.keys()):
-                if (reg_dp_rank == meta.remote_dp_rank and reg_rank == self.rank and 
-                    any(ip in reg_key[1:] for ip in remote_id_key[1:])):
-                    old_key = (reg_key, reg_dp_rank, reg_rank) # reg_key: (time_stamp, ip1_int, .., ip2_int)
-                    break
+            with self.registered_link_infos_lock:
+                for (reg_key, reg_dp_rank, reg_rank) in list(self.registered_link_infos.keys()):
+                    if (reg_dp_rank == meta.remote_dp_rank and reg_rank == self.rank and 
+                        any(ip in reg_key[1:] for ip in remote_id_key[1:])):
+                        old_key = (reg_key, reg_dp_rank, reg_rank) # reg_key: (time_stamp, ip1_int, .., ip2_int)
+                        break
             if old_key:
                 self.close_link(old_key[0], meta.remote_dp_rank, self.rank, tp_rank)
                 logger.warning(f"Deleted old link with {old_key}")
@@ -223,7 +227,8 @@ class LLMDataDistManager:
             logger.warning(f"Try to build new link with {meta.remote_cluster_id=}, {meta.remote_dp_rank=}...")
             # Ensure register_link also receives hashable data
             self.register_link(remote_id_key, meta.remote_dp_rank, self.rank, tp_rank)
-            remote_cluster_ids = self.registered_link_infos.get(key, None)
+            with self.registered_link_infos_lock:
+                remote_cluster_ids = self.registered_link_infos.get(key, None)
         
         return remote_cluster_ids
 
@@ -256,7 +261,7 @@ class LLMDataDistManager:
         clusters = []
         for PROMPT_CLUSTER_ID in prompt_cluster_id_list:
             cluster = LLMClusterInfo()
-            host_ip, tp_size, tp_rank = cluster_id_to_ip_port(PROMPT_CLUSTER_ID)
+            host_ip, tp_size, tp_rank = self.cluster_id_to_ip_port(PROMPT_CLUSTER_ID)
             remote_host_ip, port = host_ip.split(':')
             cluster.remote_cluster_id = PROMPT_CLUSTER_ID
             cluster.append_local_ip_info(self._get_local_ip(), 0)
@@ -267,7 +272,8 @@ class LLMDataDistManager:
             raise Exception("link failed")
         # add the cluster_id to the dict
         if not self.data_dist_config.is_prefill:
-            self.registered_link_infos[(host_cluster_id, prefill_dp_rank, d_rank)] = prompt_cluster_id_list
+            with self.registered_link_infos_lock:
+                self.registered_link_infos[(host_cluster_id, prefill_dp_rank, d_rank)] = prompt_cluster_id_list
         logger.info(f"rank:{self.rank} linked to : {remote_host_ip}, {prompt_cluster_id_list=}")
 
     # close the link when it is confirmed to be broken
@@ -279,7 +285,7 @@ class LLMDataDistManager:
         clusters = []
         for PROMPT_CLUSTER_ID in prompt_cluster_id_list:
             cluster = LLMClusterInfo()
-            host_ip, tp_size, tp_rank = cluster_id_to_ip_port(PROMPT_CLUSTER_ID)
+            host_ip, tp_size, tp_rank = self.cluster_id_to_ip_port(PROMPT_CLUSTER_ID)
             remote_host_ip, port = host_ip.split(':')
             cluster.remote_cluster_id = PROMPT_CLUSTER_ID
             cluster.append_local_ip_info(self._get_local_ip(), 0)
@@ -290,8 +296,17 @@ class LLMDataDistManager:
             raise Exception("unlink failed")
         # remove the cluster_id from the dict
         if not self.data_dist_config.is_prefill:
-            self.registered_link_infos.pop((host_cluster_id, prefill_dp_rank, d_rank), None)
+            with self.registered_link_infos_lock:
+                self.registered_link_infos.pop((host_cluster_id, prefill_dp_rank, d_rank), None)
         logger.info(f"rank:{self.rank} unlinked with : {remote_host_ip}, {prompt_cluster_id_list=}")
+
+    def force_unlink(self, remote_cluster_id) -> None:
+        clusters = []
+        cluster_info = LLMClusterInfo()
+        logger.warning(f"force unlink cluster {remote_cluster_id=}")
+        cluster_info.remote_cluster_id = remote_cluster_id
+        clusters.append(cluster_info)
+        self.data_dist_engine.unlink_clusters(clusters, timeout=LINK_TIMEOUT, force=True)
 
     def _pull_blocks(self, src_cache_key, dst_cache, src_blocks, dst_blocks):
         """" pull kv from remote cache to local cache, support return error state if pull kv fails """
@@ -356,26 +371,27 @@ class LLMDataDistManager:
     # search for the host_cluster_id in key using the prompt_cluster_id in value
     def _get_host_cluster_id(self, prompt_cluster_id, prefill_dp_rank, d_rank):
         """ search for the host_cluster_id in key using the prompt_cluster_id in value """
-        prompt_p_metas = [
-            key for key, values in self.registered_link_infos.items()
-            if (isinstance(values, list) and
-                prompt_cluster_id in values and
-                len(key) >= 3 and
-                key[1] == prefill_dp_rank and 
-                key[2] == d_rank)
-        ]
+        with self.registered_link_infos_lock:
+            prompt_p_metas = [
+                key for key, values in self.registered_link_infos.items()
+                if (isinstance(values, list) and 
+                    prompt_cluster_id in values and 
+                    len(key) >= 3 and
+                    key[1] == prefill_dp_rank and 
+                    key[2] == d_rank)
+            ]
         if not prompt_p_metas:
             return None
         else:
             return prompt_p_metas[0]
-        
+
     def _get_cluster_id_list(self, host_cluster_ids, prefill_dp_rank, d_rank, tp_rank):
         """ compute the cluster id that should be linked with the target dp rank """
         if isinstance(host_cluster_ids, int):
            host_cluster_ids = [host_cluster_ids]
         ip_ports = []
         for host_cluster_id in host_cluster_ids:
-            ip_port, prefill_tp_size, _ = cluster_id_to_ip_port(host_cluster_id)
+            ip_port, prefill_tp_size, _ = self.cluster_id_to_ip_port(host_cluster_id)
             ip_ports.append(ip_port)
         decode_tp_size = self.data_dist_config.kv_parallel_size
         decode_id = 0
@@ -430,6 +446,20 @@ class LLMDataDistManager:
             cache = self.data_dist_engine.cache_manager.register_blocks_cache(cache_desc, cache_addrs, cache_key)
             self.registered_kv_caches.append(cache)
         logger.debug(f" ***** registered_kv_caches num:{len(self.registered_kv_caches)}")
+
+    def cluster_id_to_ip_port(self, cluster_id):
+        """Extract ip_port from int64 cluster id (inverse of ip_port_to_int)."""
+        if not isinstance(cluster_id, int):
+            raise TypeError("cluster_id must be int type")
+        
+        # Extract fields (reverse order of packing)
+        tp_size = cluster_id & 0xFFFF              # Lower 16 bits
+        port = (cluster_id >> 16) & 0xFFFF         # Next 16 bits
+        ip_int = (cluster_id >> 32) & 0xFFFFFFFF   # Upper 32 bits
+        
+        ip = socket.inet_ntoa(struct.pack('!I', ip_int))
+
+        return f"{ip}:{port}", tp_size, 0  # tp_rank always 0
 
 # reuse the existing code
 def unzip_kv_cache_dict(kv_caches: dict[str, torch.Tensor], ):
@@ -530,18 +560,3 @@ def ip_port_to_int(ip_port, tp_size, tp_rank=0):
     result = (ip_int << 32) | (port << 16) | (tp_size & 0xFFFF)
     return result
 
-
-
-def cluster_id_to_ip_port(cluster_id):
-    """Extract ip_port from int64 cluster id (inverse of ip_port_to_int)."""
-    if not isinstance(cluster_id, int):
-        raise TypeError("cluster_id must be int type")
-    
-    # Extract fields (reverse order of packing)
-    tp_size = cluster_id & 0xFFFF              # Lower 16 bits
-    port = (cluster_id >> 16) & 0xFFFF         # Next 16 bits
-    ip_int = (cluster_id >> 32) & 0xFFFFFFFF   # Upper 32 bits
-    
-    ip = socket.inet_ntoa(struct.pack('!I', ip_int))
-
-    return f"{ip}:{port}", tp_size, 0  # tp_rank always 0
