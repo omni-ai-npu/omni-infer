@@ -1,17 +1,30 @@
 from typing_extensions import override
 import torch
 from llm_datadist.v2.llm_types import Cache, CacheDesc, BlocksCacheKey
-from omni.accelerators.pd.llmdatadist_manager import (
-    LLMDataDistManager,
-    TORCH_DTYPE_TO_NPU_DTYPE,
-    unzip_kv_cache_dict,
-    logger,
-)
+import os
+USE_NEW_DATADIST = os.getenv("ENABLE_DYNAMIC_LLMDATADIST", "0") == "1"
+if USE_NEW_DATADIST:
+    from omni.accelerators.pd.llmdatadist_manager_v1 import (
+        LLMDataDistManager,
+        TORCH_DTYPE_TO_NPU_DTYPE,
+        unzip_kv_cache_dict,
+        logger,
+    )
+else:
+    from omni.accelerators.pd.llmdatadist_manager import (
+        LLMDataDistManager,
+        TORCH_DTYPE_TO_NPU_DTYPE,
+        unzip_kv_cache_dict,
+        logger,
+    )
 from . import kv_cache_interface as itfc
 
 class OmniBiGroupDataDistManager(LLMDataDistManager):
-    def __init__(self, vllm_config):
-        super().__init__(vllm_config)
+    def __init__(self, vllm_config, local_host_ip=0, host_port=0):
+        if USE_NEW_DATADIST:
+            super().__init__(vllm_config, local_host_ip, host_port)
+        else:
+            super().__init__(vllm_config)
         self.registerd_kv_caches: list[list[Cache]] = [[], []]
 
     @override
@@ -78,7 +91,7 @@ class OmniBiGroupDataDistManager(LLMDataDistManager):
         logger.error(f" ***** registerd_kv_caches num:{sum([len(group_kv_caches) for group_kv_caches in self.registerd_kv_caches])}")
 
     @override
-    def pull_kv(self, src_blocks: list[int], tgt_blocks: list[list[int]], prompt_cluster_id: int):
+    def pull_kv(self, src_blocks: list[int], tgt_blocks: list[list[int]], prompt_cluster_id: int, prefill_dp_rank: int=0):
         """Pull KV Caches for both full and omni attention layers. The input `tgt_blocks`
         is a list of lists of ints like [[blk1,...,blk100], [blk1,blk2,blk3]], where the
         first sublist is the block table for full attention layers while the second is
@@ -105,8 +118,12 @@ class OmniBiGroupDataDistManager(LLMDataDistManager):
                 prompt_cache_key = BlocksCacheKey(
                     prompt_cluster_id=prompt_cluster_id, model_id=cur_id)
                 if flag == 0:
-                    self._pull_blocks(prompt_cache_key, kv_cache,
-                                      group_src_blocks, group_tgt_blocks)
+                    if USE_NEW_DATADIST:
+                        ret = self._pull_blocks(prompt_cache_key, kv_cache,
+                                    group_src_blocks, group_tgt_blocks)
+                    else:
+                        self._pull_blocks(prompt_cache_key, kv_cache,
+                                    group_src_blocks, group_tgt_blocks)
                 else:
                     if len(group_tgt_blocks) == 0:
                         continue
@@ -119,5 +136,16 @@ class OmniBiGroupDataDistManager(LLMDataDistManager):
                         raise RuntimeError("src and tgt cannot match for omni kv caches. "
                                            f"{src_blocks=}, {tgt_blocks=}, "
                                            f"{len(tmp_src)=}, {len(tmp_tgt)=}.")
-                    self._pull_blocks(prompt_cache_key, kv_cache,
-                                      tmp_src, tmp_tgt)
+                    if USE_NEW_DATADIST:
+                        ret = self._pull_blocks(prompt_cache_key, kv_cache,
+                                        tmp_src, tmp_tgt)
+                    else:
+                        self._pull_blocks(prompt_cache_key, kv_cache,
+                                        tmp_src, tmp_tgt)
+                if USE_NEW_DATADIST:
+                    if not ret:
+                        self._refresh_link(prompt_cluster_id, prefill_dp_rank, self.rank)
+                        ret_updated = self._pull_blocks(prompt_cache_key, kv_cache,
+                                        tmp_src, tmp_tgt)
+                        if not ret_updated:
+                            raise RuntimeError(f"Failed to pull kv even if rebuild the kv link!")
