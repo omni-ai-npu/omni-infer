@@ -1,0 +1,497 @@
+diff --git a/vllm/engine/arg_utils.py b/vllm/engine/arg_utils.py
+index c57a628cf..8fa622fe1 100644
+--- a/vllm/engine/arg_utils.py
++++ b/vllm/engine/arg_utils.py
+@@ -1226,11 +1226,6 @@ class EngineArgs:
+                                recommend_to_remove=True)
+             return False
+ 
+-        if self.scheduling_policy != SchedulerConfig.policy:
+-            _raise_or_fallback(feature_name="--scheduling-policy",
+-                               recommend_to_remove=False)
+-            return False
+-
+         if self.num_scheduler_steps != SchedulerConfig.num_scheduler_steps:
+             _raise_or_fallback(feature_name="--num-scheduler-steps",
+                                recommend_to_remove=True)
+diff --git a/vllm/v1/core/sched/request_queue.py b/vllm/v1/core/sched/request_queue.py
+new file mode 100644
+index 000000000..430a05e20
+--- /dev/null
++++ b/vllm/v1/core/sched/request_queue.py
+@@ -0,0 +1,233 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++from __future__ import annotations
++
++import heapq
++from abc import ABC, abstractmethod
++from collections import deque
++from collections.abc import Iterable, Iterator
++from enum import Enum
++
++from vllm.logger import init_logger
++from vllm.v1.request import Request
++logger = init_logger(__name__)
++
++class SchedulingPolicy(Enum):
++    """Enum for scheduling policies."""
++    FCFS = "fcfs"
++    PRIORITY = "priority"
++
++
++class RequestQueue(ABC):
++    """Abstract base class for request queues."""
++
++    @abstractmethod
++    def add_request(self, request: Request) -> None:
++        """Add a request to the queue according to the policy."""
++        pass
++
++    @abstractmethod
++    def pop_request(self) -> Request:
++        """Pop a request from the queue according to the policy."""
++        pass
++
++    @abstractmethod
++    def peek_request(self) -> Request:
++        """Peek at the request at the front of the queue without removing it."""
++        pass
++
++    @abstractmethod
++    def prepend_request(self, request: Request) -> None:
++        """Prepend a request to the front of the queue."""
++        pass
++
++    @abstractmethod
++    def prepend_requests(self, requests: RequestQueue) -> None:
++        """Prepend all requests from another queue to the front of this
++        queue."""
++        pass
++
++    @abstractmethod
++    def remove_request(self, request: Request) -> None:
++        """Remove a specific request from the queue."""
++        pass
++
++    @abstractmethod
++    def remove_requests(self, requests: Iterable[Request]) -> None:
++        """Remove multiple specific requests from the queue."""
++        pass
++
++    @abstractmethod
++    def __bool__(self) -> bool:
++        """Check if queue has any requests."""
++        pass
++
++    @abstractmethod
++    def __len__(self) -> int:
++        """Get number of requests in queue."""
++        pass
++
++    @abstractmethod
++    def __iter__(self) -> Iterator[Request]:
++        """Iterate over the queue according to the policy."""
++        pass
++
++    @abstractmethod
++    def __reversed__(self) -> Iterator[Request]:
++        """Iterate over the queue in reverse order."""
++        pass
++
++
++class FCFSRequestQueue(RequestQueue):
++    """A first-come-first-served queue that supports deque operations."""
++    def __init__(self, deque_param: deque[Request] = None) -> None:
++        if deque_param is None:
++            self._deque: deque[Request] = deque()
++        else:
++            self._deque = deque_param
++
++    def add_request(self, request: Request) -> None:
++        """Add a request to the queue according to FCFS policy."""
++        self._deque.append(request)
++
++    def pop_request(self) -> Request:
++        """Pop a request from the queue according to FCFS policy."""
++        return self._deque.popleft()
++
++    def peek_request(self) -> Request:
++        """Peek at the next request in the queue without removing it."""
++        if not self:
++            raise IndexError("peek from an empty queue")
++        return self._deque[0]
++
++    def prepend_request(self, request: Request) -> None:
++        """Prepend a request to the front of the queue."""
++        self._deque.appendleft(request)
++
++    def prepend_requests(self, requests: RequestQueue) -> None:
++        """Prepend all requests from another queue to the front of this
++        queue."""
++        self._deque.extendleft(requests)
++
++    def remove_request(self, request: Request) -> None:
++        """Remove a specific request from the queue."""
++        self._deque.remove(request)
++
++    def remove_requests(self, requests: Iterable[Request]) -> None:
++        """Remove multiple specific requests from the queue."""
++        requests_to_remove = set(requests)
++        filtered_requests = [
++            req for req in self if req not in requests_to_remove
++        ]
++        # deque does not support in-place filtering, so we need to clear
++        # and extend
++        self._deque.clear()
++        self._deque.extend(filtered_requests)
++
++    def __bool__(self) -> bool:
++        """Check if queue has any requests."""
++        return len(self._deque) > 0
++
++    def __len__(self) -> int:
++        """Get number of requests in queue."""
++        return self._deque.__len__()
++
++    def __iter__(self) -> Iterator[Request]:
++        """Iterate over the queue according to FCFS policy."""
++        return self._deque.__iter__()
++
++    def __reversed__(self) -> Iterator[Request]:
++        """Iterate over the queue in reverse order."""
++        return self._deque.__reversed__()
++
++
++class PriorityRequestQueue(RequestQueue):
++    """
++    A priority queue that supports heap operations.
++
++    Requests with a smaller value of `priority` are processed first.
++    If multiple requests have the same priority, the one with the earlier
++    `arrival_time` is processed first.
++    """
++
++    def __init__(self) -> None:
++        self._heap: list[tuple[int, float, Request]] = []
++
++    def add_request(self, request: Request) -> None:
++        """Add a request to the queue according to priority policy."""
++        heapq.heappush(self._heap,
++                       (request.priority, request.arrival_time, request))
++
++    def pop_request(self) -> Request:
++        """Pop a request from the queue according to priority policy."""
++        if not self._heap:
++            raise IndexError("pop from empty heap")
++        _, _, request = heapq.heappop(self._heap)
++        return request
++
++    def peek_request(self) -> Request:
++        """Peek at the next request in the queue without removing it."""
++        if not self._heap:
++            raise IndexError("peek from empty heap")
++        _, _, request = self._heap[0]
++        return request
++
++    def prepend_request(self, request: Request) -> None:
++        """Add a request to the queue according to priority policy.
++
++        Note: In a priority queue, there is no concept of prepending to the
++        front. Requests are ordered by (priority, arrival_time)."""
++        self.add_request(request)
++
++    def prepend_requests(self, requests: RequestQueue) -> None:
++        """Add all requests from another queue according to priority policy.
++
++        Note: In a priority queue, there is no concept of prepending to the
++        front. Requests are ordered by (priority, arrival_time)."""
++        for request in requests:
++            self.add_request(request)
++
++    def remove_request(self, request: Request) -> None:
++        """Remove a specific request from the queue."""
++        self._heap = [(p, t, r) for p, t, r in self._heap if r != request]
++        heapq.heapify(self._heap)
++
++    def remove_requests(self, requests: Iterable[Request]) -> None:
++        """Remove multiple specific requests from the queue."""
++        requests_to_remove = set(requests)
++        self._heap = [(p, t, r) for p, t, r in self._heap
++                      if r not in requests_to_remove]
++        heapq.heapify(self._heap)
++
++    def __bool__(self) -> bool:
++        """Check if queue has any requests."""
++        return bool(self._heap)
++
++    def __len__(self) -> int:
++        """Get number of requests in queue."""
++        return len(self._heap)
++
++    def __iter__(self) -> Iterator[Request]:
++        """Iterate over the queue according to priority policy."""
++        heap_copy = self._heap[:]
++        while heap_copy:
++            _, _, request = heapq.heappop(heap_copy)
++            yield request
++
++    def __reversed__(self) -> Iterator[Request]:
++        """Iterate over the queue in reverse priority order."""
++        return reversed(list(self))
++
++
++def create_request_queue(policy: SchedulingPolicy) -> RequestQueue:
++    """Create request queue based on scheduling policy."""
++    if policy == SchedulingPolicy.PRIORITY:
++        return PriorityRequestQueue()
++    elif policy == SchedulingPolicy.FCFS:
++        return FCFSRequestQueue()
++    else:
++        raise ValueError(f"Unknown scheduling policy: {policy}")
++
++def create_fcfs_request_queue(queue: deque[Request]) -> RequestQueue:
++    return FCFSRequestQueue(queue)
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 2d62c5ad1..1f01c1e0a 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -33,6 +33,8 @@ from vllm.v1.outputs import ModelRunnerOutput
+ from vllm.v1.request import Request, RequestStatus
+ from vllm.v1.spec_decode.metrics import SpecDecodingStats
+ from vllm.v1.structured_output import StructuredOutputManager
++from vllm.v1.core.sched.request_queue import (SchedulingPolicy,
++                                              create_request_queue)
+ 
+ logger = init_logger(__name__)
+ 
+@@ -114,8 +116,16 @@ class Scheduler(SchedulerInterface):
+ 
+         # req_id -> Request
+         self.requests: dict[str, Request] = {}
++        # Scheduling policy
++        if self.scheduler_config.policy == "priority":
++            self.policy = SchedulingPolicy.PRIORITY
++        elif self.scheduler_config.policy == "fcfs":
++            self.policy = SchedulingPolicy.FCFS
++        else:
++            raise ValueError(
++                f"Unknown scheduling policy: {self.scheduler_config.policy}")
+         # Priority queues for requests.
+-        self.waiting: deque[Request] = deque()
++        self.waiting = create_request_queue(self.policy)
+         self.running: list[Request] = []
+ 
+         # The request IDs that are finished in between the previous and the
+@@ -321,7 +331,16 @@ class Scheduler(SchedulerInterface):
+                 if new_blocks is None:
+                     # The request cannot be scheduled.
+                     # Preempt the lowest-priority request.
+-                    preempted_req = self.running.pop()
++                    if self.policy == SchedulingPolicy.PRIORITY:
++                        preempted_req = max(
++                            self.running,
++                            key=lambda r: (r.priority, r.arrival_time),
++                        )
++                        self.running.remove(preempted_req)
++                        if preempted_req in scheduled_running_reqs:
++                            scheduled_running_reqs.remove(preempted_req)
++                    else:
++                        preempted_req = self.running.pop()
+                     if self.preemption_mode == PreemptionMode.SWAP:
+                         if not self.cpu_npu_kv_cache_manager.can_swap_out(preempted_req):
+                             preempted_req.status = RequestStatus.FINISHED_LENGTH_CAPPED
+@@ -339,7 +358,7 @@ class Scheduler(SchedulerInterface):
+                         preempted_req.record_event(
+                             EngineCoreEventType.PREEMPTED, scheduled_timestamp)
+ 
+-                    self.waiting.appendleft(preempted_req)
++                    self.waiting.prepend_request(preempted_req)
+                     preempted_reqs.append(preempted_req)
+                     if preempted_req == request:
+                         # No more request to preempt.
+@@ -398,21 +417,21 @@ class Scheduler(SchedulerInterface):
+         # Overload Control
+         if self.vllm_config.kv_transfer_config is not None:
+             if self.vllm_config.kv_transfer_config.kv_role != 'kv_consumer' and self.llm_waiting_out > 0:
+-                filter_waiting: deque[Request] = deque()
++                filter_waiting = create_request_queue(self.policy)
+                 while self.waiting:
+-                    request = self.waiting.popleft()
++                    request = self.waiting.pop_request()
+                     if time.time() - request.arrival_time > self.llm_waiting_out:
+                         logger.warning(f"Request (request_id={request.request_id}) timed out: "
+                                        f"waiting duration exceeded the limit of {self.llm_waiting_out}s")
+                         request.status = RequestStatus.FINISHED_OVERLOAD
+                         self.finished_req_ids.add(request.request_id)
+                         continue
+-                    filter_waiting.append(request)
++                    filter_waiting.add_request(request)
+                 self.waiting = filter_waiting
+ 
+         # Use a temporary deque to collect requests that need to be skipped
+         # and put back at the head of the waiting queue later
+-        skipped_waiting_requests: deque[Request] = deque()
++        skipped_waiting_requests = create_request_queue(self.policy)
+ 
+         # Next, schedule the WAITING requests.
+         if not preempted_reqs:
+@@ -420,7 +439,7 @@ class Scheduler(SchedulerInterface):
+                 if len(self.running) == self.max_num_running_reqs:
+                     break
+ 
+-                request = self.waiting[0]
++                request = self.waiting.peek_request()
+ 
+                 # KVTransfer: skip request if still waiting for remote kvs.
+                 if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
+@@ -431,8 +450,8 @@ class Scheduler(SchedulerInterface):
+                         logger.debug(
+                             "%s is still in WAITING_FOR_REMOTE_KVS state.",
+                             request.request_id)
+-                        self.waiting.popleft()
+-                        skipped_waiting_requests.appendleft(request)
++                        self.waiting.pop_request()
++                        skipped_waiting_requests.prepend_request(request)
+                         continue
+ 
+                 # Skip request if the structured output request is still waiting
+@@ -442,8 +461,8 @@ class Scheduler(SchedulerInterface):
+                     if structured_output_req and structured_output_req.grammar:
+                         request.status = RequestStatus.WAITING
+                     else:
+-                        self.waiting.popleft()
+-                        skipped_waiting_requests.appendleft(request)
++                        self.waiting.pop_request()
++                        skipped_waiting_requests.prepend_request(request)
+                         continue
+ 
+                 # Check that adding the request still respects the max_loras
+@@ -453,8 +472,8 @@ class Scheduler(SchedulerInterface):
+                         and request.lora_request.lora_int_id
+                         not in scheduled_loras):
+                     # Scheduling would exceed max_loras, skip.
+-                    self.waiting.popleft()
+-                    skipped_waiting_requests.appendleft(request)
++                    self.waiting.pop_request()
++                    skipped_waiting_requests.prepend_request(request)
+                     continue
+ 
+                 num_external_computed_tokens = 0
+@@ -545,11 +564,11 @@ class Scheduler(SchedulerInterface):
+                         num_external_computed_tokens,
+                     )
+ 
+-                self.waiting.popleft()
++                self.waiting.pop_request()
+                 if load_kv_async:
+                     # If loading async, allocate memory and put request
+                     # into the WAITING_FOR_REMOTE_KV state.
+-                    skipped_waiting_requests.appendleft(request)
++                    skipped_waiting_requests.prepend_request(request)
+                     request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
+                     continue
+ 
+@@ -600,7 +619,7 @@ class Scheduler(SchedulerInterface):
+ 
+         # Put back any skipped requests at the head of the waiting queue
+         if skipped_waiting_requests:
+-            self.waiting.extendleft(skipped_waiting_requests)
++            self.waiting.prepend_requests(skipped_waiting_requests)
+ 
+         # Check if the scheduling constraints are satisfied.
+         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
+@@ -1014,7 +1033,7 @@ class Scheduler(SchedulerInterface):
+         return engine_core_outputs
+ 
+     def add_request(self, request: Request) -> None:
+-        self.waiting.append(request)
++        self.waiting.prepend_request(request)
+         self.requests[request.request_id] = request
+         if self.log_stats:
+             request.record_event(EngineCoreEventType.QUEUED)
+@@ -1045,7 +1064,7 @@ class Scheduler(SchedulerInterface):
+             if request.status == RequestStatus.RUNNING:
+                 self.running.remove(request)
+             elif request.status != RequestStatus.FINISHED_LENGTH_CAPPED:
+-                self.waiting.remove(request)
++                self.waiting.remove_request(request)
+             request.status = finished_status
+             self._free_request(request)
+ 
+diff --git a/vllm/v1/engine/__init__.py b/vllm/v1/engine/__init__.py
+index e98ec66f7..1474f9528 100644
+--- a/vllm/v1/engine/__init__.py
++++ b/vllm/v1/engine/__init__.py
+@@ -64,7 +64,7 @@ class EngineCoreRequest(
+     # belong to, to cover a race condition where the request is sent before
+     # a wave finished notification is received.
+     current_wave: int = 0
+-
++    priority: int = 0
+ 
+ class EngineCoreEventType(enum.IntEnum):
+     """The type of engine core request event."""
+diff --git a/vllm/v1/engine/processor.py b/vllm/v1/engine/processor.py
+index 64a756148..96e6c3ec7 100644
+--- a/vllm/v1/engine/processor.py
++++ b/vllm/v1/engine/processor.py
+@@ -217,8 +217,6 @@ class Processor:
+         # TODO(woosuk): Support encoder-decoder models.
+         self._validate_lora(lora_request)
+         self._validate_params(params, lora_request)
+-        if priority != 0:
+-            raise ValueError("V1 does not support priority yet.")
+         if trace_headers is not None:
+             raise ValueError("V1 does not support tracing yet.")
+         if prompt_adapter_request is not None:
+@@ -327,6 +325,7 @@ class Processor:
+             arrival_time=arrival_time,
+             lora_request=lora_request,
+             cache_salt=decoder_inputs.get("cache_salt"),
++            priority=priority
+         )
+ 
+     def _validate_model_inputs(self,
+diff --git a/vllm/v1/request.py b/vllm/v1/request.py
+index 03f6802c1..b19635ac1 100644
+--- a/vllm/v1/request.py
++++ b/vllm/v1/request.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ 
+ import enum
++import time
+ from typing import TYPE_CHECKING, Any, Optional, Union
+ 
+ from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
+@@ -35,16 +36,19 @@ class Request:
+         lora_request: Optional["LoRARequest"] = None,
+         structured_output_request: Optional["StructuredOutputRequest"] = None,
+         cache_salt: Optional[str] = None,
++        priority: int = 0,
+     ) -> None:
+         self.padding_len = 0
+         self.arrival_time = arrival_time
++        self.priority = priority
+         self.request_id = request_id
+         self.sampling_params = sampling_params
+         # Because of LoRA, the eos token id can be different for each request.
+         self.eos_token_id = eos_token_id
+         self.lora_request = lora_request
+         self.structured_output_request = structured_output_request
+-
++        self.arrival_time = arrival_time if arrival_time is not None else \
++            time.time()
+         self.status = (RequestStatus.WAITING_FOR_FSM
+                        if sampling_params.guided_decoding is not None else
+                        RequestStatus.WAITING)
+@@ -135,6 +139,7 @@ class Request:
+             structured_output_request=StructuredOutputRequest(
+                 sampling_params=request.sampling_params),
+             cache_salt=request.cache_salt,
++            priority=request.priority,
+         )
+ 
+     def append_output_token_ids(

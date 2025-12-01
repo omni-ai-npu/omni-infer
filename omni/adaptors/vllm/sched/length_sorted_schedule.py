@@ -42,6 +42,7 @@ from vllm.v1.core.sched.output import (CachedRequestData, NewRequestData,
                                        SchedulerOutput)
 from vllm.v1.core.sched.utils import check_stop, add_token_and_check_stop
 from vllm.v1.core.sched.scheduler import logger, PreemptionMode
+from vllm.v1.core.sched.request_queue import create_request_queue, create_fcfs_request_queue
 from vllm.v1.engine import (EngineCoreEventType, EngineCoreOutput,
                             EngineCoreOutputs)
 from vllm.v1.kv_cache_interface import KVCacheConfig
@@ -82,6 +83,10 @@ class LengthSortedScheduler(Scheduler):
         include_finished_set: bool = False,
         log_stats: bool = False,
     ) -> None:
+        if vllm_config.scheduler_config.policy != "fcfs":
+            raise NotImplementedError(
+                f"currently lengthSortedScheduler only supports fcfs policy, got {self.policy}"
+            )
         super().__init__(vllm_config, kv_cache_config,
                          structured_output_manager, mm_registry,
                          include_finished_set, log_stats)
@@ -277,7 +282,7 @@ class LengthSortedScheduler(Scheduler):
                         preempted_req.record_event(
                             EngineCoreEventType.PREEMPTED, scheduled_timestamp)
 
-                    self.waiting.appendleft(preempted_req)
+                    self.waiting.prepend_request(preempted_req)
                     preempted_reqs.append(preempted_req)
                     if preempted_req == request:
                         # No more request to preempt.
@@ -335,18 +340,19 @@ class LengthSortedScheduler(Scheduler):
 
         # Use a temporary deque to collect requests that need to be skipped
         # and put back at the head of the waiting queue later
-        skipped_waiting_requests: deque[Request] = deque()
+        skipped_waiting_requests = create_request_queue(self.policy)
 
         # Next, schedule the WAITING requests.
         if not preempted_reqs:
             if is_prefill:
-                self.waiting = deque([mix_req.request for mix_req in mix_requests if not mix_req.is_running])
+                _deque = deque([mix_req.request for mix_req in mix_requests if not mix_req.is_running])
+                self.waiting = create_fcfs_request_queue(_deque)
 
             while self.waiting and token_budget > 0:
                 if len(self.running) == self.max_num_running_reqs:
                     break
 
-                request = self.waiting[0]
+                request = self.waiting.peek_request()
                 if is_prefill and not pre_scheduled[request.request_id]:
                     break
                 # KVTransfer: skip request if still waiting for remote kvs.
@@ -358,8 +364,8 @@ class LengthSortedScheduler(Scheduler):
                         logger.debug(
                             "%s is still in WAITING_FOR_REMOTE_KVS state.",
                             request.request_id)
-                        self.waiting.popleft()
-                        skipped_waiting_requests.appendleft(request)
+                        self.waiting.pop_request()
+                        skipped_waiting_requests.prepend_request(request)
                         continue
 
                 # Skip request if the structured output request is still waiting
@@ -369,8 +375,8 @@ class LengthSortedScheduler(Scheduler):
                     if structured_output_req and structured_output_req.grammar:
                         request.status = RequestStatus.WAITING
                     else:
-                        self.waiting.popleft()
-                        skipped_waiting_requests.appendleft(request)
+                        self.waiting.pop_request()
+                        skipped_waiting_requests.prepend_request(request)
                         continue
 
                 # Check that adding the request still respects the max_loras
@@ -380,8 +386,8 @@ class LengthSortedScheduler(Scheduler):
                         and request.lora_request.lora_int_id
                         not in scheduled_loras):
                     # Scheduling would exceed max_loras, skip.
-                    self.waiting.popleft()
-                    skipped_waiting_requests.appendleft(request)
+                    self.waiting.pop_request()
+                    skipped_waiting_requests.prepend_request(request)
                     continue
 
                 num_external_computed_tokens = 0
@@ -479,11 +485,11 @@ class LengthSortedScheduler(Scheduler):
                         num_external_computed_tokens,
                     )
 
-                self.waiting.popleft()
+                self.waiting.pop_request()
                 if load_kv_async:
                     # If loading async, allocate memory and put request
                     # into the WAITING_FOR_REMOTE_KV state.
-                    skipped_waiting_requests.appendleft(request)
+                    skipped_waiting_requests.prepend_request(request)
                     request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
                     continue
 
@@ -534,7 +540,7 @@ class LengthSortedScheduler(Scheduler):
 
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
-            self.waiting.extendleft(skipped_waiting_requests)
+            self.waiting.prepend_requests(skipped_waiting_requests)
 
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
