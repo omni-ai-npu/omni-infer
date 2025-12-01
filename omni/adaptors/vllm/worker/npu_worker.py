@@ -114,7 +114,6 @@ class NPUWorker(WorkerBase):
 
         vllm_config.model_config.disable_cascade_attn = True
         self._init_graph_options()
-        self._profile_start_requested = False  # profile start call symbol
 
         # token recover
         self.enable_token_recover = False
@@ -337,11 +336,10 @@ class NPUWorker(WorkerBase):
         scheduler_output: "SchedulerOutput",
     ) -> Optional[ModelRunnerOutput]:
         if envs.VLLM_TORCH_PROFILER_DIR:
-            if not self.profile_already_start and self._profile_start_requested:
+            if not self.profile_already_start and scheduler_output.total_num_scheduled_tokens >= self.profiler_token_threshold:
                 self.profiler.start()
                 self.profile_already_start = True
                 self.profile_step = 0
-                self._profile_start_requested = False  
 
         output = self.execute_model_wrapper(scheduler_output)
         if isinstance(output, dict):
@@ -436,15 +434,9 @@ class NPUWorker(WorkerBase):
         if self.profiler is None:
             raise RuntimeError("Profiler is not enabled.")
         if is_start:
-            self._profile_start_requested = True
-            self.profile_finished = False
+            self.profiler.start()
         else:
-            self._profile_start_requested = False
-            if self.profile_already_start and not self.profile_finished:
-                self.profiler.stop()
-            self.profile_already_start = False
-            self.profile_step = 0
-            self.profile_finished = True
+            self.profiler.stop()
 
     def execute_dummy_batch(self) -> None:
         output = self.execute_dummy_batch_wrapper()

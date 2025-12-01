@@ -391,21 +391,15 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 
 # profiling采集
 profiling采集代码位于`omni\adaptors\vllm\worker\npu_worker.py`文件。  
-既可以采集prefill，又可以采集decode的profiling。可以自动停止，也可以curl端口提前停止。  
-主要配置项为以下环境变量：  
-1. `VLLM_TORCH_PROFILER_DIR`：在pd_run.sh设置，默认设置为/tmp/profiling，表示profiling文件存放位置，若设置了可以通过post /start_profile接口开启采集profiling，并且通过post /stop_profile接口停止。没设置则不开启。  
-与官方接口保持一致
-2. `PROFILER_STOP_STEP`：表示采集profiling的步数，在启动后需要采集多少就设置为多少，默认为5。 到达指定步数后自动停止。 
+既可以采集prefill，又可以采集decode的profiling。  
+主要配置项为以下三个环境变量：  
+1. `VLLM_TORCH_PROFILER_DIR`：表示profiling文件存放位置，若设置了表示开启采集profiling，没设置则不采集。  
+2. `PROFILER_TOKEN_THRESHOLD`：表示step调度的token数，是采集profiling的入口条件，可以根据这个值区分采集的阶段，默认值为1。  
+3. `PROFILER_STOP_STEP`：表示采集profiling的步数，需要采集多少就设置为多少，默认为5。  
 
 用法：
 ```bash
-#首先在pd_run设置保存地址，默认为/tmp/profiling
 export VLLM_TORCH_PROFILER_DIR=./profiling
+export PROFILER_TOKEN_THRESHOLD=1
 export PROFILER_STOP_STEP=5
-```
-直接发起请求控制开启和关闭,与vllm官方接口一致
-```bash
-#暂时不支持curl proxy,直接 curl 想要开启profile的服务，端口为配置文件中api port，可以在日志中查看实际端口
-curl  -X POST ip:port/start_profile
-curl  -X POST ip:port/stop_profile
 ```
