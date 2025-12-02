@@ -10,7 +10,7 @@ from vllm.v1.sample.sampler import Sampler as SamplerV1
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 
 from omni.models.config_loader.loader import model_extra_config
-from omni.layers.npu_sampler_cache import PenaltyCache, ProbCache
+from omni.layers.npu_sampler_cache import PenaltyCache, ProbCache, AcceptedTokenCache
 from omni.layers.sampler import AscendTopKTopPSamplerV1
 
 _SAMPLING_EPS = 1e-5
@@ -108,6 +108,7 @@ class AscendSamplerV1(SamplerV1):
         self.sampler_preparing_stream = torch.npu.Stream()
         self.penalty_cache = PenaltyCache(runner.max_num_reqs, runner.input_batch.vocab_size, runner.device) if runner.use_penalty else None
         self.prob_cache = ProbCache(runner.max_num_reqs, runner.num_tokens_per_reqs_decode - 1, runner.topk, runner.input_batch.vocab_size, runner.device) if runner.use_rejection_sampler else None
+        self.accepted_token_cache = AcceptedTokenCache(runner.max_num_reqs, runner.device) if runner.use_spec_decode else None
         self.topk_topp_sampler = AscendTopKTopPSamplerV1()
 
     def expand_sampling_metadata(
@@ -402,3 +403,5 @@ class AscendSamplerV1(SamplerV1):
             self.penalty_cache.prepare_cache(*args, **kwargs)
         if self.prob_cache:
             self.prob_cache.prepare_cache(*args, **kwargs)
+        if self.accepted_token_cache:
+            self.accepted_token_cache.prepare_cache(*args, **kwargs)

@@ -538,11 +538,8 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         ssm_state = self_kv_cache[1]
         max_batch_size = hidden_states.shape[0]
         num_accepted_tokens = attn_metadata.num_accepted_tokens
-        is_decode = attn_metadata.is_decode
-
         # 1. Set up dimensions for reshapes later
         if attn_metadata.num_prefill_tokens > 0:
-            assert(not is_decode)      
             projected_states, _ = self.in_proj(hidden_states[:attn_metadata.num_prefill_tokens])         
         else:
             projected_states, _ = self.in_proj(hidden_states)
@@ -569,7 +566,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
 
         if spec_sequence_masks is not None:
             if (attn_metadata.num_prefills == 0
-                    and (not attn_metadata.is_decode)):
+                    and (not attn_metadata.have_decode)):
                 mixed_qkv_spec = mixed_qkv
                 mixed_qkv_non_spec = None
             else:
@@ -593,25 +590,24 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                 conv_state_indices=spec_state_indices_tensor[:, 0]
                 [:attn_metadata.num_spec_decodes],
                 num_accepted_tokens=num_accepted_tokens,
-                validate_data=False,
             )
             mixed_qkv_spec = rearrange(mixed_qkv_spec, 'b d l -> (b l) d')
 
         # 2.2: process the remaining part
         if attn_metadata.num_prefills > 0:
-           # - "cache_indices" updates the conv_state cache in positions
-           #   pointed to by "mamba_cache_params.state_indices_tensor"
-           mixed_qkv_non_spec = causal_conv1d_fn(
-               mixed_qkv_non_spec.transpose(0, 1),
-               conv_weights,
-               self.conv1d.bias,
-               activation=self.activation,
-               conv_states=conv_state,
-               has_initial_state=has_initial_state,
-               cache_indices=non_spec_state_indices_tensor,
-               query_start_loc=non_spec_query_start_loc,
-           ).transpose(0, 1)
-        elif attn_metadata.is_decode:
+            # - "cache_indices" updates the conv_state cache in positions
+            #   pointed to by "mamba_cache_params.state_indices_tensor"
+            mixed_qkv_non_spec = causal_conv1d_fn(
+                mixed_qkv_non_spec.transpose(0, 1),
+                conv_weights,
+                self.conv1d.bias,
+                activation=self.activation,
+                conv_states=conv_state,
+                has_initial_state=has_initial_state,
+                cache_indices=non_spec_state_indices_tensor,
+                query_start_loc=non_spec_query_start_loc,
+            ).transpose(0, 1)
+        elif attn_metadata.have_decode:
             mixed_qkv_non_spec = causal_conv1d_update(
                mixed_qkv_non_spec,
                conv_state,
@@ -619,8 +615,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                self.conv1d.bias,
                self.activation,
                conv_state_indices=non_spec_state_indices_tensor,
-               validate_data=True,
-           )
+            )
         else:
            mixed_qkv_non_spec = None
 
@@ -636,7 +631,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
 
         if spec_sequence_masks is not None:
             if (attn_metadata.num_prefills == 0
-                    and (not attn_metadata.is_decode)):
+                    and (not attn_metadata.have_decode)):
                 g_spec = g
                 beta_spec = beta
                 g_non_spec = None
@@ -674,7 +669,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
             core_attn_out_spec, last_recurrent_state = None, None
 
         # 3.2: process the remaining part
-        if (not attn_metadata.is_decode):
+        if (attn_metadata.num_prefills > 0):
             initial_state = ssm_state[
                 non_spec_state_indices_tensor].contiguous()
             initial_state[~has_initial_state, ...] = 0
@@ -727,7 +722,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
             # Init cache
             ssm_state[non_spec_state_indices_tensor[:batch_size]] = last_recurrent_state.to(
                 ssm_state.dtype)
-        elif attn_metadata.is_decode:
+        elif attn_metadata.have_decode:
             core_attn_out_non_spec, last_recurrent_state = (
                 fused_recurrent_gated_delta_rule(
                     q=query_non_spec,
@@ -769,7 +764,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         core_attn_out = core_attn_out.reshape(z_shape_og)
         core_attn_out = rearrange(core_attn_out, '... h d -> ... (h d)')
 
-        if(not attn_metadata.is_decode):
+        if(attn_metadata.num_prefills > 0):
             npt = attn_metadata.num_prefill_tokens
             output[:npt] = self.out_proj(core_attn_out)[0][:npt]
         else:

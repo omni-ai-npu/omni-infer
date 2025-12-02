@@ -216,9 +216,9 @@ def _fused_recurrent_gated_delta_rule_ref(
     indices_0 = torch.arange(bs, device=q.device) * T
     if not contiguous_states:
         if num_accepted_tokens is None:
-            indices = ssm_state_indices[indices_0]
+            indices = ssm_state_indices.view(-1)[indices_0]
         else:
-            indices = ssm_state_indices[indices_0 + num_accepted_tokens - 1]
+            indices = ssm_state_indices.view(-1)[indices_0 + num_accepted_tokens]
     else:
         indices = indices_0 if eq_len else cu_seqlens[:-1]
     S = initial_state[indices].to(torch.float32) #[bs, C, D, E]
@@ -244,7 +244,7 @@ def _fused_recurrent_gated_delta_rule_ref(
         S = S + S_ #[bs, C, D, E]
         o_t = torch.einsum('abc,abcd->abd', q_t, S) #[bs, C, E]
         if not contiguous_states:
-            indices = ssm_state_indices[indices_0 + t]
+            indices = ssm_state_indices.view(-1)[indices_0 + t]
         else:
             indices = cu_seqlens[:-1] + t if eq_len else indices_0 + t
         torch_npu.npu_scatter_nd_update_(initial_state, indices.unsqueeze(1), S.to(torch.bfloat16))
@@ -289,8 +289,8 @@ def _fused_recurrent_gated_delta_rule_npu(
         beta=beta.to(torch.bfloat16),
         scale=scale,
         actual_seq_lengths=actual_seq_lengths.to(torch.int32),
-        ssm_state_indices=ssm_state_indices.to(torch.int32),
-        num_accepted_tokens= None if num_accepted_tokens is None else num_accepted_tokens.to(torch.int32),
+        ssm_state_indices=ssm_state_indices.view(-1).to(torch.int32),
+        num_accepted_tokens= None if num_accepted_tokens is None else num_accepted_tokens.to(torch.int32) + 1,
         g=None if g is None else g.to(torch.float32),
         gk=None,
     )

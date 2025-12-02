@@ -341,6 +341,7 @@ class NPUModelRunner(GPUModelRunner):
     def _prepare_inputs(
         self,
         scheduler_output: "SchedulerOutput",
+        num_accepted_tokens: Optional[Union[int, torch.Tensor]] = None,
     ) -> tuple[dict[str, Any], int, torch.Tensor, torch.Tensor, bool]:
         # Check input valid
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
@@ -455,6 +456,23 @@ class NPUModelRunner(GPUModelRunner):
                 common_attn_metadata = CommonAttentionMetadata(
                     query_start_loc=torch.from_numpy(query_start_loc), seq_lens=self.seq_lens)
 
+                if self.use_spec_decode:
+                    # Get the number of draft tokens for each request.
+                    # Iterate over the dictionary rather than all requests since not all
+                    # requests have draft tokens.
+                    num_draft_tokens = np.zeros(num_reqs, dtype=np.int32)
+                    for req_id, draft_token_ids in (
+                            scheduler_output.scheduled_spec_decode_tokens.items()):
+                        req_idx = self.input_batch.req_id_to_index[req_id]
+                        num_draft_tokens[req_idx] = len(draft_token_ids)
+                    # Convert numpy array to torch tensor
+                    num_draft_tokens = torch.from_numpy(num_draft_tokens).to(self.device)
+                else:
+                    num_draft_tokens = None
+                if (self.speculative_config is not None):
+                    num_speculative_tokens = self.speculative_config.num_speculative_tokens
+                else:
+                    num_speculative_tokens = 0
                 attn_metadata_i = (
                     self.attn_metadata_builders[kv_cache_group_id].build(
                         num_reqs=num_reqs,
@@ -462,6 +480,9 @@ class NPUModelRunner(GPUModelRunner):
                         max_query_len=max_num_scheduled_tokens,
                         common_attn_metadata=common_attn_metadata,
                         num_computed_tokens_cpu_tensor=self.input_batch.num_computed_tokens_cpu_tensor,
+                        num_accepted_tokens=num_accepted_tokens,
+                        num_draft_tokens=num_draft_tokens,
+                        num_spec_tokens=num_speculative_tokens,
                         **extra_builder_kwargs,
                     )
                 )
@@ -577,6 +598,7 @@ class NPUModelRunner(GPUModelRunner):
                     attn_metadata_i.seq_lens_list = attn_metadata_i.seq_lens.tolist()
                 else:
                     attn_metadata_i.seq_lens_list = []
+                attn_metadata_i.num_accepted_tokens = accepted_num
             if kv_cache_group_id == 0:
                 self.full_attn_metadata = attn_metadata_i
 
@@ -822,7 +844,7 @@ class NPUModelRunner(GPUModelRunner):
         # cached return values
         cached_sampled_token_ids = None
         finished_sending = set()
-        accepted_num = 0
+        num_accepted_tokens = 0
         finished_recving = set()
         loading_kv_failure = set()
         sampled_token_ids_list = []
@@ -847,16 +869,21 @@ class NPUModelRunner(GPUModelRunner):
                     # Return empty ModelRunnerOuptut if there's no work to do.
                     return EMPTY_MODEL_RUNNER_OUTPUT
                 return self.kv_connector_no_forward(scheduler_output)
-            if self.curr_step == 0:
-                attn_metadata, graph_pad_size, sample_indices, positions, spec_decode_metadata = self._prepare_inputs(scheduler_output)
-            else:
-                attn_metadata, positions = self._simple_prepare_inputs(attn_metadata, positions,
-                        sampled_tokens, spec_tokens_tensor, accepted_num)
-            hidden_states, raw_hidden_states, input_ids, temp_finished_sending, temp_finished_recving = self._execute_model(scheduler_output,
-                                                   attn_metadata, graph_pad_size, sample_indices, positions, intermediate_tensors)
             sampling_metadata = self.input_batch.sampling_metadata
             if self.curr_step == 0:
                 self.sampler.prepare_cache(scheduler_output.scheduled_new_reqs, self.input_batch.req_ids, sampling_metadata, self.input_batch)
+            if self.curr_step == 0:
+                if self.use_spec_decode:
+                    num_accepted_tokens = self.sampler.accepted_token_cache.num_accepted_tokens
+                else:
+                    num_accepted_tokens = None
+                attn_metadata, graph_pad_size, sample_indices, positions, spec_decode_metadata = \
+                    self._prepare_inputs(scheduler_output, num_accepted_tokens)
+            else:
+                attn_metadata, positions = self._simple_prepare_inputs(attn_metadata, positions,
+                        sampled_tokens, spec_tokens_tensor, num_accepted_tokens)
+            hidden_states, raw_hidden_states, input_ids, temp_finished_sending, temp_finished_recving = self._execute_model(scheduler_output,
+                                                   attn_metadata, graph_pad_size, sample_indices, positions, intermediate_tensors)
             if temp_finished_sending is not None:
                 finished_sending.update(temp_finished_sending)
             if temp_finished_recving is not None:
@@ -922,7 +949,7 @@ class NPUModelRunner(GPUModelRunner):
             if not self.use_spec_decode:
                 sampler_output = self.sampler(logits=logits, sampling_metadata=sampling_metadata)
             else:
-                sampler_output, last_accepted_index, accepted_num = self.drafter.verify_and_prepare_inputs(
+                sampler_output, last_accepted_index, num_accepted_tokens = self.drafter.verify_and_prepare_inputs(
                     input_ids=input_ids,
                     logits=logits,
                     sampling_metadata=sampling_metadata,
@@ -932,6 +959,7 @@ class NPUModelRunner(GPUModelRunner):
                     chunk_next_tokens=chunk_next_tokens,
                     chunk_next_indices=chunk_next_indices,
                 )
+                self.sampler.accepted_token_cache.update_num_accepted_tokens(num_accepted_tokens)
             start_6 = time.time()
 
             if not self.use_spec_decode:
@@ -1103,11 +1131,12 @@ class NPUModelRunner(GPUModelRunner):
                     attn_metadata_i.decode.seq_lens = new_seq_lens
             else:
                 from vllm.v1.attention.backends.utils import CommonAttentionMetadata
-                num_scheduled_tokens = np.array([1 for _ in range(self.max_batch_size)], dtype=np.int32)
+                num_speculative_tokens = 0 if not self.speculative_config else self.speculative_config.num_speculative_tokens
+                num_scheduled_tokens = np.array([num_speculative_tokens + 1 for _ in range(self.max_num_reqs)], dtype=np.int32)
                 cu_num_tokens = np.cumsum(num_scheduled_tokens)
                 query_start_loc = np.pad(cu_num_tokens, pad_width=(1, 0), mode='constant', constant_values=0)
                 common_attn_metadata = CommonAttentionMetadata(
-                    query_start_loc=torch.from_numpy(query_start_loc), seq_lens=torch.ones(self.max_batch_size, dtype=torch.int64, device=self.device))
+                    query_start_loc=torch.from_numpy(query_start_loc), seq_lens=torch.ones(self.max_num_reqs, dtype=torch.int64, device=self.device))
                 extra_builder_kwargs = {'graph_pad_size': 0}
 
                 self.attn_metadata_builders[kv_cache_group_id]._num_decodes = self.max_batch_size
@@ -1115,6 +1144,16 @@ class NPUModelRunner(GPUModelRunner):
                 self.attn_metadata_builders[kv_cache_group_id]._num_decode_tokens = self.max_batch_size
                 self.attn_metadata_builders[kv_cache_group_id]._num_prefill_tokens = 0
 
+                if self.use_spec_decode:
+                    num_draft_tokens = torch.ones(self.max_num_reqs, dtype=torch.int32, device=self.device)
+                    num_accepted_tokens = torch.zeros(self.max_num_reqs, dtype=torch.int32, device=self.device)
+                else:
+                    num_draft_tokens = None
+                    num_accepted_tokens = None
+                if (self.speculative_config is not None):
+                    num_speculative_tokens = self.speculative_config.num_speculative_tokens
+                else:
+                    num_speculative_tokens = 0
                 attn_metadata_i = (
                     self.attn_metadata_builders[kv_cache_group_id].build(
                         num_reqs=self.max_batch_size,
@@ -1122,6 +1161,9 @@ class NPUModelRunner(GPUModelRunner):
                         max_query_len=num_tokens,
                         common_attn_metadata=common_attn_metadata,
                         num_computed_tokens_cpu_tensor=self.input_batch.num_computed_tokens_cpu_tensor,
+                        num_accepted_tokens=num_accepted_tokens,
+                        num_draft_tokens=num_draft_tokens,
+                        num_spec_tokens=num_speculative_tokens,
                         **extra_builder_kwargs,
                     )
                 )
