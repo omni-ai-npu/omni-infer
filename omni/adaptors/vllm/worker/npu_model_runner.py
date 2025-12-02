@@ -1219,17 +1219,6 @@ class NPUModelRunner(GPUModelRunner):
             kv_cache_config: Configuration for the KV cache, including the KV
             cache size of each layer
         """
-        #zhj: merge groups with the same kv_cache_spec
-        same_type_layers: dict[KVCacheSpec, list[str]] = defaultdict(list)
-        for kv_cache_group in kv_cache_config.kv_cache_groups:
-            for layer_name in kv_cache_group.layer_names:
-                same_type_layers[kv_cache_group.kv_cache_spec].append(layer_name)
-        
-        new_kv_cache_groups = list()
-        for kv_cache_spec, layer_names in same_type_layers.items():
-            new_kv_cache_groups.append(KVCacheGroupSpec(layer_names, kv_cache_spec))
-        kv_cache_config.kv_cache_groups = new_kv_cache_groups
-        
         kv_caches: Dict[str, torch.Tensor] = {}
         cpu_caches: Dict[str, torch.Tensor] = {}
         self.kv_cache_config = kv_cache_config
