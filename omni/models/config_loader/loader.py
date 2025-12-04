@@ -132,6 +132,7 @@ class ModelOperatorOptConfig:
     enable_c8: bool = False # GQA使能C8
     
     enable_scmoe_multi_stream: bool = False # 龙猫ScMoe架构多流开启
+    enable_e_score_correction_bias: bool = False # moe部分是否启用e_score_correction_bias
     def __post_init__(self):
 
         # Check the dependencies of use_prefetch and prefetch_Mb

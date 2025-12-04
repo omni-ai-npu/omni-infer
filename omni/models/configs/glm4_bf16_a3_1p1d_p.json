@@ -1,0 +1,12 @@
+{
+    "model_parallel_config": {
+        "dense_mlp_tp_size": 16
+    },
+    "operator_optimization_config": {
+        "prefill_moe_all_to_all": true,
+        "use_tnd_pa": true,
+        "unquant_bmm_nz": true,
+        "decode_moe_dispatch_combine": false,
+        "enable_e_score_correction_bias": true
+    }
+}

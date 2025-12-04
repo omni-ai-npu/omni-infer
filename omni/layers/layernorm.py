@@ -25,8 +25,8 @@ class RMSNorm(RMSNormGPU):
         super().__init__(hidden_size, eps, var_hidden_size, has_weight, dtype)
 
         self.bias = None
-        load_rmsnorm_bias = os.environ.get("LOAD_RMSNORM_BIAS", 0)
-        if load_rmsnorm_bias == 1:
+        load_rmsnorm_bias = os.environ.get("LOAD_RMSNORM_BIAS", "0")
+        if load_rmsnorm_bias == "1":
             self.bias = torch.nn.Parameter(torch.zeros(hidden_size), requires_grad=False)
 
     def forward(

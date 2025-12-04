@@ -46,3 +46,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/gpt_oss_model_init.patch
 git apply --whitespace=nowarn $PATCH_ROOT/openai_harmony_parser.patch
 git apply --whitespace=nowarn $PATCH_ROOT/pp_scheduler.patch
 git apply --whitespace=nowarn $PATCH_ROOT/apply_tool_parser_content.patch
+git apply --whitespace=nowarn $PATCH_ROOT/glm4moe_model_init.patch
