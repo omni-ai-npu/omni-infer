@@ -772,7 +772,7 @@ class NPUModelRunner(GPUModelRunner):
         )
 
     @torch.inference_mode()
-    def _dummy_run(self, num_tokens: int, is_capture_model: bool = False) -> torch.Tensor:
+    def _dummy_run(self, num_tokens: int, is_capture_model: bool = False, phase: str = "decode") -> torch.Tensor:
         if self.is_multimodal_model:
             input_ids, inputs_embeds = None, self.inputs_embeds[:num_tokens]
         else:
@@ -791,6 +791,46 @@ class NPUModelRunner(GPUModelRunner):
 
         positions = self.mrope_positions[:, :num_tokens] if self.uses_mrope else self.positions[:num_tokens]
         raw_hidden_states = None
+        if phase == "prefill": # dummy pefill run
+            global_batch = num_tokens
+            tp_pad = _get_pad_size(global_batch)
+
+            fake_len = global_batch + tp_pad
+            if self.is_multimodal_model:
+                inputs_embeds = (self.inputs_embeds[:fake_len]
+                                 if self.inputs_embeds.shape[0] >= fake_len
+                                 else torch.zeros(fake_len, *self.inputs_embeds.shape[1:],
+                                                 dtype=self.inputs_embeds.dtype, device=self.device))
+                input_ids = None
+            else:
+                input_ids = torch.zeros(fake_len, dtype=self.input_ids.dtype, device=self.device)
+                inputs_embeds = None
+            positions = torch.zeros(fake_len, dtype=self.positions.dtype, device=self.device)
+
+            self.attn_state = AscendAttentionState.PrefillNoCache
+            with set_forward_context(None, self.vllm_config):
+                forward_results = self.model(
+                    input_ids=input_ids,
+                    positions=positions,
+                    intermediate_tensors=intermediate_tensors,
+                    inputs_embeds=inputs_embeds,
+                )
+                if isinstance(forward_results, tuple):
+                    raw_hidden_states, hidden_states = forward_results
+                else:
+                    hidden_states = forward_results
+                    raw_hidden_states = forward_results
+                if self.use_spec_decode:
+                    self.drafter.propose(
+                        num_tokens=fake_len,
+                        positions=positions,
+                        kv_caches=None,
+                        attn_metadata=None,
+                        previous_hidden_states=raw_hidden_states,
+                        last_accepted_index=None,
+                        sample_indices=None,
+                    )
+            return hidden_states
 
         # No kv_caches: profile run
         if not self.kv_caches:

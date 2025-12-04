@@ -2,6 +2,7 @@
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 import os
 from omni.adaptors.vllm.patches.pangu_patch import patch_pangu
+import omni.adaptors.vllm.patches.dp_engine_core_patch
 
 def patch_vllm_distributed():
     from vllm import distributed

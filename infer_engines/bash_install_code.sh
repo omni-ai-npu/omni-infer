@@ -23,3 +23,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/scheduler_abort_kv_loading_failure_req
 git apply --whitespace=nowarn $PATCH_ROOT/tfas_patch_request.patch
 git apply --whitespace=nowarn $PATCH_ROOT/prometheus_dp_logging.patch
 git apply --whitespace=nowarn $PATCH_ROOT/swap_kv_cache.patch
+git apply --whitespace=nowarn $PATCH_ROOT/a2_pd_hybrid.patch

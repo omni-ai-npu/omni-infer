@@ -418,12 +418,14 @@ class DeepseekV3Model(nn.Module):
 
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
+        parallel_lmhead = model_extra_config.parall_config.dp_size > 1 and os.getenv("OMNI_PD_HYBRID", "0") == "0"
+        self.embed_reduce = 1 if parallel_lmhead else 0
 
         if get_pp_group().is_first_rank:
             self.embed_tokens = VocabParallelEmbedding(
                 config.vocab_size,
                 config.hidden_size,
-                parallel_lmhead=(model_extra_config.parall_config.dp_size > 1),
+                parallel_lmhead=parallel_lmhead,
             )
         else:
             self.embed_tokens = PPMissingLayer()
@@ -460,7 +462,7 @@ class DeepseekV3Model(nn.Module):
     CACHED_GLOBAL_NUM_TOKENS = None
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.embed_tokens(input_ids, reduce=1)
+        return self.embed_tokens(input_ids, reduce=self.embed_reduce)
 
     def forward(
             self,
@@ -524,10 +526,11 @@ class DeepseekV3ForCausalLM(nn.Module):
         self.config = vllm_config.model_config.hf_config
         self.quant_config = vllm_config.quant_config
         self.model = DeepseekV3Model(vllm_config=vllm_config, prefix="model")
+        parallel_lmhead = model_extra_config.parall_config.dp_size > 1 and os.getenv("OMNI_PD_HYBRID", "0") == "0"
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
                                       quant_config=self.quant_config,
-                                      parallel_lmhead=(model_extra_config.parall_config.dp_size > 1))
+                                      parallel_lmhead=parallel_lmhead)
         self.logits_processor = LogitsProcessor(self.config.vocab_size,
                                                 logits_as_input=True)
         self.sampler = Sampler()

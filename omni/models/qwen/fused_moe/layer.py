@@ -13,6 +13,7 @@ from vllm.distributed import get_tp_group, get_dp_group, get_ep_group
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
 from vllm.model_executor.utils import set_weight_attrs
+from omni.adaptors.vllm.distributed.communication_op import all_gather_two_stage
 
 import os
 
@@ -267,15 +268,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
         if is_prefill:
             assert len(x.shape) == 2
             assert len(router_logits.shape) == 2
-            n_tokens = x.shape[0]
-            n_tokens_tensor = torch.Tensor([n_tokens]).int().npu()
-            n_tokens_list = get_ep_group().all_gather(n_tokens_tensor, dim=0).tolist()
-            x_output_list = [torch.empty((n, x.shape[1]), dtype=x.dtype, device=x.device) for n in n_tokens_list]
-            router_logits_output_list = [torch.empty((n, router_logits.shape[1]), dtype=router_logits.dtype, device=router_logits.device) for n in n_tokens_list]
-            get_ep_group().all_gather_v(x_output_list, x)
-            get_ep_group().all_gather_v(router_logits_output_list, router_logits)
-            x = torch.cat(x_output_list)
-            router_logits = torch.cat(router_logits_output_list)
+            x = all_gather_two_stage(x, idx=0, dim=0)
+            router_logits = all_gather_two_stage(router_logits, idx=0, dim=0)
         else:
             return self.apply_all2all_decode(
                 layer,
@@ -365,14 +359,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase):
             topk_ids,
         ).to(x.dtype)
 
-        if is_prefill:
-            assert len(y.shape) == 2
-            y_list = list(torch.split(y, n_tokens_list))
-            y_output = torch.empty((n_tokens, y.shape[1]), dtype=y.dtype, device=y.device)
-            get_ep_group().reduce_scatter_v(y_output, y_list)
-            y = y_output
-        else:
-            y = get_ep_group().reduce_scatter(y)
+        y = get_ep_group().reduce_scatter(y)
 
         return y
 

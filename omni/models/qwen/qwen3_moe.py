@@ -26,6 +26,7 @@ from typing import Any, Optional, Union, List, Tuple
 
 import torch
 from torch import nn
+import torch.distributed as dist
 from transformers import PretrainedConfig
 from vllm.attention import Attention, AttentionMetadata
 from vllm.config import CacheConfig, VllmConfig
@@ -54,10 +55,11 @@ from omni.models.common.layers.linear import (RowParallelFlashCommLinear,
                                               QKVParallelFlashCommLinear)
 from omni.models.common.layers.rotary_embedding import get_rope
 from omni.models.common.layers.attention.backend.attention import AscendAttentionState
+from omni.models.common.config.model_config import model_extra_config
 
 
 logger = init_logger(__name__)
-SEQ_SPLIT_LENGTH = 4096
+SEQ_SPLIT_LENGTH = 256
 
 class Qwen3MoeSparseMoeBlock(nn.Module):
 
@@ -296,6 +298,14 @@ class Qwen3MoeDecoderLayer(nn.Module):
         is_prefill = attn_metadata is None or not attn_metadata.is_pd_seperate_d
         if is_prefill:
             local_length = hidden_states.shape[0]
+            if model_extra_config.parall_config.dp_size > 1:
+                reduce_length = torch.tensor(local_length, dtype=torch.int64, device="npu")
+                dist.all_reduce(reduce_length, op=dist.ReduceOp.MAX, async_op=False)
+                global_max_length = reduce_length.item()
+                pad_size = global_max_length - hidden_states.shape[0]
+                hidden_states = torch.nn.functional.pad(
+                    hidden_states, (0, 0, 0, pad_size)
+                )
             hidden_states_list = hidden_states.split(SEQ_SPLIT_LENGTH)
             hidden_states_out = []
             for i in range(len(hidden_states_list)):
