@@ -772,6 +772,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         if(not attn_metadata.is_decode):
             npt = attn_metadata.num_prefill_tokens
             output[:npt] = self.out_proj(core_attn_out)[0][:npt]
+            output[npt:] = 0
         else:
             output[:max_batch_size] = self.out_proj(core_attn_out)[0][:max_batch_size]
             
