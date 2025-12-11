@@ -11,7 +11,7 @@
         "best_ep": false,
         "merge_qkv": false,
         "gmm_nz": true,
-        "decode_moe_dispatch_combine": true,
+        "decode_moe_dispatch_combine": false,
         "use_super_kernel": true,
         "use_mlaprolog": false,
         "cast_w2_scale_f32": true,
