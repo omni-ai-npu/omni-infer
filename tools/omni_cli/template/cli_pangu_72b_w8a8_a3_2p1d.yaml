@@ -39,6 +39,10 @@ all:
               enable-expert-parallel: ''
               max-num-batched-tokens: 4096
               max-num-seqs: 90
+              enable-reasoning: ''
+              reasoning-parser: pangu
+              enable-auto-tool-choice: ''
+              tool-call-parser: pangu
             gpu-util: '0.95'
             kv-transfer-config:
               engine_id: 2
@@ -86,7 +90,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/omni_logs
             MASTER_PORT: 8045
-            MODEL_LEN_MAX_DECODE: 4096
+            MODEL_LEN_MAX_DECODE: 10240
             MODEL_PATH: /data/model/pangu
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
@@ -135,6 +139,10 @@ all:
               max-num-seqs: 4
               no-enable-prefix-caching: ''
               no-enable-chunked-prefill: ''
+              enable-reasoning: ''
+              reasoning-parser: pangu
+              enable-auto-tool-choice: ''
+              tool-call-parser: pangu
             gpu-util: '0.80'
             kv-transfer-config:
               engine_id: 0
@@ -181,7 +189,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/omni_logs
             MASTER_PORT: 8002
-            MODEL_LEN_MAX_PREFILL: 4096
+            MODEL_LEN_MAX_PREFILL: 10240
             MODEL_PATH: /data/model/pangu
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
@@ -231,6 +239,10 @@ all:
               max-num-seqs: 4
               no-enable-prefix-caching: ''
               no-enable-chunked-prefill: ''
+              enable-reasoning: ''
+              reasoning-parser: pangu
+              enable-auto-tool-choice: ''
+              tool-call-parser: pangu
             gpu-util: '0.80'
             kv-transfer-config:
               engine_id: 1
@@ -277,7 +289,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/omni_logs
             MASTER_PORT: 8057
-            MODEL_LEN_MAX_PREFILL: 4096
+            MODEL_LEN_MAX_PREFILL: 10240
             MODEL_PATH: /data/model/pangu
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
