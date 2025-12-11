@@ -549,11 +549,19 @@ class PanguProMoEV2Attention(nn.Module):
         output, _ = self.o_proj(attn_output, reduce_type="RS")
         return output
 
-def DeepseekMoE_forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
-        if attn_metadata is None or attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
-            is_prefill = True
+
+def DeepseekMoE_forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None, is_hybrid_chunked_prefill_graph_mode=False) -> torch.Tensor:
+        # when is_hybrid_chunked_prefill_graph_mode is True, enable chunkprefill
+        if is_hybrid_chunked_prefill_graph_mode:
+            if attn_metadata is None or attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
+                is_prefill = True
+            else:
+                is_prefill = False
         else:
-            is_prefill = False
+            if attn_metadata is None or attn_metadata.attn_state != AscendAttentionState.DecodeOnly:
+                is_prefill = True
+            else:
+                is_prefill = False
          
         if not self.is_init_gate:
             self.gate.weight.data = torch_npu.npu_format_cast(self.gate.weight.data, 2)
@@ -625,6 +633,11 @@ class PanguProMoEDecoderLayer(nn.Module):
         else:
             self.sandwich_norm = False
 
+        self.enable_torchair_graph_mode = (
+                    vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
+        self.is_pd_seperate_d = vllm_config.kv_transfer_config is not None and vllm_config.kv_transfer_config.kv_role == "kv_consumer"
+        self.is_hybrid_chunked_prefill_graph_mode = self.enable_torchair_graph_mode and not self.is_pd_seperate_d and \
+            not vllm_config.additional_config.get("enable_hybrid_graph_mode", False) and vllm_config.scheduler_config.enable_chunked_prefill
 
     def forward(
         self,
@@ -677,7 +690,7 @@ class PanguProMoEDecoderLayer(nn.Module):
             
             if self.is_moe == True:
                 # omni placement do not support super kernel
-                hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, layer_id, next_attn_weights)
+                hidden_states, residual = self.mlp(hidden_states, residual, attn_metadata, layer_id, next_attn_weights, is_hybrid_chunked_prefill_graph_mode=self.is_hybrid_chunked_prefill_graph_mode)
                 if isinstance(hidden_states, (tuple, list)):
                     assert len(hidden_states) == 2
                     hidden_states = hidden_states[0] + hidden_states[1]

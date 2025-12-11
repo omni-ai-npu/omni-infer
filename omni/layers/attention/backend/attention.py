@@ -1389,7 +1389,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             )         
 
         # Store sink kv in block 0 (kv cache starts from block 1 and slots 128)
-        if attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:
+        if attn_metadata.attn_state == AscendAttentionState.PrefillNoCache or (not self.is_hybrid_chunked_prefill_graph_mode and attn_metadata.attn_state == AscendAttentionState.ChunkedPrefill):
             slots = torch.arange(0, 128, device=sink_key.device, dtype=torch.int32)
             torch_npu.npu_scatter_pa_kv_cache(
                 sink_key,
