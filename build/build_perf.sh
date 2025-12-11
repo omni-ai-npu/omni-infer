@@ -6,7 +6,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
-ALL_MODULES=("omni-npu" "omni-cache" "omni-eplb" "omni-proxy")
+ALL_MODULES=("omni-npu" "omni-cache" "omni-eplb" "omni-proxy" "omni-models")
 
 # 定义各模块所用的git仓库及分支
 declare -A GIT_PATH_OF_MODULE
@@ -14,6 +14,7 @@ GIT_PATH_OF_MODULE["omni-npu"]="-b master https://gitee.com/omniai/omni-npu.git"
 GIT_PATH_OF_MODULE["omni-cache"]="-b master https://gitee.com/omniai/omni-cache.git"
 GIT_PATH_OF_MODULE["omni-eplb"]="-b master https://gitee.com/omniai/omni-eplb.git"
 GIT_PATH_OF_MODULE["omni-proxy"]="-b master https://gitee.com/omniai/omni-proxy.git"
+GIT_PATH_OF_MODULE["omni-models"]="-b master https://gitee.com/omniai/omni-models.git"
 
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -71,7 +72,7 @@ traverse_submodules() {
             log_info "开始子模块: $submodule"
             
             # 检查并执行UT测试 run_test.sh
-            # check_and_test "$submodule_path"
+            check_and_test "$submodule_path"
             
         else
             log_warn "子模块路径不存在: $submodule_path"
@@ -83,9 +84,9 @@ traverse_submodules() {
     for submodule in $submodules; do
         local submodule_path="$base_dir/components/$submodule"
         
-        if [ -d "$submodule_path" ]; then  #
+        if [ -d "$submodule_path" ]; then 
             log_info "子模块: $submodule"
-                
+            
             # 检查并执行 build.sh
             check_and_build "$submodule_path"
             
@@ -96,14 +97,16 @@ traverse_submodules() {
 }
 
 # 执行UT测试
-# check_and_test() {
-# }
+check_and_test() {
+    # TODO:加入UT
+    echo "$@"
+}
 
 # 检查并执行 build.sh
 check_and_build() {
     local module_dir="$1"
     local build_script="$module_dir/build/build.sh"
-  
+    
     # 检查 build.sh 是否存在
     if [ -f "$build_script" ]; then
         log_info "找到 build.sh，开始编译安装: $module_dir"
@@ -230,7 +233,7 @@ main() {
     # 遍历并处理所有子模块
     traverse_submodules "$project_root"
     
-    log_info "${MODULES_TO_BUILD[*]}子模块处理完成！"
+    log_info "所有子模块处理完成！"
 }
 
 # 运行主函数

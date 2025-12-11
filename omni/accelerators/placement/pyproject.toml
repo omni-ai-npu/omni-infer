@@ -1,3 +1,0 @@
-[build-system]
-requires = ["setuptools", "pybind11", "torch"]
-build-backend = "setuptools.build_meta"
