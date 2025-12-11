@@ -1537,6 +1537,8 @@
       command: bash -c "{{ docker_start_proxy_cmd_c }}"
       environment:
         DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+        PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
+        DECODE_POD_NUM: "{{ DECODE_POD_NUM }}"
       when: "'C' in group_names"
       tags:
         - run_proxy
