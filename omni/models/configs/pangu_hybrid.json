@@ -2,6 +2,7 @@
     "model_parallel_config": {},
     "operator_optimizition_config": {
         "use_super_kernel": true,
-        "use_tnd_pa": true
+        "use_tnd_pa": true,
+        "use_prefetch": true
     }
 }

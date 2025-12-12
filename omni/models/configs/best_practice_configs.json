@@ -309,8 +309,18 @@
       "prefill_node_num": 1,
       "decode_node_num": 1,
       "pd_disaggregation": false,
-      "prefill_config_file": "pangu_a3_hybrid.json",
-      "decode_config_file": "pangu_a3_hybrid.json"
+      "prefill_config_file": "pangu_hybrid.json",
+      "decode_config_file": "pangu_hybrid.json"
+   },
+   {
+      "model": "pangu-38B",
+      "hardware": "A2",
+      "precision": "w8a8c8",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,
+      "pd_disaggregation": false,
+      "prefill_config_file": "pangu_w8a8c8_hybrid.json",
+      "decode_config_file": "pangu_w8a8c8_hybrid.json"
    },
    {
       "model": "pangu-7B",
@@ -319,8 +329,8 @@
       "prefill_node_num": 1,
       "decode_node_num": 1,
       "pd_disaggregation": false,
-      "prefill_config_file": "pangu_a3_hybrid.json",
-      "decode_config_file": "pangu_a3_hybrid.json"
+      "prefill_config_file": "pangu_hybrid.json",
+      "decode_config_file": "pangu_hybrid.json"
    },
    {
       "model": "pangu_ultra_moe",
@@ -485,7 +495,7 @@
    {
       "model": "qwen3_30b_a3b",
       "hardware": "A3",
-      "precision": "w8a8",
+      "precision": "w8a8c8",
       "prefill_node_num": 1,
       "decode_node_num": 1,
       "pd_disaggregation": true,

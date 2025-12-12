@@ -243,6 +243,9 @@ def parse_hf_config(hf_config):
         quant_type = f"w{weights_type}a{input_activations_type}"
         if kv_cache_scheme_type == "Opti-C8":
             quant_type = quant_type+"_fa_c8"
+        elif isinstance(kv_cache_scheme_type, dict):
+            num_bits_values = kv_cache_scheme_type["num_bits"]
+            quant_type = f"{quant_type}c{num_bits_values}"
     else:
         quant_type = "bf16"
 
