@@ -182,8 +182,8 @@ class ProbCache:
 class AcceptedTokenCache:
     def __init__(self, num_req, device):
         self.cached_req_ids = None
-        self.num_accepted_tokens = torch.zeros(num_req, dtype=torch.int32, device=device)
-        print(f'AcceptedTokenCache: init {self.num_accepted_tokens=}')
+        self.num_accepted_tokens = torch.zeros(num_req + 1, dtype=torch.int32, device=device)
+        self.num_req = num_req
     
     def permute_cached_reqs(self, new_req_ids):
         if self.cached_req_ids == None:
@@ -199,7 +199,8 @@ class AcceptedTokenCache:
                 pass
         move_cached_tensors([self.num_accepted_tokens], src)
         self.cached_req_ids = new_req_ids
-    
+    def get_num_accepted_tokens(self):
+        return self.num_accepted_tokens[:self.num_req]
     def update_num_accepted_tokens(self, num_accepted_tokens):
         self.num_accepted_tokens[:num_accepted_tokens.shape[0]] = num_accepted_tokens
 

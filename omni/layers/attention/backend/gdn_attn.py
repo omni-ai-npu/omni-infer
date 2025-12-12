@@ -66,6 +66,7 @@ class GDNAttentionMetadata:
         torch.
         Tensor] = None  # shape: [num_prefill_tokens + num_decode_tokens,]
     num_accepted_tokens: Optional[torch.Tensor] = None  # shape: [batch,]
+    num_spec_tokens: int = 0
 
     # The following attributes are for triton implementation of causal_conv1d
     nums_dict: Optional[dict] = None
@@ -357,6 +358,7 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             spec_sequence_masks=spec_sequence_masks,
             spec_token_masks=spec_token_masks,
             num_accepted_tokens=num_accepted_tokens,
+            num_spec_tokens=num_spec_tokens,
         )
         return attn_metadata
 
@@ -451,6 +453,7 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             spec_sequence_masks=None,
             spec_token_masks=None,
             num_accepted_tokens=None,
+            num_spec_tokens=0,
         )
         return attn_metadata
 

@@ -874,7 +874,7 @@ class NPUModelRunner(GPUModelRunner):
                 self.sampler.prepare_cache(scheduler_output.scheduled_new_reqs, self.input_batch.req_ids, sampling_metadata, self.input_batch)
             if self.curr_step == 0:
                 if self.use_spec_decode:
-                    num_accepted_tokens = self.sampler.accepted_token_cache.num_accepted_tokens
+                    num_accepted_tokens = self.sampler.accepted_token_cache.get_num_accepted_tokens()
                 else:
                     num_accepted_tokens = None
                 attn_metadata, graph_pad_size, sample_indices, positions, spec_decode_metadata = \

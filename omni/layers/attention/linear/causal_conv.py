@@ -30,7 +30,7 @@ def causal_conv1d_ref(
     x: (batch, dim, seqlen) or (dim, seqlen)
     weight: (dim, width)
     bias: (dim,)
-    initial_states: (batch, width - 1 + num_spec, dim) or (width - 1 + num_spec, dim)
+    initial_states: (batch, dim, width - 1 + num_spec) or (dim, width - 1 + num_spec)
     final_states_out: (batch, width - 1 + num_spec, dim)
     out: (batch, dim, seqlen)
     """
@@ -40,7 +40,7 @@ def causal_conv1d_ref(
     x = x.to(weight.dtype)
     seqlen = x.shape[-1]
     dim, width = weight.shape
-    padding_size = final_states_out.shape[-2] - (width - 1)
+    padding_size = final_states_out.shape[-1] - (width - 1)
 
     if initial_states is None:
         out = F.conv1d(x,
@@ -49,21 +49,21 @@ def causal_conv1d_ref(
                        padding=width - 1,
                        groups=dim)
     else:
-        x = torch.cat([initial_states[..., :width - 1, :].transpose(-1, -2), x], dim=-1)
+        x = torch.cat([initial_states[..., :width - 1, :], x], dim=-1)
         out = F.conv1d(x, weight.unsqueeze(1), bias, padding=0, groups=dim)
     out = out[..., :seqlen]
     if return_final_states:
         final_states = F.pad(x, (0, padding_size)).to(
                 dtype_in)  # (batch, dim, seqlen + padding_size)
-        required_len = final_states_out.shape[-2]
+        required_len = final_states_out.shape[-1]
         if(final_states.shape[-1] < required_len):
             final_states = F.pad(final_states, (required_len - final_states.shape[-1], 0)).to(
                 dtype_in)  # (batch, dim, max(required_len, seqlen + padding_size))
         final_states = final_states[..., -required_len:]
         if final_states_out is not None:
-            final_states_out.copy_(final_states.transpose(-1, -2))
+            final_states_out.copy_(final_states)
         else:
-            final_states_out = final_states.transpose(-1, -2)
+            final_states_out = final_states
     out = (out if activation is None else F.silu(out)).to(dtype=dtype_in)
     return (out, None) if not return_final_states else (out, final_states_out)
 
@@ -95,7 +95,7 @@ def causal_conv1d_fn(
     has_initial_state: (batch) bool
         indicates whether should the kernel take the current state as initial
         state for the calculations
-    conv_states: (...,dim,width - 1) itype
+    conv_states: (...,width - 1, dim) itype
         updated inplace if provided
     activation: either None or "silu" or "swish"
     pad_slot_id: int
@@ -145,10 +145,11 @@ def causal_conv1d_update_ref(x,
                              activation=None,
                              cache_seqlens=None,
                              conv_state_indices=None,
-                             num_accepted_tokens=None):
+                             num_accepted_tokens=None,
+                             num_spec_tokens=0):
     """
     x: (batch, dim) or (batch, dim, seqlen)
-    conv_state: (batch, state_len, dim), where state_len >= width - 1
+    conv_state: (batch, dim, state_len), where state_len >= width - 1
     weight: (dim, width)
     bias: (dim,)
     cache_seqlens: (batch,), dtype int32.
@@ -159,6 +160,8 @@ def causal_conv1d_update_ref(x,
     num_accepted_tokens: (batch,), dtype int32, optional
         If provided, used to offset where conv_state is read from.
         For spec decoding: conv_state_token_offset = num_accepted_tokens
+    num_spec_tokens: int, optional
+        Number of speculative tokens. Used for speculative decoding.
 
     out: (batch, dim) or (batch, dim, seqlen)
     """
@@ -170,34 +173,25 @@ def causal_conv1d_update_ref(x,
         x = x.unsqueeze(-1)
     batch, dim, seqlen = x.shape
     width = weight.shape[1]
-    state_len = conv_state.shape[-2]
+    state_len = conv_state.shape[-1]
     assert weight.shape == (dim, width)
     if cache_seqlens is None:
         if num_accepted_tokens is not None:
             # Create indices for gathering conv_state slices
             batch_indices = torch.clamp(conv_state_indices, 0)  # (batch,)
-            
-            # Create offset indices for each position in the width-1 window
-            width_range = torch.arange(width - 1, device=conv_state.device)  # (width-1,)
-            
-            # Add offset to width_range for each batch item
-            position_indices = num_accepted_tokens.unsqueeze(1) + width_range.unsqueeze(0)  # (batch, width-1)
-            
-            # Use advanced indexing to gather all slices at once
-            # First, gather the correct batch entries
-            conv_state_gathered = conv_state[batch_indices]  # (batch, state_len, dim)
-            
-            # Then gather the correct positions for each batch
-            conv_state_selected = torch.gather(
-                conv_state_gathered, 
-                1, 
-                position_indices.long().unsqueeze(2).expand(-1, -1, dim)
-            )  # (batch, width-1, dim)` `
-            x_new = torch.cat([conv_state_selected.transpose(-1, -2), x], dim=-1).to(weight.dtype)
+            conv_state_batch = conv_state[batch_indices]
+            conv_state_to_select = [0] * (num_spec_tokens + 1)
+            for i in range(num_spec_tokens + 1):
+                conv_state_to_select[i] = conv_state_batch[...,i:i + width - 1]
+            conv_state_selected = torch.zeros_like(conv_state_to_select[0])
+            for i in range(num_spec_tokens + 1):
+                select_mask = (num_accepted_tokens == i).to(conv_state_selected.dtype)
+                conv_state_selected += conv_state_to_select[i] * select_mask.unsqueeze(-1).unsqueeze(-1)
+            x_new = torch.cat([conv_state_selected, x], dim=-1).to(weight.dtype)
         else:
-            x_new = torch.cat([conv_state[torch.clamp(conv_state_indices, 0)].transpose(-1, -2), x], dim=-1).to(
+            x_new = torch.cat([conv_state[torch.clamp(conv_state_indices, 0)], x], dim=-1).to(
                 weight.dtype)
-        torch_npu.npu_scatter_nd_update_(conv_state, conv_state_indices.unsqueeze(1), x_new[:, :, -state_len:].transpose(-1, -2))
+        torch_npu.npu_scatter_nd_update_(conv_state, conv_state_indices.unsqueeze(1), x_new[:, :, -state_len:])
     else:
         assert(False)
         width_idx = torch.arange(
@@ -480,6 +474,7 @@ def causal_conv1d_update_npu(
     cache_seqlens: Optional[torch.Tensor] = None,
     conv_state_indices: Optional[torch.Tensor] = None,
     num_accepted_tokens: Optional[torch.Tensor] = None,
+    num_spec_tokens: Optional[int] = None,
     intermediate_conv_window: Optional[torch.Tensor] = None, # This parameter will be ignored
     pad_slot_id: int = PAD_SLOT_ID, # This parameter will be ignored
     metadata=None, # This parameter will be ignored
@@ -488,7 +483,7 @@ def causal_conv1d_update_npu(
     x: (batch, dim) or (batch, dim, seqlen)
         [shape=2: single token prediction]
         [shape=3: single or multiple tokens prediction]
-    conv_state: (..., dim, state_len), where state_len >= width - 1
+    conv_state: (..., state_len, dim), where state_len >= width - 1
     weight: (dim, width)
     bias: (dim,)
     cache_seqlens: (batch,), dtype int32.
@@ -546,6 +541,7 @@ def causal_conv1d_update_npu(
         cache_seqlens=cache_seqlens,
         conv_state_indices=conv_state_indices,
         num_accepted_tokens=num_accepted_tokens,
+        num_spec_tokens=num_spec_tokens,
     )
 
     if unsqueeze:
