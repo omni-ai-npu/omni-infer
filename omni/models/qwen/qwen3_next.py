@@ -769,10 +769,10 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         if(attn_metadata.num_prefills > 0):
             npt = attn_metadata.num_prefill_tokens
             output[:npt] = self.out_proj(core_attn_out)[0][:npt]
+            output[npt:] = 0
         else:
             output[:max_batch_size] = self.out_proj(core_attn_out)[0][:max_batch_size]
             
-
 
 class Qwen3NextAttention(nn.Module):
 
@@ -899,6 +899,10 @@ class Qwen3NextAttention(nn.Module):
             attn_output = attn_output * gate
 
         output[:], _ = self.o_proj(attn_output)
+
+        if (attn_metadata is not None) and is_prefill:
+            npt = attn_metadata.num_prefill_tokens
+            output[npt:] = 0
 
 
 class Qwen3NextDecoderLayer(nn.Module):
