@@ -166,8 +166,6 @@ class LLMDataDistManager:
                         # self attention layers, including mtp layers
                         kv_caches_of_group[key] = kv_caches[key]
 
-                print(f"{kv_caches_of_group.keys()=}")
-                print(f"{list(sorted(kv_caches.keys(), key=extract_layer_index))=}")
                 flatten_kv_caches = unzip_kv_cache_dict(kv_caches_of_group)
 
                 # group by kv cache shape
