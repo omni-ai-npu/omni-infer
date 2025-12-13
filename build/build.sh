@@ -37,13 +37,14 @@ check_git() {
 
 # 初始化并更新子模块
 init_submodules() {
+    local base_dir="$1"
     log_info "---Step1：初始化子模块...---"
     for mod in "${MODULES_TO_BUILD[@]}"; do
-        if [ -e "components/$mod" ]; then
-            log_warn "路径 components/$mod 存在"
-            rm -rf components/$mod
+        if [ -e "$base_dir/components/$mod" ]; then
+            log_warn "路径 $base_dir/components/$mod 存在"
+            rm -rf $base_dir/components/$mod
         fi
-        git submodule add --force ${GIT_PATH_OF_MODULE["$mod"]} components/$mod
+        git submodule add --force ${GIT_PATH_OF_MODULE["$mod"]} $base_dir/components/$mod
     done
     git submodule init
     
@@ -218,12 +219,12 @@ main() {
     
     # 检查 git
     check_git
-    
-    # 初始化子模块
-    init_submodules
-    
+
     # 获取项目根目录
     local project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+    
+    # 初始化子模块
+    init_submodules "$project_root"
     
     log_info "项目根目录: $project_root"
     
