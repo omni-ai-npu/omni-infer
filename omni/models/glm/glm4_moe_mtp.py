@@ -55,7 +55,8 @@ from .glm4_moe import (
 )
 from vllm.model_executor.models.interfaces import SupportsPP
 from vllm.model_executor.models.utils import maybe_prefix
-
+from omni.adaptors.vllm.distributed import get_eh_proj_tp_group
+from omni.layers.linear import ColumnParallelFlashCommLinear
 
 class SharedHead(nn.Module):
     def __init__(
@@ -92,7 +93,17 @@ class Glm4MoeMultiTokenPredictorLayer(nn.Module):
         self.layer_name = f"{prefix}.self_attn.attn"
         self.enorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.hnorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.eh_proj = nn.Linear(config.hidden_size * 2, config.hidden_size, bias=False)
+        self.eh_tp_size = get_eh_proj_tp_group().world_size
+        self.eh_tp_rank = get_eh_proj_tp_group().rank_in_group
+        self.eh_proj = ColumnParallelFlashCommLinear(
+            input_size=2 * self.config.hidden_size,
+            output_size=self.config.hidden_size,
+            bias=False,
+            tp_size=self.eh_tp_size,
+            tp_rank=self.eh_tp_rank,
+            quant_config=quant_config,
+            prefix=f"{prefix}.eh_proj",
+        )
         self.shared_head = SharedHead(
             config=config, prefix=prefix, quant_config=quant_config
         )
@@ -120,6 +131,8 @@ class Glm4MoeMultiTokenPredictorLayer(nn.Module):
         selected_indices: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
+        is_prefill = attn_metadata is None or (hasattr(attn_metadata, "prefill") and attn_metadata.prefill is not None) or \
+                    (hasattr(attn_metadata, "is_pd_seperate_d") and not attn_metadata.is_pd_seperate_d)
         tok_embeds = self.enorm(self.get_input_embeddings(input_ids))
         if len(tok_embeds.shape) > 2:
             tok_embeds = tok_embeds.view(-1, self.config.hidden_size)
@@ -134,7 +147,11 @@ class Glm4MoeMultiTokenPredictorLayer(nn.Module):
 
         previous = self.hnorm(previous_hidden_states)
         cat_hidden_states = torch.cat([tok_embeds, previous], dim=-1)
-        hidden_states = self.eh_proj.forward(cat_hidden_states)
+        if self.eh_tp_size > 1:
+            cat_hidden_states = get_eh_proj_tp_group().all_gather(cat_hidden_states, dim=0)
+        hidden_states, _ = self.eh_proj.forward(cat_hidden_states,is_prefill=is_prefill)
+        if self.eh_tp_size > 1:
+            hidden_states = get_eh_proj_tp_group().all_to_all(hidden_states)
 
         encoded_states, residual = self.mtp_block(
             positions=positions,

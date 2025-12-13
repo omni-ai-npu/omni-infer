@@ -369,7 +369,7 @@ class Glm4MoeModel(nn.Module):
                 quant_config=quant_config,
                 prefix=prefix,
             ),
-            prefix=f"model.{prefix}.layers",
+            prefix=f"{prefix}.layers",
         )
 
         if get_pp_group().is_last_rank:
