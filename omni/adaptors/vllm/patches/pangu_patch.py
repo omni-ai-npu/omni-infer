@@ -91,6 +91,15 @@ def patch_pangu():
             })
             return hf_config
 
+        if hf_config.model_type == "qwen3_next":
+            hf_config.model_type = "qwen3_next_mtp"
+        if hf_config.model_type == "qwen3_next_mtp":
+            n_predict = getattr(hf_config, "num_nextn_predict_layers", None)
+            hf_config.update({
+                "n_predict": n_predict,
+                "architectures": ["Qwen3NextMTPModel"]
+            })
+
         return hf_config
 
     def __post_init__(self):
@@ -112,7 +121,9 @@ def patch_pangu():
                     self.target_model_config.hf_text_config.model_type \
                         == "mimo" or
                     self.target_model_config.hf_text_config.model_type \
-                        == "pangu_ultra_moe"):
+                        == "pangu_ultra_moe" or
+                    self.target_model_config.hf_text_config.model_type \
+                        == "qwen3_next"):
                 # use the draft model from the same model:
                 self.model = self.target_model_config.model
             elif self.method in ("ngram", "[ngram]"):
@@ -205,7 +216,7 @@ def patch_pangu():
                       "deepseek_mtp"):
                     self.method = "deepseek_mtp"
                     if self.num_speculative_tokens > 1:
-                        logger.warning(
+                        print(
                                 "All Deepseek MTP models only have " \
                                 "one layer. Might need some code changes " \
                                 "to support multiple layers."
@@ -214,8 +225,17 @@ def patch_pangu():
                       "pangu_ultra_moe_mtp"):
                     self.method = "pangu_ultra_moe_mtp"
                     if self.num_speculative_tokens > 1:
-                        logger.warning(
+                        print(
                                 "All Pangu Ultra MoE MTP models only have " \
+                                "one layer. Might need some code changes " \
+                                "to support multiple layers."
+                            )
+                elif (self.draft_model_config.hf_config.model_type ==
+                      "qwen3_next_mtp"):
+                    self.method = "qwen3_next_mtp"
+                    if self.num_speculative_tokens > 1:
+                        print(
+                                "All Qwen3 Next MTP models only have " \
                                 "one layer. Might need some code changes " \
                                 "to support multiple layers."
                             )
@@ -287,7 +307,7 @@ def patch_pangu():
         self._verify_args()
 
     def use_eagle(self) -> bool:
-        return self.method in ("eagle", "eagle3", "deepseek_mtp", "ernie_mtp","pangu_ultra_moe_mtp")
+        return self.method in ("eagle", "eagle3", "deepseek_mtp", "ernie_mtp","pangu_ultra_moe_mtp", "qwen3_next_mtp")
 
     ModelConfig.is_deepseek_mla = is_deepseek_mla
     ModelConfig._verify_with_expert_parallelism = _verify_with_expert_parallelism

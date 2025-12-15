@@ -187,8 +187,8 @@ class MambaStateShapeCalculator:
     ):
         conv_dim = (head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads)
         conv_state_shape = (
-            divide(conv_dim, tp_world_size),
             conv_kernel_size - 1 + num_spec,
+            divide(conv_dim, tp_world_size),
         )
 
         # In V0, the conv_state shape was swapped during allocation in

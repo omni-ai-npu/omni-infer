@@ -67,9 +67,8 @@ def register_model():
     )
 
     ModelRegistry.register_model(
-        "Qwen3NextForCausalLM",
-        "omni.models.qwen.qwen3_next:Qwen3NextForCausalLM"
-    )
+        "Qwen3NextMTPModel",
+        "omni.models.qwen.qwen3_next_mtp:Qwen3NextMTP")
 
     ModelRegistry.register_model(
         "Eagle3LlamaForCausalLMEagle3",

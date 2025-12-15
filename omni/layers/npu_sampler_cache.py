@@ -178,3 +178,40 @@ class ProbCache:
     def prepare_cache(self, scheduled_new_reqs, req_ids, sampling_metadata, input_batch):
         self.permute_cached_reqs(input_batch.req_ids)
         self.prepare_new_reqs(scheduled_new_reqs)
+
+class AcceptedTokenCache:
+    def __init__(self, num_req, device):
+        self.cached_req_ids = None
+        self.num_accepted_tokens = torch.zeros(num_req + 1, dtype=torch.int32, device=device)
+        self.num_req = num_req
+    
+    def permute_cached_reqs(self, new_req_ids):
+        if self.cached_req_ids == None:
+            self.cached_req_ids = new_req_ids
+            return
+        num_reqs = len(new_req_ids)
+        src = [-1] * num_reqs
+        for i in range(len(self.cached_req_ids)):
+            try:
+                index = new_req_ids.index(self.cached_req_ids[i])
+                src[index] = i
+            except ValueError:
+                pass
+        move_cached_tensors([self.num_accepted_tokens], src)
+        self.cached_req_ids = new_req_ids
+    def get_num_accepted_tokens(self):
+        return self.num_accepted_tokens[:self.num_req]
+    def update_num_accepted_tokens(self, num_accepted_tokens):
+        self.num_accepted_tokens[:num_accepted_tokens.shape[0]] = num_accepted_tokens
+
+    def prepare_new_reqs(self, scheduled_new_reqs):
+        for i in range(len(scheduled_new_reqs)):
+            try:
+                index = self.cached_req_ids.index(scheduled_new_reqs[i].req_id)
+            except ValueError:
+                raise RuntimeError("accepted token cache: a scheduled new req is not in req id list")
+            self.num_accepted_tokens[index] = 0
+
+    def prepare_cache(self, scheduled_new_reqs, req_ids, sampling_metadata, input_batch):
+        self.permute_cached_reqs(input_batch.req_ids)
+        self.prepare_new_reqs(scheduled_new_reqs)

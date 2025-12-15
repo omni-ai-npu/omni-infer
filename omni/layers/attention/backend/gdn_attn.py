@@ -44,7 +44,7 @@ class GDNAttentionMetadata:
     num_prefills: int
     num_prefill_tokens: int
     num_decodes: int
-    is_decode: bool
+    have_decode: bool
     num_decode_tokens: int
     num_spec_decodes: int
     num_spec_decode_tokens: int
@@ -66,6 +66,7 @@ class GDNAttentionMetadata:
         torch.
         Tensor] = None  # shape: [num_prefill_tokens + num_decode_tokens,]
     num_accepted_tokens: Optional[torch.Tensor] = None  # shape: [batch,]
+    num_spec_tokens: int = 0
 
     # The following attributes are for triton implementation of causal_conv1d
     nums_dict: Optional[dict] = None
@@ -145,6 +146,7 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
         num_draft_tokens: Optional[torch.Tensor] = None,
         fast_build: bool = False,
         graph_pad_size: int = -1,
+        num_spec_tokens: int = 0,
         **kwargs,
     ) -> GDNAttentionMetadata:
         m = common_attn_metadata
@@ -152,19 +154,16 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
         context_lens = num_computed_tokens_cpu_tensor
         context_lens_tensor = context_lens.to(query_start_loc.device)
         seq_lens_tensor = m.seq_lens
-
+        max_num_reqs = seq_lens_tensor.shape[0]        
         if (not self.use_spec_decode or num_draft_tokens is None
                 or num_draft_tokens.sum().item() == 0):
             spec_sequence_masks = None
         else:
-            spec_sequence_masks = (num_draft_tokens > 0) & (
-                context_lens_tensor +
-                (num_draft_tokens + 1) == seq_lens_tensor)
+            spec_sequence_masks = torch.full((max_num_reqs,), True, dtype=torch.bool, device=query_start_loc.device)
             if spec_sequence_masks.sum().item() == 0:
                 spec_sequence_masks = None
-
         if graph_pad_size > 0 and self.runner.attn_state == AscendAttentionState.DecodeOnly:
-            padding = torch.full((graph_pad_size, ),
+            padding = torch.full((graph_pad_size // (num_spec_tokens + 1), ),
                                     query_start_loc[-1],
                                     dtype=query_start_loc.dtype,
                                     device=self.runner.device)
@@ -197,12 +196,15 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
 
             if num_prefills == 0 and num_decodes == 0:
                 spec_token_masks = torch.ones(
-                    (min(num_spec_decodes *
-                         (self.num_spec + 1), query_start_loc[-1].item())),
+                    (num_spec_decodes * (self.num_spec + 1)),
                     dtype=torch.bool,
                     device=query_start_loc.device)
                 spec_state_indices_tensor = self.block_table.block_table[:, :self.
                                                                  num_spec + 1]
+                # need to clean kv cache indices for padding slots
+                padding_size = graph_pad_size // (num_spec_tokens + 1)
+                spec_state_indices_tensor[-padding_size:,...] = 0
+
                 non_spec_state_indices_tensor = None
                 spec_query_start_loc = query_start_loc
                 non_spec_query_start_loc = None
@@ -232,7 +234,13 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             num_spec_decode_tokens = (query_lens.sum().item() -
                                       num_prefill_tokens - num_decode_tokens)
             assert num_accepted_tokens is not None
-            num_accepted_tokens = num_accepted_tokens[spec_sequence_masks]
+            # num_accepted_tokens: pad to max_num_reqs as tensor, fill missing with 0
+            assert(num_accepted_tokens.shape[0] <= max_num_reqs)
+            pad_size = max_num_reqs - num_accepted_tokens.shape[0]
+            num_accepted_tokens = torch.cat(
+                [num_accepted_tokens, torch.zeros((pad_size,), dtype=num_accepted_tokens.dtype, device=num_accepted_tokens.device)],
+                dim=0
+            )
 
         if num_prefills > 0:
             has_initial_state = context_lens_tensor > 0
@@ -308,7 +316,7 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
                 self.non_spec_query_start_loc[:batch_size + 1]
             non_spec_query_start_loc[num_decodes +
                                      1:].fill_(non_spec_num_query_tokens)
-            
+
         ascend_attn_metadata = super().build(
             num_reqs=num_reqs,
             num_actual_tokens=num_actual_tokens,
@@ -337,7 +345,7 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             num_prefills=num_prefills,
             num_prefill_tokens=num_prefill_tokens,
             num_decodes=num_decodes,
-            is_decode=(num_decodes > 0),
+            have_decode=(num_decodes > 0),
             num_decode_tokens=num_decode_tokens,
             num_spec_decodes=num_spec_decodes,
             num_spec_decode_tokens=num_spec_decode_tokens,
@@ -349,13 +357,17 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             non_spec_state_indices_tensor=non_spec_state_indices_tensor,
             spec_sequence_masks=spec_sequence_masks,
             spec_token_masks=spec_token_masks,
-            num_accepted_tokens=None,
+            num_accepted_tokens=num_accepted_tokens,
+            num_spec_tokens=num_spec_tokens,
         )
         return attn_metadata
 
     def mark_static_for_attn_metadata(self, attn_metadata):
         if attn_metadata is not None:
-            torch._dynamo.mark_static(attn_metadata.non_spec_query_start_loc)
+            if attn_metadata.non_spec_query_start_loc is not None:
+                torch._dynamo.mark_static(attn_metadata.non_spec_query_start_loc)
+            if attn_metadata.spec_query_start_loc is not None:
+                torch._dynamo.mark_static(attn_metadata.spec_query_start_loc)
             # torch._dynamo.mark_static(attn_metadata.query_lens)
             # torch._dynamo.mark_static(attn_metadata.seq_lens)
 
@@ -428,7 +440,7 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             num_prefills=0,
             num_prefill_tokens=0,
             num_decodes=num_tokens,
-            is_decode=(num_decodes > 0),
+            have_decode=(num_tokens > 0),
             num_decode_tokens=num_tokens,
             num_spec_decodes=0,
             num_spec_decode_tokens=0,
@@ -441,6 +453,7 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             spec_sequence_masks=None,
             spec_token_masks=None,
             num_accepted_tokens=None,
+            num_spec_tokens=0,
         )
         return attn_metadata
 

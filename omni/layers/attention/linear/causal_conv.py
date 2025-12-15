@@ -27,12 +27,11 @@ def causal_conv1d_ref(
     activation: Optional[str] = "silu",
 ):
     """
-    x: (batch, dim, seqlen)
+    x: (batch, dim, seqlen) or (dim, seqlen)
     weight: (dim, width)
     bias: (dim,)
-    initial_states: (batch, dim, width - 1)
-    final_states_out: (batch, dim, width - 1)
-
+    initial_states: (batch, dim, width - 1 + num_spec) or (dim, width - 1 + num_spec)
+    final_states_out: (batch, width - 1 + num_spec, dim)
     out: (batch, dim, seqlen)
     """
     if activation not in [None, "silu", "swish"]:
@@ -41,6 +40,7 @@ def causal_conv1d_ref(
     x = x.to(weight.dtype)
     seqlen = x.shape[-1]
     dim, width = weight.shape
+    padding_size = final_states_out.shape[-1] - (width - 1)
 
     if initial_states is None:
         out = F.conv1d(x,
@@ -49,16 +49,21 @@ def causal_conv1d_ref(
                        padding=width - 1,
                        groups=dim)
     else:
-        x = torch.cat([initial_states.transpose(-1, -2), x], dim=-1)
+        x = torch.cat([initial_states[..., :width - 1, :], x], dim=-1)
         out = F.conv1d(x, weight.unsqueeze(1), bias, padding=0, groups=dim)
     out = out[..., :seqlen]
     if return_final_states:
-        final_states = F.pad(x, (width - 1 - x.shape[-1], 0)).to(
-            dtype_in)  # (batch, dim, width - 1)
+        final_states = F.pad(x, (0, padding_size)).to(
+                dtype_in)  # (batch, dim, seqlen + padding_size)
+        required_len = final_states_out.shape[-1]
+        if(final_states.shape[-1] < required_len):
+            final_states = F.pad(final_states, (required_len - final_states.shape[-1], 0)).to(
+                dtype_in)  # (batch, dim, max(required_len, seqlen + padding_size))
+        final_states = final_states[..., -required_len:]
         if final_states_out is not None:
-            final_states_out.copy_(final_states.transpose(-1, -2))
+            final_states_out.copy_(final_states)
         else:
-            final_states_out = final_states.transpose(-1, -2)
+            final_states_out = final_states
     out = (out if activation is None else F.silu(out)).to(dtype=dtype_in)
     return (out, None) if not return_final_states else (out, final_states_out)
 
@@ -90,7 +95,7 @@ def causal_conv1d_fn(
     has_initial_state: (batch) bool
         indicates whether should the kernel take the current state as initial
         state for the calculations
-    conv_states: (...,dim,width - 1) itype
+    conv_states: (...,width - 1, dim) itype
         updated inplace if provided
     activation: either None or "silu" or "swish"
     pad_slot_id: int
@@ -114,10 +119,9 @@ def causal_conv1d_fn(
     seqlens = query_start_loc[1:] - query_start_loc[:-1]
     seqlens = seqlens.tolist()
     splits = torch.split(x, seqlens, dim=-1)
-
     for i in range(len(seqlens)):
         x_s = splits[i]
-        if cache_indices[i] == PAD_SLOT_ID:
+        if cache_indices[i] == PAD_SLOT_ID or seqlens[i] == 0:
             continue
         out_ref_b.append(
             causal_conv1d_ref(
@@ -126,7 +130,7 @@ def causal_conv1d_fn(
                 bias,
                 activation=activation,
                 return_final_states=True,
-                final_states_out=conv_states[cache_indices[i]].unsqueeze(0),
+                final_states_out=conv_states[cache_indices[i]],
                 initial_states=conv_states[cache_indices[i]]
                 if has_initial_state[i] else None))
     out_ref.append(torch.cat([t[0] for t in out_ref_b], dim=-1))
@@ -140,7 +144,9 @@ def causal_conv1d_update_ref(x,
                              bias=None,
                              activation=None,
                              cache_seqlens=None,
-                             conv_state_indices=None):
+                             conv_state_indices=None,
+                             num_accepted_tokens=None,
+                             num_spec_tokens=0):
     """
     x: (batch, dim) or (batch, dim, seqlen)
     conv_state: (batch, dim, state_len), where state_len >= width - 1
@@ -151,6 +157,11 @@ def causal_conv1d_update_ref(x,
         The conv_state will be updated by copying x to the
         conv_state starting at the index
         @cache_seqlens % state_len before performing the convolution.
+    num_accepted_tokens: (batch,), dtype int32, optional
+        If provided, used to offset where conv_state is read from.
+        For spec decoding: conv_state_token_offset = num_accepted_tokens
+    num_spec_tokens: int, optional
+        Number of speculative tokens. Used for speculative decoding.
 
     out: (batch, dim) or (batch, dim, seqlen)
     """
@@ -162,14 +173,27 @@ def causal_conv1d_update_ref(x,
         x = x.unsqueeze(-1)
     batch, dim, seqlen = x.shape
     width = weight.shape[1]
-    state_len = conv_state.shape[-2]
+    state_len = conv_state.shape[-1]
     assert weight.shape == (dim, width)
     if cache_seqlens is None:
-        x_new = torch.cat([conv_state[torch.clamp(conv_state_indices, 0)].transpose(-1, -2), x], dim=-1).to(
-            weight.dtype)
-        torch_npu.npu_scatter_nd_update_(conv_state, conv_state_indices.unsqueeze(1), x_new[:, :, -state_len:].transpose(-1, -2))
+        if num_accepted_tokens is not None:
+            # Create indices for gathering conv_state slices
+            batch_indices = torch.clamp(conv_state_indices, 0)  # (batch,)
+            conv_state_batch = conv_state[batch_indices]
+            conv_state_to_select = [0] * (num_spec_tokens + 1)
+            for i in range(num_spec_tokens + 1):
+                conv_state_to_select[i] = conv_state_batch[...,i:i + width - 1]
+            conv_state_selected = torch.zeros_like(conv_state_to_select[0])
+            for i in range(num_spec_tokens + 1):
+                select_mask = (num_accepted_tokens == i).to(conv_state_selected.dtype)
+                conv_state_selected += conv_state_to_select[i] * select_mask.unsqueeze(-1).unsqueeze(-1)
+            x_new = torch.cat([conv_state_selected, x], dim=-1).to(weight.dtype)
+        else:
+            x_new = torch.cat([conv_state[torch.clamp(conv_state_indices, 0)], x], dim=-1).to(
+                weight.dtype)
+        torch_npu.npu_scatter_nd_update_(conv_state, conv_state_indices.unsqueeze(1), x_new[:, :, -state_len:])
     else:
-        assert(false)
+        assert(False)
         width_idx = torch.arange(
             -(width - 1), 0, dtype=torch.long,
             device=x.device).unsqueeze(0) + cache_seqlens.unsqueeze(1)
@@ -449,17 +473,17 @@ def causal_conv1d_update_npu(
     activation: Union[bool, str, None] = None,
     cache_seqlens: Optional[torch.Tensor] = None,
     conv_state_indices: Optional[torch.Tensor] = None,
-    num_accepted_tokens: Optional[torch.Tensor] = None, # This parameter will be ignored
+    num_accepted_tokens: Optional[torch.Tensor] = None,
+    num_spec_tokens: Optional[int] = None,
     intermediate_conv_window: Optional[torch.Tensor] = None, # This parameter will be ignored
     pad_slot_id: int = PAD_SLOT_ID, # This parameter will be ignored
     metadata=None, # This parameter will be ignored
-    validate_data=False, # This parameter will be ignored
 ):
     """
     x: (batch, dim) or (batch, dim, seqlen)
         [shape=2: single token prediction]
         [shape=3: single or multiple tokens prediction]
-    conv_state: (..., dim, state_len), where state_len >= width - 1
+    conv_state: (..., state_len, dim), where state_len >= width - 1
     weight: (dim, width)
     bias: (dim,)
     cache_seqlens: (batch,), dtype int32.
@@ -492,9 +516,9 @@ def causal_conv1d_update_npu(
 
     # Call the pure PyTorch reference implementation
     # Note: causal_conv1d_update_ref updates conv_state inplace and returns the output.
-    # Parameters like num_accepted_tokens, intermediate_conv_window, pad_slot_id,
-    # metadata, validate_data are specific to the Triton implementation or debugging
-    # and are not directly used by causal_conv1d_update_ref.
+    # Parameters like intermediate_conv_window, pad_slot_id, metadata
+    # are specific to the Triton implementation or debugging and are not directly used
+    # by causal_conv1d_update_ref.
     #
     # IMPORTANT CONSIDERATION REGARDING `pad_slot_id`:
     # The original Triton kernel explicitly skips processing for `pad_slot_id` entries
@@ -516,6 +540,8 @@ def causal_conv1d_update_npu(
         activation=activation,
         cache_seqlens=cache_seqlens,
         conv_state_indices=conv_state_indices,
+        num_accepted_tokens=num_accepted_tokens,
+        num_spec_tokens=num_spec_tokens,
     )
 
     if unsqueeze:

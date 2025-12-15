@@ -157,8 +157,15 @@ class LLMDataDistManager:
         if any(["linear_attn" for layer_name in kv_caches.keys()]):
             model_id = 0
             for kv_cache_group in range(4):
-                kv_caches_of_group = {k: kv_caches[k] for i, k in enumerate(sorted(kv_caches.keys(), key=extract_layer_index)) if i % 4 == kv_cache_group}
-                print(f"{kv_caches_of_group.keys()=} {list(sorted(kv_caches.keys(), key=extract_layer_index))=}")
+                kv_caches_of_group = {}
+                for index, key in enumerate(sorted(kv_caches.keys(), key=extract_layer_index)):
+                    if "linear_attn" in key:
+                        if index % 4 == kv_cache_group:
+                            kv_caches_of_group[key] = kv_caches[key]
+                    elif kv_cache_group == 3:
+                        # self attention layers, including mtp layers
+                        kv_caches_of_group[key] = kv_caches[key]
+
                 flatten_kv_caches = unzip_kv_cache_dict(kv_caches_of_group)
 
                 # group by kv cache shape
