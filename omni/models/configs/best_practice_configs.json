@@ -75,7 +75,7 @@
    {
       "model": "deepseek_v3",
       "hardware": "A3",
-      "precision": "w4a8",
+      "precision": "w4a8_fa_c8",
       "prefill_node_num": 4,
       "decode_node_num": 1,
       "pd_disaggregation": true,

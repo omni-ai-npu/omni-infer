@@ -2,7 +2,7 @@
     "model_parallel_config": {
       "dense_mlp_tp_size": 4,
       "o_proj_tp_size": 1,
-      "redundancy_shared_expert_num": 0
+      "dp_size": 32
     },
     "operator_optimization_config": {
       "enable_kv_rmsnorm_rope_cache": true,
@@ -15,11 +15,11 @@
       "use_super_kernel": true,
       "use_mlaprolog": true,
       "fa_quant": true,
-      "cast_w2_scale_f32": true,
       "control_accept_rate": -1,
       "use_prefetch": true,
       "expert_gate_up_prefetch": 50,
       "expert_down_prefetch": 0,
-      "attn_prefetch": 96
+      "attn_prefetch": 96,
+      "decode_experts_pruning": true
     }
   }
