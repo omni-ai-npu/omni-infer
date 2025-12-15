@@ -20,7 +20,7 @@ from vllm.distributed import (
     get_ep_group
 )
 from omni.models.config_loader.loader import model_extra_config
-
+from omni.layers.utils import ConditionalTNGScope
 
 def fused_topk(
         gating_output: torch.Tensor,
@@ -515,26 +515,17 @@ def fused_experts_allgather_ep_a3(layer: torch.nn.Module,
                                     get_world_group().rank_in_group - redundancy_shared_expert_num) * max_num_deployed_expert_per_rank  # ENABLE_OMNI_PLANNER
         experts_end_idx = experts_start_idx + n_routed_experts
         expert_range = [experts_start_idx, experts_end_idx]
+        row_idx_type = 0 if is_prefill else 1
+        sorted_tokens, expanded_x_idx, expert_tokens, dynamic_quant_scale = \
+            torch_npu.npu_moe_init_routing_v2(hidden_states, topk_ids, scale=pertoken_scale, offset=None,
+                                              active_num=topk_ids.numel(),
+                                              expert_capacity=-1, expert_num=n_total_expert, drop_pad_mode=0,
+                                              expert_tokens_num_type=1,
+                                              expert_tokens_num_flag=True, quant_mode=-1,
+                                              active_expert_range=expert_range, row_idx_type=row_idx_type)
 
-        sorted_tokens, expanded_x_idx, expert_tokens, dynamic_quant_scale = torch_npu.npu_moe_init_routing_v2(
-            hidden_states, topk_ids, scale=pertoken_scale, offset=None, active_num=topk_ids.numel(), expert_capacity=-1,
-            expert_num=n_total_expert, drop_pad_mode=0, expert_tokens_num_type=1, expert_tokens_num_flag=True,
-            quant_mode=-1, active_expert_range=expert_range, row_idx_type=1)
-
-        if is_prefill or not model_extra_config.operator_opt_config.enable_kv_rmsnorm_rope_cache:
-            range1 = torch.arange(0, expanded_x_idx.shape[0], dtype=torch.int32, device="npu")
-            range2 = range1 * torch.tensor(991, dtype=torch.int32, device="npu")
-            mask = (range1 >= torch.sum(expert_tokens)).to(torch.int32)
-            expanded_x_idx += range2 * mask
-            expanded_x_idx = expanded_x_idx % expanded_x_idx.shape[0]
-            expanded_x_idx = torch.clamp(expanded_x_idx, min=0, max=expanded_x_idx.shape[0] - 1)
-            sorted_topk_weight = torch.index_select(topk_weights.reshape(-1), 0, expanded_x_idx)
-            row_index = expanded_x_idx // topk_ids.shape[-1]
-            row_index = row_index.to(torch.int64)
-            share_input = torch.zeros((batch_size // get_dp_group().world_size, hidden_size), dtype=torch.bfloat16,
-                                      device=current_platform.device_type)
-        else:
-            with tng.scope.npu_stream_switch('11'):
+        if not is_prefill:
+            with ConditionalTNGScope(multi_stream=model_extra_config.operator_opt_config.moe_multi_stream_tune, stream_id='11'):
                 range1 = torch.arange(0, expanded_x_idx.shape[0], dtype=torch.int32, device="npu")
                 range2 = range1 * torch.tensor(991, dtype=torch.int32, device="npu")
                 mask = (range1 >= torch.sum(expert_tokens)).to(torch.int32)
@@ -561,18 +552,26 @@ def fused_experts_allgather_ep_a3(layer: torch.nn.Module,
                                                                               quant_offset=None,
                                                                               group_index=expert_tokens,
                                                                               activate_left=True, quant_mode=1)
-
-            output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, layer.w2_weight, expert_tokens,
-                                                                   scale=layer.w2_weight_scale.to(torch.float),
-                                                                   bias=None,
-                                                                   pertoken_scale=pertoken_scale,
-                                                                   shared_input=share_input,
-                                                                   logit=sorted_topk_weight,
-                                                                   row_index=row_index,
-                                                                   output_bs=batch_size,
-                                                                   shared_input_weight=1.0,
-                                                                   group_list_type=1, shared_input_offset=0).to(
-                torch.bfloat16)
+            if is_prefill:
+                out = torch_npu.npu_grouped_matmul([gate_up_proj], [layer.w2_weight], scale=[layer.w2_weight_scale],
+                                                   per_token_scale=[pertoken_scale], bias=None,
+                                                   group_list=expert_tokens, split_item=3, output_dtype=torch.bfloat16,
+                                                   group_type=0, group_list_type=1)[0]
+                output = torch_npu.npu_moe_finalize_routing(out.unsqueeze(1).to(torch.bfloat16),
+                                                            None, None, None,
+                                                            topk_weights.to(torch.bfloat16),
+                                                            expanded_x_idx, topk_ids, drop_pad_mode=3)
+            else:
+                output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, layer.w2_weight, expert_tokens,
+                                                                    scale=layer.w2_weight_scale.to(torch.float),
+                                                                    bias=None,
+                                                                    pertoken_scale=pertoken_scale,
+                                                                    shared_input=share_input,
+                                                                    logit=sorted_topk_weight,
+                                                                    row_index=row_index,
+                                                                    output_bs=batch_size,
+                                                                    shared_input_weight=1.0,
+                                                                    group_list_type=1, shared_input_offset=0).to(torch.bfloat16)
             return output
         elif layer.weight_num_bits == 4:
             gate_up_proj = \
