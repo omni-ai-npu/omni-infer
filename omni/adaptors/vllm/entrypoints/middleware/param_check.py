@@ -8,7 +8,9 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from http import HTTPStatus
 from vllm.entrypoints.openai.protocol import ErrorResponse
+from vllm.logger import init_logger
 
+logger = init_logger("vllm.entrypoints.middleware")
 
 TYPE_MAPPING = {
     "int": int,
@@ -19,6 +21,7 @@ TYPE_MAPPING = {
     "dict": dict
 }
 DEFAULT_MAX_MODEL_LEN = 8192
+ACTION = os.environ.get("ROLE", "")
 
 class BaseValidator(ABC):
     def __init__(self,
@@ -28,8 +31,10 @@ class BaseValidator(ABC):
         self.param_name = param_name
         self.error_msg = error_msg
 
-    @abstractmethod
     def validate(self, value: Any) -> Optional[str]:
+        pass
+
+    def validate_json(self, value: Any) -> Optional[str]:
         pass
 
 
@@ -38,25 +43,23 @@ class NestedBaseValidator(BaseValidator):
         self,
         param_name: str,
         error_msg: Optional[str] = None,
-        subfields: list[str] = [],
+        subfield: list[str] = [],
         checker_condition = None,
-        checker: Callable[[str, Any], Tuple[Optional[str], Optional[Any]]] | None = None
+        checker: Callable[[str, Any], Tuple[Optional[str], Optional[Any]]] | None = None,
+        skip_check_subfield: list = []
     ):
         super(NestedBaseValidator, self).__init__(param_name, error_msg)
-        self.subfields = subfields
+        self.subfield = subfield
         self.checker_condition = checker_condition
         self.checker = checker
+        self.skip_check_subfield = skip_check_subfield
     
     def validate(self, value):
-        if not self.subfields:
+        if not self.subfield:
             return None
         return self.check_field(value, self.param_name)
     
     def check_field(self, value, param_name: str) -> Optional[str]:
-        if self.checker_condition and self.checker_condition(param_name):
-            if self.checker:
-                if err_str := self.checker(param_name, value):
-                    return err_str
         if isinstance(value, dict):
             return self.check_dict_subfield(value, param_name)
         if isinstance(value, list):
@@ -64,6 +67,8 @@ class NestedBaseValidator(BaseValidator):
         return None
     
     def check_dict_subfield(self, value, cur_param: str) -> Optional[str]:
+        if cur_param in self.skip_check_subfield:
+            return None
         for name, val in list(value.items()):
             sub_cur_param = f'{cur_param}.{name}'
             if self.checker_condition and self.checker_condition(sub_cur_param):
@@ -90,16 +95,17 @@ class SupportedValidator(NestedBaseValidator):
             self,
             param_name: str,
             error_msg: Optional[str] = None,
-            subfield: list = []
+            subfield: list = [],
+            skip_check_subfield: list = []
     ):
         def checker_condition(param_name: str):
-            return param_name not in self.subfields
+            return param_name not in self.subfield
         
         def checker(param_name: str, value: Any):
             value.pop(param_name.split('.')[-1])
             return None
         
-        super().__init__(param_name, error_msg, subfield, checker_condition, checker)
+        super().__init__(param_name, error_msg, subfield, checker_condition, checker, skip_check_subfield)
 
 
 class NestedValueValidator(NestedBaseValidator):
@@ -107,18 +113,31 @@ class NestedValueValidator(NestedBaseValidator):
         self,
         param_name: str,
         error_msg: Optional[str] = None,
-        subfields: list[str] = [],
+        subfield: list[str] = [],
         target_values: list[str] = []
     ):
         def checker_condition(param_name: str):
-            return param_name in self.subfields
+            return param_name in self.subfield
         
         def checker(param_name: str, value: Any):
             if value[param_name.split('.')[-1]] not in target_values:
                 return (f'{param_name} only support the value in {target_values}', None)
             return None
         
-        super().__init__(param_name, error_msg, subfields, checker_condition, checker)
+        super().__init__(param_name, error_msg, subfield, checker_condition, checker)
+
+class IncompatibilityValidator(BaseValidator):
+    def __init__(self,
+                 param_name: str,
+                 error_msg: Optional[str] = None,
+                 subfield: list[str] = []
+                 ):
+        super().__init__(param_name, error_msg)
+        self.subfield = subfield
+
+    def validate_json(self, request_json):
+        for param_name in self.subfield:
+            request_json.pop(param_name, None)
 
 
 class RangeValidator(BaseValidator):
@@ -180,6 +199,14 @@ def create_validator(param_name: str, config: dict[str, Any]) -> Optional[BaseVa
         return SupportedValidator(
             param_name=config.get("param_name", param_name),
             error_msg=config.get("error_msg"),
+            subfield=config.get("subfield", []),
+            skip_check_subfield=config.get("skip_check_subfield", [])
+        )
+    
+    elif validator_type == "incompatibility":
+        return IncompatibilityValidator(
+            param_name=config.get("param_name", param_name),
+            error_msg=config.get("error_msg"),
             subfield=config.get("subfield", [])
         )
     
@@ -206,7 +233,7 @@ def create_validator(param_name: str, config: dict[str, Any]) -> Optional[BaseVa
         return NestedValueValidator(
             param_name=config.get('param_name', param_name),
             error_msg=config.get('error_msg'),
-            subfields=config.get('subfield', []),
+            subfield=config.get('subfield', []),
             target_values=config.get('target_value', [])
         )
     
@@ -273,15 +300,11 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
             except json.JSONDecodeError:
                 return await call_next(request)
 
-            # Only True and False are allowed for "thinking" in chat_template_kwargs.thinking.
-            chat_template_kwargs = json_load.get("chat_template_kwargs")
-            if chat_template_kwargs is not None and "thinking" in chat_template_kwargs \
-                    and chat_template_kwargs["thinking"] not in {True, False}:
-                chat_template_kwargs.pop("thinking")
             # Ignore guided decoding if parameter json_schema is missing.
             response_format = json_load.get("response_format")
-            if response_format is not None and "type" in response_format and response_format["type"] == "json_schema":
-                if "json_schema" not in response_format:
+            if response_format is not None and isinstance(response_format, dict) and "type" in response_format \
+                and response_format["type"] == "json_schema":
+                if response_format.get("json_schema", None) is None:
                     json_load.pop("response_format")
             # guided_decoding_backend is not supported
             if "guided_decoding_backend" in json_load:
@@ -289,8 +312,8 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
             request._body = json.dumps(json_load).encode("utf-8")
 
             if json_load.get("kv_transfer_params"):
-                max_tokens = json_load.get("max_tokens", -1)
-                if max_tokens < 0:
+                max_tokens = json_load.get("max_tokens", None)
+                if max_tokens is None:
                     json_load["max_tokens"] = int(os.getenv("DEFAULT_MAX_TOKENS", DEFAULT_MAX_MODEL_LEN))
                     request._body = json.dumps(json_load).encode("utf-8")
 
@@ -311,9 +334,22 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
                         if error := validator.validate_json(json_load):
                             return self.create_error_response(status_code, error)
             
-            if os.environ.get("ROLE", "") == "prefill":
+            if ACTION == "prefill":
                 json_load["max_tokens"] = 1
             request._body = json.dumps(json_load).encode("utf-8")
+
+            headers = dict(request.headers)
+            if "x-request-id" in headers:
+                request_id = headers["x-request-id"]
+                if "chat" in request.url.path:
+                    request_id = f"chatcmpl-{request_id}"
+                else:
+                    request_id = f"cmpl-{request_id}"
+                
+                logger.info(f"[Begin {ACTION}] request_id: {request_id}")
+                response = await call_next(request)
+                logger.info(f"[End {ACTION}] request_id: {request_id}")
+                return response
 
         if request.method == "GET" and request.url.path == "/v1/models":
             response = await call_next(request)
