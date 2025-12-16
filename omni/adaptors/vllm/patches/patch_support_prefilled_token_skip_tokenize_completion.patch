@@ -1,0 +1,81 @@
+diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
+index ed047c288..173f22dc2 100755
+--- a/vllm/entrypoints/openai/serving_completion.py
++++ b/vllm/entrypoints/openai/serving_completion.py
+@@ -44,6 +44,9 @@ logger = init_logger(__name__)
+ import os
+ llm_waiting_out = float(os.environ.get("LLM_WAITING_OUT", "86400"))
+ 
++reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
++skip_decode_tokenize = os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "0") == "1"
++
+ class OpenAIServingCompletion(OpenAIServing):
+ 
+     def __init__(
+@@ -164,6 +167,19 @@ class OpenAIServingCompletion(OpenAIServing):
+                     input_length = len(engine_prompt["prompt_token_ids"])
+                 else:
+                     assert_never(engine_prompt)
++                if reuse_prefilled_tokens:
++                    if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
++                        new_tokens = tokenizer.convert_ids_to_tokens(request.kv_transfer_params["prefilled_token"][0])
++                        delta_text = tokenizer.convert_tokens_to_string([new_tokens])
++                        # If the decoded text ends with '�', it indicates an incomplete UTF-8 sequence — abandon reuse.
++                        # If the prefilled side has already triggered a stop reason, we also fall back to normal generation.
++                        if delta_text.endswith("�") or (request.max_tokens == 1) or any(s is not None for s in request.kv_transfer_params["stop_reasons"]):
++                            request.kv_transfer_params.pop("prefilled_token", None)
++                        else:
++                            engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
++                            engine_prompt["prefilled_texts"] = delta_text
++                            engine_prompt["max_tokens"] = min(request.max_tokens or self.max_model_len, self.max_model_len-len(engine_prompt["prompt_token_ids"]))
++                            request.kv_transfer_params["max_tokens"] = engine_prompt["max_tokens"]
+                 default_max_tokens = self.max_model_len - input_length
+ 
+                 if request.use_beam_search:
+@@ -262,7 +278,7 @@ class OpenAIServingCompletion(OpenAIServing):
+             prompt_token_ids = []
+             for req_output in final_res_batch_checked:
+                 prompt_token_ids.append(req_output.prompt_token_ids) 
+-            if final_res_batch_checked[0].kv_transfer_params:
++            if final_res_batch_checked[0].kv_transfer_params and skip_decode_tokenize:
+                 ## In Prefill node, the response will carry prompt_token_ids with kv_transfer_params
+                 final_res_batch_checked[0].kv_transfer_params["prompt_token_ids"] = prompt_token_ids
+ 
+@@ -461,6 +477,21 @@ class OpenAIServingCompletion(OpenAIServing):
+             prompt_logprobs = clamp_prompt_logprobs(final_res.prompt_logprobs)
+             prompt_text = final_res.prompt
+ 
++            if reuse_prefilled_tokens:
++                if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
++                    prompt_token_ids = request.kv_transfer_params["prefilled_token"]
++                    new_tokens = tokenizer.convert_ids_to_tokens(prompt_token_ids[0])
++                    prompt_text = tokenizer.convert_tokens_to_string([new_tokens])
++                    if request.kv_transfer_params["max_tokens"] > 1:
++                        final_res.outputs[0].text = prompt_text + final_res.outputs[0].text
++            ## In Prefill node, the response will carry prompt_token_ids with kv_transfer_params
++            if skip_decode_tokenize:
++                if final_res.kv_transfer_params:
++                    final_res.kv_transfer_params["prompt_token_ids"] = final_res.prompt_token_ids
++            if reuse_prefilled_tokens:
++                if final_res.kv_transfer_params:
++                    final_res.kv_transfer_params["prefilled_token"] = [final_res.outputs[0].token_ids[0]]
++
+             token_ids: GenericSequence[int]
+             out_logprobs: Optional[GenericSequence[Optional[dict[int,
+                                                                  Logprob]]]]
+@@ -524,6 +555,15 @@ class OpenAIServingCompletion(OpenAIServing):
+ 
+             num_prompt_tokens += len(prompt_token_ids)
+ 
++            if reuse_prefilled_tokens:
++                if request.kv_transfer_params and "prefilled_token" in request.kv_transfer_params:
++                    if request.kv_transfer_params["max_tokens"] > 1:
++                        num_generated_tokens += 1
++                if final_res.kv_transfer_params:
++                    final_res.kv_transfer_params["stop_reasons"] = [
++                        output.stop_reason for output in final_res.outputs
++                    ]
++
+         usage = UsageInfo(
+             prompt_tokens=num_prompt_tokens,
+             completion_tokens=num_generated_tokens,

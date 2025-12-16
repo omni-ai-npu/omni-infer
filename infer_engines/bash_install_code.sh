@@ -41,3 +41,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/fix_bugs_first_token.patch
 git apply --whitespace=nowarn $PATCH_ROOT/guided_decoding_adapt_prefilled_token.patch
 git apply --whitespace=nowarn $PATCH_ROOT/patch_reasoning_thinking_bug.patch
 git apply --whitespace=nowarn $PATCH_ROOT/support_v1_priority_schedule_for_xiaoyi.patch
+git apply --whitespace=nowarn $PATCH_ROOT/patch_support_prefilled_token_skip_tokenize_completion.patch
