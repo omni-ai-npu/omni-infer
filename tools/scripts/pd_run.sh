@@ -274,10 +274,8 @@ done
 KV_TRANSFER_CONFIG=$(cat <<EOF
 {
     "kv_connector": "$KV_CONNECTOR",
-    "kv_buffer_device": "$KV_BUFFER_DEVICE",
     "kv_role": "$KV_ROLE",
     "kv_rank": $KV_RANK,
-    "engine_id": $KV_ENGINE_ID,
     "kv_parallel_size": $KV_PARALLEL_SIZE
 }
 EOF
@@ -336,7 +334,6 @@ export HCCL_EXEC_TIMEOUT=120
 export TNG_HOST_COPY=1
 # 使能双页表 pd 分离
 export AUTO_USE_UC_MEMORY=1
-export TASK_QUEUE_ENABLE=2
 
 # enable to overwrite request IDs
 export ENABLE_OVERWRITE_REQ_IDS=1
@@ -390,6 +387,10 @@ EXTRA_ARGS="$EXTRA_ARGS"
 # Execute Python script
 
 common_operations() {
+  local mtp_args=""
+  if [ "$NUM_SPECULATIVE_TOKENS" -ne 0 ]; then
+    mtp_args="--enable-mtp"
+  fi
   python start_api_servers.py \
     --num-servers "$NUM_SERVERS" \
     --num-dp "$NUM_DP" \
@@ -405,7 +406,7 @@ common_operations() {
     --kv-transfer-config "$KV_TRANSFER_CONFIG" \
     --gpu-util "$GPU_UTIL" \
     --additional-config "$ADDITIONAL_CONFIG" \
-    --enable-mtp \
+    $mtp_args \
     --num-speculative-tokens "$NUM_SPECULATIVE_TOKENS" \
     --extra-args "$EXTRA_ARGS"
 }

@@ -60,6 +60,15 @@ class ProcessManager:
     def __init__(self, processes):
         self.processes = processes
 
+def export_additional_config(additional_config, cmd):
+    data = json.loads(additional_config)
+    if "compilation-config" in data:
+        cmd.extend(["--compilation-config", json.dumps(data["compilation-config"], ensure_ascii=False)])
+        data.pop("compilation-config", None)
+    if len(data) > 0: 
+        additional_config_tmp = json.dumps(data, ensure_ascii=False)
+        cmd.extend(["--additional-config", additional_config_tmp])
+    return cmd
 
 def start_single_node_api_servers(
     num_servers,
@@ -115,6 +124,7 @@ def start_single_node_api_servers(
         env["VLLM_DP_RANK_LOCAL"] = str(rank + server_offset // tp)
         env["VLLM_DP_MASTER_IP"] = master_ip
         env["VLLM_DP_MASTER_PORT"] = str(master_port)
+        env["VLLM_PLUGINS"] = "omni-npu"
 
         # Find an available port
         try:
@@ -131,14 +141,17 @@ def start_single_node_api_servers(
             "--gpu-memory-utilization", str(gpu_util),
             "--block_size", str(block_size),
             "--tensor-parallel-size", str(tp),
-            "--data-parallel-size", str(dp_per_server),   # one engine core for one dp
-            "--data-parallel-size-local", "1",            # 'Number of data parallel replicas '
             "--data-parallel-address", master_ip,         # 'Address of data parallel cluster '
             "--data-parallel-rpc-port", str(master_port), # 'Port for data parallel RPC '
             "--port", str(port),
             "--served-model-name", served_model_name,
             "--max-model-len", str(max_tokens)
         ]
+        if os.getenv('ROLE', 'prefill') == 'decode':
+            cmd.extend([
+                "--data-parallel-size", str(total_dp_size), # one engine core for one dp
+                "--data-parallel-rank", str(rank + server_offset // tp),
+            ])
         if enable_mtp:
             cmd.extend(["--speculative_config", '{"method": "deepseek_mtp", "num_speculative_tokens": ' + str(num_speculative_tokens) + '}'])
         if kv_transfer_config:
@@ -146,7 +159,7 @@ def start_single_node_api_servers(
         if extra_args:
             cmd.extend(extra_args.split())
         if additional_config:
-            cmd.extend(["--additional-config", additional_config])
+            cmd = export_additional_config(additional_config, cmd)
         if no_enable_prefix_caching:
             cmd.extend(["--no-enable-prefix-caching"])
         if no_enable_chunked_prefill:
