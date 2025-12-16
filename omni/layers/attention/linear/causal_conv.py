@@ -7,7 +7,7 @@
 # and https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/mamba/ops/causal_conv1d.py
 # mypy: ignore-errors
 
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 import torch
 import torchair, torch_npu
@@ -72,7 +72,7 @@ def causal_conv1d_fn(
     x: torch.Tensor,
     weight: torch.Tensor,
     bias: Optional[torch.Tensor] = None,
-    query_start_loc: Optional[torch.Tensor] = None,
+    seqlens_list: Optional[List[int]] = None,
     cache_indices: Optional[torch.Tensor] = None,
     has_initial_state: Optional[torch.Tensor] = None,
     conv_states: Optional[torch.Tensor] = None,
@@ -89,6 +89,11 @@ def causal_conv1d_fn(
         the batch, used to index into sequence. prepended by 0.
         for example: query_start_loc = torch.Tensor([0,10,16,17]),
         x.shape=(dim,17)
+        replaced by seqlens_list for varlen
+    seqlens_list: list of int
+        list of sequence lengths for each batch entry
+        for example: query_start_loc = torch.Tensor([0,10,16,17]),
+        seqlens_list = [10,6,1]
     cache_indices: (batch)  int32
         indicates the corresponding state index,
         like so: conv_state = conv_states[cache_indices[batch_id]]
@@ -110,18 +115,18 @@ def causal_conv1d_fn(
     """
     if activation not in [None, "silu", "swish"]:
         raise NotImplementedError("activation must be None, silu, or swish")
+    if seqlens_list is None:
+        raise ValueError("seqlens_list must be provided for variable length sequences")
     if x.stride(-1) != 1:
         x = x.contiguous()
     bias = bias.contiguous() if bias is not None else None
 
     out_ref = []
     out_ref_b = []
-    seqlens = query_start_loc[1:] - query_start_loc[:-1]
-    seqlens = seqlens.tolist()
-    splits = torch.split(x, seqlens, dim=-1)
-    for i in range(len(seqlens)):
+    splits = torch.split(x, seqlens_list, dim=-1)
+    for i in range(len(seqlens_list)):
         x_s = splits[i]
-        if cache_indices[i] == PAD_SLOT_ID or seqlens[i] == 0:
+        if cache_indices[i] == PAD_SLOT_ID or seqlens_list[i] == 0:
             continue
         out_ref_b.append(
             causal_conv1d_ref(

@@ -51,16 +51,31 @@ class GDNAttentionMetadata:
     num_actual_tokens: int
 
     has_initial_state: Optional[torch.Tensor] = None
+    has_initial_state_cpu: Optional[torch.Tensor] = None
+    no_initial_state_indices: Optional[torch.Tensor] = None
 
     spec_query_start_loc: Optional[
         torch.Tensor] = None  # shape: [num_spec_decodes + 1,]
     non_spec_query_start_loc: Optional[
         torch.Tensor] = None  # shape: [batch - num_spec_decodes + 1,]
+    non_spec_query_start_loc_cpu: Optional[
+        torch.Tensor] = None
+        # shape: [batch - num_spec_decodes + 1,]
+    spec_seqlens: Optional[torch.Tensor] = None  # shape: [num_spec_decodes,]
+    non_spec_seqlens: Optional[
+        torch.Tensor] = None
+        # shape: [batch - num_spec_decodes,]
+    spec_seqlens_list: Optional[
+        List] = None  # shape: [num_spec_decodes,]
+    non_spec_seqlens_list: Optional[
+        List] = None  # shape: [batch - num_spec_decodes,]
 
     spec_state_indices_tensor: Optional[
         torch.Tensor] = None  # shape: [batch, num_spec]
     non_spec_state_indices_tensor: Optional[
         torch.Tensor] = None  # shape: [batch - num_spec_decodes,]
+    non_spec_state_indices_tensor_list: Optional[
+        List] = None  # shape: [batch - num_spec_decodes,]
     spec_sequence_masks: Optional[torch.Tensor] = None  # shape: [batch,]
     spec_token_masks: Optional[
         torch.
@@ -180,9 +195,15 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
                 non_spec_state_indices_tensor[num_prefills:] = 0
             if num_prefills == 0:
                 non_spec_state_indices_tensor[num_decodes:] = 0
+            non_spec_state_indices_tensor_list = non_spec_state_indices_tensor.tolist()
             spec_query_start_loc = None
             non_spec_query_start_loc = query_start_loc
+            non_spec_query_start_loc_cpu = non_spec_query_start_loc.tolist()
             num_accepted_tokens = None
+            spec_seqlens = None
+            spec_seqlens_list = None
+            non_spec_seqlens = non_spec_query_start_loc[1:] - non_spec_query_start_loc[:-1]
+            non_spec_seqlens_list = non_spec_seqlens.tolist()
         else:
             num_spec_decodes = spec_sequence_masks.sum().item()
             query_lens = query_start_loc[1:] - query_start_loc[:-1]
@@ -206,8 +227,10 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
                 spec_state_indices_tensor[-padding_size:,...] = 0
 
                 non_spec_state_indices_tensor = None
+                non_spec_state_indices_tensor_list = None
                 spec_query_start_loc = query_start_loc
                 non_spec_query_start_loc = None
+                non_spec_query_start_loc_cpu = None
             else:
                 spec_token_masks = torch.repeat_interleave(
                     spec_sequence_masks, query_lens)
@@ -215,6 +238,8 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
                     spec_sequence_masks, :self.num_spec + 1]
                 non_spec_state_indices_tensor = \
                     self.block_table.block_table[~spec_sequence_masks, 0]
+                non_spec_state_indices_tensor_list = \
+                    non_spec_state_indices_tensor.tolist()
 
                 spec_query_start_loc = torch.zeros(
                     num_spec_decodes + 1,
@@ -230,7 +255,14 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
                 torch.cumsum(query_lens[~spec_sequence_masks],
                              dim=0,
                              out=non_spec_query_start_loc[1:])
-
+                non_spec_query_start_loc_cpu = \
+                    non_spec_query_start_loc.tolist()
+                spec_seqlens = spec_query_start_loc[1:] - \
+                    spec_query_start_loc[:-1]
+                spec_seqlens_list = spec_seqlens.tolist()
+                non_spec_seqlens = non_spec_query_start_loc[1:] - \
+                    non_spec_query_start_loc[:-1]
+                non_spec_seqlens_list = non_spec_seqlens.tolist()
             num_spec_decode_tokens = (query_lens.sum().item() -
                                       num_prefill_tokens - num_decode_tokens)
             assert num_accepted_tokens is not None
@@ -246,8 +278,17 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             has_initial_state = context_lens_tensor > 0
             if spec_sequence_masks is not None:
                 has_initial_state = has_initial_state[~spec_sequence_masks]
+            no_initial_state_indices = torch.nonzero(
+                ~has_initial_state,
+                as_tuple=False,
+            ).squeeze(1).to(torch.int32)
         else:
             has_initial_state = None
+            no_initial_state_indices = None
+        if has_initial_state is not None:
+            has_initial_state_cpu = has_initial_state.cpu()
+        else:
+            has_initial_state_cpu = None
         num_actual_tokens = num_prefill_tokens + num_decode_tokens + \
             num_spec_decode_tokens
 
@@ -307,7 +348,8 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             non_spec_state_indices_tensor = \
                 self.non_spec_state_indices_tensor[:batch_size]
             non_spec_state_indices_tensor[num_decodes:].fill_(PAD_SLOT_ID)
-
+            non_spec_state_indices_tensor_list = \
+                non_spec_state_indices_tensor.tolist()
             self.non_spec_query_start_loc[:num_decodes + 1].copy_(
                 non_spec_query_start_loc, non_blocking=True)
             non_spec_num_query_tokens = non_spec_query_start_loc[
@@ -316,7 +358,8 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
                 self.non_spec_query_start_loc[:batch_size + 1]
             non_spec_query_start_loc[num_decodes +
                                      1:].fill_(non_spec_num_query_tokens)
-
+            non_spec_query_start_loc_cpu = \
+                non_spec_query_start_loc.tolist()
         ascend_attn_metadata = super().build(
             num_reqs=num_reqs,
             num_actual_tokens=num_actual_tokens,
@@ -351,14 +394,22 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             num_spec_decode_tokens=num_spec_decode_tokens,
             num_actual_tokens=num_actual_tokens,
             has_initial_state=has_initial_state,
+            has_initial_state_cpu=has_initial_state_cpu,
+            no_initial_state_indices=no_initial_state_indices,
             spec_query_start_loc=spec_query_start_loc,
             non_spec_query_start_loc=non_spec_query_start_loc,
+            non_spec_query_start_loc_cpu=non_spec_query_start_loc_cpu,
             spec_state_indices_tensor=spec_state_indices_tensor,
             non_spec_state_indices_tensor=non_spec_state_indices_tensor,
+            non_spec_state_indices_tensor_list=non_spec_state_indices_tensor_list,
             spec_sequence_masks=spec_sequence_masks,
             spec_token_masks=spec_token_masks,
             num_accepted_tokens=num_accepted_tokens,
             num_spec_tokens=num_spec_tokens,
+            spec_seqlens=spec_seqlens,
+            spec_seqlens_list=spec_seqlens_list,
+            non_spec_seqlens=non_spec_seqlens,
+            non_spec_seqlens_list=non_spec_seqlens_list,
         )
         return attn_metadata
 
@@ -402,7 +453,9 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
                            self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'
 
         non_spec_query_start_loc = torch.tensor([0, 1], device=self.runner.device)
+        non_spec_query_start_loc_cpu = non_spec_query_start_loc.tolist()
         non_spec_state_indices_tensor = self.block_table.block_table[:, 0]
+        non_spec_state_indices_tensor_list = non_spec_state_indices_tensor.tolist()
 
         ascend_attn_metadata = AscendMetadata(
             num_actual_tokens=num_tokens,
@@ -446,10 +499,14 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             num_spec_decode_tokens=0,
             num_actual_tokens=num_tokens,
             has_initial_state=None,
+            has_initial_state_cpu=None,
+            no_initial_state_indices=None,
             spec_query_start_loc=None,
             non_spec_query_start_loc=non_spec_query_start_loc,
+            non_spec_query_start_loc_cpu=non_spec_query_start_loc_cpu,
             spec_state_indices_tensor=None,
             non_spec_state_indices_tensor=non_spec_state_indices_tensor,
+            non_spec_state_indices_tensor_list=non_spec_state_indices_tensor_list,
             spec_sequence_masks=None,
             spec_token_masks=None,
             num_accepted_tokens=None,
