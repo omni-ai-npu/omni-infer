@@ -202,8 +202,8 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
                 spec_state_indices_tensor = self.block_table.block_table[:, :self.
                                                                  num_spec + 1]
                 # need to clean kv cache indices for padding slots
-                padding_size = graph_pad_size // (num_spec_tokens + 1)
-                spec_state_indices_tensor[-padding_size:,...] = 0
+                num_spec_reqs = num_spec_decodes - graph_pad_size // (num_spec_tokens + 1)
+                spec_state_indices_tensor[num_spec_reqs:,...] = 0
 
                 non_spec_state_indices_tensor = None
                 spec_query_start_loc = query_start_loc
