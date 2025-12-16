@@ -590,7 +590,7 @@ all:
               max-num-batched-tokens: 33792
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-            gpu-util: '0.92'
+            gpu-util: '0.91'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
@@ -726,7 +726,7 @@ all:
               max-num-batched-tokens: 33792
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-            gpu-util: '0.92'
+            gpu-util: '0.91'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
@@ -862,7 +862,7 @@ all:
               max-num-batched-tokens: 33792
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-            gpu-util: '0.92'
+            gpu-util: '0.91'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
@@ -998,7 +998,7 @@ all:
               max-num-batched-tokens: 33792
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-            gpu-util: '0.92'
+            gpu-util: '0.91'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
@@ -1134,7 +1134,7 @@ all:
               max-num-batched-tokens: 33792
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-            gpu-util: '0.92'
+            gpu-util: '0.91'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
@@ -1270,7 +1270,7 @@ all:
               max-num-batched-tokens: 33792
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-            gpu-util: '0.92'
+            gpu-util: '0.91'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
@@ -1406,7 +1406,7 @@ all:
               max-num-batched-tokens: 33792
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-            gpu-util: '0.92'
+            gpu-util: '0.91'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
@@ -1542,7 +1542,7 @@ all:
               max-num-batched-tokens: 33792
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-            gpu-util: '0.92'
+            gpu-util: '0.91'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
