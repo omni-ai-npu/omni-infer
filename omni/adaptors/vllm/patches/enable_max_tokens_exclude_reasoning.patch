@@ -1,5 +1,5 @@
 diff --git a/vllm/v1/core/sched/utils.py b/vllm/v1/core/sched/utils.py
-index 814c87762..f3d2ee1df 100644
+index 814c87762..fb163953a 100644
 --- a/vllm/v1/core/sched/utils.py
 +++ b/vllm/v1/core/sched/utils.py
 @@ -1,6 +1,6 @@
@@ -10,7 +10,7 @@ index 814c87762..f3d2ee1df 100644
  
  def check_stop(request: Request, max_model_len: int) -> bool:
      if (request.num_tokens >= max_model_len
-@@ -20,12 +20,38 @@ def check_stop(request: Request, max_model_len: int) -> bool:
+@@ -20,8 +20,34 @@ def check_stop(request: Request, max_model_len: int) -> bool:
          request.stop_reason = last_token_id
          return True
      return False
@@ -45,11 +45,6 @@ index 814c87762..f3d2ee1df 100644
      remain_len = min(max_model_len - request.num_tokens, request.max_tokens - request.num_output_tokens)
      if remain_len <= 0:
          request.status = RequestStatus.FINISHED_LENGTH_CAPPED
--        return True, 0
-+        return True, 1
- 
-     possible_len = min(len(token_ids), remain_len)
- 
 diff --git a/vllm/v1/request.py b/vllm/v1/request.py
 index eeb928ac3..1f6aa4e25 100755
 --- a/vllm/v1/request.py
