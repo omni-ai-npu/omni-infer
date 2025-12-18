@@ -470,8 +470,12 @@ void Placement::placement_handle_instrucions(
         }
 
         if (need_split_batch) {
-            dist_ptr_->sync_round_shakehand(cur_round, cur_batch);
+            while (!dist_ptr_->sync_round_shakehand(cur_round, cur_batch)) {
+                std::this_thread::yield();
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
             placement_handle_one_batch(changeInstructions_one_batch);
+            dist_ptr_->sync_round_shakehand(cur_round, cur_batch);
             cur_batch++;
             memset(rank_used, 0, sizeof(rank_used));
             memset(rank_src_used, 0, sizeof(rank_src_used));
@@ -479,7 +483,7 @@ void Placement::placement_handle_instrucions(
             changeInstructions_one_batch.clear();
             need_split_batch = false;
         }
-
+        size_t cnt = 0;
         if (need_wait_main) {
             bool expected = false;
             bool desired = true;
@@ -490,7 +494,15 @@ void Placement::placement_handle_instrucions(
                           << "\n";
 
             while (buf_ready_flag_.load()) {
+                std::this_thread::yield();
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                cnt++;
+                if (cnt > 600) { // 超时3s
+                    std::cout << "[handle ins][warning] wait main thread > 3s."
+                              << "\n";
+                    dist_ptr_->sync_round_shakehand(-1, -1);
+                    cnt = 0;
+                }
             }
 
             need_wait_main = false;

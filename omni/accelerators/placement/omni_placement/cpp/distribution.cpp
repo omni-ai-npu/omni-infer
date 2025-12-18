@@ -253,7 +253,7 @@ void Distribution::warmup() {
     ACLCHECK(aclrtCreateStream(&stream));
 
     std::string dtype = "int";
-    size_t length = 1;
+    size_t length = round_info_length_;
     size_t data_size = length * sizeof(int);
     void *data_ptr;
     void *recv_buf;
