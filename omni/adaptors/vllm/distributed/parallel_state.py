@@ -69,7 +69,7 @@ class GroupCoordinator(GroupCoordinatorGPU):
         self.cpu_group = None
 
         torch_distributed_options = torch_npu._C._distributed_c10d.ProcessGroupHCCL.Options()
-        if group_name != "world":
+        if group_name != "ep":
             hccl_buffer_size = os.getenv('HCCL_BASIC_BUFFSIZE', os.getenv('HCCL_BUFFSIZE', 200))
             torch_distributed_options.hccl_config = {"hccl_buffer_size":int(hccl_buffer_size)}
 
