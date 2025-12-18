@@ -192,6 +192,7 @@ def _fused_recurrent_gated_delta_rule_ref(
     initial_state: torch.Tensor,
     inplace_final_state: bool,
     cu_seqlens: torch.LongTensor,
+    actual_seqlens: torch.LongTensor,
     ssm_state_indices: torch.Tensor,
     num_accepted_tokens: torch.Tensor,
     use_qk_l2norm_in_kernel: bool,
@@ -264,6 +265,7 @@ def _fused_recurrent_gated_delta_rule_npu(
     initial_state: torch.Tensor,
     inplace_final_state: bool = True,
     cu_seqlens: Optional[torch.LongTensor] = None,
+    actual_seqlens: Optional[torch.LongTensor] = None,
     ssm_state_indices: Optional[torch.Tensor] = None,
     num_accepted_tokens: Optional[torch.Tensor] = None,
     use_qk_l2norm_in_kernel: bool = False,
@@ -279,7 +281,6 @@ def _fused_recurrent_gated_delta_rule_npu(
     v = v.reshape(T, Nv, Dv)
     beta = beta.reshape(T, Nv)
     g = g.reshape(T, Nv)
-    actual_seq_lengths = cu_seqlens[1:] - cu_seqlens[:-1] if cu_seqlens is not None else None
     # Call the NPU reference implementation
     o = torch_npu.npu_recurrent_gated_delta_rule(
         query=q.to(torch.bfloat16),
@@ -288,7 +289,7 @@ def _fused_recurrent_gated_delta_rule_npu(
         state=initial_state.to(torch.bfloat16),
         beta=beta.to(torch.bfloat16),
         scale=scale,
-        actual_seq_lengths=actual_seq_lengths.to(torch.int32),
+        actual_seq_lengths=actual_seqlens.to(torch.int32),
         ssm_state_indices=ssm_state_indices.view(-1).to(torch.int32),
         num_accepted_tokens= None if num_accepted_tokens is None else num_accepted_tokens.to(torch.int32) + 1,
         g=None if g is None else g.to(torch.float32),
@@ -315,6 +316,7 @@ def fused_recurrent_gated_delta_rule_fwd(
     initial_state: torch.Tensor,
     inplace_final_state: bool = True,
     cu_seqlens: Optional[torch.LongTensor] = None,
+    actual_seqlens: Optional[torch.LongTensor] = None,
     ssm_state_indices: Optional[torch.Tensor] = None,
     num_accepted_tokens: Optional[torch.Tensor] = None,
     use_qk_l2norm_in_kernel: bool = False,
@@ -330,6 +332,7 @@ def fused_recurrent_gated_delta_rule_fwd(
         initial_state,
         inplace_final_state,
         cu_seqlens,
+        actual_seqlens,
         ssm_state_indices,
         num_accepted_tokens,
         use_qk_l2norm_in_kernel,
@@ -350,6 +353,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
                 initial_state: torch.Tensor,
                 inplace_final_state: bool = True,
                 cu_seqlens: Optional[torch.LongTensor] = None,
+                actual_seqlens: Optional[torch.LongTensor] = None,
                 ssm_state_indices: Optional[torch.Tensor] = None,
                 num_accepted_tokens: Optional[torch.Tensor] = None,
                 use_qk_l2norm_in_kernel: bool = False):
@@ -363,6 +367,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
             initial_state=initial_state,
             inplace_final_state=inplace_final_state,
             cu_seqlens=cu_seqlens,
+            actual_seqlens=actual_seqlens,
             ssm_state_indices=ssm_state_indices,
             num_accepted_tokens=num_accepted_tokens,
             use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
@@ -381,6 +386,7 @@ def fused_recurrent_gated_delta_rule(
     initial_state: torch.Tensor = None,
     inplace_final_state: bool = True,
     cu_seqlens: Optional[torch.LongTensor] = None,
+    actual_seqlens: Optional[torch.LongTensor] = None,
     ssm_state_indices: Optional[torch.Tensor] = None,
     num_accepted_tokens: Optional[torch.Tensor] = None,
     use_qk_l2norm_in_kernel: bool = False,
@@ -411,6 +417,8 @@ def fused_recurrent_gated_delta_rule(
         cu_seqlens (torch.LongTensor):
             Cumulative sequence lengths of shape `[N+1]` used for variable-length training,
             consistent with the FlashAttention API.
+        actual_seqlens (torch.LongTensor):
+            Actual sequence lengths of shape `[N]` used for variable-length decoding.
         ssm_state_indices (Optional[torch.Tensor]):
             Indices to map the input sequences to the initial/final states.
         num_accepted_tokens (Optional[torch.Tensor]):
@@ -469,6 +477,7 @@ def fused_recurrent_gated_delta_rule(
         initial_state,
         inplace_final_state,
         cu_seqlens,
+        actual_seqlens,
         ssm_state_indices,
         num_accepted_tokens,
         use_qk_l2norm_in_kernel,

@@ -28,7 +28,7 @@ from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe import FusedMoE
 # yapf conflicts with isort for this block
 # yapf: disable
-from vllm.model_executor.layers.layernorm import (
+from omni.layers.layernorm import (
     GemmaRMSNorm as Qwen3NextRMSNorm)
 # yapf: enable
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
@@ -110,7 +110,7 @@ from omni.layers.attention.backend.attention import AscendAttentionState
 
 
 logger = init_logger(__name__)
-SEQ_SPLIT_LENGTH = 4096
+SEQ_SPLIT_LENGTH = 40960
 
 KVCache = tuple[torch.Tensor, torch.Tensor]
 
@@ -195,6 +195,8 @@ def torch_chunk_gated_delta_rule(
     value,
     g,
     beta,
+    mask0,
+    mask1,
     chunk_size=128,
     initial_state=None,
     output_final_state=False,
@@ -212,70 +214,60 @@ def torch_chunk_gated_delta_rule(
     batch_size, num_qk_heads, sequence_length, k_head_dim = key.shape
     num_v_heads = value.shape[1]
     v_head_dim = value.shape[-1]
+    scale = 1 / (k_head_dim**0.5)
+    query.mul_(scale)
     pad_size = (chunk_size - sequence_length % chunk_size) % chunk_size
     query = F.pad(query, (0, 0, 0, pad_size)).repeat_interleave(num_v_heads // num_qk_heads, dim=1)
     key = F.pad(key, (0, 0, 0, pad_size)).repeat_interleave(num_v_heads // num_qk_heads, dim=1)
     value = F.pad(value, (0, 0, 0, pad_size))
-    beta = F.pad(beta, (0, pad_size))
+    beta = F.pad(beta, (0, pad_size)).unsqueeze(-1)
     g = F.pad(g, (0, pad_size))
     sequence_length_padded = sequence_length + pad_size
-    scale = 1 / (query.shape[-1]**0.5)
-    query = query * scale
-
-    v_beta = value * beta.unsqueeze(-1)
-    k_beta = key * beta.unsqueeze(-1)
+    v_beta = value * beta
+    k_beta = key * beta
     # reshape to chunks
     query, key, value, k_beta, v_beta = [
         x.reshape(x.shape[0], x.shape[1], -1, chunk_size, x.shape[-1])
         for x in (query, key, value, k_beta, v_beta)
     ]
     g = g.reshape(g.shape[0], g.shape[1], -1, chunk_size)
-    mask = torch.triu(torch.ones(chunk_size,
-                                 chunk_size,
-                                 dtype=torch.bool,
-                                 device=query.device),
-                      diagonal=0)
+    # mask = torch.triu(torch.ones(chunk_size,
+    #                              chunk_size,
+    #                              dtype=torch.bool,
+    #                              device=query.device),
+    #                   diagonal=0)
 
     # chunk decay
     g = g.cumsum(dim=-1)
-    decay_mask = ((g.unsqueeze(-1) -
-                   g.unsqueeze(-2)).tril().exp().float()).tril()
+    decay_mask = (g.unsqueeze(-1) -
+                   g.unsqueeze(-2)).exp().float()
     attn = -(
-        (k_beta @ key.transpose(-1, -2)) * decay_mask).masked_fill(mask, 0)
-    
-    lg = int(log(chunk_size, 2))
-
-    block_size = 1
+        (k_beta @ key.transpose(-1, -2)) * decay_mask).masked_fill(mask0, 0)
     attn_inv = torch.eye(chunk_size, dtype=attn.dtype, device=attn.device).repeat((tuple(attn.shape)[:-2] + (1, 1)))
     attn = attn_inv - attn
     attn = torch_npu.npu_lower_triangular_inverse(attn)
 
     value = attn @ v_beta
-    k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1))
+    gexp = g.exp()
+    k_cumdecay = attn @ (k_beta * gexp.unsqueeze(-1))
 
-    core_attn_out = torch.zeros_like(value)
-    mask = torch.triu(torch.ones(chunk_size,
-                                 chunk_size,
-                                 dtype=torch.bool,
-                                 device=query.device),
-                      diagonal=1)
+    # mask = torch.triu(torch.ones(chunk_size,
+    #                              chunk_size,
+    #                              dtype=torch.bool,
+    #                              device=query.device),
+    #                   diagonal=1)
     query_view = query.reshape(query.shape[0], query.shape[1], -1, chunk_size, query.shape[-1])
     key_trans = key.reshape(key.shape[0], key.shape[1], -1, chunk_size, key.shape[-1]).transpose(-1, -2)
     qk = query_view @ key_trans
-    attn_score = qk * decay_mask.masked_fill_(mask, 0)
+    attn_score = qk * decay_mask.masked_fill_(mask1, 0)
 
-    gexp = g[:, :, :, :, None].exp()
+    gexp = gexp.unsqueeze(-1)
     qgexp = query * gexp
 
     kgexp = (g[:, :, :, -1, None] - g[:, :, :]).exp()[..., None]
     kgexp = key * kgexp
-    
-    k_cumdecay_qgexp = torch.cat([k_cumdecay, qgexp], dim=3)
-    v_new_out = torch.zeros_like(value)
-    attn_inter_out = torch.zeros_like(value)
 
     initial_state_ = (torch.zeros(batch_size, num_v_heads, v_head_dim, k_head_dim).to(value) if initial_state is None else initial_state.to(value))
-    actual_seqlens = torch.tensor([sequence_length_padded], device=qgexp.device, dtype=torch.int32)
     attn_inter_out, v_new_out = torch.ops.custom.npu_chunk_gated_delta_rule_recurrence(
         initial_state_.to(torch.float32),
         kgexp.squeeze(0),
@@ -283,7 +275,7 @@ def torch_chunk_gated_delta_rule(
         k_cumdecay.squeeze(0),
         qgexp.squeeze(0),
         gexp.squeeze(0),
-        actual_seqlens
+        torch.ones(1, dtype=torch.int32, device=query.device) * chunk_size,
     )
     core_attn_out = attn_inter_out + attn_score @ v_new_out
 
@@ -296,6 +288,7 @@ def torch_chunk_gated_delta_rule(
     core_attn_out = core_attn_out.transpose(1,
                                             2).contiguous().to(initial_dtype)
     return core_attn_out, initial_state_
+
 
 
 class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
@@ -527,12 +520,20 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         attn_metadata = attn_metadata[self.prefix]
         assert isinstance(attn_metadata, GDNAttentionMetadata)
         has_initial_state = attn_metadata.has_initial_state
+        has_initial_state_cpu = attn_metadata.has_initial_state_cpu
+        no_initial_state_indices = attn_metadata.no_initial_state_indices
         spec_query_start_loc = attn_metadata.spec_query_start_loc
         non_spec_query_start_loc = attn_metadata.non_spec_query_start_loc
+        non_spec_query_start_loc_cpu = attn_metadata.non_spec_query_start_loc_cpu
+        spec_seqlens = attn_metadata.spec_seqlens
+        non_spec_seqlens = attn_metadata.non_spec_seqlens
+        spec_seqlens_list = attn_metadata.spec_seqlens_list
+        non_spec_seqlens_list = attn_metadata.non_spec_seqlens_list
         spec_sequence_masks = attn_metadata.spec_sequence_masks
         spec_token_masks = attn_metadata.spec_token_masks
         spec_state_indices_tensor = attn_metadata.spec_state_indices_tensor  # noqa: E501
         non_spec_state_indices_tensor = attn_metadata.non_spec_state_indices_tensor  # noqa: E501
+        non_spec_state_indices_tensor_list = attn_metadata.non_spec_state_indices_tensor_list  # noqa: E501
         num_spec_tokens = attn_metadata.num_spec_tokens
         self_kv_cache = self.kv_cache[forward_context.virtual_engine]
         conv_state = self_kv_cache[0]
@@ -605,9 +606,9 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                 self.conv1d.bias,
                 activation=self.activation,
                 conv_states=conv_state,
-                has_initial_state=has_initial_state,
-                cache_indices=non_spec_state_indices_tensor,
-                query_start_loc=non_spec_query_start_loc,
+                has_initial_state=has_initial_state_cpu,
+               cache_indices=non_spec_state_indices_tensor_list,
+               seqlens_list=non_spec_seqlens_list,
             ).transpose(0, 1)
         elif attn_metadata.have_decode:
             mixed_qkv_non_spec = causal_conv1d_update(
@@ -663,6 +664,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                     initial_state=ssm_state,
                     inplace_final_state=True,
                     cu_seqlens=spec_query_start_loc,
+                    actual_seqlens=spec_seqlens,
                     ssm_state_indices=spec_state_indices_tensor,
                     num_accepted_tokens=num_accepted_tokens,
                     use_qk_l2norm_in_kernel=True,
@@ -674,15 +676,26 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         if (attn_metadata.num_prefills > 0):
             initial_state = ssm_state[
                 non_spec_state_indices_tensor].contiguous()
-            initial_state[~has_initial_state, ...] = 0
+            # initial_state[~has_initial_state, ...] = 0
+            initial_state[no_initial_state_indices] = 0
             
             batch_size = attn_metadata.num_prefills
             core_attn_out = []
             last_recurrent_state = []
-
+            chunk_size = 128
+            mask0 = torch.triu(torch.ones(chunk_size,
+                                 chunk_size,
+                                 dtype=torch.bool,
+                                 device=query.device),
+                      diagonal=0)
+            mask1 = torch.triu(torch.ones(chunk_size,
+                                 chunk_size,
+                                 dtype=torch.bool,
+                                 device=query.device),
+                      diagonal=1)
             for b_idx in range(batch_size):
-                start, end = non_spec_query_start_loc[
-                    b_idx], non_spec_query_start_loc[b_idx + 1]
+                start, end = non_spec_query_start_loc_cpu[
+                    b_idx], non_spec_query_start_loc_cpu[b_idx + 1]
                 cur_q = query_non_spec[:, start:end, ...]
                 cur_k = key_non_spec[:, start:end, ...]
                 cur_v = value_non_spec[:, start:end, ...]
@@ -699,6 +712,8 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                     value=cur_v,
                     g=cur_g,
                     beta=cur_b,
+                    mask0=mask0,
+                    mask1=mask1,
                     initial_state=cur_state,
                     output_final_state=True,
                     use_qk_l2norm_in_kernel=True,
@@ -707,18 +722,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                 core_attn_out.append(cur_core_attn_out_non_spec)
                 last_recurrent_state.append(cur_last_recurrent_state)
 
-            tar_dtype = core_attn_out[0].dtype
-            tar_device = core_attn_out[0].device
-            tar_shape = list(core_attn_out[0].shape)
-            tar_shape[1] = non_spec_query_start_loc[-1]
-            core_attn_out_non_spec = torch.empty(tar_shape,
-                                                 dtype=tar_dtype,
-                                                 device=tar_device)
-            for b_idx in range(batch_size):
-                cur_core_attn_out = core_attn_out[b_idx]
-                start, end = non_spec_query_start_loc[
-                    b_idx], non_spec_query_start_loc[b_idx + 1]
-                core_attn_out_non_spec[:, start:end, ...] = cur_core_attn_out
+            core_attn_out_non_spec = torch.cat(core_attn_out, dim=1)
             last_recurrent_state = torch.cat(last_recurrent_state, dim=0)
 
             # Init cache
@@ -735,6 +739,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                     initial_state=ssm_state,
                     inplace_final_state=True,
                     cu_seqlens=non_spec_query_start_loc,
+                    actual_seqlens=non_spec_seqlens,
                     ssm_state_indices=non_spec_state_indices_tensor,
                     use_qk_l2norm_in_kernel=True,
                  ))
