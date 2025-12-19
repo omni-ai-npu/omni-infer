@@ -771,9 +771,13 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         core_attn_out = core_attn_out.reshape(z_shape_og)
         core_attn_out = rearrange(core_attn_out, '... h d -> ... (h d)')
 
-        num_tokens = attn_metadata.num_actual_tokens
-        output[:num_tokens] = self.out_proj(core_attn_out)[0][:num_tokens]
-        output[num_tokens:] = 0
+        if not attn_metadata.is_pd_seperate_d:
+            num_tokens = attn_metadata.num_actual_tokens
+            output[:num_tokens], _ = self.out_proj(core_attn_out)
+            output[num_tokens:] = 0
+        else:
+            output[:], _ = self.out_proj(core_attn_out)
+            output.masked_fill_(~attn_metadata.actual_tokens_mask.unsqueeze(-1), 0)
             
 
 class Qwen3NextAttention(nn.Module):
@@ -869,7 +873,7 @@ class Qwen3NextAttention(nn.Module):
         hidden_states: torch.Tensor,
     ):
         forward_context: ForwardContext = get_forward_context()
-        attn_metadata = forward_context.attn_metadata
+        attn_metadata: AttentionMetadata = forward_context.attn_metadata
         if isinstance(attn_metadata, dict):
             attn_metadata = attn_metadata[next(iter(attn_metadata))]
         is_prefill = attn_metadata is None or not attn_metadata.is_pd_seperate_d
@@ -903,8 +907,11 @@ class Qwen3NextAttention(nn.Module):
         output[:], _ = self.o_proj(attn_output)
 
         if attn_metadata is not None:
-            num_tokens = attn_metadata.num_actual_tokens
-            output[num_tokens:] = 0
+            if not attn_metadata.is_pd_seperate_d:
+                num_tokens = attn_metadata.num_actual_tokens
+                output[num_tokens:] = 0
+            else:
+                output.masked_fill_(~attn_metadata.actual_tokens_mask.unsqueeze(-1), 0)
 
 
 class Qwen3NextDecoderLayer(nn.Module):
