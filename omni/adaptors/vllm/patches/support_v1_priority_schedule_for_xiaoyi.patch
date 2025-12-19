@@ -407,7 +407,7 @@ index 2d62c5ad1..1f01c1e0a 100644
  
      def add_request(self, request: Request) -> None:
 -        self.waiting.append(request)
-+        self.waiting.prepend_request(request)
++        self.waiting.add_request(request)
          self.requests[request.request_id] = request
          if self.log_stats:
              request.record_event(EngineCoreEventType.QUEUED)
