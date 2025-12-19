@@ -514,8 +514,14 @@ ngx_str_t omni_health_status_export_json(omni_global_state_t *gs, ngx_pool_t *po
         }
     }
 
-    ngx_uint_t num_health_prefill_instance = healthy_prefill_count / gs->prefill_pod_size;
+    ngx_uint_t num_health_prefill_instance = healthy_prefill_count;
     ngx_uint_t num_health_decode_instance = healthy_decode_count / (DECODE_INSTANCE_GROUP_SIZE * gs->decode_pod_size);
+
+    ngx_uint_t num_prefill_instance = (gs->prefill_pod_size > 0) ? gs->prefill_pod_size : gs->num_prefill_endpoints;
+    ngx_uint_t num_decode_instance = (gs->decode_pod_size > 0) ? gs->decode_pod_size : 1;
+
+    ngx_uint_t num_decode_card_per_instance = gs->num_decode_endpoints / (2 * num_decode_instance);
+    ngx_uint_t num_prefill_card_per_instance = DECODE_INSTANCE_GROUP_SIZE / 2;
 
     ngx_uint_t code;
     ngx_str_t status;
@@ -523,7 +529,7 @@ ngx_str_t omni_health_status_export_json(omni_global_state_t *gs, ngx_pool_t *po
     ngx_uint_t total_upstreams = gs->num_prefill_endpoints + gs->num_decode_endpoints;
     ngx_uint_t total_healthy = healthy_prefill_count + healthy_decode_count;
 
-    if (num_health_prefill_instance == 0 || num_health_decode_instance == 0) {
+    if (healthy_prefill_count == 0 || healthy_decode_count == 0) {
         code = 503;
         ngx_str_set(&status, "service failed");
     } else if (total_healthy == total_upstreams) {
@@ -538,7 +544,7 @@ ngx_str_t omni_health_status_export_json(omni_global_state_t *gs, ngx_pool_t *po
     p = ngx_snprintf(p, end - p, "    \"code\": %ui,\n", code);
     p = ngx_snprintf(p, end - p, "    \"status\": \"%V\",\n", &status);
     p = ngx_snprintf(p, end - p, "    \"timestamp\": \"%s\",\n", time_buf);
-    p = ngx_snprintf(p, end - p, "    \"summary\": \"%uiP%ui-%uiD%ui\",\n", num_health_prefill_instance, gs->prefill_pod_size, num_health_decode_instance, gs->decode_pod_size);
+    p = ngx_snprintf(p, end - p, "    \"summary\": \"%uiP%ui-%uiD%ui\",\n", num_prefill_instance, num_prefill_card_per_instance, num_decode_instance, num_decode_card_per_instance);
     p = ngx_snprintf(p, end - p, "    \"total_prefill_servers\": %d,\n", gs->num_prefill_endpoints);
     p = ngx_snprintf(p, end - p, "    \"health_prefill_servers\": %d,\n", healthy_prefill_count);
     p = ngx_snprintf(p, end - p, "    \"total_decode_servers\": %d,\n", gs->num_decode_endpoints);

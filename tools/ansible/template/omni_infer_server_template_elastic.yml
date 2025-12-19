@@ -422,6 +422,8 @@
       {{ docker_exec_cmd }}
       -e USE_OMNI_PROXY=$USE_OMNI_PROXY
       -e MODEL_PATH=$MODEL_PATH
+      -e PREFILL_POD_NUM=$PREFILL_POD_NUM
+      -e DECODE_POD_NUM=$DECODE_POD_NUM
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/reload_proxy_server.sh
 
@@ -1558,6 +1560,8 @@
       command: bash -c "{{ docker_reload_proxy_cmd_c }}"
       environment:
         DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+        PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
+        DECODE_POD_NUM: "{{ DECODE_POD_NUM }}"
       when: "'C' in group_names"
       tags:
         - reload_proxy
