@@ -130,6 +130,8 @@ class AscendMetadata:
     sin: Optional[torch.Tensor] = None
     is_pd_seperate_d: bool = False
     kv_index: Optional[torch.Tensor] = None
+    # bool tensor of shape (max_batch_size, ) on NPU
+    actual_tokens_mask: Optional[torch.Tensor] = None
 
     @staticmethod
     def advance_step(metadata, positions, block_size, pad_mask, model_layer):
@@ -349,6 +351,12 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
                            self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'
 
+        if is_pd_seperate_d:
+            actual_tokens_mask = torch.zeros((self.runner.max_batch_size, ), dtype=torch.bool, device=self.runner.device)
+            actual_tokens_mask[:num_actual_tokens] = True
+        else:
+            actual_tokens_mask = None
+
         attn_metadata = AscendMetadata(num_actual_tokens=num_actual_tokens,
                                        block_tables=block_table,
                                        query_lens=query_lens,
@@ -362,7 +370,8 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
                                        cos=cos,
                                        sin=sin,
                                        is_pd_seperate_d=is_pd_seperate_d,
-                                       kv_index=kv_index)
+                                       kv_index=kv_index,
+                                       actual_tokens_mask=actual_tokens_mask)
         return attn_metadata
 
     def build_dummy(self, num_tokens: int, max_pad_size: int = -1) -> AscendMetadata:
@@ -404,6 +413,12 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
         is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
                            self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'
 
+        if is_pd_seperate_d:
+            actual_tokens_mask = torch.zeros((self.runner.max_batch_size, ), dtype=torch.bool, device=self.runner.device)
+            actual_tokens_mask[:num_tokens] = True
+        else:
+            actual_tokens_mask = None
+
         return AscendMetadata(
             num_actual_tokens=num_tokens,
             block_tables=block_table,
@@ -417,7 +432,8 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
             attn_state=self.runner.attn_state,
             cos=cos,
             sin=sin,
-            is_pd_seperate_d=is_pd_seperate_d
+            is_pd_seperate_d=is_pd_seperate_d,
+            actual_tokens_mask=actual_tokens_mask
         )
 
     def mark_static_for_attn_metadata(self, attn_metadata):

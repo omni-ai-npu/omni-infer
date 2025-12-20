@@ -88,6 +88,8 @@ class GDNAttentionMetadata:
     cu_seqlen: Optional[int] = None
     batch_ptr: Optional[torch.Tensor] = None
     token_chunk_offset_ptr: Optional[torch.Tensor] = None
+    # bool tensor of shape (max_batch_size, ) on NPU
+    actual_tokens_mask: Optional[torch.Tensor] = None
 
 
 class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
@@ -410,6 +412,7 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             spec_seqlens_list=spec_seqlens_list,
             non_spec_seqlens=non_spec_seqlens,
             non_spec_seqlens_list=non_spec_seqlens_list,
+            actual_tokens_mask=ascend_attn_metadata.actual_tokens_mask,
         )
         return attn_metadata
 
@@ -451,6 +454,12 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
 
         is_pd_seperate_d = self.runner.vllm_config.kv_transfer_config is not None and \
                            self.runner.vllm_config.kv_transfer_config.kv_role == 'kv_consumer'
+
+        if is_pd_seperate_d:
+            actual_tokens_mask = torch.zeros((self.runner.max_batch_size, ), dtype=torch.bool, device=self.runner.device)
+            actual_tokens_mask[:num_tokens] = True
+        else:
+            actual_tokens_mask = None
 
         non_spec_query_start_loc = torch.tensor([0, 1], device=self.runner.device)
         non_spec_query_start_loc_cpu = non_spec_query_start_loc.tolist()
@@ -511,6 +520,7 @@ class GDNAttentionMetadataBuilder(AscendAttentionMetadataBuilder):
             spec_token_masks=None,
             num_accepted_tokens=None,
             num_spec_tokens=0,
+            actual_tokens_mask=actual_tokens_mask,
         )
         return attn_metadata
 

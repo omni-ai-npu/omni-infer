@@ -208,6 +208,9 @@ class Qwen3NextMultiTokenPredictor(nn.Module):
             if "rotary_emb.inv_freq" in name:
                 continue
 
+            if 'weight_scale' in name:
+                loaded_weight = loaded_weight.view(-1)
+
             for param_name, weight_name, shard_id in stacked_params_mapping:
                 if weight_name not in name:
                     continue
