@@ -310,8 +310,28 @@ class NpuW8A8DynamicFusedMoEMethod(FusedMoEMethodBase):
             is_prefill: bool = False,
     ) -> torch.Tensor:
         moe_dispatch_combine = os.environ.get('MOE_DISPATCH_COMBINE', '0') == '1'
+        moe_all_reduce = os.environ.get('MOE_ALL_REDUCE', '0') == '1'
         if moe_dispatch_combine:
             return self.apply_all2all(
+                layer,
+                x,
+                router_logits,
+                top_k,
+                renormalize,
+                use_grouped_topk,
+                topk_group,
+                num_expert_group,
+                global_num_experts,
+                expert_range,
+                custom_routing_function,
+                scoring_func,
+                e_score_correction_bias,
+                apply_router_weight_on_input,
+                activation,
+                is_prefill
+            )
+        elif moe_all_reduce:
+            return self.apply_all_reduce(
                 layer,
                 x,
                 router_logits,
@@ -589,6 +609,117 @@ class NpuW8A8DynamicFusedMoEMethod(FusedMoEMethodBase):
 
             return output_combine
 
+    def apply_all_reduce(
+        self,
+        layer: torch.nn.Module,
+        x: torch.Tensor,
+        router_logits: torch.Tensor,
+        top_k: int,
+        renormalize: bool,
+        use_grouped_topk: bool = False,
+        topk_group: Optional[int] = None,
+        num_expert_group: Optional[int] = None,
+        global_num_experts: int = -1,
+        expert_range: List[int] = None,
+        custom_routing_function: Optional[Callable] = None,
+        scoring_func: str = 'softmax',
+        e_score_correction_bias: Optional[torch.Tensor] = None,
+        apply_router_weight_on_input: bool = False,
+        activation: str = 'silu',
+        is_prefill: bool = False,
+    ) -> torch.Tensor:
+        topk_weights, topk_ids = FusedMoE.select_experts(
+            hidden_states=x,
+            router_logits=router_logits,
+            use_grouped_topk=use_grouped_topk,
+            top_k=top_k,
+            renormalize=renormalize,
+            topk_group=topk_group,
+            num_expert_group=num_expert_group,
+            custom_routing_function=custom_routing_function,
+            scoring_func=scoring_func,
+            e_score_correction_bias=e_score_correction_bias,
+            indices_type=None
+        )
+
+        x_int8, x_scale = torch_npu.npu_dynamic_quant(x)
+        num_tokens_per_rank = x.shape[0]
+
+        repeat_num = get_ep_group().world_size
+
+        if is_prefill:
+            n_tokens = x_int8.shape[0]
+            n_tokens_list = [n_tokens] * repeat_num
+
+        sorted_tokens, expanded_x_idx, expert_tokens, expanded_scale = torch_npu.npu_moe_init_routing_v2(
+                x_int8,
+                topk_ids,
+                scale=x_scale,
+                offset=None,
+                active_num=topk_ids.numel(),
+                expert_num=global_num_experts,
+                expert_capacity=-1,
+                drop_pad_mode=0,
+                expert_tokens_num_type=1,
+                expert_tokens_num_flag=True,
+                active_expert_range=expert_range,
+                quant_mode=-1,
+                row_idx_type=0
+        )
+        expanded_x_idx = torch.clamp(expanded_x_idx, min=0, max=expanded_x_idx.shape[0] - 1)
+        gate_up_proj = torch_npu.npu_grouped_matmul(
+            [sorted_tokens],
+            [layer.w13_weight],
+            bias=None,
+            group_list=expert_tokens,
+            split_item=3,
+            output_dtype=torch.int32,
+            group_type=0,
+            group_list_type=1
+        )[0]
+        inter_states, inter_states_scale = torch_npu.npu_dequant_swiglu_quant(
+            gate_up_proj,
+            weight_scale=layer.w13_weight_scale,
+            activation_scale=expanded_scale,
+            bias=None,
+            quant_scale=NpuW8A8DynamicFusedMoEMethod.ONES_SCALE,
+            quant_offset=None,
+            group_index=expert_tokens,
+            activate_left=True,
+            quant_mode=1
+        )
+        y = torch_npu.npu_grouped_matmul(
+            [inter_states],
+            [layer.w2_weight],
+            scale=[layer.w2_weight_scale],
+            per_token_scale=[inter_states_scale],
+            bias=None,
+            group_list=expert_tokens,
+            split_item=3,
+            output_dtype=x.dtype,
+            group_type=0,
+            group_list_type=1
+        )[0]
+
+        # 将不在本rank的专家的topk_weights置为0
+        valid_mask = (topk_ids >= expert_range[0]) & (topk_ids < expert_range[1])
+        topk_weights = topk_weights * valid_mask.to(topk_weights.dtype)
+
+        y = torch_npu.npu_moe_finalize_routing(
+            y.float(),
+            None,
+            None,
+            None,
+            topk_weights.float(),  # 数据类型要求与y一致
+            expanded_x_idx,
+            topk_ids,
+            drop_pad_mode=2
+        ).to(x.dtype)
+
+        y = get_ep_group().all_reduce(y)
+
+        return y
+    
     def apply_ag_rs(
         self,
         layer: torch.nn.Module,
