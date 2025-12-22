@@ -39,7 +39,8 @@ class GemmaRMSNorm(CustomOp):
             else:
                 x = x + residual
             residual = x
-        x = torch_npu.npu_gemma_rms_norm(x, weight, variance_epsilon)[0]
+        # x = torch_npu.npu_gemma_rms_norm(x, weight, variance_epsilon)[0] # the gemma kernel is not working in graph mode
+        x = torch_npu.npu_rms_norm(x, weight + 1.0, variance_epsilon)[0]
         x = x.to(orig_dtype)
         return x if residual is None else (x, residual)
     
