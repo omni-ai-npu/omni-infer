@@ -1,0 +1,169 @@
+diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
+index 7743ae47f..e88cdec2c 100644
+--- a/vllm/entrypoints/openai/protocol.py
++++ b/vllm/entrypoints/openai/protocol.py
+@@ -103,6 +103,7 @@ class ModelList(OpenAIBaseModel):
+ 
+ class PromptTokenUsageInfo(OpenAIBaseModel):
+     cached_tokens: Optional[int] = None
++    cached_rate: Optional[float] = None
+ 
+ 
+ class UsageInfo(OpenAIBaseModel):
+@@ -1437,7 +1438,6 @@ class ChatCompletionResponse(OpenAIBaseModel):
+     kv_transfer_params: Optional[dict[str, Any]] = Field(
+         default=None, description="KVTransfer parameters.")
+ 
+-
+ class DeltaMessage(OpenAIBaseModel):
+     role: Optional[str] = None
+     content: Optional[str] = None
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+index 0f30bed26..c56194b50 100755
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -918,10 +918,17 @@ class OpenAIServingChat(OpenAIServing):
+                     # handle usage stats if requested & if continuous
+                     if include_continuous_usage:
+                         completion_tokens = previous_num_tokens[i]
++                        if request.kv_transfer_params and request.kv_transfer_params["num_cached_tokens"]:
++                            num_cached_tokens = request.kv_transfer_params["num_cached_tokens"]
++                        cached_rate = None if num_prompt_tokens == 0 else round(
++                            num_cached_tokens / num_prompt_tokens, 4)
+                         chunk.usage = UsageInfo(
+                             prompt_tokens=num_prompt_tokens,
+                             completion_tokens=completion_tokens,
+                             total_tokens=num_prompt_tokens + completion_tokens,
++                            prompt_tokens_details=PromptTokenUsageInfo(
++                                cached_tokens=num_cached_tokens,
++                                cached_rate=cached_rate)
+                         )
+ 
+                     data = chunk.model_dump_json(exclude_none=True)
+@@ -940,8 +947,13 @@ class OpenAIServingChat(OpenAIServing):
+                         final_usage.prompt_tokens_details = PromptTokenUsageInfo(
+                             cached_tokens=0)
+                     else:
++                        if request.kv_transfer_params and request.kv_transfer_params["num_cached_tokens"]:
++                            num_cached_tokens = request.kv_transfer_params["num_cached_tokens"]
++                        cached_rate = None if num_prompt_tokens == 0 else round(
++                            num_cached_tokens / num_prompt_tokens, 4)
+                         final_usage.prompt_tokens_details = PromptTokenUsageInfo(
+-                            cached_tokens=num_cached_tokens)
++                            cached_tokens=num_cached_tokens,
++                            cached_rate = cached_rate)
+ 
+                 final_usage_chunk = ChatCompletionStreamResponse(
+                     id=request_id,
+@@ -1211,8 +1223,11 @@ class OpenAIServingChat(OpenAIServing):
+                 usage.prompt_tokens_details = PromptTokenUsageInfo(
+                     cached_tokens=0)
+             else:
++                cached_rate = None if num_prompt_tokens == 0 else round(
++                    final_res.num_cached_tokens / num_prompt_tokens, 4)
+                 usage.prompt_tokens_details = PromptTokenUsageInfo(
+-                    cached_tokens=final_res.num_cached_tokens)
++                    cached_tokens=final_res.num_cached_tokens,
++                    cached_rate=cached_rate)
+ 
+         request_metadata.final_usage_info = usage
+ 
+diff --git a/vllm/entrypoints/openai/serving_completion.py b/vllm/entrypoints/openai/serving_completion.py
+index e43a96d51..a1930c244 100755
+--- a/vllm/entrypoints/openai/serving_completion.py
++++ b/vllm/entrypoints/openai/serving_completion.py
+@@ -24,7 +24,9 @@ from vllm.entrypoints.openai.protocol import (CompletionLogProbs,
+                                               CompletionStreamResponse,
+                                               ErrorResponse,
+                                               RequestResponseMetadata,
+-                                              UsageInfo)
++                                              UsageInfo,
++                                              PromptTokenUsageInfo
++                                              )
+ # yapf: enable
+ from vllm.entrypoints.openai.serving_engine import (OpenAIServing,
+                                                     clamp_prompt_logprobs,
+@@ -326,6 +328,7 @@ class OpenAIServingCompletion(OpenAIServing):
+         previous_num_tokens = [0] * num_choices * num_prompts
+         has_echoed = [False] * num_choices * num_prompts
+         num_prompt_tokens = [0] * num_prompts
++        num_cached_tokens = 0
+ 
+         stream_options = request.stream_options
+         if stream_options:
+@@ -337,6 +340,7 @@ class OpenAIServingCompletion(OpenAIServing):
+ 
+         try:
+             async for prompt_idx, res in result_generator:
++                num_cached_tokens = res.num_cached_tokens
+                 prompt_token_ids = res.prompt_token_ids
+                 prompt_logprobs = res.prompt_logprobs
+                 prompt_text = res.prompt
+@@ -420,10 +424,17 @@ class OpenAIServingCompletion(OpenAIServing):
+                     if include_continuous_usage:
+                         prompt_tokens = num_prompt_tokens[prompt_idx]
+                         completion_tokens = previous_num_tokens[i]
++                        if request.kv_transfer_params and request.kv_transfer_params["num_cached_tokens"]:
++                            num_cached_tokens = request.kv_transfer_params["num_cached_tokens"]
++                        cached_rate = None if prompt_tokens == 0 else round(
++                            num_cached_tokens / prompt_tokens, 4)
+                         chunk.usage = UsageInfo(
+                             prompt_tokens=prompt_tokens,
+                             completion_tokens=completion_tokens,
+                             total_tokens=prompt_tokens + completion_tokens,
++                            prompt_tokens_details=PromptTokenUsageInfo(
++                                cached_tokens=num_cached_tokens,
++                                cached_rate=cached_rate)
+                         )
+ 
+                     response_json = chunk.model_dump_json(exclude_unset=False)
+@@ -431,10 +442,18 @@ class OpenAIServingCompletion(OpenAIServing):
+ 
+             total_prompt_tokens = sum(num_prompt_tokens)
+             total_completion_tokens = sum(previous_num_tokens)
++            if request.kv_transfer_params and request.kv_transfer_params["num_cached_tokens"]:
++                num_cached_tokens = request.kv_transfer_params["num_cached_tokens"]
++            cached_rate = None if total_prompt_tokens == 0 else round(
++                num_cached_tokens / total_prompt_tokens, 4)
+             final_usage_info = UsageInfo(
+                 prompt_tokens=total_prompt_tokens,
+                 completion_tokens=total_completion_tokens,
+-                total_tokens=total_prompt_tokens + total_completion_tokens)
++                total_tokens=total_prompt_tokens + total_completion_tokens,
++                prompt_tokens_details=PromptTokenUsageInfo(
++                    cached_tokens=num_cached_tokens,
++                    cached_rate=cached_rate)
++                )
+ 
+             if include_usage:
+                 final_usage_chunk = CompletionStreamResponse(
+@@ -470,8 +489,12 @@ class OpenAIServingCompletion(OpenAIServing):
+         choices: list[CompletionResponseChoice] = []
+         num_prompt_tokens = 0
+         num_generated_tokens = 0
++        num_cached_tokens = 0
++        prompt_token_len = 0
+ 
+         for final_res in final_res_batch:
++            prompt_token_len = len(final_res.prompt_token_ids)
++            num_cached_tokens = final_res.num_cached_tokens
+             prompt_token_ids = final_res.prompt_token_ids
+             assert prompt_token_ids is not None
+             prompt_logprobs = clamp_prompt_logprobs(final_res.prompt_logprobs)
+@@ -563,11 +586,15 @@ class OpenAIServingCompletion(OpenAIServing):
+                     final_res.kv_transfer_params["stop_reasons"] = [
+                         output.stop_reason for output in final_res.outputs
+                     ]
+-
++        cached_rate = None if prompt_token_len == 0 else round(
++            num_cached_tokens / prompt_token_len, 4)
+         usage = UsageInfo(
+             prompt_tokens=num_prompt_tokens,
+             completion_tokens=num_generated_tokens,
+             total_tokens=num_prompt_tokens + num_generated_tokens,
++            prompt_tokens_details=PromptTokenUsageInfo(
++                cached_tokens=num_cached_tokens,
++                cached_rate=cached_rate)
+         )
+ 
+         request_metadata.final_usage_info = usage

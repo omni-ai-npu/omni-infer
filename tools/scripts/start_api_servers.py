@@ -93,6 +93,7 @@ def start_single_node_api_servers(
     extra_args=None,
     additional_config=None,
     enable_mtp=False,
+    enable_prompt_tokens_details=False,
     no_enable_prefix_caching=False,
     num_speculative_tokens=1,
     no_enable_chunked_prefill=False,
@@ -154,6 +155,8 @@ def start_single_node_api_servers(
         ]
         if enable_mtp:
             cmd.extend(["--speculative_config", '{"method": "deepseek_mtp", "num_speculative_tokens": ' + str(num_speculative_tokens) + '}'])
+        if enable_prompt_tokens_details:
+            cmd.extend(["--enable-prompt-tokens-details"])
         if kv_transfer_config:
             cmd.extend(["--kv-transfer-config", str(kv_transfer_config)])
         if extra_args:
@@ -286,6 +289,7 @@ if __name__ == "__main__":
         help="JSON-formatted additional platform-specific config, e.g., '{\"key\":\"value\"}'")
     parser.add_argument("--log-dir", type=str, default="logs", help="Directory to store log files")
     parser.add_argument("--enable-mtp", default=False, action='store_true')
+    parser.add_argument("--enable-prompt-tokens-details", default=False, action='store_true')
     parser.add_argument("--no-enable-prefix-caching", default=False, action="store_true")
     parser.add_argument("--no-enable-chunked-prefill", default=False, action="store_true")
     parser.add_argument("--num-speculative-tokens", type=int, default=1)
@@ -318,6 +322,7 @@ if __name__ == "__main__":
         extra_args=args.extra_args,
         additional_config=args.additional_config,
         enable_mtp=args.enable_mtp,
+        enable_prompt_tokens_details=args.enable_prompt_tokens_details,
         num_speculative_tokens=args.num_speculative_tokens,
         no_enable_chunked_prefill=args.no_enable_chunked_prefill
     )
