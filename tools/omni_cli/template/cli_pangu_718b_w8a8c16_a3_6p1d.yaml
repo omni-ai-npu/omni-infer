@@ -20,6 +20,7 @@ all:
             LOG_PATH: /tmp/omni_logs
             ROLE: proxy
             OMNI_PROXY_SCHEDULE_ALGO: earliest_batch
+            MODEL_PATH: /data/model/pangu
     D:
       hosts:
         d0:
@@ -38,7 +39,6 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               max-num-seqs: 4
-              no-enable-prefix-caching: ''
               enable-reasoning: ''
               reasoning-parser: pangu
               enable-auto-tool-choice: ''
@@ -64,6 +64,7 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: pangu718B_6p1d_d0
           env:
+            OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9100
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_GLOBAL_LOG_LEVEL: 3
@@ -161,7 +162,6 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               max-num-seqs: 4
-              no-enable-prefix-caching: ''
               enable-reasoning: ''
               reasoning-parser: pangu
               enable-auto-tool-choice: ''
@@ -187,6 +187,7 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: pangu718B_6p1d_d1
           env:
+            OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9116
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_GLOBAL_LOG_LEVEL: 3
@@ -309,6 +310,7 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: pangu718B_6p1d_p0
           env:
+            OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9000
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_GLOBAL_LOG_LEVEL: 3
@@ -431,6 +433,7 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: pangu718B_6p1d_p1
           env:
+            OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9016
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_GLOBAL_LOG_LEVEL: 3
@@ -553,6 +556,7 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: pangu718B_6p1d_p2
           env:
+            OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9032
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_GLOBAL_LOG_LEVEL: 3
@@ -675,6 +679,7 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: pangu718B_6p1d_p3
           env:
+            OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9048
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_GLOBAL_LOG_LEVEL: 3
@@ -797,6 +802,7 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: pangu718B_6p1d_p4
           env:
+            OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9064
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_GLOBAL_LOG_LEVEL: 3
@@ -919,6 +925,7 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: pangu718B_6p1d_p5
           env:
+            OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9080
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_GLOBAL_LOG_LEVEL: 3
