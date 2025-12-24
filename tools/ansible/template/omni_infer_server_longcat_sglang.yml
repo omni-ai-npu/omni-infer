@@ -37,6 +37,7 @@
     SCRIPTS_PATH: "/tmp/your_folder/sglang/scripts"
     GLOO_SOCKET_IFNAME: "enp23s0f3"
     TARCE_LOG_PATH: "/dev/shm/your_folder"
+    USE_OMNI_PROXY: "1"
 
   vars:
 
@@ -258,21 +259,41 @@
       baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/update/aarch64/
       enabled=1
       gpgcheck=0" > /etc/yum.repos.d/openeuler.repo
-
+      
       bash build.sh >> ${LOG_PATH}/install_nginx.log 2>&1
-
+      cd /workspace/omniinfer/omni/accelerators/sched/omni_proxy
+      bash build.sh --skip-extras >> ${LOG_PATH}/install_nginx.log 2>&1
       unset http_proxy
       unset https_proxy
-      bash global_proxy.sh \
-        --listen-port "$PROXY_NODE_PORT" \
-        --prefill-servers-list "$prefill_result" \
-        --decode-servers-list "$decode_result" \
-        --log-file ${LOG_PATH}/nginx_error.log \
-        --log-level error \
-        --core-num 4 \
-        --start-core-index 0 \
-        --engine-type sglang \
-        --bootstrap-port 8998 >> ${LOG_PATH}/nginx_error.log 2>&1
+
+
+      if [ ${USE_OMNI_PROXY} = "1" ]; then
+        cd /workspace/omniinfer/tools/scripts
+        bash omni_proxy.sh \
+          --omni-proxy-schedule-algo default \
+          --stream-ops off \
+          --listen-port "$PROXY_NODE_PORT" \
+          --prefill-endpoints "$prefill_result" \
+          --decode-endpoints "$decode_result" \
+          --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
+          --log-level info \
+          --access-log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_access.log \
+          --core-num 4 \
+          --start-core-index 0 \
+          --omni-proxy-pd-policy parallel >> ${LOG_PATH}/nginx_error.log 2>&1
+      else
+        cd /workspace/omniinfer/tools/scripts
+        bash global_proxy.sh \
+          --listen-port "$PROXY_NODE_PORT" \
+          --prefill-servers-list "$prefill_result" \
+          --decode-servers-list "$decode_result" \
+          --log-file ${LOG_PATH}/nginx_error.log \
+          --log-level error \
+          --core-num 4 \
+          --start-core-index 0 \
+          --engine-type sglang \
+          --bootstrap-port 8998 >> ${LOG_PATH}/nginx_error.log 2>&1
+      fi
 
     kill_python_processes_cmd: |
       #!/bin/bash
