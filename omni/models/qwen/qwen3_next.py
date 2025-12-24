@@ -203,6 +203,8 @@ def torch_chunk_gated_delta_rule(
     use_qk_l2norm_in_kernel=False,
 ):
     initial_dtype = query.dtype
+    query = query.contiguous()
+    key = key.contiguous()
     if use_qk_l2norm_in_kernel:
         query = F.normalize(query, p=2, dim=-1)
         key = F.normalize(key, p=2, dim=-1)
@@ -231,11 +233,6 @@ def torch_chunk_gated_delta_rule(
         for x in (query, key, value, k_beta, v_beta)
     ]
     g = g.reshape(g.shape[0], g.shape[1], -1, chunk_size)
-    # mask = torch.triu(torch.ones(chunk_size,
-    #                              chunk_size,
-    #                              dtype=torch.bool,
-    #                              device=query.device),
-    #                   diagonal=0)
 
     # chunk decay
     g = g.cumsum(dim=-1)
@@ -251,11 +248,6 @@ def torch_chunk_gated_delta_rule(
     gexp = g.exp()
     k_cumdecay = attn @ (k_beta * gexp.unsqueeze(-1))
 
-    # mask = torch.triu(torch.ones(chunk_size,
-    #                              chunk_size,
-    #                              dtype=torch.bool,
-    #                              device=query.device),
-    #                   diagonal=1)
     query_view = query.reshape(query.shape[0], query.shape[1], -1, chunk_size, query.shape[-1])
     key_trans = key.reshape(key.shape[0], key.shape[1], -1, chunk_size, key.shape[-1]).transpose(-1, -2)
     qk = query_view @ key_trans
@@ -275,7 +267,7 @@ def torch_chunk_gated_delta_rule(
         k_cumdecay.squeeze(0),
         qgexp.squeeze(0),
         gexp.squeeze(0),
-        torch.ones(1, dtype=torch.int32, device=query.device) * chunk_size,
+        torch.ones(1, dtype=torch.int32, device=query.device) * sequence_length_padded,
     )
     core_attn_out = attn_inter_out + attn_score @ v_new_out
 
