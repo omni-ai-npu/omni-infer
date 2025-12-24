@@ -92,7 +92,7 @@ class SimpleValidator(RejectionSamplerV1):
             _, accepted_num = accepted.view(batch_size, -1).min(-1)
             accepted_num = accepted_num.to(torch.int32)
             offset = self.runner.arange_npu_int32[:metadata.max_spec_len + 1]
-            output_token_ids = torch.where(offset[None, :] <= accepted_num[:, None], all_sampled_tokens.view(batch_size, -1), -1)
+            output_token_ids = torch.where(offset[None, :] <= accepted_num[:, None], all_sampled_tokens.view(batch_size, -1), self.minus_one[0])
         else:
             output_token_ids = self.minus_ones[:batch_size, :metadata.max_spec_len + 1].clone()
             indices = last_accepted_index.clone()
