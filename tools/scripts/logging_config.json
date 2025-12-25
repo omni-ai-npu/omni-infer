@@ -15,7 +15,7 @@
       "backupCount": 10,
       "filename": "/home/ma-user/run.log",
       "delay": true,
-      "use_gzip":true,
+      "use_gzip": false,
       "encoding":"utf-8"
     },
     "console": {
