@@ -39,7 +39,7 @@ all:
               max-num-seqs: 32
               no-enable-prefix-caching: ''
               no-enable-chunked-prefill: ''
-            gpu-util: '0.92'
+            gpu-util: '0.96'
             kv-transfer-config:
               engine_id: $PREFILL_POD_NUM
               kv_buffer_device: npu
@@ -131,7 +131,7 @@ all:
               max-num-seqs: 32
               no-enable-prefix-caching: ''
               no-enable-chunked-prefill: ''
-            gpu-util: '0.92'
+            gpu-util: '0.96'
             kv-transfer-config:
               engine_id: $PREFILL_POD_NUM
               kv_buffer_device: npu
@@ -223,7 +223,7 @@ all:
               max-num-seqs: 32
               no-enable-prefix-caching: ''
               no-enable-chunked-prefill: ''
-            gpu-util: '0.92'
+            gpu-util: '0.96'
             kv-transfer-config:
               engine_id: $PREFILL_POD_NUM
               kv_buffer_device: npu
@@ -315,7 +315,7 @@ all:
               max-num-seqs: 32
               no-enable-prefix-caching: ''
               no-enable-chunked-prefill: ''
-            gpu-util: '0.92'
+            gpu-util: '0.96'
             kv-transfer-config:
               engine_id: $PREFILL_POD_NUM
               kv_buffer_device: npu
