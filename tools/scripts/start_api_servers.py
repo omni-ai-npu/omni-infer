@@ -60,15 +60,25 @@ class ProcessManager:
     def __init__(self, processes):
         self.processes = processes
 
-def export_additional_config(additional_config, cmd):
-    data = json.loads(additional_config)
-    if "compilation-config" in data:
-        cmd.extend(["--compilation-config", json.dumps(data["compilation-config"], ensure_ascii=False)])
-        data.pop("compilation-config", None)
-    if len(data) > 0: 
-        additional_config_tmp = json.dumps(data, ensure_ascii=False)
-        cmd.extend(["--additional-config", additional_config_tmp])
-    return cmd
+def process_space_split(arg_temp, out_list):
+    if "--compilation-config" in arg_temp:
+        out_list.extend(["--compilation-config", arg_temp[len("--compilation-config "):]])
+    else:
+        out_list.extend(arg_temp.split(" "))
+    return out_list
+
+def process_extra_args(extra_args):
+    out_list = []
+    for arg in extra_args.split("--"):
+        arg_temp = arg.strip(" ")
+        if arg_temp == "":
+            continue
+        arg_temp = "--" + arg_temp
+        if " " in arg_temp:
+            out_list = process_space_split(arg_temp, out_list)
+        else:
+            out_list.extend([arg_temp])
+    return out_list
 
 def start_single_node_api_servers(
     num_servers,
@@ -124,7 +134,7 @@ def start_single_node_api_servers(
         env["VLLM_DP_RANK_LOCAL"] = str(rank + server_offset // tp)
         env["VLLM_DP_MASTER_IP"] = master_ip
         env["VLLM_DP_MASTER_PORT"] = str(master_port)
-        env["VLLM_PLUGINS"] = "omni-npu"
+        env["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(map(str, range(rank*tp, (rank+1)*tp)))
 
         # Find an available port
         try:
@@ -153,13 +163,14 @@ def start_single_node_api_servers(
                 "--data-parallel-rank", str(rank + server_offset // tp),
             ])
         if enable_mtp:
-            cmd.extend(["--speculative_config", '{"method": "deepseek_mtp", "num_speculative_tokens": ' + str(num_speculative_tokens) + '}'])
+            cmd.extend(["--speculative_config", '{"method": "mtp", "num_speculative_tokens": ' + str(num_speculative_tokens) + '}'])
         if kv_transfer_config:
             cmd.extend(["--kv-transfer-config", str(kv_transfer_config)])
         if extra_args:
-            cmd.extend(extra_args.split())
+            args_list = process_extra_args(extra_args)
+            cmd.extend(args_list)
         if additional_config:
-            cmd = export_additional_config(additional_config, cmd)
+            cmd.extend(["--additional-config", additional_config])
         if no_enable_prefix_caching:
             cmd.extend(["--no-enable-prefix-caching"])
         if no_enable_chunked_prefill:

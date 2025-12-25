@@ -6,7 +6,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
-ALL_MODULES=("omni-npu" "omni-cache" "omni-eplb" "omni-proxy")
+ALL_MODULES=()
 
 # 定义各模块所用的git仓库及分支
 declare -A GIT_PATH_OF_MODULE
@@ -14,6 +14,8 @@ GIT_PATH_OF_MODULE["omni-npu"]="-b master https://gitee.com/omniai/omni-npu.git"
 GIT_PATH_OF_MODULE["omni-cache"]="-b master https://gitee.com/omniai/omni-cache.git"
 GIT_PATH_OF_MODULE["omni-eplb"]="-b master https://gitee.com/omniai/omni-eplb.git"
 GIT_PATH_OF_MODULE["omni-proxy"]="-b master https://gitee.com/omniai/omni-proxy.git"
+
+declare -A COMMIT_OF_MODULE
 
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -27,25 +29,60 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# 统计所有子模块
+read_all_modules(){
+    local project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+    cd $project_root
+    ALL_MODULES=($(grep "\[submodule " .gitmodules | sed 's/.*"components\///; s/"\]//'))
+    log_info "所有子模块: ${ALL_MODULES[*]}"
+}
+
 # 检查 git 是否安装
 check_git() {
     if ! command -v git &> /dev/null; then
         log_error "git 未安装，请先安装 git"
         exit 1
     fi
+    local project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+    cd $project_root
+    if [ ! -f ".gitmodules" ]; then
+        log_error ".gitmodules文件不存在"
+        exit 1
+    fi
+}
+
+# 设置子模块的commitid
+set_submodule_commit(){
+    local module_commit=$1 # 格式：模块=commit
+    local module="${module_commit%%=*}"
+    local commit="${module_commit#*=}"
+
+    # 写入commit
+    COMMIT_OF_MODULE["$module"]="$commit"
 }
 
 # 初始化并更新子模块
 init_submodules() {
     local base_dir="$1"
+    cd $base_dir
     log_info "---Step1：初始化子模块...---"
     for mod in "${MODULES_TO_BUILD[@]}"; do
-        if [ -e "$base_dir/components/$mod" ]; then
-            log_warn "路径 $base_dir/components/$mod 存在"
-            rm -rf $base_dir/components/$mod
+        if [ -e "components/$mod" ]; then
+            log_warn "路径 components/$mod 存在"
+            cp -f .gitmodules .gitmodules.bak
+            git submodule deinit -f components/$mod || true
+            git rm -f components/$mod || true
+            rm -rf .git/modules/components/$mod
+            rm -rf components/$mod
+            cp -f .gitmodules.bak .gitmodules
         fi
-        git submodule add --force ${GIT_PATH_OF_MODULE["$mod"]} $base_dir/components/$mod
+        local url=$(git config -f .gitmodules --get "submodule.components/$mod.url" 2>/dev/null)
+        local path=$(git config -f .gitmodules --get "submodule.components/$mod.path" 2>/dev/null)
+        local branch=$(git config -f .gitmodules --get "submodule.components/$mod.branch" 2>/dev/null)
+        log_info "添加 components/$mod, url:$url, path:$path, branch:$branch"
+        git submodule add --force -b $branch $url $path
     done
+    log_info "初始化子模块..."
     git submodule init
     
     log_info "更新子模块..."
@@ -55,6 +92,15 @@ init_submodules() {
         log_warn "子模块更新失败，尝试仅同步当前提交..."
         git submodule update --recursive
     fi
+
+    for mod in "${MODULES_TO_BUILD[@]}"; do
+        cd $base_dir
+        if [[ -v COMMIT_OF_MODULE["$mod"] ]]; then
+            log_info "子模块${mod}更新到commitid ${COMMIT_OF_MODULE["$mod"]}"
+            cd components/$mod
+            git checkout "${COMMIT_OF_MODULE["$mod"]}"
+        fi
+    done
 }
 
 # 递归遍历子模块
@@ -182,12 +228,21 @@ parse_args() {
                 modules_str="$2"
                 shift 2
                 ;;
+            -s|--set)
+                if [ -n "$2" ] && [[ $2 == *=* ]]; then
+                    set_submodule_commit "$2"
+                    shift 2
+                else
+                    log_error "--set 参数需要 模块=commit 格式, 如--set omni-proxy=xxxxx"
+                    exit 1
+                fi
+                ;;
             -h|--help)
                 show_help
                 exit 0
                 ;;
             *)
-                echo "未知选项: $1" >&2
+                log_error "未知选项: $1" >&2
                 show_help >&2
                 exit 1
                 ;;
@@ -200,6 +255,8 @@ parse_args() {
     else
         MODULES_TO_BUILD=()
     fi
+
+    read_all_modules
 
     if [[ ${#MODULES_TO_BUILD[@]} -eq 0 ]]; then
         log_warn "未指定模块，将编译所有模块。${ALL_MODULES}"

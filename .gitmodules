@@ -1,24 +1,12 @@
 [submodule "components/omni-npu"]
 	path = components/omni-npu
 	url = https://gitee.com/omniai/omni-npu.git
-    branch = master
-
-# [submodule "components/omni-cache"]
-# 	  path = components/omni-cache
-# 	  url = https://gitee.com/omniai/omni-cache.git
-#     branch = master
-
-[submodule "components/omni-models"]
-	path = components/omni-models
-	url = https://gitee.com/omniai/omni-models.git
-    branch = master
-
-# [submodule "components/omni-eplb"]
-# 	path = components/omni-eplb
-# 	url = https://gitee.com/omniai/omni-eplb.git
-#     branch = master
-
+	branch = master
+[submodule "components/omni-eplb"]
+	path = components/omni-eplb
+	url = https://gitee.com/omniai/omni-eplb.git
+	branch = master
 [submodule "components/omni-proxy"]
 	path = components/omni-proxy
 	url = https://gitee.com/omniai/omni-proxy.git
-    branch = master
+	branch = master
