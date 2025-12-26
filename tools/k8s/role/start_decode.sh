@@ -71,6 +71,28 @@ if [ ${NODE_IPS} ]; then
     env | grep -E '^(ROLE|HOST_IP|MODEL_LEN_MAX_DECODE|DECODE_|KV_|GPU_UTIL|SERVER_OFFSET)' | sort
     echo "======================================"
     echo "NUM_PER_DECODE_POD is "${NUM_PER_DECODE_POD}
+    PREFILL_SERVER_LIST=()
+    DECODE_SERVER_LIST=()
+    # 如果是多机组P的场景
+    if [ "${NUM_PER_PREFILL_POD}" -gt 1 ]; then
+        for i in "${!arr[@]}";do
+            # 收集当前实例下所有从节点的ranktable
+            if [ $i -lt $((${PREFILL_POD_NUM} * ${NUM_PER_PREFILL_POD})) ] && [ $(($i % ${NUM_PER_PREFILL_POD})) -eq 0 ]; then
+                # 等待Ranktable文件生成
+                wait_for_file "$PREFILL_RANKTABLE_SAVE_PATH/merge/${arr[$i]}/local_ranktable_merge.json"
+                PREFILL_SERVER_LIST+=("$PREFILL_RANKTABLE_SAVE_PATH/merge/${arr[$i]}/local_ranktable_merge.json")
+            fi
+        done
+    else
+        for i in "${!arr[@]}";do
+            # 收集当前实例下所有从节点的ranktable
+            if [ $i -lt $((${PREFILL_POD_NUM} * ${NUM_PER_PREFILL_POD})) ]; then
+                # 等待Ranktable文件生成
+                wait_for_file $PREFILL_RANKTABLE_SAVE_PATH"/local_ranktable_"${arr[$i]}"_${device_collection}.json"
+                PREFILL_SERVER_LIST+=($PREFILL_RANKTABLE_SAVE_PATH"/local_ranktable_"${arr[$i]}"_${device_collection}.json")
+            fi
+        done
+    fi
     # 若是多机组D的场景(默认场景）
     if [ "${NUM_PER_DECODE_POD}" -gt 1 ]; then
         # 获取当前实例的master节点
@@ -104,29 +126,6 @@ if [ ${NODE_IPS} ]; then
               --mode merge-local \
               --local-ranktable-list "${D_RANKTABLE_LIST[@]}" \
               --save-dir "$DECODE_RANKTABLE_SAVE_PATH/merge/${MA_CURRENT_IP}"
-            # 适配多机组P以及单机组P的场景，即收集所有prefill master节点的ranktable文件
-            PREFILL_SERVER_LIST=()
-            DECODE_SERVER_LIST=()
-            # 如果是多机组P的场景
-            if [ "${NUM_PER_PREFILL_POD}" -gt 1 ]; then
-                for i in "${!arr[@]}";do
-                    # 收集当前实例下所有从节点的ranktable
-                    if [ $i -lt $((${PREFILL_POD_NUM} * ${NUM_PER_PREFILL_POD})) ] && [ $(($i % ${NUM_PER_PREFILL_POD})) -eq 0 ]; then
-                        # 等待Ranktable文件生成
-                        wait_for_file "$PREFILL_RANKTABLE_SAVE_PATH/merge/${arr[$i]}/local_ranktable_merge.json"
-                        PREFILL_SERVER_LIST+=("$PREFILL_RANKTABLE_SAVE_PATH/merge/${arr[$i]}/local_ranktable_merge.json")
-                    fi
-                done
-            else
-                for i in "${!arr[@]}";do
-                    # 收集当前实例下所有从节点的ranktable
-                    if [ $i -lt $((${PREFILL_POD_NUM} * ${NUM_PER_PREFILL_POD})) ]; then
-                        # 等待Ranktable文件生成
-                        wait_for_file $PREFILL_RANKTABLE_SAVE_PATH"/local_ranktable_"${arr[$i]}"_${device_collection}.json"
-                        PREFILL_SERVER_LIST+=($PREFILL_RANKTABLE_SAVE_PATH"/local_ranktable_"${arr[$i]}"_${device_collection}.json")
-                    fi
-                done
-            fi
             for i in "${!arr[@]}";do
                 # 收集当前实例下所有从节点的ranktable
                 PREFILL_TOTAL_NUM_TEMP=$((${PREFILL_POD_NUM} * ${NUM_PER_PREFILL_POD}))
@@ -166,7 +165,27 @@ if [ ${NODE_IPS} ]; then
             echo "已同步主节点Ranktable到本地全局目录: $RANK_TABLE_PATH"
         fi
         RANK_TABLE_FILE_PATH="$RANK_TABLE_PATH/merge/${role_head_ip}/local_ranktable_merge.json"
-
+    else
+        echo "单机组D场景"
+        DECODE_SERVER_LIST="${DECODE_RANKTABLE_SAVE_PATH}/local_ranktable_"${MA_CURRENT_IP}"_${device_collection}.json"
+        # 合并Prefill和Decode的Ranktable
+        echo "合并Prefill和Decode节点Ranktable"
+        echo "prefill-server-list is "${PREFILL_SERVER_LIST[@]}
+        echo "decode-server-list is "${DECODE_SERVER_LIST[@]}
+        python "${CODE_PATH}/tools/scripts/pd_ranktable_tools.py" \
+          --mode merge-all \
+          --prefill-server-list "${PREFILL_SERVER_LIST[@]}" \
+          --decode-server-list "${DECODE_SERVER_LIST[@]}" \
+          --save-dir "$DECODE_RANKTABLE_SAVE_PATH"
+        # 复制Ranktable到全局目录
+        cp -r "$DECODE_RANKTABLE_SAVE_PATH"/* "$RANK_TABLE_PATH"/
+        cp -r "$DECODE_RANKTABLE_SAVE_PATH"/* "$RANK_TABLE_PATH_D"/
+        cp -r "$DECODE_RANKTABLE_SAVE_PATH"/global_ranktable_merge.json "$PREFILL_RANKTABLE_SAVE_PATH"/
+        echo "已复制合并后的Ranktable到全局目录: $RANK_TABLE_PATH"
+        # 等待全局Ranktable文件生成
+        wait_for_file "$GLOBAL_RANK_TABLE_FILE_PATH"
+        RANK_TABLE_FILE_PATH="$RANK_TABLE_PATH/local_ranktable_"${MA_CURRENT_IP}"_${device_collection}.json"
+        sleep 60  # 给从节点足够时间同步Ranktable
     fi
     # 适配图缓存
     graph_cache=$(echo "$ADDITIONAL_CONFIG" | sed -n 's/.*"use_ge_graph_cached"[[:space:]]*:[[:space:]]*\([^,}]*\).*/\1/p')

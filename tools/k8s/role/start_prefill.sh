@@ -161,19 +161,12 @@ if [ ${NODE_IPS} ]; then
             echo "PREFILL从节点启动成功，日志路径: $LOG_PATH"
         fi
     else
-        IFS=',' read -r -a arr <<< "$NODE_IPS"
-        # 单机组P的场景
-        for i in "${!arr[@]}";do
-            # 收集当前节点的所有rank_table
-            if [ $i -eq ${PREFILL_RANK} ]; then
-                RANK_TABLE_FILE_PATH="$RANK_TABLE_PATH/local_ranktable_"${arr[$i]}"_${device_collection}.json"
-                break
-            fi
-        done
+        echo "单机组P场景"
+        RANK_TABLE_FILE_PATH="$RANK_TABLE_PATH/local_ranktable_"${MA_CURRENT_IP}"_${device_collection}.json"
     fi
     # 等待全局Ranktable文件生成
     wait_for_file "$PREFILL_RANKTABLE_SAVE_PATH/global_ranktable_merge.json"
-    
+
     # 复制Ranktable到本地目录
     cp -r "$PREFILL_RANKTABLE_SAVE_PATH"/* "$RANK_TABLE_PATH"/
     cp -r "$PREFILL_RANKTABLE_SAVE_PATH"/* "$RANK_TABLE_PATH_P"/
