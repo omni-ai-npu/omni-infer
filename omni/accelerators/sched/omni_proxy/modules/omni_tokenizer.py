@@ -516,30 +516,58 @@ def _preprocess_chat_batch(
     formatted_prompts = []
     multi_modal_data_list = []
     
-    # Phase 1: Template application (sequential to maintain exact vLLM behavior)
+    # Phase 1: Adapt request format and apply template
     for request in requests:
-        messages = request["messages"]
-        add_generation_prompt = request.get("add_generation_prompt", True)
-        tools, tool_choice = parse_tools_and_tool_choice(request)
-        
-        # Extract multi-modal data from messages (vLLM's mm_data handling)
-        processed_messages, multi_modal_data = extract_multi_modal_data(messages)
-        
-        # Apply chat template exactly as vLLM does
-        prompt = _apply_chat_template(
-            tokenizer, processed_messages, add_generation_prompt, tools, tool_choice, multi_modal_data
-        )        
-        formatted_prompts.append(prompt)
-        multi_modal_data_list.append(multi_modal_data)
-        
-        # Store conversation for result
-        results.append(PreprocessResult(
-            conversation=processed_messages,
-            prompt=prompt,
-            input_ids=[],
-            multi_modal_data=multi_modal_data
-        ))
-    # whether use chunk
+        # Check if the request is for Chat Completions API
+        if "messages" in request:
+            messages = request["messages"]
+            add_generation_prompt = request.get("add_generation_prompt", True)
+            tools, tool_choice = parse_tools_and_tool_choice(request)
+            
+            # Extract multi-modal data from messages
+            processed_messages, multi_modal_data = extract_multi_modal_data(messages)
+            
+            # Apply chat template to generate the final prompt string
+            prompt = _apply_chat_template(
+                tokenizer, processed_messages, add_generation_prompt, tools, tool_choice, multi_modal_data
+            )        
+            
+            formatted_prompts.append(prompt)
+            multi_modal_data_list.append(multi_modal_data)
+            
+            # Store results
+            results.append(PreprocessResult(
+                conversation=processed_messages,
+                prompt=prompt,
+                input_ids=[],
+                multi_modal_data=multi_modal_data
+            ))
+
+        # Check if the request is for legacy Completions API
+        elif "prompt" in request:
+            prompt = request["prompt"]
+            # Completions API does not have messages, tools, or multi-modal data
+            processed_messages = [] 
+            multi_modal_data = None
+
+            formatted_prompts.append(prompt)
+            multi_modal_data_list.append(multi_modal_data)
+
+            # Store results
+            results.append(PreprocessResult(
+                conversation=processed_messages,
+                prompt=prompt,
+                input_ids=[],
+                multi_modal_data=multi_modal_data
+            ))
+
+        else:
+            raise ValueError(
+                "Invalid request format. Request must contain either 'messages' (for chat) "
+                "or 'prompt' (for completions)."
+            )
+
+    # Phase 2: Batch Tokenization
     can_fast = getattr(tokenizer, "is_fast", False)
     has_mm = any(mm is not None for mm in multi_modal_data_list)
     use_chunk_path = OMNI_CHUNK_TOKENIZE and ChunkTokenizer and can_fast and not has_mm
@@ -578,7 +606,7 @@ def _preprocess_chat_batch(
     all_input_ids = []
     for i, ids in enumerate(ids_no_sp_list):
         ids = tokenizer.build_inputs_with_special_tokens(ids)
-        model_name = "deepseek"  
+        model_name = requests[i].get("model", "")
         if "deepseek" in model_name.lower() and ids:
             ids = ids[1:]
         all_input_ids.append(ids)
@@ -709,22 +737,43 @@ def c_batch_chat_encode_bytes(texts_bytes: List[bytes]) -> tuple:
 if __name__ == "__main__":    
     try:
         model_path = "/root/nginx-1.26.0/omni_proxy/deepseek"
-        msgs = [
-            '{"messages":[{"role":"user","content":"赵女士买了一些水果和小食品准备去看望一个朋友，士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知品被他士买了一些水果和小食品准备去看谁知品被他士买了一些水果和小食品准备去看谁知品被他士买了一些水果和小食品准备去看谁知品被他士买士买了一些水果和小食品准备去看谁知品被他士买士买了一些水果和小食品准备去看谁知品被他士买士买了一些水果和小食品准备去看谁知品被他士买士买了一些水果和小食品准备去看谁知品被他士买了一些水果和小食品准备去看谁知品被他士买了一些水果和小食品准备去看望一个朋友，谁知品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他谁知，这些水果和小食品被他的儿子们偷吃了，二说道：“是老四偷吃的。”老三人说了实话，其他的3个都在撒谎。那么，到底是谁偷吃了这些水果和小食 品？"}],"model":"deepseek","temperature":0,"max_tokens":20, "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}',
-            '{"messages":[{"role":"user","content":"老四说道：“老二在说谎。”这4个儿子中只有一个人说了实话，其他的3个都在撒谎。那么，到底是谁偷吃了这些水果和小食 品？"}],"model":"deepseek","temperature":0,"max_tokens":20, "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}',
+        if not os.path.exists(model_path):
+             print(f"Model path does not exist: {model_path}")
+             print("Skipping __main__ execution.")
+             exit()
+
+
+        # Example messages for chat
+        chat_msgs = [
+            '{"messages":[{"role":"user","content":"Hello, how are you?"}],"model":"deepseek"}',
+            '{"messages":[{"role":"user","content":"Translate this to French: I love programming."}],"model":"deepseek"}',
         ]
 
-        msgs = [s.encode('utf-8') for s in msgs]
-        tokenizer = load_tokenizer(model_path)
+        # Example prompts for completions
+        completion_prompts = [
+            '{"prompt": "Once upon a time in a land far, far away", "model": "some_completion_model"}',
+            '{"prompt": "The first rule of programming is:", "model": "some_completion_model"}'
+        ]
 
-        prompts, input_ids, block_hashes, multi_modal_data = batch_chat_encode_bytes(msgs)
+        # Combine and encode
+        all_requests_str = chat_msgs + completion_prompts
+        all_requests_bytes = [s.encode('utf-8') for s in all_requests_str]
+        
+        # Initialize tokenizer
+        init_tokenizer(model_path)
+
+        # Run the batch encoding
+        prompts, input_ids, block_hashes, multi_modal_data = batch_chat_encode_bytes(all_requests_bytes)
                       
-        print(f"Multi-modal data found: {any(multi_modal_data)}")
+        print(f"\n--- Batch Encoding Results ---")
+        print(f"Successfully processed {len(prompts)} requests.")
 
-        for prompt, ids, block_hash, mm_data in zip(prompts, input_ids, block_hashes, multi_modal_data):
-            print(f"Prompt: {prompt}")
-            print(f"  Input IDs ({len(ids)}): {ids}")
-            print(f"  Block Hashes ({len(ids)}): {block_hash}")
+        for i, (prompt, ids, block_hash, mm_data) in enumerate(zip(prompts, input_ids, block_hashes, multi_modal_data)):
+            print(f"\n--- Request {i+1} ---")
+            print(f"Original Request JSON: {all_requests_str[i]}")
+            print(f"Formatted Prompt: {prompt.decode('utf-8')}")
+            print(f"  Input IDs ({len(ids)}): {ids[:10]}... (first 10)")
+            print(f"  Block Hashes ({len(block_hash)}): {block_hash[:5]}... (first 5)")
             if mm_data:
                 print(f"Multi-modal data: {mm_data}")
             print("-" * 40)
