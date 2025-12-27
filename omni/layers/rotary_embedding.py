@@ -963,9 +963,6 @@ def get_rope(
     else:
         rope_scaling_args = None
 
-    if partial_rotary_factor < 1.0:
-        rotary_dim = int(rotary_dim * partial_rotary_factor)
-
     key = (head_size, rotary_dim, max_position, base, is_neox_style,
            rope_scaling_args)
 

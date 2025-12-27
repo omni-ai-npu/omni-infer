@@ -156,6 +156,16 @@ def register_model():
         "HSTUInferenceForCausalLM",
         "omni.models.hstu.hstu:HSTUInferenceForCausalLM")
 
+    ModelRegistry.register_model(
+        "Glm4MoeForCausalLM",
+        "omni.models.glm.glm4_moe:Glm4MoeForCausalLM",
+    )
+    
+    ModelRegistry.register_model(
+        "Glm4MoeMTPModel",
+        "omni.models.glm.glm4_moe_mtp:Glm4MoeMTP",
+    )
+
     from vllm.transformers_utils.config import _CONFIG_REGISTRY
     from omni.models.hstu.hstu_config import HSTUInferenceRankingConfig
     _CONFIG_REGISTRY["hstu_inference_ranking"] = HSTUInferenceRankingConfig

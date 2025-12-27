@@ -1,0 +1,18 @@
+{
+    "model_parallel_config": {
+        "dense_mlp_tp_size": 16,
+        "eh_proj_tp_size": 16
+    },
+    "operator_optimization_config": {
+        "prefill_moe_all_to_all": true,
+        "moe_multi_stream_tune": true,
+        "use_tnd_pa": true,
+        "gmm_nz": true,
+        "use_super_kernel": false,
+        "unquant_bmm_nz": true,
+        "decode_moe_dispatch_combine": true,
+        "cast_w2_scale_f32": true,
+        "load_rms_bias": true,
+        "enable_e_score_correction_bias": true
+    }
+}

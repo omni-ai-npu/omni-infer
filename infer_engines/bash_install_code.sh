@@ -44,6 +44,7 @@ git apply --whitespace=nowarn $PATCH_ROOT/gpt_oss_model_init.patch
 git apply --whitespace=nowarn $PATCH_ROOT/openai_harmony_parser.patch
 git apply --whitespace=nowarn $PATCH_ROOT/pp_scheduler.patch
 git apply --whitespace=nowarn $PATCH_ROOT/apply_tool_parser_content.patch
+git apply --whitespace=nowarn $PATCH_ROOT/glm4moe_model_init.patch
 git apply --whitespace=nowarn $PATCH_ROOT/fix_fc_stream_content_type_error.patch
 git apply --whitespace=nowarn $PATCH_ROOT/enable_max_tokens_exclude_reasoning.patch
 git apply --whitespace=nowarn $PATCH_ROOT/remove_hard_limit_check_for_max_tokens.patch

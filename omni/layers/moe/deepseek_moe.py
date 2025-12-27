@@ -263,7 +263,7 @@ class DeepseekMoE(nn.Module):
             self.gate.e_score_correction_bias = None
             self.gate.expert_bias = nn.Parameter(
                 torch.empty(self.n_routed_experts, dtype=torch.float), requires_grad=False)
-        elif getattr(config, "topk_method", "topk") == "noaux_tc":
+        elif getattr(config, "topk_method", "topk") == "noaux_tc" or model_extra_config.operator_opt_config.enable_e_score_correction_bias:
             self.gate.e_score_correction_bias = nn.Parameter(
                 torch.empty(self.n_routed_experts, dtype=torch.float), requires_grad=False)
         # Adapt for Pangu72B

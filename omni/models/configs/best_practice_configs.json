@@ -771,5 +771,55 @@
       "pd_disaggregation": true,
       "prefill_config_file": "qwen3_32b_bf16_a3_hybrid.json",
       "decode_config_file": "qwen3_32b_bf16_a3_hybrid.json"
+   },
+   {
+      "model": "glm4",
+      "hardware": "A3",
+      "precision": "bf16",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "glm4_bf16_a3_1p1d_p.json",
+      "decode_config_file": "glm4_bf16_a3_1p1d_d.json"
+   },
+   {
+      "model": "glm4",
+      "hardware": "A3",
+      "precision": "bf16",
+      "prefill_node_num": 1,
+      "decode_node_num": 2,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "glm4_bf16_a3_1p1d_p.json",
+      "decode_config_file": "glm4_bf16_a3_1p1d_d.json"
+   },
+   {
+      "model": "glm4",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "glm4_bf16_a3_1p1d_p.json",
+      "decode_config_file": "glm4_bf16_a3_1p1d_d.json"
+   },
+   {
+      "model": "glm4",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 1,
+      "decode_node_num": 2,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "glm4_bf16_a3_1p1d_p.json",
+      "decode_config_file": "glm4_bf16_a3_1p1d_d.json"
+   },
+   {
+      "model": "glm4",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 4,
+      "decode_node_num": 1,        
+      "pd_disaggregation": true,
+      "prefill_config_file": "glm4_bf16_a3_1p1d_p.json",
+      "decode_config_file": "glm4_bf16_a3_1p1d_d.json"
    }
 ]

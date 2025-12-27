@@ -74,8 +74,8 @@ class PostDrafter(EagleProposer):
         self.dsa_stream = torch_npu.npu.Stream()
 
         # TODO check model type
-        if self.method not in ('deepseek_mtp', 'eagle', 'eagle3', 'pangu_ultra_moe_mtp', 'qwen3_mtp', 'pangu_moe_v2_mtp'):
-            raise ValueError(f"Speculative method should be one of ('deepseek_mtp', 'eagle', 'eagle3', 'pangu_ultra_moe_mtp', 'qwen3_mtp', 'pangu_moe_v2_mtp'), while get {self.method}.")
+        if self.method not in ('deepseek_mtp', 'eagle', 'eagle3', 'pangu_ultra_moe_mtp', 'qwen3_mtp', 'pangu_moe_v2_mtp', 'glm4_moe_mtp'):
+            raise ValueError(f"Speculative method should be one of ('deepseek_mtp', 'eagle', 'eagle3', 'pangu_ultra_moe_mtp', 'qwen3_mtp', 'pangu_moe_v2_mtp', 'glm4_moe_mtp'), while get {self.method}.")
 
         self.n_predictor = self.vllm_config.model_config.hf_config.num_nextn_predict_layers if self.method == 'deepseek_mtp' else 1
         self.is_autogressive = self.speculative_config.num_speculative_tokens > self.n_predictor

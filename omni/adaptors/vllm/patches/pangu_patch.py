@@ -120,16 +120,18 @@ def patch_pangu():
             # TODO(Shangming): Refactor mtp configuration logic when supporting
             # mtp acceleration for more models besides deepseek_v3
             if self.target_model_config and \
-                (self.target_model_config.hf_text_config.model_type
-                 in ["deepseek_v3", "deepseek_v32", "kimi_k2"] or
-                    self.target_model_config.hf_text_config.model_type
-                 == "mimo" or
-                    self.target_model_config.hf_text_config.model_type
-                 == "pangu_ultra_moe" or
-                    self.target_model_config.hf_text_config.model_type
-                 == "PanguProMoE" or
-                    self.target_model_config.hf_text_config.model_type
-                 == "qwen3_moe"):
+                (self.target_model_config.hf_text_config.model_type \
+                        in ["deepseek_v3", "deepseek_v32", "kimi_k2"] or
+                    self.target_model_config.hf_text_config.model_type \
+                        == "mimo" or
+                    self.target_model_config.hf_text_config.model_type \
+                        == "pangu_ultra_moe" or
+                    self.target_model_config.hf_text_config.model_type \
+                        == "PanguProMoE" or
+                    self.target_model_config.hf_text_config.model_type \
+                        == "qwen3_moe" or
+                    self.target_model_config.hf_text_config.model_type \
+                        == "glm4_moe"):
                 # use the draft model from the same model:
                 self.model = self.target_model_config.model
             elif self.method in ("ngram", "[ngram]"):
@@ -256,8 +258,21 @@ def patch_pangu():
                     self.method = "pangu_ultra_moe_mtp"
                     if self.num_speculative_tokens > 1:
                         logger.info(
-                            "All Pangu Ultra MoE MTP models only have "
-                            "one layer. Might need some code changes "
+                            "All Pangu Ultra MoE MTP models only have " \
+                            "one layer. Might need some code changes " \
+                            "to support multiple layers."
+                        )
+                elif (self.draft_model_config.hf_config.model_type ==
+                      "glm4_moe"):
+                    self.method = "glm4_moe_mtp"
+                    n_predict = getattr(self.draft_model_config.hf_config, "num_nextn_predict_layers", None)
+                    self.draft_model_config.hf_config.model_type = "glm4_moe_mtp"
+                    self.draft_model_config.hf_config.n_predict = n_predict
+                    self.draft_model_config.hf_config.architectures = ["Glm4MoeMTPModel"]
+                    if self.num_speculative_tokens > 1: 
+                        logger.info(
+                            "All GLM MTP models only have " \
+                            "one layer. Might need some code changes " \
                             "to support multiple layers."
                         )
                 else:
@@ -328,7 +343,7 @@ def patch_pangu():
         self._verify_args()
 
     def use_eagle(self) -> bool:
-        return self.method in ("eagle", "eagle3", "deepseek_mtp", "ernie_mtp", "pangu_ultra_moe_mtp", "qwen3_mtp", "pangu_moe_v2_mtp")
+        return self.method in ("eagle", "eagle3", "deepseek_mtp", "ernie_mtp", "pangu_ultra_moe_mtp", "qwen3_mtp", "pangu_moe_v2_mtp","glm4_moe_mtp")
 
     def patch_chat_utils():
         from vllm.entrypoints.chat_utils import BaseMultiModalItemTracker, AsyncMultiModalContentParser
