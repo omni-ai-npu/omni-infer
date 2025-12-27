@@ -15,46 +15,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import torch
-import torchair as tng
-import torch.distributed as dist
 import torch.nn.functional as F
+import torchair as tng
 import torch_npu
 from torch import nn
-from torch.nn import Parameter
 from transformers import PretrainedConfig
 
 from vllm.attention import Attention, AttentionMetadata
 from vllm.compilation.decorators import support_torch_compile
-from vllm.config import CacheConfig, VllmConfig, CompilationLevel
+from vllm.config import CacheConfig, CompilationLevel, VllmConfig
 from vllm.distributed import (
     divide,
+    get_dp_group,
+    get_ep_group,
     get_pp_group,
+    get_tp_group,
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_gather,
     tensor_model_parallel_all_reduce,
 )
-from vllm.distributed import (
-    get_ep_group,
-    get_pp_group,
-    get_dp_group,
-    get_tp_group,
-    get_world_group,
-)
-from vllm.forward_context import get_forward_context
+from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
-from vllm.model_executor.model_loader.weight_utils import default_weight_loader, sharded_weight_loader
+from vllm.model_executor.model_loader.weight_utils import (
+    default_weight_loader,
+    sharded_weight_loader,
+)
 from vllm.model_executor.models.interfaces import SupportsPP
 from vllm.model_executor.models.utils import (
     PPMissingLayer,
-    extract_layer_index,
     is_pp_missing_parameter,
     make_empty_intermediate_tensors_factory,
     make_layers,
@@ -64,6 +59,7 @@ from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.sequence import IntermediateTensors
 from vllm.utils import supports_dynamo
+
 from omni.layers.activation import SiluAndMul
 from omni.layers.attention.backend.attention import AscendAttentionState
 from omni.layers.layernorm import RMSNorm
@@ -76,10 +72,9 @@ from omni.layers.linear import (
 from omni.layers.moe.deepseek_moe import DeepseekMoE
 from omni.layers.moe.fused_moe.layer import FusedMoE
 from omni.layers.rotary_embedding import get_rope
-from omni.layers.vocab_parallel_embedding import ParallelLMHead, VocabParallelEmbedding
-
-from omni.models.config_loader.loader import model_extra_config
 from omni.layers.utils import ConditionalTNGScope
+from omni.layers.vocab_parallel_embedding import ParallelLMHead, VocabParallelEmbedding
+from omni.models.config_loader.loader import model_extra_config
 
 logger = init_logger(__name__)
 
@@ -118,14 +113,12 @@ class CustomQKVRearrangeColumnParallelLinear(ColumnParallelFlashCommLinear):
         self.num_heads = divide(self.total_num_heads, tp_size)
         if tp_size >= self.total_num_kv_heads:
             self.num_kv_heads = 1
-            self.num_kv_head_replicas = divide(tp_size,
-                                               self.total_num_kv_heads)
+            self.num_kv_head_replicas = divide(tp_size, self.total_num_kv_heads)
         else:
             self.num_kv_heads = divide(self.total_num_kv_heads, tp_size)
             self.num_kv_head_replicas = 1
         input_size = self.hidden_size
-        output_size = (self.num_heads +
-                       2 * self.num_kv_heads) * tp_size * self.v_channels
+        output_size = (self.num_heads + 2 * self.num_kv_heads) * tp_size * self.v_channels
         self.output_sizes = [
             self.num_heads * self.head_size * tp_size,  # q_proj
             self.num_kv_heads * self.head_size * tp_size,  # k_proj
@@ -220,14 +213,15 @@ class ParallelPanguProMoEMLP(nn.Module):
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.gate_up_proj")
-        self.down_proj = AscendRowParallelLinear(intermediate_size,
-                                           hidden_size,
-                                           bias=False,
-                                           tp_size=get_tp_group().world_size,
-                                           tp_rank=get_tp_group().rank_in_group,
-                                           quant_config=quant_config,
-                                           reduce_results=False,
-                                           prefix=f"{prefix}.down_proj")
+        self.down_proj = AscendRowParallelLinear(
+            intermediate_size,
+            hidden_size,
+            bias=False,
+            tp_size=get_tp_group().world_size,
+            tp_rank=get_tp_group().rank_in_group,
+            quant_config=quant_config,
+            reduce_results=False,
+            prefix=f"{prefix}.down_proj")
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
                              "Only silu is supported for now.")
@@ -283,11 +277,11 @@ def Attention_forward(
             self.calc_kv_scales(query, key, value)
     # print("self.use_output_test", self.use_output)   #true
     if self.use_output:
-        output_shape = (output_shape
-                        if output_shape is not None else query.shape)
-        output = torch.empty(output_shape,
-                                dtype=query.dtype,
-                                device=query.device)
+        output_shape = (output_shape if output_shape is not None else query.shape)
+        output = torch.empty(
+            output_shape,
+            dtype=query.dtype,
+            device=query.device)
         hidden_size = output_shape[-1]
         forward_context: ForwardContext = get_forward_context()
         attn_metadata = forward_context.attn_metadata
@@ -312,19 +306,21 @@ def Attention_forward(
             if isinstance(attn_metadata, dict):
                 attn_metadata = attn_metadata[self.layer_name]
             self_kv_cache = self.kv_cache[forward_context.virtual_engine]
-            self.impl.forward(self,
-                                query,
-                                key,
-                                value,
-                                self_kv_cache,
-                                attn_metadata,
-                                output=output,
-                                # patch for pangu 72Bv2 with attention sink
-                                **(dict(sink_query=sink_query,
-                                sink_key=sink_key,
-                                sink_value=sink_value,
-                                sink_pad_params=sink_pad_params,
-                                v_head_size=v_head_size) if sink_query is not None else {}))
+            self.impl.forward(
+                self,
+                query,
+                key,
+                value,
+                self_kv_cache,
+                attn_metadata,
+                output=output,
+                # patch for pangu 72Bv2 with attention sink
+                **(dict(
+                    sink_query=sink_query,
+                    sink_key=sink_key,
+                    sink_value=sink_value,
+                    sink_pad_params=sink_pad_params,
+                    v_head_size=v_head_size) if sink_query is not None else {}))
         else:
             torch.ops.vllm.unified_attention_with_output(
                 query, key, value, output, self.layer_name)
@@ -336,8 +332,8 @@ def Attention_forward(
             if isinstance(attn_metadata, dict):
                 attn_metadata = attn_metadata[self.layer_name]
             self_kv_cache = self.kv_cache[forward_context.virtual_engine]
-            return self.impl.forward(self, query, key, value,
-                                        self_kv_cache, attn_metadata)
+            return self.impl.forward(
+                self, query, key, value, self_kv_cache, attn_metadata)
         else:
             return torch.ops.vllm.unified_attention(
                 query, key, value, self.layer_name)
@@ -424,7 +420,7 @@ class PanguProMoEV2Attention(nn.Module):
         if rope_scaling is None:
             rope_scaling = {'factor': '0'}
         rope_scaling["rope_type"] = 'pangu_pro_moe'
-        
+
         # native support for partial rope: qk[:64]
         self.rotary_emb = get_rope(
             self.head_dim,
@@ -448,10 +444,8 @@ class PanguProMoEV2Attention(nn.Module):
         )
 
         if self.param_sink_number > 0:
-            self.param_sink_query = torch.zeros((
-                    self.param_sink_number, 
-                    self.num_heads, 
-                    self.head_dim),
+            self.param_sink_query = torch.zeros(
+                (self.param_sink_number, self.num_heads, self.head_dim),
                 device=torch.npu.current_device(),
                 dtype=config.torch_dtype,
             )
@@ -461,10 +455,8 @@ class PanguProMoEV2Attention(nn.Module):
             else:
                 self.param_sink_num_heads_per_partition = self.num_kv_heads
             if self.param_sink_scalar:
-                self.param_sink_key_zero_pad = torch.zeros((
-                        self.param_sink_number, 
-                        self.param_sink_num_heads_per_partition, 
-                        self.param_sink_scalar - 1),
+                self.param_sink_key_zero_pad = torch.zeros(
+                    (self.param_sink_number, self.param_sink_num_heads_per_partition, self.param_sink_scalar - 1),
                     device=torch.npu.current_device(),
                     dtype=config.torch_dtype,
                 )
@@ -478,10 +470,8 @@ class PanguProMoEV2Attention(nn.Module):
                 setattr(self.param_sink_key, 'allreduce', True)
             else:
                 self.param_sink_key = torch.nn.Parameter(
-                    torch.empty((
-                            self.param_sink_number, 
-                            self.param_sink_num_heads_per_partition, 
-                            self.head_dim),
+                    torch.empty(
+                        (self.param_sink_number, self.param_sink_num_heads_per_partition, self.head_dim),
                         device=torch.npu.current_device(),
                         dtype=config.torch_dtype,
                     )
@@ -489,20 +479,16 @@ class PanguProMoEV2Attention(nn.Module):
                 setattr(self.param_sink_key, 'allreduce', True)
             if self.param_sink_with_value:
                 self.param_sink_value = torch.nn.Parameter(
-                    torch.empty((
-                            self.param_sink_number, 
-                            self.param_sink_num_heads_per_partition, 
-                            self.v_channels),
+                    torch.empty(
+                        (self.param_sink_number, self.param_sink_num_heads_per_partition, self.v_channels),
                         device=torch.npu.current_device(),
                         dtype=config.torch_dtype,
                     )
                 )
                 setattr(self.param_sink_value, 'allreduce', True)
             else:
-                self.param_sink_value = torch.zeros((
-                        self.param_sink_number, 
-                        self.param_sink_num_heads_per_partition, 
-                        self.v_channels),
+                self.param_sink_value = torch.zeros(
+                    (self.param_sink_number, self.param_sink_num_heads_per_partition, self.v_channels),
                     device=torch.npu.current_device(),
                     dtype=config.torch_dtype,
                 )
@@ -573,7 +559,7 @@ class PanguProMoEV2MoEBlock(DeepseekMoE):
             is_prefill = False
         else:
             is_prefill = attn_metadata.attn_state != AscendAttentionState.DecodeOnly
-         
+
         if not self.is_init_gate:
             self.gate.weight.data = torch_npu.npu_format_cast(self.gate.weight.data, 2)
             self.is_init_gate = True
@@ -616,7 +602,7 @@ class PanguProMoEV2MoEBlock(DeepseekMoE):
                     gate_up_share, _ = self.shared_experts.gate_up_proj.forward(hidden_states)
 
             wait_gate = gate_up_share if isinstance(gate_up_share, torch.Tensor) else gate_up_share[0]
-            
+
             # expert weight prefetch
             if self.w13_prefetch_size > 0:
                 torch_npu.npu_prefetch(self.experts.w13_weight, wait_gate, self.w13_prefetch_size)
@@ -624,19 +610,18 @@ class PanguProMoEV2MoEBlock(DeepseekMoE):
                 torch_npu.npu_prefetch(self.experts.w2_weight, wait_gate, self.w2_prefetch_size)
 
         topk_weights, topk_ids, _ = FusedMoE.select_experts(
-            hidden_states, 
+            hidden_states,
             router_logits,
-            self.experts.top_k, 
+            self.experts.top_k,
             self.experts.use_grouped_topk,
             self.experts.renormalize,
-            self.experts.topk_group, 
+            self.experts.topk_group,
             self.experts.num_expert_group,
             self.experts.custom_routing_function,
             self.experts.scoring_func,
             self.experts.e_score_correction_bias,
             self.routed_scaling_factor,
-            layer=self.experts
-            )
+            layer=self.experts)
 
         topk_ids = self.experts.apply_expert_load_balance(topk_ids=topk_ids, best_topk_ids=None)
 
@@ -647,7 +632,7 @@ class PanguProMoEV2MoEBlock(DeepseekMoE):
         shared_expert_rank_num = 0
         kwargs = {
             "x": hidden_states,
-            "expert_ids": topk_ids, 
+            "expert_ids": topk_ids,
             "expert_shard_type": 0,
             "shared_expert_rank_num": shared_expert_rank_num,
             "moe_expert_num": max_num_deployed_expert,
@@ -703,34 +688,34 @@ class PanguProMoEV2MoEBlock(DeepseekMoE):
             # w8a8
             if self.experts.weight_num_bits == 8:
                 gate_up_proj = torch_npu.npu_grouped_matmul(
-                    [expand_x], 
-                    [weight1_3], 
-                    bias=None, 
+                    [expand_x],
+                    [weight1_3],
+                    bias=None,
                     group_list=group_list,
-                    split_item=3, 
-                    output_dtype=torch.int32, 
+                    split_item=3,
+                    output_dtype=torch.int32,
                     group_type=0,
                     group_list_type=1)[0]
 
                 gate_up_proj, pertoken_scale = torch_npu.npu_dequant_swiglu_quant(
-                    gate_up_proj, 
-                    weight_scale=weight_scale1_3, 
-                    activation_scale=pertoken_scale, 
-                    bias=None, 
-                    quant_scale=self.in_scale_2, 
+                    gate_up_proj,
+                    weight_scale=weight_scale1_3,
+                    activation_scale=pertoken_scale,
+                    bias=None,
+                    quant_scale=self.in_scale_2,
                     quant_offset=None,
-                    group_index=group_list, 
-                    activate_left=True, 
+                    group_index=group_list,
+                    activate_left=True,
                     quant_mode=1)
 
                 hidden_states_experts = torch_npu.npu_grouped_matmul(
-                    [gate_up_proj], 
-                    [weight2], 
+                    [gate_up_proj],
+                    [weight2],
                     scale=[weight_scale2],
                     per_token_scale=[pertoken_scale],
                     bias=None,
-                    group_list=group_list, 
-                    split_item=3, 
+                    group_list=group_list,
+                    split_item=3,
                     output_dtype=act_dtype,
                     group_type=0,
                     group_list_type=1)[0]
@@ -739,24 +724,24 @@ class PanguProMoEV2MoEBlock(DeepseekMoE):
         else:
             # bf16
             gate_up_proj = torch_npu.npu_grouped_matmul(
-                [expand_x], 
-                [weight1_3], 
-                bias=None, 
+                [expand_x],
+                [weight1_3],
+                bias=None,
                 group_list=group_list,
-                split_item=3, 
-                group_type=0, 
+                split_item=3,
+                group_type=0,
                 group_list_type=1)[0]
-        
+
             gate_up_proj = torch_npu.npu_swiglu(gate_up_proj)
 
             hidden_states_experts = torch_npu.npu_grouped_matmul(
-                [gate_up_proj], 
+                [gate_up_proj],
                 [weight2],
                 bias=None,
-                group_list=group_list, 
-                split_item=3, 
+                group_list=group_list,
+                split_item=3,
                 output_dtype=act_dtype,
-                group_type=0, 
+                group_type=0,
                 group_list_type=1)[0]
 
         # moeCombine
@@ -767,7 +752,7 @@ class PanguProMoEV2MoEBlock(DeepseekMoE):
             "expert_scales": topk_weights.to(torch.float32),
             "expert_shard_type": 0,
             "shared_expert_rank_num": shared_expert_rank_num,
-            "moe_expert_num":  max_num_deployed_expert,
+            "moe_expert_num": max_num_deployed_expert,
             "global_bs": 0,
         }
         tp_recv_counts = output[5]
@@ -807,7 +792,8 @@ class PanguProMoEV2MoEBlock(DeepseekMoE):
             final_hidden_states = (hidden_states_route, shared_output)
 
         return final_hidden_states, residual
-    
+
+
 class PanguProMoEDecoderLayer(nn.Module):
 
     def __init__(
@@ -870,10 +856,12 @@ class PanguProMoEDecoderLayer(nn.Module):
             self.sandwich_norm = False
 
         self.enable_torchair_graph_mode = (
-                    vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
+            vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
         self.is_pd_seperate_d = vllm_config.kv_transfer_config is not None and vllm_config.kv_transfer_config.kv_role == "kv_consumer"
-        self.is_hybrid_chunked_prefill_graph_mode = self.enable_torchair_graph_mode and not self.is_pd_seperate_d and \
-            not vllm_config.additional_config.get("enable_hybrid_graph_mode", False) and vllm_config.scheduler_config.enable_chunked_prefill
+        self.is_hybrid_chunked_prefill_graph_mode = (
+            self.enable_torchair_graph_mode and not self.is_pd_seperate_d and
+            not vllm_config.additional_config.get("enable_hybrid_graph_mode", False) and
+            vllm_config.scheduler_config.enable_chunked_prefill)
 
     def forward(
         self,
@@ -892,7 +880,7 @@ class PanguProMoEDecoderLayer(nn.Module):
 
         if isinstance(attn_metadata, dict):
             attn_metadata = attn_metadata[self.layer_name]
-            
+
         is_prefill = attn_metadata is None or not attn_metadata.is_pd_seperate_d
         enable_superkernel = not is_prefill and model_extra_config.operator_opt_config.use_super_kernel
 
@@ -914,7 +902,7 @@ class PanguProMoEDecoderLayer(nn.Module):
             kv_cache=kv_cache,
             attn_metadata=attn_metadata,
         )
-        
+
         with ConditionalTNGScope(super_kernel=enable_superkernel, scope='superkernel_decode_layer'):
             if model_extra_config.operator_opt_config.use_prefetch:
                 if self.is_moe:
@@ -1011,7 +999,7 @@ class PanguProMoEModel(nn.Module):
 
         sink_pad_params = None
 
-        if attn_metadata is None :
+        if attn_metadata is None:
             cos, sin = self.layers[0].self_attn.rotary_emb.get_cos_sin(positions)
         else:
             if isinstance(attn_metadata, dict):
@@ -1110,10 +1098,12 @@ class PanguProMoEV2ForCausalLM(nn.Module, SupportsPP):
         self.return_hidden_states = True
 
         self.enable_torchair_graph_mode = (
-                    vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
+            vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
         self.is_pd_seperate_d = vllm_config.kv_transfer_config is not None and vllm_config.kv_transfer_config.kv_role == "kv_consumer"
-        self.is_hybrid_chunked_prefill_graph_mode = self.enable_torchair_graph_mode and not self.is_pd_seperate_d and \
-            not vllm_config.additional_config.get("enable_hybrid_graph_mode", False) and vllm_config.scheduler_config.enable_chunked_prefill
+        self.is_hybrid_chunked_prefill_graph_mode = (
+            self.enable_torchair_graph_mode and not self.is_pd_seperate_d and
+            not vllm_config.additional_config.get("enable_hybrid_graph_mode", False) and
+            vllm_config.scheduler_config.enable_chunked_prefill)
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
@@ -1254,9 +1244,7 @@ class PanguProMoEV2ForCausalLM(nn.Module, SupportsPP):
                     name = remapped_kv_scale_name
                     param = params_dict[name]
                     set_weight_attrs(param, {"is_2_dims": True})
-                    loaded_weight = torch.tensor_split(loaded_weight,
-                                                       tp_size,
-                                                       dim=0)[tp_rank]
+                    loaded_weight = torch.tensor_split(loaded_weight, tp_size, dim=0)[tp_rank]
                     weight_loader = getattr(param, "weight_loader", default_weight_loader)
                     weight_loader(param, loaded_weight)
 

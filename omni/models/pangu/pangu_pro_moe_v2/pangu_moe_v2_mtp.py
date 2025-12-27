@@ -26,35 +26,31 @@ from transformers import PretrainedConfig
 
 from vllm.attention.backends.abstract import AttentionMetadata
 from vllm.compilation.decorators import support_torch_compile
-from vllm.config import CacheConfig, ModelConfig, VllmConfig
+from vllm.config import CacheConfig, CompilationLevel, ModelConfig, VllmConfig
 from vllm.distributed.communication_op import tensor_model_parallel_all_gather
 from vllm.distributed.parallel_state import (
     get_dp_group,
     get_tp_group,
     get_tensor_model_parallel_rank,
-    get_tensor_model_parallel_world_size
+    get_tensor_model_parallel_world_size,
 )
 from vllm.logger import init_logger
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
-from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.models.deepseek_mtp import DeepSeekMultiTokenPredictor
 from vllm.model_executor.models.utils import maybe_prefix
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader,
-    sharded_weight_loader
+    sharded_weight_loader,
 )
-from vllm.model_executor.sampling_metadata import SamplingMetadata
+from vllm.utils import supports_dynamo
 
+from omni.adaptors.vllm.distributed import get_eh_proj_tp_group
 from omni.layers.attention.backend.attention import AscendAttentionState
 from omni.layers.layernorm import RMSNorm
-from omni.layers.moe.fused_moe.layer import FusedMoE
 from omni.layers.linear import ColumnParallelFlashCommLinear
-from omni.layers.vocab_parallel_embedding import (
-    ParallelLMHead,
-    VocabParallelEmbedding
-)
-from omni.adaptors.vllm.distributed import get_eh_proj_tp_group
+from omni.layers.moe.fused_moe.layer import FusedMoE
+from omni.layers.vocab_parallel_embedding import ParallelLMHead, VocabParallelEmbedding
 
 from .pangu_moe_v2 import PanguProMoEDecoderLayer
 
@@ -120,6 +116,14 @@ class PanguProMoEMultiTokenPredictorLayer(PanguProMoEDecoderLayer):
             quant_config,
             prefix)
 
+        self.enable_torchair_graph_mode = (
+            vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
+        self.is_pd_seperate_d = vllm_config.kv_transfer_config is not None and vllm_config.kv_transfer_config.kv_role == "kv_consumer"
+        self.is_hybrid_chunked_prefill_graph_mode = (
+            self.enable_torchair_graph_mode and not self.is_pd_seperate_d and
+            not vllm_config.additional_config.get("enable_hybrid_graph_mode", False) and
+            vllm_config.scheduler_config.enable_chunked_prefill)
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -138,7 +142,7 @@ class PanguProMoEMultiTokenPredictorLayer(PanguProMoEDecoderLayer):
             token_num = previous_hidden_states.shape[0]
             start_range = rank_in_group * (token_num // tp_size)
             end_range = (1 + rank_in_group) * (token_num // tp_size)
-            previous_hidden_states = previous_hidden_states[start_range: end_range, :]
+            previous_hidden_states = previous_hidden_states[start_range:end_range, :]
 
         previous_hidden_states = self.hnorm(previous_hidden_states)
 
@@ -167,7 +171,11 @@ class PanguProMoEMultiTokenPredictorLayer(PanguProMoEDecoderLayer):
         if attn_metadata is None:
             logits = self.compute_lmhead(hidden_states[-1:, ...], None)
         else:
-            logits = self.compute_lmhead(hidden_states, selected_indices)
+            # when use ChunkedPrefill, selected_indices can cause GE graph recompilation, temporarily set to None
+            if self.is_hybrid_chunked_prefill_graph_mode:
+                logits = self.compute_lmhead(hidden_states, None)
+            else:
+                logits = self.compute_lmhead(hidden_states, selected_indices)
 
         return logits, hidden_states
 
@@ -190,11 +198,11 @@ class PanguProMoeMultiTokenPredictor(DeepSeekMultiTokenPredictor):
         config = vllm_config.model_config.hf_config
         self.mtp_start_layer_idx = config.num_hidden_layers
         self.num_mtp_layers = config.num_mtp_layers
-        self.ignore_share_weight = True # TODO get from config
+        self.ignore_share_weight = True  # TODO get from config
         # to map the exact layer index from weights
         real_num_mtp = min(self.num_mtp_layers, vllm_config.speculative_config.num_speculative_tokens)
         self.layers = torch.nn.ModuleDict({
-            str(i + self.mtp_start_layer_idx): 
+            str(i + self.mtp_start_layer_idx):
             PanguProMoEMultiTokenPredictorLayer(
                 config,
                 vllm_config,
@@ -245,6 +253,14 @@ class PanguProMoEMTP(nn.Module):
             prefix=maybe_prefix(prefix, "model"))
         self.n_predictor = self.config.num_mtp_layers
 
+        self.enable_torchair_graph_mode = (
+            vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
+        self.is_pd_seperate_d = vllm_config.kv_transfer_config is not None and vllm_config.kv_transfer_config.kv_role == "kv_consumer"
+        self.is_hybrid_chunked_prefill_graph_mode = (
+            self.enable_torchair_graph_mode and not self.is_pd_seperate_d and
+            not vllm_config.additional_config.get("enable_hybrid_graph_mode", False) and
+            vllm_config.scheduler_config.enable_chunked_prefill)
+
     def set_share_weight(self, target_model):
         self.model.set_share_weight(target_model)
 
@@ -260,13 +276,13 @@ class PanguProMoEMTP(nn.Module):
     ) -> torch.Tensor:
 
         logits, hidden_states = self.model(
-                                input_ids=input_ids,
-                                positions=positions,
-                                kv_caches=kv_caches,
-                                attn_metadata=attn_metadata,
-                                previous_hidden_states=previous_hidden_states,
-                                selected_indices=selected_indices,
-                                mtp_layer_idx=min(self.n_predictor -1, mtp_layer_idx))
+            input_ids=input_ids,
+            positions=positions,
+            kv_caches=kv_caches,
+            attn_metadata=attn_metadata,
+            previous_hidden_states=previous_hidden_states,
+            selected_indices=selected_indices,
+            mtp_layer_idx=min(self.n_predictor - 1, mtp_layer_idx))
 
         return logits, hidden_states
 
@@ -319,11 +335,8 @@ class PanguProMoEMTP(nn.Module):
                 else:
                     name = remapped_kv_scale_name
                     param = params_dict[name]
-                    loaded_weight = torch.tensor_split(loaded_weight,
-                                                    tp_size,
-                                                    dim=0)[tp_rank]
-                    weight_loader = getattr(param, "weight_loader",
-                                            default_weight_loader)
+                    loaded_weight = torch.tensor_split(loaded_weight, tp_size, dim=0)[tp_rank]
+                    weight_loader = getattr(param, "weight_loader", default_weight_loader)
                     weight_loader(param, loaded_weight)
 
             if name.endswith("v_proj.kv_cache_scale"):
@@ -340,11 +353,8 @@ class PanguProMoEMTP(nn.Module):
                 else:
                     name = remapped_kv_scale_name
                     param = params_dict[name]
-                    loaded_weight = torch.tensor_split(loaded_weight,
-                                                    tp_size,
-                                                    dim=0)[tp_rank]
-                    weight_loader = getattr(param, "weight_loader",
-                                            default_weight_loader)
+                    loaded_weight = torch.tensor_split(loaded_weight, tp_size, dim=0)[tp_rank]
+                    weight_loader = getattr(param, "weight_loader", default_weight_loader)
                     weight_loader(param, loaded_weight)
 
             name = self._rewrite_spec_layer_name(spec_layer, name)
@@ -400,11 +410,9 @@ class PanguProMoEMTP(nn.Module):
 
                     param = params_dict[name]
                     if name.endswith("param_sink_key") or name.endswith("param_sink_value"):
-                        weight_loader = getattr(param, "weight_loader",
-                                            sharded_weight_loader(-2))
+                        weight_loader = getattr(param, "weight_loader", sharded_weight_loader(-2))
                     else:
-                        weight_loader = getattr(param, "weight_loader",
-                                                default_weight_loader)
+                        weight_loader = getattr(param, "weight_loader", default_weight_loader)
                     weight_loader(param, loaded_weight)
 
             loaded_params.add(name)
@@ -440,5 +448,6 @@ class PanguProMoEMTP(nn.Module):
             return True
         if isinstance(attn_metadata, dict):
             attn_metadata = attn_metadata[next(iter(attn_metadata))]
-
+        if self.is_hybrid_chunked_prefill_graph_mode and attn_metadata.attn_state == AscendAttentionState.ChunkedPrefill:
+            return False
         return attn_metadata.attn_state != AscendAttentionState.DecodeOnly
