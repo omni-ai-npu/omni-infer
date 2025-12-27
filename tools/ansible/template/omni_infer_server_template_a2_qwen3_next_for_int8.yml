@@ -176,6 +176,7 @@
 
     run_vllm_server_prefill_cmd: |
       #!/bin/bash
+
       . ~/.bashrc
 
       HCCL_BUFFSIZE=700
@@ -186,7 +187,6 @@
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
 
-      export LOG_PATH=${LOG_PATH}/{{ inventory_hostname }}
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
       export ASCEND_GLOBAL_LOG_LEVEL=3
@@ -216,8 +216,8 @@
       export ATB_MATMUL_SHUFFLE_K_ENABLE=0
       export ATB_LLM_LCOC_ENABLE=0
       # 启用Function call
-      export CHAT_TEMPLATE_PATH="/workspace/function_call/tool_chat_template_herms_instruct_v20251212.jinja"
-      export TOOL_PARSER_PLUGIN_PATH="/workspace/function_call/ascend_herms_tool_parser.py"
+      export CHAT_TEMPLATE_PATH="/workspace/function_call/tool_chat_template_hermes_instruct_v20251212.jinja"
+      export TOOL_PARSER_PLUGIN_PATH="/workspace/function_call/ascend_hermes_tool_parser.py"
       # 采集Profiling
       # export VLLM_ENABLE_PROFILING=1
       # export PROFILER_TOKEN_THRESHOLD=1
@@ -225,7 +225,7 @@
       # export VLLM_TORCH_PROFILER_DIR=/workspace/porfiling/prefill
 
 
-      EXTRA_ARGS='--block-size ${BLOCK_SIZE} --num-gpu-blocks-override=1224 --enforce-eager --enable-expert-parallel --disable-log-requests --no-enable-prefix-caching --no-enable-chunked-prefill --max-num-seqs ${MAX_NUM_SEQ} --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS}'
+      EXTRA_ARGS="--block-size ${BLOCK_SIZE} --num-gpu-blocks-override=1224 --enforce-eager --enable-expert-parallel --disable-log-requests --no-enable-prefix-caching --no-enable-chunked-prefill --max-num-seqs ${MAX_NUM_SEQ} --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS}"
       if [[ -n "${CHAT_TEMPLATE_PATH}" ]]
       then
         EXTRA_ARGS="${EXTRA_ARGS} --chat-template ${CHAT_TEMPLATE_PATH} --enable-auto-tool-choice --tool-call-parser ascend_hermes --tool-parser-plugin ${TOOL_PARSER_PLUGIN_PATH}"
@@ -262,7 +262,7 @@
         sed -i -e '/^export ENABLE_OVERWRITE_REQ_IDS=0/d' /workspace/omniinfer/tools/scripts/pd_run.sh
       }
       mod_pd_run
-      env > ${LOG_PATH}/run_prefill.log
+      env > ${LOG_PATH}/{{ inventory_hostname }}/run_prefill.log
 
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
@@ -311,10 +311,11 @@
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
         --num-speculative-tokens "${NUM_SPECULATIVE_TOKENS}" \
         --vllm-logging-level "${VLLM_LOGGING_LEVEL}" \
-        --log-dir "${LOG_PATH}" >> ${LOG_PATH}/run_prefill.log 2>&1 &
+        --log-dir "${LOG_PATH}/{{ inventory_hostname }}" >> ${LOG_PATH}/{{ inventory_hostname }}/run_prefill.log 2>&1 &
     
     run_vllm_server_decode_cmd: |
       #!/bin/bash
+
       . ~/.bashrc
       
       HCCL_BUFFSIZE=768
@@ -325,7 +326,6 @@
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
 
-      export LOG_PATH=${LOG_PATH}/{{ inventory_hostname }}
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
       export ASCEND_GLOBAL_LOG_LEVEL=3
@@ -355,17 +355,17 @@
       export ATB_MATMUL_SHUFFLE_K_ENABLE=0
       export ATB_LLM_LCOC_ENABLE=0
       # 启用Function call
-      export CHAT_TEMPLATE_PATH="/workspace/function_call/tool_chat_template_herms_instruct_v20251212.jinja"
-      export TOOL_PARSER_PLUGIN_PATH="/workspace/function_call/ascend_herms_tool_parser.py"
+      export CHAT_TEMPLATE_PATH="/workspace/function_call/tool_chat_template_hermes_instruct_v20251212.jinja"
+      export TOOL_PARSER_PLUGIN_PATH="/workspace/function_call/ascend_hermes_tool_parser.py"
       # 采集Profiling
       # export VLLM_ENABLE_PROFILING=1
       # export PROFILER_TOKEN_THRESHOLD=1
       # export PROFILER_STOP_STEP=3
-      # export VLLM_TORCH_PROFILER_DIR=/workspace/porfiling/prefill
+      # export VLLM_TORCH_PROFILER_DIR=/workspace/profiling/decode
 
 
-      EXTRA_ARGS='--block-size ${BLOCK_SIZE} --enable-expert-parallel --disable-log-requests --no-enable-prefix-caching --no-enable-chunked-prefill --max-num-seqs ${MAX_NUM_SEQ} --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS}'
-      ADDITIONAL_CONFIG='{"graph_model_compile_config":{"level:1, "use_ge_graph_cached":true}}'
+      EXTRA_ARGS="--block-size ${BLOCK_SIZE} --enable-expert-parallel --disable-log-requests --no-enable-prefix-caching --no-enable-chunked-prefill --max-num-seqs ${MAX_NUM_SEQ} --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS}"
+      ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}}'
       if [[ -n "${CHAT_TEMPLATE_PATH}" ]]
       then
         EXTRA_ARGS="${EXTRA_ARGS} --chat-template ${CHAT_TEMPLATE_PATH} --enable-auto-tool-choice --tool-call-parser ascend_hermes --tool-parser-plugin ${TOOL_PARSER_PLUGIN_PATH}"
@@ -381,7 +381,7 @@
 
       function add_kv_connector_extra_config()
       {
-        if [[ -n "$(grep "kv_connector_extra_config" /workspace/omniinfer/tools/scripts/pd_run.sh)"]]
+        if [[ -n "$(grep "kv_connector_extra_config" /workspace/omniinfer/tools/scripts/pd_run.sh)" ]]
         then
           return
         fi
@@ -403,7 +403,7 @@
         sed -i -e 's/^export ENABLE_OVERWRITE_REQ_IDS=0/d' /workspace/omniinfer/tools/scripts/pd_run.sh
       }
       mod_pd_run
-      env > ${LOG_PATH}/run_decode.log
+      env > ${LOG_PATH}/{{ inventory_hostname }}/run_decode.log
 
       if [ $DECODE_POD_NUM -gt 1 ]; then
         LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json | tr '\n' ' '))
@@ -449,13 +449,12 @@
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
         --num-speculative-tokens "${NUM_SPECULATIVE_TOKENS}" \
         --vllm-logging-level "${VLLM_LOGGING_LEVEL}" \
-        --log-dir "${LOG_PATH}d" >> ${LOG_PATH}d/run_decode.log 2>&1 &
+        --log-dir "${LOG_PATH}/{{ inventory_hostname }}" >> ${LOG_PATH}/{{ inventory_hostname }}/run_decode.log 2>&1 &
 
     run_proxy_cmd: |
       #!/bin/bash
       . ~/.bashrc
 
-      export LOG_PATH=${LOG_PATH}/{{ inventory_hostname }}
       prefill_result="{{ PREFILL_API_SERVER_LIST }}"
       prefill_result=`echo "$prefill_result" | awk '$1=$1'`
 
@@ -483,12 +482,12 @@
         --listen-port "$PROXY_NODE_PORT" \
         --prefill-servers-list "$prefill_result" \
         --decode-servers-list "$decode_result" \
-        --log-file ${LOG_PATH}/nginx_error.log \
+        --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
         --log-level notice \
         --core-num 4 \
         --start-core-index 8 \
         --prefill-lb-sdk ${PREFILL_LB_SDK} \
-        --decode-lb-sdk ${DECODE_LB_SDK} > ${LOG_PATH}/run_proxy.log 2>&1 &
+        --decode-lb-sdk ${DECODE_LB_SDK} > ${LOG_PATH}/{{ inventory_hostname }}/run_proxy.log 2>&1 &
 
     kill_python_processes_cmd: |
       #!/bin/bash
@@ -1308,6 +1307,15 @@
       when: "'C' in group_names"
       tags:
         - run_proxy
+
+    - name: Create a directory on the executor to store the log.
+      ansible.builtin.file:
+        path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
+        state: directory
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      delegate_to: localhost
+      tags:
+        - fetch_log
 
     - name: Forward logs from all machines to the executor.
       ansible.builtin.synchronize:
