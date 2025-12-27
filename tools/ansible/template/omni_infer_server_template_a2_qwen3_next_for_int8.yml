@@ -1311,8 +1311,8 @@
     - name: Forward logs from all machines to the executor.
       ansible.builtin.synchronize:
         mode: pull
-        src: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
-        dest: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
+        src: "{{ ansible_env.LOG_PATH }}/"
+        dest: "{{ ansible_env.LOG_PATH }}/"
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags:
         - fetch_log
