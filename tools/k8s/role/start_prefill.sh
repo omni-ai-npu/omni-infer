@@ -221,5 +221,6 @@ if [ ! ${NODE_IPS} ] || [ $((${PREFILL_RANK} % $NUM_PER_PREFILL_POD)) -eq 0 ]; t
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
         --additional-config "${ADDITIONAL_CONFIG}" \
         --served-model-name "${SERVED_MODEL_NAME}" \
+        --num-speculative-tokens "${NUM_SPECULATIVE_TOKENS}" \
         --log-dir "${LOG_PATH}" 2>&1 | tee "${LOG_PATH}"/run_prefill.log &
 fi

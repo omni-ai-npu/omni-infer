@@ -272,4 +272,5 @@ bash pd_run.sh \
     --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
     --additional-config "${ADDITIONAL_CONFIG}" \
     --served-model-name "${SERVED_MODEL_NAME}" \
+    --num-speculative-tokens "${NUM_SPECULATIVE_TOKENS}" \
     --log-dir "${LOG_PATH}" 2>&1 | tee "${LOG_PATH}"/run_decode.log &

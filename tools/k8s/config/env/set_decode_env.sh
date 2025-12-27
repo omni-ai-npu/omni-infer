@@ -16,6 +16,7 @@ set_env_from_arg_or_default "CANN_JSON_PATH" "--cann-json-path" "/usr/local/Asce
 set_env "CURRENT_STARTUP_ROLE" "decode"
 set_env_from_arg_or_default "MAX_MODEL_LEN" "--max-model-len" 65536 "$@"
 set_env_from_arg_or_default "MAX_NUM_SEQS" "--max-num-seqs" 8 "$@"
+set_env_from_arg_or_default "NUM_SPECULATIVE_TOKENS" "--num-speculative-tokens" 0 "$@"
 set_env_from_arg_or_default "ADD_ARGS" "--add-args" "" "$@"
 if [ ${NODE_IPS} ]; then
     D_RANKTABLE_LIST=()
@@ -63,13 +64,13 @@ else
     set_env_from_arg_or_default "MODEL_PATH" "--model-path" "/home/mind/model" "$@"
 
     role_head_ip=$(python3 -u "${TOOL_DIR}"/ranktable/get_role_head_ip.py)  #  done
-    
+
     local_device_size=$(python3 -u "${TOOL_DIR}"/ranktable/get_local_device_size.py)  #  每个ip的device数量
-    
+
     role_node_rank=$(python3 -u "${TOOL_DIR}"/ranktable/get_role_node_rank.py)  #  done
-    
+
     role_device_size=$(python3 -u "${TOOL_DIR}"/ranktable/get_role_device_size.py)  #  所有ip的device数量
-    
+
     role_node_size=$(python3 -u "${TOOL_DIR}"/ranktable/get_role_node_size.py)  #  done
     set_env_from_arg_or_default "VLLM_ENABLE_MC2" "--vllm-enable-mc2" 1 "$@"
     set_env_from_arg_or_default "ADDITIONAL_CONFIG" "--additional-config" '{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":false}, "enable_omni_attn":false}' "$@"

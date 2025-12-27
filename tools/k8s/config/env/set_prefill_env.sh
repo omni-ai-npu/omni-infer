@@ -22,6 +22,7 @@ set_env_from_arg_or_default "LONG_PREFILL_TOKEN_THRESHOLD" "--long-prefill-token
 set_env_from_arg_or_default "MAX_MODEL_LEN" "--max-model-len" 65536 "$@"
 set_env_from_arg_or_default "MAX_NUM_BATCHED_TOKENS" "--max-num-batched-tokens" 32768 "$@"
 set_env_from_arg_or_default "MAX_NUM_SEQS" "--max-num-seqs" 8 "$@"
+set_env_from_arg_or_default "NUM_SPECULATIVE_TOKENS" "--num-speculative-tokens" 0 "$@"
 set_env_from_arg_or_default "MODEL_EXTRA_CFG_PATH" "--model-extra-cfg-path" "${CODE_PATH}/tests/test_config/test_config_prefill.json"
 
 set_env_from_arg_or_default "VLLM_LOGGING_LEVEL" "--vllm-logging-level" "INFO" "$@"
