@@ -206,12 +206,13 @@
       export INF_NAN_MODE_FORCE_DISABLE=1
       export PTA_TORCHAIR_DECODE_GEAR_LIST=16
       export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
-      export OMNI_REUSE_PREFILLED_TOKEMS=1
+      export OMNI_REUSE_PREFILLED_TOKENS=1
       export OMNI_SKIP_DECODE_TOKENIZE=1
       export NPU_MODEL_RUNNER_COST_THRESHOLD=0.01
       export MOE_ALL_REDUCE=1
       export ASCEND_RT_VISIBLE_DEVICES=$PREFILL_SERVER_LIST
-      export LCCL_DETERMINISTIC=true
+      export LCCL_DETERMINISTIC=1
+      export HCCL_DETERMINISTIC=true
       export ATB_MATMUL_SHUFFLE_K_ENABLE=0
       export ATB_LLM_LCOC_ENABLE=0
       # 启用Function call
@@ -225,12 +226,12 @@
 
 
       EXTRA_ARGS='--block-size ${BLOCK_SIZE} --num-gpu-blocks-override=1224 --enforce-eager --enable-expert-parallel --disable-log-requests --no-enable-prefix-caching --no-enable-chunked-prefill --max-num-seqs ${MAX_NUM_SEQ} --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS}'
-      if [[ -n "${CHAT_TEMPLATE_PATH}"]]
+      if [[ -n "${CHAT_TEMPLATE_PATH}" ]]
       then
-        EXTRA_ARGS="${EXTRA_ARGS} --chat-template ${CHAT_TEMPLATE_PATH} --enable-auto-tool-choice --tool-call-parser ascend_herms --tool-parser-plugin ${TOOL_PARSER_PLUGIN_PATH}"
+        EXTRA_ARGS="${EXTRA_ARGS} --chat-template ${CHAT_TEMPLATE_PATH} --enable-auto-tool-choice --tool-call-parser ascend_hermes --tool-parser-plugin ${TOOL_PARSER_PLUGIN_PATH}"
       fi
 
-      if [[ ${REASONING_CONFIG} = "1"]]
+      if [ ${REASONING_CONFIG} = "1" ]
       then
         EXTRA_ARGS="${EXTRA_ARGS} --enable-reasoning --reasoning-parser deepseek_r1"
       fi
@@ -239,7 +240,7 @@
 
       function add_kv_connector_extra_config()
       {
-        if [[ -n "$(grep "kv_connector_extra_config" /workspace/omniinfer/tools/scripts/pd_run.sh)"]]
+        if [[ -n "$(grep "kv_connector_extra_config" /workspace/omniinfer/tools/scripts/pd_run.sh)" ]]
         then
           return
         fi
@@ -251,14 +252,14 @@
 
       function mod_use_dsv3()
       {
-        sed -i -e 's/^export OMNI_USE_DSV3=1/export OMNI_USE_DSV3=0/' /workspace/omniinfer/tools/scripts/pd_run.sh
+        sed -i -e '/^export OMNI_USE_DSV3=1/export OMNI_USE_DSV3=0/' /workspace/omniinfer/tools/scripts/pd_run.sh
       }
 
       function mod_pd_run()
       {
         add_kv_connector_extra_config
         mod_use_dsv3
-        sed -i -e 's/^export ENABLE_OVERWRITE_REQ_IDS=0/d' /workspace/omniinfer/tools/scripts/pd_run.sh
+        sed -i -e '/^export ENABLE_OVERWRITE_REQ_IDS=0/d' /workspace/omniinfer/tools/scripts/pd_run.sh
       }
       mod_pd_run
       env > ${LOG_PATH}/run_prefill.log
@@ -307,11 +308,10 @@
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
-        --additional-config "$ADDITIONAL_CONFIG" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
         --num-speculative-tokens "${NUM_SPECULATIVE_TOKENS}" \
         --vllm-logging-level "${VLLM_LOGGING_LEVEL}" \
-        --log-dir "${LOG_PATH}" > ${LOG_PATH}/run_prefill.log 2>&1 &
+        --log-dir "${LOG_PATH}" >> ${LOG_PATH}/run_prefill.log 2>&1 &
     
     run_vllm_server_decode_cmd: |
       #!/bin/bash
@@ -345,12 +345,13 @@
       export INF_NAN_MODE_FORCE_DISABLE=1
       export PTA_TORCHAIR_DECODE_GEAR_LIST=16
       export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
-      export OMNI_REUSE_PREFILLED_TOKEMS=1
+      export OMNI_REUSE_PREFILLED_TOKENS=1
       export OMNI_SKIP_DECODE_TOKENIZE=1
       export NPU_MODEL_RUNNER_COST_THRESHOLD=0.01
       export MOE_ALL_REDUCE=1
       export ASCEND_RT_VISIBLE_DEVICES=$DECODE_SERVER_LIST
-      export LCCL_DETERMINISTIC=true
+      export LCCL_DETERMINISTIC=1
+      export HCCL_DETERMINISTIC=true
       export ATB_MATMUL_SHUFFLE_K_ENABLE=0
       export ATB_LLM_LCOC_ENABLE=0
       # 启用Function call
@@ -365,12 +366,12 @@
 
       EXTRA_ARGS='--block-size ${BLOCK_SIZE} --enable-expert-parallel --disable-log-requests --no-enable-prefix-caching --no-enable-chunked-prefill --max-num-seqs ${MAX_NUM_SEQ} --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS}'
       ADDITIONAL_CONFIG='{"graph_model_compile_config":{"level:1, "use_ge_graph_cached":true}}'
-      if [[ -n "${CHAT_TEMPLATE_PATH}"]]
+      if [[ -n "${CHAT_TEMPLATE_PATH}" ]]
       then
-        EXTRA_ARGS="${EXTRA_ARGS} --chat-template ${CHAT_TEMPLATE_PATH} --enable-auto-tool-choice --tool-call-parser ascend_herms --tool-parser-plugin ${TOOL_PARSER_PLUGIN_PATH}"
+        EXTRA_ARGS="${EXTRA_ARGS} --chat-template ${CHAT_TEMPLATE_PATH} --enable-auto-tool-choice --tool-call-parser ascend_hermes --tool-parser-plugin ${TOOL_PARSER_PLUGIN_PATH}"
       fi
 
-      if [[ ${REASONING_CONFIG} = "1"]]
+      if [ ${REASONING_CONFIG} = "1" ]
       then
         EXTRA_ARGS="${EXTRA_ARGS} --enable-reasoning --reasoning-parser deepseek_r1"
       fi
@@ -448,7 +449,7 @@
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
         --num-speculative-tokens "${NUM_SPECULATIVE_TOKENS}" \
         --vllm-logging-level "${VLLM_LOGGING_LEVEL}" \
-        --log-dir "${LOG_PATH}d" > ${LOG_PATH}d/run_decode.log 2>&1 &
+        --log-dir "${LOG_PATH}d" >> ${LOG_PATH}d/run_decode.log 2>&1 &
 
     run_proxy_cmd: |
       #!/bin/bash
@@ -730,13 +731,6 @@
       tags:
         - run_docker
 
-    - name: Create a directory to store the log.
-      ansible.builtin.file:
-        path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
-        state: directory
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: sync_code
-
     - name: Create a directory to store the code.
       ansible.builtin.file:
         path: "{{ ansible_env.CODE_PATH }}"
@@ -872,7 +866,7 @@
             {% set h=hostvars.get(host,{}) %}
             {% set ip=h.ansible_host|default('') %}
             {% set port=h.api_port|default('9100') %}
-            {% set num=h.ascend_rt_visible_devices.count(',')|default('0') %}
+            {% set num=0 %}
             {% if ip %}
               {% set entry=ip~':'~port~'@'~num %}
               {% if entry not in result %}
@@ -940,7 +934,6 @@
           {% endfor %}
           {{ result | join(',') }}
         DECODE_SERVER_OFFSET: "{% set offsets = {} %}{% set ns = namespace(cnt=0) %}{% for host in groups['D']|default([]) %}{% set _ = offsets.update({host: ns.cnt}) %}{% set num=hostvars[host].ascend_rt_visible_devices.count(',')|default('0')|int %}{% set ns.cnt = ns.cnt + num + 1 %}{% endfor %}{{ offsets }}"
-        PREFILL_SERVER_OFFSET: "{% set offsets = {} %}{% set ns = namespace(cnt=0) %}{% for host in groups['P']|default([]) %}{% set _ = offsets.update({host: ns.cnt}) %}{% set num=hostvars[host].ascend_rt_visible_devices.count(',')|default('0')|int %}{% set ns.cnt = ns.cnt + num + 1 %}{% endfor %}{{ offsets }}"
       run_once: yes
       delegate_to: localhost
       tags: always
@@ -978,7 +971,6 @@
          PREFILL_MERGE_RANKTABLE_LIST: {{ PREFILL_MERGE_RANKTABLE_LIST }}   
          DECODE_RANKTABLE_LIST: {{ DECODE_RANKTABLE_LIST }}
          DECODE_SERVER_OFFSET: {{ DECODE_SERVER_OFFSET }}
-         PREFILL_SERVER_OFFSET: {{ PREFILL_SERVER_OFFSET }}
          NODE_IP_LIST: {{ NODE_IP_LIST }}
          NNODES: {{ NNODES }}
       run_once: yes
@@ -1180,8 +1172,6 @@
         content: "{{ run_vllm_server_prefill_cmd }}"
         dest: "$SCRIPTS_PATH/vllm_run_for_p.sh"
         mode: '0750'
-      vars:
-        server_offset_dict: "{{ PREFILL_SERVER_OFFSET }}"
       when: "'P' in group_names"
       tags:
         - run_server
@@ -1254,7 +1244,7 @@
       
     
     - name: Wait or vLLM sevice to be ready in container D
-      ansible.builtin.shell: 
+      ansible.builtin.shell:
         cmd: |
           timeout=600
           while [ $timeout -gt 0 ]; do
@@ -1267,9 +1257,9 @@
           done
           echo "Timeout waiting for service" >&2
           exit 1
-        environment:
-          DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
-          LOG_PATH: "{{ ansible_env.LOG_PATH }}"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+        LOG_PATH: "{{ ansible_env.LOG_PATH }}"
       when: 
         - "'D' in group_names"
         - "proc_bind_enabled | default(false)"
@@ -1284,7 +1274,7 @@
       when: "'C' in group_names"
       tags: run_proxy
 
-    - name: Kill all Python processes in the container of prefill.
+    - name: Kill all Python processes in the container of proxy.
       command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/kill_nginx_processes.sh"
       environment:
         DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
