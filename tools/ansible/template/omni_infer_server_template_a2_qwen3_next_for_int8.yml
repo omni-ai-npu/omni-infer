@@ -730,6 +730,15 @@
       when: "'C' in group_names"
       tags:
         - run_docker
+    
+    - name: Create a directory on the executor to store the log.
+      ansible.builtin.file:
+        path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
+        state: directory
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      delegate_to: localhost
+      tags:
+        - run_docker
 
     - name: Create a directory to store the code.
       ansible.builtin.file:
@@ -1299,15 +1308,6 @@
       when: "'C' in group_names"
       tags:
         - run_proxy
-
-    - name: Create a directory on the executor to store the log.
-      ansible.builtin.file:
-        path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
-        state: directory
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      delegate_to: localhost
-      tags:
-        - fetch_log
 
     - name: Forward logs from all machines to the executor.
       ansible.builtin.synchronize:
