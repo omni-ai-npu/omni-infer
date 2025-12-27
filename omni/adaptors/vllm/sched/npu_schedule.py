@@ -23,6 +23,7 @@ from vllm.logger import logger
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.utils import cdiv
 from vllm.v1.core.sched.output import NewRequestData, SchedulerOutput
+from vllm.v1.core.sched.request_queue import create_request_queue, SchedulingPolicy
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.core.sched.utils import check_stop
 from vllm.v1.engine import EngineCoreOutput, EngineCoreOutputs
@@ -125,17 +126,17 @@ class NpuHybridScheduler(Scheduler):
 
         # Use a temporary deque to collect requests that need to be skipped
         # and put back at the head of the waiting queue later
-        skipped_waiting_requests: deque[Request] = deque()
+        skipped_waiting_requests = create_request_queue(SchedulingPolicy.FCFS)
 
         # Schedule prefill requests first.
         while self.waiting and token_budget > 0:
             if len(self.running) == self.max_num_running_reqs:
                 break
 
-            request = self.waiting[0]
+            request = self.waiting.peek_request()
             def skip_cur_request():
-                self.waiting.popleft()
-                skipped_waiting_requests.appendleft(request)
+                self.waiting.pop_request()
+                skipped_waiting_requests.prepend_request(request)
 
             # Check that adding the request still respects the max_loras
             # constraint.
@@ -169,7 +170,7 @@ class NpuHybridScheduler(Scheduler):
                 )
                 request.status = RequestStatus.FINISHED_IGNORED
                 self.finished_req_ids.add(request.request_id)  # type: ignore
-                self.waiting.popleft()
+                self.waiting.pop_request()
                 continue
             if num_new_tokens > token_budget:
                 # Scheduling would exceed token_budget, skip.
@@ -182,7 +183,7 @@ class NpuHybridScheduler(Scheduler):
                 # The request cannot be scheduled.
                 break
 
-            self.waiting.popleft()
+            self.waiting.pop_request()
             self.running.append(request)
             self.scheduled_req_ids.add(request.request_id)
             # Check request status.
@@ -207,7 +208,7 @@ class NpuHybridScheduler(Scheduler):
 
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
-            self.waiting.extendleft(skipped_waiting_requests)
+            self.waiting.prepend_request(skipped_waiting_requests)
 
         # If no prefill requests are scheduled,
         # Schedule decode requests next.
@@ -239,7 +240,7 @@ class NpuHybridScheduler(Scheduler):
                         self.kv_cache_manager.free(preempted_req)
                         preempted_req.status = RequestStatus.PREEMPTED
                         preempted_req.num_computed_tokens = 0
-                        self.waiting.appendleft(preempted_req)
+                        self.waiting.prepend_request(preempted_req)
                         preempted_reqs.append(preempted_req)
                         if preempted_req == request:
                             # No more request to preempt.
@@ -398,7 +399,7 @@ class NpuHybridScheduler(Scheduler):
                 self.running.remove(request)
                 self.scheduled_req_ids.discard(request.request_id)
             else:
-                self.waiting.remove(request)
+                self.waiting.remove_request(request)
             request.status = finished_status
             self._free_request(request)
 
