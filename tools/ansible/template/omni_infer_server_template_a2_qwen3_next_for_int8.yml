@@ -829,7 +829,7 @@
     - name: docker_uninstall_decode_old_omni_cmd.
       command: bash -c "{{ docker_uninstall_decode_old_omni_cmd }}"
       environment:
-        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_D }}"
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
       when: >
         'D' in group_names
       tags: uninstall_preinstalled_omni
