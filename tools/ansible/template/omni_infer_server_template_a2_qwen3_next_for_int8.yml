@@ -21,37 +21,41 @@
 
   environment:
     # Global Configuration
-    LOG_PATH: "/data/kai/infer/c00923721/logs"
-    MODEL_PATH: "/data/kai/infer/c00923721/Qwen3-Next-80B-A3B-Instruct/"
-    MODEL_LEN_MAX_PREFILL: "4096" #"8192"
-    MODEL_LEN_MAX_DECODE: "32768"
-    LOG_PATH_IN_EXECUTOR: "/data/kai/infer/c00923721/logs"
-    CODE_PATH: "/data/kai/infer/c00923721/code"
-    HTTP_PROXY: "http://p_atlas:proxy%40123@172.18.100.92:8080" # set to your own proxy
+    LOG_PATH: "/tmp/log_path"
+    MODEL_PATH: "/data/model/Qwen3-Next-80B-A3B-Instruct-w8a8-moe"
+    SERVED_MODEL_NAME: "Qwen3-Next-80B-A3B"
+    MODEL_LEN_MAX_PREFILL: 65536
+    MODEL_LEN_MAX_DECODE: 65536
+    CODE_PATH: "/workspace/code"
 
     # Configuration for containers
-    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer/omni_infer-a2-arm:release_0.6.0_20251028_vllm"
-    # DOCKER_IMAGE_ID: "ef518138f490"
-    DOCKER_NAME_P: "mtk"
-    DOCKER_NAME_D: "mtk"
-    DOCKER_NAME_C: "mtk"
-    SCRIPTS_PATH: "/data/kai/infer/c00923721/scripts"
+    DOCKER_IMAGE_ID: "xxx"
+    DOCKER_NAME_P: "qwen3_next"
+    DOCKER_NAME_D: "qwen3_next"
+    DOCKER_NAME_C: "qwen3_next"
+    SCRIPTS_PATH: "/workspace/scripts"
     ASCEND_TOOLKIT_HOME: "/usr/local/Ascend/latest"
 
     #Configuration for lb_sdk in global proxy
     PREFILL_LB_SDK: "least_conn"
     DECODE_LB_SDK: "least_conn"
 
+    FUNCTION_CALL_FILE: "/workspace/function_call"
+    VLLM_LOGGING_LEVEL: "INFO"
+    NUM_SPECULATIVE_TOKENS: 1 # 是否启用MTP
+    REASONING_CONFIG: "0" # Thinking模型时改为1
+
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "8"
 
   vars:
     # Configure the storage path of the ranktable file.
-    ranktable_save_path: "/data/kai/infer/c00923721/ranktable"
+    ranktable_save_path: "/workspace/ranktable"
     docker_run_cmd: |
       docker run -it --shm-size=500g \
         -e RANKTABLE_SAVE_PATH={{ ranktable_save_path }} \
         -e LOG_PATH=$LOG_PATH \
+        -e PYTHONHASHSEED=123 \
         --net=host \
         --privileged=true \
         -u root \
@@ -172,33 +176,99 @@
 
     run_vllm_server_prefill_cmd: |
       #!/bin/bash
-
       . ~/.bashrc
+
+      HCCL_BUFFSIZE=700
+      MAX_NUM_SEQ=8
+      BLOCK_SIZE=512
+      MAX_NUM_BATCHED_TOKENS=65536
+      GPU_UTIL=0.7
+      VLLM_ENABLE_MC2=1
+      HCCL_OP_EXPANSION_MODE="AIV"
+
+      export LOG_PATH=${LOG_PATH}/{{ inventory_hostname }}
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
       export ASCEND_GLOBAL_LOG_LEVEL=3
-      HCCL_BUFFSIZE=200
-      prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
-      KV_PARALLEL_SIZE=$((DECODE_TENSOR_PARALLEL_SIZE + 0))
-      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_prefill.json"
-      EXTRA_ARGS='--max-num-batched-tokens 4096 --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 4 --enable-chunked-prefill'
-      ADDITIONAL_CONFIG='{"ascend_scheduler_config":{"enabled":false,"enable_chunked_prefill":true}}'
-      GPU_UTIL=0.7
-      VLLM_ENABLE_MC2=0
-      HCCL_OP_EXPANSION_MODE="AIV"
-      export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
+      export PATCH_ROOT=/workspace/omniinfer/omni/adaptors/vllm/patches
+      export TOKENIZER_PROC_POOL=0
+      export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
       export ASCEND_PLATFORM=A2
       export CPU_AFFINITY_CONF=1
       export ASCEND_LAUNCH_BLOCKING=0
-      export FORCE_ENABLE_CHUNK_PREFILL=1
-      export VLLM_LOGGING_LEVEL=DEBUG
+      export VLLM_PLUGINS=npu,npu_optimized_models,kv_connectors
+      export VLLM_ENGINE_ITERATION_TIMEOUT_S=6000
+      export VLLM_ASCEND_ENABLE_TOPK_OPTIMIZE=1
+      export USING_LCCL_COM=0
+      export MM_ALL_REDUCE_OP_THRESHOLD=1000000
+      export HCCL_OP_RETRY_ENABLE="L0:0, L1:0, L2:0"
+      export HCCL_DFS_CONFIG="stuck_detection:off"
+      export INF_NAN_MODE_FORCE_DISABLE=1
+      export PTA_TORCHAIR_DECODE_GEAR_LIST=16
+      export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
+      export OMNI_REUSE_PREFILLED_TOKEMS=1
+      export OMNI_SKIP_DECODE_TOKENIZE=1
+      export NPU_MODEL_RUNNER_COST_THRESHOLD=0.01
+      export MOE_ALL_REDUCE=1
+      export ASCEND_RT_VISIBLE_DEVICES=$PREFILL_SERVER_LIST
+      export LCCL_DETERMINISTIC=true
+      export ATB_MATMUL_SHUFFLE_K_ENABLE=0
+      export ATB_LLM_LCOC_ENABLE=0
+      # 启用Function call
+      export CHAT_TEMPLATE_PATH="/workspace/function_call/tool_chat_template_herms_instruct_v20251212.jinja"
+      export TOOL_PARSER_PLUGIN_PATH="/workspace/function_call/ascend_herms_tool_parser.py"
+      # 采集Profiling
+      # export VLLM_ENABLE_PROFILING=1
+      # export PROFILER_TOKEN_THRESHOLD=1
+      # export PROFILER_STOP_STEP=3
+      # export VLLM_TORCH_PROFILER_DIR=/workspace/porfiling/prefill
 
+
+      EXTRA_ARGS='--block-size ${BLOCK_SIZE} --num-gpu-blocks-override=1224 --enforce-eager --enable-expert-parallel --disable-log-requests --no-enable-prefix-caching --no-enable-chunked-prefill --max-num-seqs ${MAX_NUM_SEQ} --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS}'
+      if [[ -n "${CHAT_TEMPLATE_PATH}"]]
+      then
+        EXTRA_ARGS="${EXTRA_ARGS} --chat-template ${CHAT_TEMPLATE_PATH} --enable-auto-tool-choice --tool-call-parser ascend_herms --tool-parser-plugin ${TOOL_PARSER_PLUGIN_PATH}"
+      fi
+
+      if [[ ${REASONING_CONFIG} = "1"]]
+      then
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-reasoning --reasoning-parser deepseek_r1"
+      fi
+
+      pip uninstall omni_placement -y
+
+      function add_kv_connector_extra_config()
+      {
+        if [[ -n "$(grep "kv_connector_extra_config" /workspace/omniinfer/tools/scripts/pd_run.sh)"]]
+        then
+          return
+        fi
+        sed -i 's/"kv_parallel_size": $DECODE_TENSOR_PARALLEL_SIZE/"kv_parallel_size": $DECODE_TENSOR_PARALLEL_SIZE, \
+        "kv_connector_extra_config": {\
+          "kv_producer_dp_size": 1\
+        }/g' /workspace/omniinfer/tools/scripts/pd_run.sh
+      }
+
+      function mod_use_dsv3()
+      {
+        sed -i -e 's/^export OMNI_USE_DSV3=1/export OMNI_USE_DSV3=0/' /workspace/omniinfer/tools/scripts/pd_run.sh
+      }
+
+      function mod_pd_run()
+      {
+        add_kv_connector_extra_config
+        mod_use_dsv3
+        sed -i -e 's/^export ENABLE_OVERWRITE_REQ_IDS=0/d' /workspace/omniinfer/tools/scripts/pd_run.sh
+      }
+      mod_pd_run
+      env > ${LOG_PATH}/run_prefill.log
+
+      prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
         export MASTER_NODE_IP=$HOST_IP
         export NNODES=$NNODES
         export NODE_RANK=$NODE_RANK
         export NODE_IP_LIST=$NODE_IP_LIST
-        export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
         export RAY_CGRAPH_get_timeout=7200
         ray stop --force
         LOCAL_RANKTABLE_FLIE=$(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_p/${MASTER_NODE_IP}/local_*merge.json | tr '\n' ' ')
@@ -209,19 +279,7 @@
         LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/prefill_config/local_*$prefill_server_list.json | tr '\n' ' '))
       fi
 
-      # install omni_placement
-      pip uninstall omni_placement -y
-      declare -A config_dict=(
-          {% for key, value in server_offset_dict.items() %}
-          [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
-          {% endfor %}
-      )
-
-      # ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":false}}'
-
       cd /workspace/omniinfer/tools/scripts
-      echo "config_dict ${config_dict[$HOST]:-0}; ${config_dict[$HOST]}" >> ${LOG_PATH}/run.log 2>&1
-      echo "HOST $HOST" >> ${LOG_PATH}/run.log 2>&1
       bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
@@ -231,8 +289,8 @@
         --gloo-socket-ifname ${SOCKET_IFNAME} \
         --tp-socket-ifname ${SOCKET_IFNAME} \
         --model-path ${MODEL_PATH} \
+        --served-model-name "${SERVED_MODEL_NAME}" \
         --master-ip ${HOST_IP} \
-        --server-offset ${config_dict[$HOST]:-0} \
         --role "prefill" \
         --kv-role "kv_producer" \
         --max-model-len ${MODEL_LEN_MAX_PREFILL} \
@@ -240,34 +298,111 @@
         --num-dp 1 \
         --num-servers 1 \
         --base-api-port ${API_PORT} \
-        --tp ${KV_PARALLEL_SIZE} \
-        --ascend-rt-visible-devices "${PREFILL_SERVER_LIST}" \
+        --tp ${PREFILL_TENSOR_PARALLEL_SIZE} \
+        --ascend-rt-visible-devices "${ASCEND_RT_VISIBLE_DEVICES}" \
         --kv-rank ${KV_RANK} \
         --kv-engine-id ${KV_RANK} \
-        --kv-parallel-size ${KV_PARALLEL_SIZE} \
-        --model-extra-cfg-path ${MODEL_EXTRA_CFG_PATH} \
+        --kv-parallel-size ${DECODE_TENSOR_PARALLEL_SIZE} \
         --gpu-util ${GPU_UTIL} \
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --additional-config "$ADDITIONAL_CONFIG" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
+        --num-speculative-tokens "${NUM_SPECULATIVE_TOKENS}" \
+        --vllm-logging-level "${VLLM_LOGGING_LEVEL}" \
         --log-dir "${LOG_PATH}" > ${LOG_PATH}/run_prefill.log 2>&1 &
     
     run_vllm_server_decode_cmd: |
       #!/bin/bash
-
       . ~/.bashrc
+      
       HCCL_BUFFSIZE=768
+      MAX_NUM_SEQ=32
+      BLOCK_SIZE=512
+      MAX_NUM_BATCHED_TOKENS=64
+      GPU_UTIL=0.7
+      VLLM_ENABLE_MC2=1
+      HCCL_OP_EXPANSION_MODE="AIV"
+
+      export LOG_PATH=${LOG_PATH}/{{ inventory_hostname }}
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
       export ASCEND_GLOBAL_LOG_LEVEL=3
-
+      export PATCH_ROOT=/workspace/omniinfer/omni/adaptors/vllm/patches
+      export TOKENIZER_PROC_POOL=0
+      export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+      export ASCEND_PLATFORM=A2
+      export CPU_AFFINITY_CONF=1
+      export ASCEND_LAUNCH_BLOCKING=0
+      export VLLM_PLUGINS=npu,npu_optimized_models,kv_connectors
+      export VLLM_ENGINE_ITERATION_TIMEOUT_S=6000
+      export VLLM_ASCEND_ENABLE_TOPK_OPTIMIZE=1
+      export USING_LCCL_COM=0
+      export MM_ALL_REDUCE_OP_THRESHOLD=1000000
+      export HCCL_OP_RETRY_ENABLE="L0:0, L1:0, L2:0"
+      export HCCL_DFS_CONFIG="stuck_detection:off"
+      export INF_NAN_MODE_FORCE_DISABLE=1
+      export PTA_TORCHAIR_DECODE_GEAR_LIST=16
+      export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
+      export OMNI_REUSE_PREFILLED_TOKEMS=1
+      export OMNI_SKIP_DECODE_TOKENIZE=1
+      export NPU_MODEL_RUNNER_COST_THRESHOLD=0.01
+      export MOE_ALL_REDUCE=1
+      export ASCEND_RT_VISIBLE_DEVICES=$DECODE_SERVER_LIST
+      export LCCL_DETERMINISTIC=true
+      export ATB_MATMUL_SHUFFLE_K_ENABLE=0
+      export ATB_LLM_LCOC_ENABLE=0
+      # 启用Function call
+      export CHAT_TEMPLATE_PATH="/workspace/function_call/tool_chat_template_herms_instruct_v20251212.jinja"
+      export TOOL_PARSER_PLUGIN_PATH="/workspace/function_call/ascend_herms_tool_parser.py"
+      # 采集Profiling
       # export VLLM_ENABLE_PROFILING=1
-      # export VLLM_TORCH_PROFILER_DIR=/opt/LingCF/omni/Qwen235B/log/profiling
-      dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
-      ((dp++))
-      KV_PARALLEL_SIZE=$((DECODE_TENSOR_PARALLEL_SIZE + 0))
+      # export PROFILER_TOKEN_THRESHOLD=1
+      # export PROFILER_STOP_STEP=3
+      # export VLLM_TORCH_PROFILER_DIR=/workspace/porfiling/prefill
+
+
+      EXTRA_ARGS='--block-size ${BLOCK_SIZE} --enable-expert-parallel --disable-log-requests --no-enable-prefix-caching --no-enable-chunked-prefill --max-num-seqs ${MAX_NUM_SEQ} --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS}'
+      ADDITIONAL_CONFIG='{"graph_model_compile_config":{"level:1, "use_ge_graph_cached":true}}'
+      if [[ -n "${CHAT_TEMPLATE_PATH}"]]
+      then
+        EXTRA_ARGS="${EXTRA_ARGS} --chat-template ${CHAT_TEMPLATE_PATH} --enable-auto-tool-choice --tool-call-parser ascend_herms --tool-parser-plugin ${TOOL_PARSER_PLUGIN_PATH}"
+      fi
+
+      if [[ ${REASONING_CONFIG} = "1"]]
+      then
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-reasoning --reasoning-parser deepseek_r1"
+      fi
+
+      pip uninstall omni_placement -y
+      python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
+
+      function add_kv_connector_extra_config()
+      {
+        if [[ -n "$(grep "kv_connector_extra_config" /workspace/omniinfer/tools/scripts/pd_run.sh)"]]
+        then
+          return
+        fi
+        sed -i 's/"kv_parallel_size": $DECODE_TENSOR_PARALLEL_SIZE/"kv_parallel_size": $DECODE_TENSOR_PARALLEL_SIZE, \
+        "kv_connector_extra_config": {\
+          "kv_producer_dp_size": 1\
+        }/g' /workspace/omniinfer/tools/scripts/pd_run.sh
+      }
+
+      function mod_use_dsv3()
+      {
+        sed -i -e 's/^export OMNI_USE_DSV3=1/export OMNI_USE_DSV3=0/' /workspace/omniinfer/tools/scripts/pd_run.sh
+      }
+
+      function mod_pd_run()
+      {
+        add_kv_connector_extra_config
+        mod_use_dsv3
+        sed -i -e 's/^export ENABLE_OVERWRITE_REQ_IDS=0/d' /workspace/omniinfer/tools/scripts/pd_run.sh
+      }
+      mod_pd_run
+      env > ${LOG_PATH}/run_decode.log
 
       if [ $DECODE_POD_NUM -gt 1 ]; then
         LOCAL_RANKTABLE_FLIE=($(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json | tr '\n' ' '))
@@ -280,28 +415,9 @@
           [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
           {% endfor %}
       )
-      MODEL_EXTRA_CFG_PATH="/workspace/omniinfer/tests/test_config/test_config_decode.json"
-      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 16 --no-enable-prefix-caching --max-num-batched-tokens 64'
-      GPU_UTIL=0.7
-      # ADDITIONAL_CONFIG='{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":true}}'
-      #ADDITIONAL_CONFIG=''
-      VLLM_ENABLE_MC2=0
-      HCCL_OP_EXPANSION_MODE="AIV"
-      export PYTORCH_NPU_ALLOC_CONF=expandable_segments:False
-      export ASCEND_PLATFORM=A2
-      export CPU_AFFINITY_CONF=1
-      export ASCEND_LAUNCH_BLOCKING=0
-      export VLLM_LOGGING_LEVEL=DEBUG
-
-      # install omni_placement
-      pip uninstall omni_placement -y
       
-      python /workspace/omniinfer/tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
-      echo "config_dict ${config_dict[$HOST]:-0}; ${config_dict[$HOST]}" >> ${LOG_PATH}d/run.log 2>&1
-      echo "HOST $HOST" >> ${LOG_PATH}d/run.log 2>&1
       cd /workspace/omniinfer/tools/scripts
-      
-      PROFILING_FORWARD=1 PROFILING_SAVE_PATH=/opt/LingCF/omni/Qwen235B/log/profiling bash /workspace/omniinfer/tools/scripts/pd_run.sh \
+      bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --global-rank-table-path "${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json" \
         --rank-table-path ${LOCAL_RANKTABLE_FLIE} \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -313,6 +429,7 @@
         --num-dp 1 \
         --server-offset ${config_dict[$HOST]:-0} \
         --model-path ${MODEL_PATH} \
+        --served-model-name "${SERVED_MODEL_NAME}" \
         --master-ip ${HOST_IP} \
         --role "decode" \
         --kv-role "kv_consumer" \
@@ -322,19 +439,22 @@
         --tp ${DECODE_TENSOR_PARALLEL_SIZE} \
         --kv-rank ${PREFILL_POD_NUM} \
         --kv-engine-id ${PREFILL_POD_NUM} \
-        --kv-parallel-size ${KV_PARALLEL_SIZE} \
-        --model-extra-cfg-path ${MODEL_EXTRA_CFG_PATH} \
+        --kv-parallel-size ${DECODE_TENSOR_PARALLEL_SIZE} \
         --gpu-util ${GPU_UTIL} \
         --additional-config "$ADDITIONAL_CONFIG" \
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
+        --num-speculative-tokens "${NUM_SPECULATIVE_TOKENS}" \
+        --vllm-logging-level "${VLLM_LOGGING_LEVEL}" \
         --log-dir "${LOG_PATH}d" > ${LOG_PATH}d/run_decode.log 2>&1 &
 
     run_proxy_cmd: |
       #!/bin/bash
+      . ~/.bashrc
 
+      export LOG_PATH=${LOG_PATH}/{{ inventory_hostname }}
       prefill_result="{{ PREFILL_API_SERVER_LIST }}"
       prefill_result=`echo "$prefill_result" | awk '$1=$1'`
 
@@ -358,42 +478,6 @@
       done
 
       cd /workspace/omniinfer/tools/scripts
-
-      cd /workspace/omniinfer/omni/accelerators/sched/global_proxy
-
-      echo '7.223.199.227 mirrors.tools.huawei.com' >> /etc/hosts
-      echo '172.19.90.131 proxycn2.huawei.com' >> /etc/hosts
-      rm  /etc/yum.repos.d/*
-      echo "[openEuler-everything]
-      name=openEuler-everything
-      baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/everything/aarch64/
-      enabled=1
-      gpgcheck=0
-      gpgkey=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/everything/aarch64/RPM-GPG-KEY-openEuler
-              
-      [openEuler-EPOL]
-      name=openEuler-epol
-      baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/EPOL/main/aarch64/
-      enabled=1
-      gpgcheck=0
-      [openEuler-update]
-      name=openEuler-update
-      baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/update/aarch64/
-      enabled=1
-      gpgcheck=0" > /etc/yum.repos.d/openeuler.repo
-
-      NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
-      if [ ! -f "nginx-${NGINX_VERSION}.tar.gz" ]; then
-        wget --no-check-certificate "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" > ${LOG_PATH}/install_nginx.log 2>&1
-      fi
-
-      tar -zxf "nginx-${NGINX_VERSION}.tar.gz"
-      unset http_proxy
-      unset https_proxy
-      bash build.sh >> ${LOG_PATH}/install_nginx.log 2>&1
-
-      cd /workspace/omniinfer/tools/scripts
-
       bash global_proxy.sh \
         --listen-port "$PROXY_NODE_PORT" \
         --prefill-servers-list "$prefill_result" \
@@ -403,7 +487,7 @@
         --core-num 4 \
         --start-core-index 8 \
         --prefill-lb-sdk ${PREFILL_LB_SDK} \
-        --decode-lb-sdk ${DECODE_LB_SDK}
+        --decode-lb-sdk ${DECODE_LB_SDK} > ${LOG_PATH}/run_proxy.log 2>&1 &
 
     kill_python_processes_cmd: |
       #!/bin/bash
@@ -456,9 +540,15 @@
     docker_start_vllm_cmd_p: >
       {{ docker_exec_cmd }}
       -e MODEL_PATH=$MODEL_PATH
+      -e SERVED_MODEL_NAME=$SERVED_MODEL_NAME
+      -e VLLM_LOGGING_LEVEL=$VLLM_LOGGING_LEVEL
+      -e LOG_PATH=$LOG_PATH
+      -e NUM_SPECULATIVE_TOKENS=$NUM_SPECULATIVE_TOKENS
+      -e REASONING_CONFIG=$REASONING_CONFIG
       -e MODEL_LEN_MAX_PREFILL=$MODEL_LEN_MAX_PREFILL
       -e PREFILL_SERVER_LIST=$PREFILL_SERVER_LIST
       -e PREFILL_TENSOR_PARALLEL_SIZE=$PREFILL_TENSOR_PARALLEL_SIZE
+      -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE
       -e IP=$IP
       -e HOST_IP=$HOST_IP
       -e MASTER_PORT=$NODE_PORT
@@ -468,21 +558,22 @@
       -e SOCKET_IFNAME=$SOCKET_IFNAME
       -e KV_RANK=$KV_RANK
       -e NNODES=$NNODES
-      -e HOST=$HOST
       -e NODE_RANK=$NODE_RANK
       -e NODE_IP_LIST=$NODE_IP_LIST
-      -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME
-      -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE
       -d $DOCKER_NAME_P
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
 
     docker_start_vllm_cmd_d: >
       {{ docker_exec_cmd }}
       -e MODEL_PATH=$MODEL_PATH
+      -e SERVED_MODEL_NAME=$SERVED_MODEL_NAME
+      -e VLLM_LOGGING_LEVEL=$VLLM_LOGGING_LEVEL
+      -e LOG_PATH=$LOG_PATH
+      -e NUM_SPECULATIVE_TOKENS=$NUM_SPECULATIVE_TOKENS
+      -e REASONING_CONFIG=$REASONING_CONFIG
       -e MODEL_LEN_MAX_DECODE=$MODEL_LEN_MAX_DECODE
       -e DECODE_SERVER_LIST=$DECODE_SERVER_LIST
       -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE
-      -e DECODE_DATA_PARALLEL_SIZE=$DECODE_DATA_PARALLEL_SIZE
       -e HOST_IP=$HOST_IP
       -e MASTER_PORT=$NODE_PORT
       -e API_PORT=$API_PORT
@@ -490,9 +581,7 @@
       -e PREFILL_POD_NUM=$PREFILL_POD_NUM
       -e DECODE_POD_NUM=$DECODE_POD_NUM
       -e SOCKET_IFNAME=$SOCKET_IFNAME
-      -e NUM_SERVERS=$NUM_SERVERS
       -e HOST=$HOST
-      -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME 
       -d $DOCKER_NAME_D
       /bin/bash -c $SCRIPTS_PATH/vllm_run_for_d.sh
 
@@ -500,17 +589,18 @@
       {{ docker_exec_cmd }}
       -e PREFILL_LB_SDK=$PREFILL_LB_SDK
       -e DECODE_LB_SDK=$DECODE_LB_SDK
+      -e LOG_PATH=$LOG_PATH
+      -e HOST_IP=$HOST_IP
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
 
-    docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/"
-    docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/"
-    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && export ASCEND_TOOLKIT_HOME={{ ansible_env.ASCEND_TOOLKIT_HOME }}   && cd /workspace/omniinfer && pip uninstall omniinfer -y  && pip install -e . --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple && pip uninstall numpy -y && pip install numpy==1.26 transformers==4.57.1 --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple > ${LOG_PATH}/pip.log'"
-    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && export ASCEND_TOOLKIT_HOME={{ ansible_env.ASCEND_TOOLKIT_HOME }}   && cd /workspace/omniinfer && pip uninstall omniinfer -y  && pip install -e . --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple && pip uninstall numpy -y && pip install numpy==1.26 transformers==4.57.1 --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple > ${LOG_PATH}/pip.log'"
+    docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/ && docker cp {{ ansible_env.FUNCTION_CALL_FILE }} $DOCKER_NAME_P:/workspace/function_call"
+    docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/ && docker cp {{ ansible_env.FUNCTION_CALL_FILE }} $DOCKER_NAME_D:/workspace/function_call"
 
-    docker_update_prefill_vllm_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c '. ~/.bashrc && export ASCEND_TOOLKIT_HOME={{ ansible_env.ASCEND_TOOLKIT_HOME }}   && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple'"
-
-    docker_update_decode_vllm_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c '. ~/.bashrc && export ASCEND_TOOLKIT_HOME={{ ansible_env.ASCEND_TOOLKIT_HOME }}   && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && cd vllm && git checkout -f && cd .. && bash bash_install_code.sh && pip uninstall vllm -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple'"
+    docker_update_prefill_code_cmd: "{{ docker_exec_cmd }} -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME $DOCKER_NAME_P /bin/bash -c 'source ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && pip uninstall vllm -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple' && cd /workspace/omniinfer && pip uninstall omniinfer -y  && pip install -e . --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple --no-build-isolation --no-deps >> ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
+    docker_update_decode_code_cmd: "{{ docker_exec_cmd }} -e ASCEND_TOOLKIT_HOME=$ASCEND_TOOLKIT_HOME $DOCKER_NAME_D /bin/bash -c 'source ~/.bashrc && cd /workspace/omniinfer/infer_engines && git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm && pip uninstall vllm -y && cd vllm && SETUPTOOLS_SCM_PRETEND_VERSION=0.9.0 VLLM_TARGET_DEVICE=empty pip install -e . --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple' && cd /workspace/omniinfer && pip uninstall omniinfer -y  && pip install -e . --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple --no-build-isolation --no-deps >> ${LOG_PATH}/{{ inventory_hostname }}/pip.log'"
+    docker_uninstall_prefill_old_omni_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'cd /usr/local/lib/python3.11/site-packages && rm -rf omni'"
+    docker_uninstall_decode_old_omni_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'cd /usr/local/lib/python3.11/site-packages && rm -rf omni'"
 
     docker_del_prefill_graph_cache_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c 'rm -rf /workspace/omniinfer/tools/scripts/.torch*'"
     docker_del_decode_graph_cache_cmd: "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c 'rm -rf /workspace/omniinfer/tools/scripts/.torch*'"
@@ -524,16 +614,46 @@
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags: always
       
-    - name: Check and delete Prefill/Decode group Docker containers.
+    - name: Check and delete Prefill group Docker containers.
       block:
         - name: Check whether the container exists.
           shell: |
             docker inspect --format='{{"{{.Name}}"}}' \
-            $DOCKER_NAME_P $DOCKER_NAME_D \
+            $DOCKER_NAME_P \
             2>/dev/null | grep -v '^$'
           register: existing_containers
           environment:
             DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+          failed_when: false
+          changed_when: false
+
+        - name: Show generated container name.
+          debug:
+            msg: "Generated container name: {{ existing_containers.stdout_lines }}"
+
+        - name: Stop containers.
+          command: |
+            /bin/bash -c "docker stop {{ existing_containers.stdout_lines | join(' ') }}"
+          when: existing_containers.stdout != ""
+
+        - name: Delete containers.
+          command: |
+            /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
+          when: existing_containers.stdout != ""
+      when: "'P' in group_names"
+      tags:
+        - run_docker
+        - clean_up
+    
+    - name: Check and delete Decode group Docker containers.
+      block:
+        - name: Check whether the container exists.
+          shell: |
+            docker inspect --format='{{"{{.Name}}"}}' \
+            $DOCKER_NAME_D \
+            2>/dev/null | grep -v '^$'
+          register: existing_containers
+          environment:
             DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
           failed_when: false
           changed_when: false
@@ -551,7 +671,7 @@
           command: |
             /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
           when: existing_containers.stdout != ""
-      when: "'P' in group_names or 'D' in group_names"
+      when: "'D' in group_names"
       tags:
         - run_docker
         - clean_up
@@ -612,14 +732,7 @@
 
     - name: Create a directory to store the log.
       ansible.builtin.file:
-        path: "{{ ansible_env.LOG_PATH }}"
-        state: directory
-      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
-      tags: sync_code
-
-    - name: Create a directory to store the log.
-      ansible.builtin.file:
-        path: "{{ ansible_env.LOG_PATH }}d"
+        path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
         state: directory
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags: sync_code
@@ -688,34 +801,38 @@
       when: "'D' in group_names"
       tags: sync_code
     
-    - name: docker_update_prefill_vllm_cmd.
-      command: bash -c "{{ docker_update_prefill_vllm_cmd }}"
-      environment:
-        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
-      when: "'P' in group_names"
-      tags: sync_code
-    
-    - name: docker_update_decode_vllm_cmd.
-      command: bash -c "{{ docker_update_decode_vllm_cmd }}"
-      environment:
-        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
-      when: "'D' in group_names"
-      tags: sync_code
-
-
     - name: docker_update_prefill_code_cmd.
       command: bash -c "{{ docker_update_prefill_code_cmd }}"
       environment:
         DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
-      when: "'P' in group_names"
-      tags: pip_install
-
+      when: >
+        'P' in group_names
+      tags: sync_code
+    
     - name: docker_update_decode_code_cmd.
       command: bash -c "{{ docker_update_decode_code_cmd }}"
       environment:
         DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
-      when: "'D' in group_names"
-      tags: pip_install
+      when: >
+        'D' in group_names
+      tags: sync_code
+
+
+    - name: docker_uninstall_prefill_old_omni_cmd.
+      command: bash -c "{{ docker_uninstall_prefill_old_omni_cmd }}"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      when: >
+        'P' in group_names
+      tags: uninstall_preinstalled_omni
+
+    - name: docker_uninstall_decode_old_omni_cmd.
+      command: bash -c "{{ docker_uninstall_decode_old_omni_cmd }}"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_D }}"
+      when: >
+        'D' in group_names
+      tags: uninstall_preinstalled_omni
 
     - name: Create a directory on the executor to store ranktable file.
       command: bash -c "rm -rf {{ ranktable_save_path }}/*; mkdir -p {{ ranktable_save_path }}/global {{ ranktable_save_path }}/collect_files_d {{ ranktable_save_path }}/collect_files_p/api;"
@@ -1095,36 +1212,6 @@
       tags:
         - run_server
 
-    - name: Run the Omniai service for prefill instances.
-      command: bash -c "{{ docker_start_vllm_cmd_p }}"
-      environment:
-        ROLE: "P"
-        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
-        NODE_PORT: "{{ node_port }}"
-        PREFILL_SERVER_LIST: "{{ ascend_rt_visible_devices }}"
-        API_PORT: "{{ api_port }}"
-        SERVER_IP_LIST: "{{ DECODE_SERVER_IP_LIST | replace(' ', '') | trim }}"
-        PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
-        SOCKET_IFNAME: "{{ default_interface }}"
-        IP: "{{ ansible_host }}"
-        HOST_IP: "{{ host_ip }}"
-        KV_RANK: "{{ kv_rank }}"
-        NODE_RANK: "{{ node_rank }}"
-        PREFILL_TENSOR_PARALLEL_SIZE: "{{ ascend_rt_visible_devices.split(',') | length }}"
-        NNODES: "{{ NNODES }}"
-        NODE_IP_LIST: "{{ NODE_IP_LIST }}"
-        HOST: "{{ inventory_hostname }}"
-      when: "'P' in group_names and (NODE_IP_LIST | string).split(',') | length >= 2"
-      tags:
-        - run_server
-
-    - name: Wait 20 seconds.
-      pause:
-        seconds: 20  # Support decimals（such as 0.5s）
-      when: "(NODE_IP_LIST | string).split(',') | length >= 2"
-      tags:
-        - run_server
-
     - name: Run the Omniai service for decode instances.
       command: bash -c "{{ docker_start_vllm_cmd_d }}"
       environment:
@@ -1137,18 +1224,9 @@
         PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
         DECODE_POD_NUM: "{{ DECODE_POD_NUM }}"
         SOCKET_IFNAME: "{{ default_interface }}"
-        NUM_SERVERS: "{{ ascend_rt_visible_devices.split(',') | length }}"
         HOST_IP: "{{ host_ip }}"
-        DECODE_DATA_PARALLEL_SIZE: "{{ DECODE_SERVER_ALL }}"
         HOST: "{{ inventory_hostname }}"
       when: "'D' in group_names"
-      tags:
-        - run_server
-
-    - name: Wait 10 seconds.
-      pause:
-        seconds: 10
-      when: "(NODE_IP_LIST | string).split(',') | length == 1"
       tags:
         - run_server
 
@@ -1175,54 +1253,28 @@
         - run_server
       
     
-    # - name: check vLLM is Ready
-    #   shell: |
-    #     timeout=600
-    #     while [ $timeout -gt 0 ]; do
-    #       if grep -q "Application startup complete" {{ ansible_env.LOG_PATH }}/server_0.log; then
-    #         echo "Service ready"
-    #         exit 0
-    #       fi
-    #       sleep 20
-    #       timeout=$((timeout - 20))
-    #     done
-    #     echo "Timeout waiting for service" >&2
-    #     exit 0
-    #   delegate_to: "{{ inventory_hostname }}"
-    #   become: yes
-    #   when: "'P' in group_names or 'D' in group_names"
-    #   tags:
-    #     - proc_bind
-    
-    # - name: Ensure bind_cpu.sh is executable
-    #   file:
-    #     path: ${CODE_PATH}/v0.3.0/omniinfer/tools/scripts/bind_cpu.sh
-    #     mode: "0755"
-    #   become: yes
-    #   tags:
-    #     - proc_bind
-    
-    # - name: Prefill cpu_pin
-    #   command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c /workspace/tools/scripts/bind_cpu.sh"
-    #   environment:
-    #     DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
-    #     SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
-    #     ROLE: "P"
-    #   become: yes
-    #   when: "'P' in group_names"
-    #   tags:
-    #     - proc_bind
-    
-    # - name: Decode cpu_pin
-    #   command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c /workspace/tools/scripts/bind_cpu.sh"
-    #   environment:
-    #     DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
-    #     SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
-    #     ROLE: "D"
-    #   become: yes
-    #   when: "'D' in group_names"
-    #   tags:
-    #     - proc_bind
+    - name: Wait or vLLM sevice to be ready in container D
+      ansible.builtin.shell: 
+        cmd: |
+          timeout=600
+          while [ $timeout -gt 0 ]; do
+            if docker exec $DOCKER_NAME_D grep -q "Application startup complete" ${LOG_PATH}/{{ inventory_hostname }}/server_0.log; then
+              echo "Service ready"
+              exit 0
+            fi
+            sleep 20
+            timeout=$((timeout - 20))
+          done
+          echo "Timeout waiting for service" >&2
+          exit 1
+        environment:
+          DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+          LOG_PATH: "{{ ansible_env.LOG_PATH }}"
+      when: 
+        - "'D' in group_names"
+        - "proc_bind_enabled | default(false)"
+      tags:
+        - proc_bind
 
     - name: Generate a script to kill all nginx processes in the container.
       copy:
@@ -1260,7 +1312,7 @@
 
     - name: Create a directory on the executor to store the log.
       ansible.builtin.file:
-        path: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}"
+        path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
         state: directory
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       delegate_to: localhost
@@ -1270,8 +1322,8 @@
     - name: Forward logs from all machines to the executor.
       ansible.builtin.synchronize:
         mode: pull
-        src: "{{ ansible_env.LOG_PATH }}/"
-        dest: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/"
+        src: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
+        dest: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags:
         - fetch_log

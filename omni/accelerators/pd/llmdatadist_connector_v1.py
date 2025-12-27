@@ -5,7 +5,7 @@ import json
 from collections.abc import Iterator
 import math
 import threading
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union, Mapping
 import zmq
 import os
 import pickle
@@ -13,7 +13,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
-import zmq
+import socket
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole)
@@ -114,7 +114,7 @@ class LLMDataDistConnector(KVConnectorBase_V1):
             logger.info("Set kv_parallel_size to 1 when use deepseek mla model.")
 
         self.datadist_config = LLMDataDistConfig(vllm_config, ignore_load_rank=True)
-        self.cluster_id_start = self.datadist_config.cluster_id_start
+        self.host_cluster_id = self.datadist_config.cluster_id_start
         self.host_ip = self.datadist_config.local_group.host_ip
         # Introduce the environment variable VLLM_LLMDATADIST_ZMQ_PORT to resolve ZMQ connection conflicts during
         # multi-P deployments on the same machine.
@@ -127,7 +127,7 @@ class LLMDataDistConnector(KVConnectorBase_V1):
 
         if role == KVConnectorRole.SCHEDULER:
             if self.is_prefill:
-                self.connector_scheduler = PrefillConnectorScheduler(vllm_config, self.cluster_id_start, self.host_ip,
+                self.connector_scheduler = PrefillConnectorScheduler(vllm_config, self.host_cluster_id, self.host_ip,
                                                                      str(self.host_port))
             else:
                 self.connector_scheduler = DecodeConnectorScheduler(vllm_config)
@@ -136,7 +136,7 @@ class LLMDataDistConnector(KVConnectorBase_V1):
             if self.is_prefill:
                 self.connector_worker = PrefillConnectorWorker(vllm_config, str(self.host_ip), str(self.host_port))
             else:
-                self.connector_worker = DecodeConnectorWorker(vllm_config, str(self.host_ip), self.cluster_id_start)
+                self.connector_worker = DecodeConnectorWorker(vllm_config, str(self.host_ip), self.host_cluster_id)
             self.connector_scheduler = None
 
     ############################################################
@@ -214,12 +214,12 @@ class LLMDataDistConnector(KVConnectorBase_V1):
 class PrefillConnectorScheduler:
     """Implementation of Scheduler side methods"""
 
-    def __init__(self, vllm_config, cluster_id_start: str, host_ip: str, host_port: str):
+    def __init__(self, vllm_config, host_cluster_id: str, host_ip: str, host_port: str):
         self.vllm_config = vllm_config
-        self.cluster_id_start = cluster_id_start
+        self.host_cluster_id = host_cluster_id
         self.host_ip = host_ip
         self.host_port = host_port
-        logger.info("Initializing LLMDataDist Scheduler %s %s %s", cluster_id_start, host_ip, host_port)
+        logger.info("Initializing LLMDataDist Scheduler %s %s %s", host_cluster_id, host_ip, host_port)
         # initialize the dict to save requests finish time
         self.requests_finish_time = dict()
 
@@ -264,7 +264,7 @@ class PrefillConnectorScheduler:
 
         return delay_free_blocks, dict(
             remote_block_ids=block_ids,
-            remote_cluster_id=self.cluster_id_start,
+            remote_cluster_id=self.host_cluster_id,
             remote_host_ip=f"tcp://{self.host_ip}:{self.host_port}",
             spec_token_ids=spec_token_ids,
             remote_dp_rank=self.vllm_config.parallel_config.data_parallel_rank,
@@ -348,10 +348,10 @@ class PrefillConnectorWorker:
             with self._transfer_lock:
                 for req_id in self.receive_req_list:
                     logger.debug(f"Get_finished: request {req_id}")
-                    all_done_sending.add(req_id)
                     # if the request's kv has been received, remove it from requests_finish_time
                     if req_id in self.requests_finish_time:
                         del self.requests_finish_time[req_id]
+                    all_done_sending.add(req_id)
                 self.receive_req_list.clear()
 
         return all_done_sending, all_done_recving
@@ -492,9 +492,9 @@ class DecodeConnectorScheduler:
 class DecodeConnectorWorker:
     """Worker implementation for datadist."""
 
-    def __init__(self, vllm_config: "VllmConfig", host_ip: str, cluster_id_start: int):
+    def __init__(self, vllm_config: "VllmConfig", host_ip: str, host_cluster_id: int):
         self.vllm_config = vllm_config
-        self.cluster_id_start = cluster_id_start
+        self.host_cluster_id = host_cluster_id
         self.dp_rank = vllm_config.parallel_config.data_parallel_rank_local
         self.tp_rank = get_tensor_model_parallel_rank()
         additional_config = vllm_config.additional_config
@@ -888,3 +888,12 @@ def dump_thread_to_file(thread, thread_name: str, folder_path: str):
             f.write(str(thread.native_id))
     except Exception as e:
         logger.error(f"Failed to write thread info to {file_path}: {e}")
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+    finally:
+        s.close()
+    return ip

@@ -5,6 +5,7 @@ import json
 import time
 from collections import defaultdict, namedtuple
 from functools import cached_property
+from typing import Optional
 
 import llm_datadist
 import torch
@@ -43,6 +44,7 @@ SCHEDULER_LINK_BATCH_SIZE = 32
 SCHEDULER_LINK_INTERVAL = 0.5
 KV_CACHE_RETRY_TIMES = 3
 KV_CACHE_RETRY_WAIT_SECOND = 2
+SYNC_KV_TIMEOUT = int(os.environ.get("SYNC_KV_TIMEOUT", 1800000))
 
 RETRYABLE_CODES = [
     LLMStatusCode.LLM_REPEAT_REQUEST,
@@ -52,6 +54,10 @@ RETRYABLE_CODES = [
     LLMStatusCode.LLM_TIMEOUT,
     LLMStatusCode.LLM_WAIT_PROCESS_TIMEOUT,
     LLMStatusCode.LLM_LINK_BUSY,
+]
+
+TOKEN_RETRY_CODES = [
+    LLMStatusCode.LLM_FAILED
 ]
 
 
@@ -141,7 +147,7 @@ class LLMDataDistManager:
         llm_config.enable_cache_manager = True
 
         # RoCE timeout is 20s
-        llm_config.sync_kv_timeout = 20000
+        llm_config.sync_kv_timeout = SYNC_KV_TIMEOUT
 
         llm_config.enable_remote_cache_accessible = True
         options = llm_config.generate_options()
@@ -221,10 +227,10 @@ class LLMDataDistManager:
 
                 cache = self.data_dist_engine.cache_manager.register_blocks_cache(cache_desc, cache_addrs, cache_key)
                 self.registered_kv_caches.append(cache)
-        logger.debug(f" ***** registered_kv_caches num:{len(self.registered_kv_caches)}")
+        logger.info(f" ***** registered_kv_caches num:{len(self.registered_kv_caches)}")
 
     def _pull_blocks(self, src_cache_key, dst_cache, src_blocks, dst_blocks):
-        for _ in range(KV_CACHE_RETRY_TIMES):
+        for i in range(KV_CACHE_RETRY_TIMES):
             try:
                 self.data_dist_engine.cache_manager.pull_blocks(src_cache_key, dst_cache, src_blocks,
                                                                           dst_blocks)
@@ -233,7 +239,12 @@ class LLMDataDistManager:
                 # Use the appropriate strategy depending on the type of anomaly
                 code = e.status_code
                 if code in RETRYABLE_CODES:
-                    logger.info(f"kv cache pull blocks failed, need retry {e}")
+                    logger.warning(f"kv cache pull blocks failed, need retry {e}")
+                    time.sleep(KV_CACHE_RETRY_WAIT_SECOND)
+                elif code in TOKEN_RETRY_CODES:
+                    if i >= KV_CACHE_RETRY_TIMES - 1:
+                        logger.warning(f"kv cache pull blocks failed, need retry {e}")
+                        raise e
                     time.sleep(KV_CACHE_RETRY_WAIT_SECOND)
                 else:
                     logger.info(f"kv cache pull blocks failed, {e}")
@@ -248,6 +259,8 @@ class LLMDataDistManager:
     def pull_kv(self, src_blocks, tgt_blocks, prompt_cluster_id):
         # If this line is not added, the fx mode will report an error.
         # The preliminary reason is that the context is lost when multiple coroutines pull kv.
+        if os.getenv("ENABLE_PD_MOCKUP", "0") == "1":
+            return
         print(f"pull_kv {len(src_blocks)=} {len(tgt_blocks)=} {len(src_blocks[0])=} {len(tgt_blocks[0])=} {src_blocks=} {tgt_blocks=} ")
         
         torch.npu.set_device(f"npu:{self.local_rank}")
@@ -276,6 +289,8 @@ class LLMDataDistManager:
                                 src_blocks[model_id][0], tgt_blocks[model_id])
 
     def register_link(self):
+        if os.getenv("ENABLE_PD_MOCKUP", "0") == "1":
+            return
 
         if self.data_dist_config.is_prefill:
             prefill_server_groups = [self.data_dist_config.local_group]
