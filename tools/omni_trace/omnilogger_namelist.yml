@@ -118,23 +118,28 @@ targets:
     exit_operation: |
       self.schedule_output = result # for accessing schedule_output in engine core 
 
-  - module: "vllm.v1.engine.core:EngineCore"
-    function_name: execute_model_with_error_logging
-    entry_operation: |
+  - module: "vllm.v1.core.sched.scheduler:Scheduler"
+    function_name: schedule
+    exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
-      self.execute_model_start_time = time.time() 
-      args[1].engine_core_str = f'{os.getpid()}-{self.execute_model_start_time}'
-      for req in args[1].scheduled_new_reqs:
+      self.execute_model_start_time = time.time()       
+      scheduler_output_schedule = result
+      scheduler_output_schedule.engine_core_str = f'{os.getpid()}-{self.execute_model_start_time}'
+      result = scheduler_output_schedule
+      for req in scheduler_output_schedule.scheduled_new_reqs:
           if os.getenv('ROLE') == "prefill":
               safe_print(trace_output_directory, f"<<<Action: Prefill start execute_model; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
           else:
               safe_print(trace_output_directory, f"<<<Action: Start to send output; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-    exit_operation: |
+
+  - module: "vllm.v1.core.sched.scheduler:Scheduler"
+    function_name: update_from_output
+    entry_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       self.execute_model_end_time = time.time()
-      for req in args[1].scheduled_new_reqs:
+      for req in args[0].scheduled_new_reqs:
           if os.getenv('ROLE') == "prefill":
               safe_print(trace_output_directory, f"<<<Action: Prefill done execute_model; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
 
@@ -152,7 +157,7 @@ targets:
       self.self_main_scheduler_output = args[0]
 
   - module: "vllm.v1.worker.gpu_model_runner:GPUModelRunner"
-    function_name: _sample
+    function_name: execute_model
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
@@ -252,18 +257,9 @@ targets:
   - module: "vllm.v1.core.sched.output:SchedulerOutput"
     function_name: __init__
     exit_operation: |
-      self.engine_core_str = ""
-
-  - module: "vllm.v1.core.sched.output:SchedulerOutput"
-    function_name: __init__
-    exit_operation: |
       self.scheduler_output = None
       self.main_model_info = {}
-
-  - module: "omni.adaptors.vllm.worker.npu_model_runner:NPUModelRunner"
-    function_name: __init__
-    exit_operation: |
-      self.engine_core_str = "" 
+      self.engine_core_str = ""
 
   - module: "vllm.v1.worker.gpu_model_runner:GPUModelRunner"
     function_name: __init__
@@ -274,21 +270,24 @@ targets:
       self.self_main_scheduler_output = None
 
 # engine step profiling
-  - module: "vllm.v1.engine.core:EngineCore"
-    function_name: step
+  - module: "vllm.v1.core.sched.scheduler:Scheduler"
+    function_name: schedule
     entry_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       self.engine_step_start_time = time.time()
-      self.start_free_block_num = self.scheduler.kv_cache_manager.block_pool.get_num_free_blocks()
+      self.start_free_block_num = self.kv_cache_manager.block_pool.get_num_free_blocks()
+
+  - module: "vllm.v1.core.sched.scheduler:Scheduler"
+    function_name: update_from_output
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
-      scheduler_output = self.scheduler.schedule_output # this is passed from above schedule marker
+      scheduler_output = self.schedule_output # this is passed from above schedule marker     
       engine_step_finish_time = time.time()
       engine_step_execute_cost = (engine_step_finish_time - self.engine_step_start_time) * 1000
       execute_model_cost_time = (self.execute_model_end_time - self.execute_model_start_time) * 1000
-      waiting_reqs_num_after_step = len(self.scheduler.waiting)
+      waiting_reqs_num_after_step = len(self.waiting)
       running_reqs_num_after_step = len(scheduler_output.scheduled_new_reqs) + scheduler_output.scheduled_cached_reqs.num_reqs
       total_tokens = scheduler_output.total_num_scheduled_tokens
       reqs_ids = []
@@ -302,14 +301,13 @@ targets:
               total_tokens += req.num_computed_tokens
           for computed_tokens in scheduler_output.scheduled_cached_reqs.num_computed_tokens:
               total_tokens += computed_tokens
-
-      kv_blocks_num = self.scheduler.kv_cache_config.num_blocks
-      end_free_block_num = self.scheduler.kv_cache_manager.block_pool.get_num_free_blocks()
+      kv_blocks_num = self.kv_cache_config.num_blocks
+      end_free_block_num = self.kv_cache_manager.block_pool.get_num_free_blocks()
       cost_blocks_num = self.start_free_block_num - end_free_block_num
 
-      engine_outputs_dict, model_executed = result  
+      engine_outputs_dict = result  
       engine_core_outputs = engine_outputs_dict[0]  
-      kv_cache_usage = engine_core_outputs.scheduler_stats.kv_cache_usage     
+      kv_cache_usage = engine_core_outputs.scheduler_stats.kv_cache_usage 
       engine_core_str = f'{os.getpid()}-{self.execute_model_start_time}'
       if scheduler_output.total_num_scheduled_tokens != 0:
           safe_print(trace_output_directory, f"profile: {os.getenv('ROLE')}_{ip_str}|{self.engine_step_start_time}|"
