@@ -76,7 +76,6 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9000
-            VLLM_LLMDATADIST_ZMQ_PORT: 5573
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_GLOBAL_LOG_LEVEL: 3
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -131,7 +130,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/test_config_decode.json
             MODEL_LEN_MAX_DECODE: 65536
             MODEL_PATH: /data/model/Pangu1013-w4a8c8-m7
             OMNI_REUSE_PREFILLED_TOKENS: 1
@@ -148,7 +146,6 @@ all:
             SOCKET_IFNAME: enp23s0f3
             TASK_QUEUE_ENABLE: 2
             TNG_HOST_COPY: 1
-            # TOKENIZER_PROC_POOL: 1
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3
             USING_LCCL_COM: 0
@@ -215,7 +212,6 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9000
-            VLLM_LLMDATADIST_ZMQ_PORT: 5574
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_GLOBAL_LOG_LEVEL: 3
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -270,11 +266,8 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/test_config_decode.json
             MODEL_LEN_MAX_DECODE: 65536
             MODEL_PATH: /data/model/Pangu1013-w4a8c8-m7
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 4
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -287,7 +280,6 @@ all:
             SOCKET_IFNAME: enp23s0f3
             TASK_QUEUE_ENABLE: 2
             TNG_HOST_COPY: 1
-            # TOKENIZER_PROC_POOL: 1
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3
             USING_LCCL_COM: 0
@@ -316,7 +308,7 @@ all:
                 pattern: [1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 0]
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../omni/accelerators/placement/patterns/placement_pattern_20251128_58_rearrange_layers_58_layers_8_ranks_prefill.npy"
+                pattern_path: "/workspace/omniinfer/omni/accelerators/placement/patterns/placement_pattern_20251128_58_rearrange_layers_58_layers_8_ranks_prefill.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: False
                 max_redundant_per_expert: 1
@@ -354,7 +346,6 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             ASCEND_GLOBAL_LOG_LEVEL: 3
-            VLLM_LLMDATADIST_ZMQ_PORT: 5569
             API_PORT: 9000
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -409,7 +400,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path/a
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/test_config_prefill.json
             MODEL_LEN_MAX_PREFILL: 33792
             MODEL_PATH: /data/model/Pangu1013-w4a8c8-m7
             PREFILL_POD_NUM: 4
@@ -425,7 +415,6 @@ all:
             SHLVL: 1
             SOCKET_IFNAME: enp23s0f3
             TASK_QUEUE_ENABLE: 2
-            # TOKENIZER_PROC_POOL: 1
             TNG_HOST_COPY: 1
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3
@@ -435,8 +424,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.1
@@ -457,7 +444,7 @@ all:
                 pattern: [1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 0]
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../omni/accelerators/placement/patterns/placement_pattern_20251128_58_rearrange_layers_58_layers_8_ranks_prefill.npy"
+                pattern_path: "/workspace/omniinfer/omni/accelerators/placement/patterns/placement_pattern_20251128_58_rearrange_layers_58_layers_8_ranks_prefill.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: False
                 max_redundant_per_expert: 1
@@ -495,7 +482,6 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             ASCEND_GLOBAL_LOG_LEVEL: 3
-            VLLM_LLMDATADIST_ZMQ_PORT: 5570
             API_PORT: 9001
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -550,7 +536,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path/b
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/test_config_prefill.json
             MODEL_LEN_MAX_PREFILL: 33792
             MODEL_PATH: /data/model/Pangu1013-w4a8c8-m7
             PREFILL_POD_NUM: 4
@@ -566,7 +551,6 @@ all:
             SHLVL: 1
             SOCKET_IFNAME: enp23s0f3
             TASK_QUEUE_ENABLE: 2
-            # TOKENIZER_PROC_POOL: 1
             TNG_HOST_COPY: 1
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3
@@ -576,8 +560,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.1
@@ -598,7 +580,7 @@ all:
                 pattern: [1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 0]
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../omni/accelerators/placement/patterns/placement_pattern_20251128_58_rearrange_layers_58_layers_8_ranks_prefill.npy"
+                pattern_path: "/workspace/omniinfer/omni/accelerators/placement/patterns/placement_pattern_20251128_58_rearrange_layers_58_layers_8_ranks_prefill.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: False
                 max_redundant_per_expert: 1
@@ -636,7 +618,6 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             ASCEND_GLOBAL_LOG_LEVEL: 3
-            VLLM_LLMDATADIST_ZMQ_PORT: 5571
             API_PORT: 9002
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -691,7 +672,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path/a
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/test_config_prefill.json
             MODEL_LEN_MAX_PREFILL: 33792
             MODEL_PATH: /data/model/Pangu1013-w4a8c8-m7
             PREFILL_POD_NUM: 4
@@ -707,7 +687,6 @@ all:
             SHLVL: 1
             SOCKET_IFNAME: enp23s0f3
             TASK_QUEUE_ENABLE: 2
-            # TOKENIZER_PROC_POOL: 1
             TNG_HOST_COPY: 1
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3
@@ -717,8 +696,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.4
@@ -739,7 +716,7 @@ all:
                 pattern: [1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 0]
               enable_omni_placement: true
               omni_placement_config:
-                pattern_path: "../../omni/accelerators/placement/patterns/placement_pattern_20251128_58_rearrange_layers_58_layers_8_ranks_prefill.npy"
+                pattern_path: "/workspace/omniinfer/omni/accelerators/placement/patterns/placement_pattern_20251128_58_rearrange_layers_58_layers_8_ranks_prefill.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: False
                 max_redundant_per_expert: 1
@@ -777,7 +754,6 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             ASCEND_GLOBAL_LOG_LEVEL: 3
-            VLLM_LLMDATADIST_ZMQ_PORT: 5572
             API_PORT: 9003
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -832,7 +808,6 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path/b
             MASTER_PORT: 8000
-            MODEL_EXTRA_CFG_PATH: ${CODE_PATH}/tests/test_config/test_config_prefill.json
             MODEL_LEN_MAX_PREFILL: 33792
             MODEL_PATH: /data/model/Pangu1013-w4a8c8-m7
             PREFILL_POD_NUM: 4
@@ -848,7 +823,6 @@ all:
             SHLVL: 1
             SOCKET_IFNAME: enp23s0f3
             TASK_QUEUE_ENABLE: 2
-            # TOKENIZER_PROC_POOL: 1
             TNG_HOST_COPY: 1
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3
@@ -858,8 +832,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.4

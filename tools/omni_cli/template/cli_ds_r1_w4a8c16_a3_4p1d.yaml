@@ -73,7 +73,6 @@ all:
           container_name: 4p1d_d0
           env:
             API_PORT: 9000
-            VLLM_LLMDATADIST_ZMQ_PORT: 5573
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_GLOBAL_LOG_LEVEL: 3
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -130,8 +129,6 @@ all:
             MASTER_PORT: 8000
             MODEL_LEN_MAX_DECODE: 65600
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 4
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -208,7 +205,6 @@ all:
           container_name: 4p1d_d1
           env:
             API_PORT: 9000
-            VLLM_LLMDATADIST_ZMQ_PORT: 5574
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_GLOBAL_LOG_LEVEL: 3
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -265,8 +261,6 @@ all:
             MASTER_PORT: 8000
             MODEL_LEN_MAX_DECODE: 65600
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 4
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -344,7 +338,6 @@ all:
           container_name: 4p1d_p0
           env:
             ASCEND_GLOBAL_LOG_LEVEL: 3
-            VLLM_LLMDATADIST_ZMQ_PORT: 5569
             API_PORT: 9000
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -423,8 +416,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.1
@@ -482,7 +473,6 @@ all:
           container_name: 4p1d_p1
           env:
             ASCEND_GLOBAL_LOG_LEVEL: 3
-            VLLM_LLMDATADIST_ZMQ_PORT: 5570
             API_PORT: 9001
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -561,8 +551,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.1
@@ -620,7 +608,6 @@ all:
           container_name: 4p1d_p2
           env:
             ASCEND_GLOBAL_LOG_LEVEL: 3
-            VLLM_LLMDATADIST_ZMQ_PORT: 5571
             API_PORT: 9002
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -699,8 +686,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.2
@@ -758,7 +743,6 @@ all:
           container_name: 4p1d_p3
           env:
             ASCEND_GLOBAL_LOG_LEVEL: 3
-            VLLM_LLMDATADIST_ZMQ_PORT: 5572
             API_PORT: 9003
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -837,8 +821,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.2

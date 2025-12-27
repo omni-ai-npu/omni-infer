@@ -130,10 +130,8 @@ all:
             MASTER_PORT: 8000
             MODEL_LEN_MAX_DECODE: 33792
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             OMNI_USE_DSV3: 1
-            PREFILL_POD_NUM: 4
+            PREFILL_POD_NUM: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
             RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json)
@@ -264,10 +262,8 @@ all:
             MASTER_PORT: 8000
             MODEL_LEN_MAX_DECODE: 33792
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             OMNI_USE_DSV3: 1
-            PREFILL_POD_NUM: 4
+            PREFILL_POD_NUM: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
             RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json)
@@ -287,7 +283,7 @@ all:
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.2
-          master_node: d1
+          master_node: d0
         d2:
           DOCKER_IMAGE_ID: image-repository:tag
           ansible_host: 127.0.0.3
@@ -398,10 +394,8 @@ all:
             MASTER_PORT: 8000
             MODEL_LEN_MAX_DECODE: 33792
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             OMNI_USE_DSV3: 1
-            PREFILL_POD_NUM: 4
+            PREFILL_POD_NUM: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
             RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json)
@@ -421,7 +415,7 @@ all:
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.3
-          master_node: d2
+          master_node: d0
         d3:
           DOCKER_IMAGE_ID: image-repository:tag
           ansible_host: 127.0.0.4
@@ -532,10 +526,8 @@ all:
             MASTER_PORT: 8000
             MODEL_LEN_MAX_DECODE: 33792
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             OMNI_USE_DSV3: 1
-            PREFILL_POD_NUM: 4
+            PREFILL_POD_NUM: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/ranktable_save_path
             RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json)
@@ -555,7 +547,7 @@ all:
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.4
-          master_node: d3
+          master_node: d0
     P:
       hosts:
         p0:
@@ -667,7 +659,7 @@ all:
             MASTER_PORT: 8000
             MODEL_LEN_MAX_PREFILL: 33792
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            PREFILL_POD_NUM: 4
+            PREFILL_POD_NUM: 8
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7
             PREFILL_TENSOR_PARALLEL_SIZE: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -688,8 +680,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.5
@@ -803,7 +793,7 @@ all:
             MASTER_PORT: 8001
             MODEL_LEN_MAX_PREFILL: 33792
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            PREFILL_POD_NUM: 4
+            PREFILL_POD_NUM: 8
             PREFILL_SERVER_LIST: 8,9,10,11,12,13,14,15
             PREFILL_TENSOR_PARALLEL_SIZE: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -824,8 +814,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.5
@@ -939,7 +927,7 @@ all:
             MASTER_PORT: 8002
             MODEL_LEN_MAX_PREFILL: 33792
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            PREFILL_POD_NUM: 4
+            PREFILL_POD_NUM: 8
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7
             PREFILL_TENSOR_PARALLEL_SIZE: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -960,8 +948,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.6
@@ -1075,7 +1061,7 @@ all:
             MASTER_PORT: 8003
             MODEL_LEN_MAX_PREFILL: 33792
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            PREFILL_POD_NUM: 4
+            PREFILL_POD_NUM: 8
             PREFILL_SERVER_LIST: 8,9,10,11,12,13,14,15
             PREFILL_TENSOR_PARALLEL_SIZE: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -1096,8 +1082,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.6
@@ -1211,7 +1195,7 @@ all:
             MASTER_PORT: 8004
             MODEL_LEN_MAX_PREFILL: 33792
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            PREFILL_POD_NUM: 4
+            PREFILL_POD_NUM: 8
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7
             PREFILL_TENSOR_PARALLEL_SIZE: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -1232,8 +1216,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.7
@@ -1347,7 +1329,7 @@ all:
             MASTER_PORT: 8005
             MODEL_LEN_MAX_PREFILL: 33792
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            PREFILL_POD_NUM: 4
+            PREFILL_POD_NUM: 8
             PREFILL_SERVER_LIST: 8,9,10,11,12,13,14,15
             PREFILL_TENSOR_PARALLEL_SIZE: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -1368,8 +1350,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.7
@@ -1483,7 +1463,7 @@ all:
             MASTER_PORT: 8006
             MODEL_LEN_MAX_PREFILL: 33792
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            PREFILL_POD_NUM: 4
+            PREFILL_POD_NUM: 8
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7
             PREFILL_TENSOR_PARALLEL_SIZE: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -1504,8 +1484,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.8
@@ -1619,7 +1597,7 @@ all:
             MASTER_PORT: 8007
             MODEL_LEN_MAX_PREFILL: 33792
             MODEL_PATH: /data/model/DeepSeek-V31-Terminus-sszs50g0a0b4sym1
-            PREFILL_POD_NUM: 4
+            PREFILL_POD_NUM: 8
             PREFILL_SERVER_LIST: 8,9,10,11,12,13,14,15
             PREFILL_TENSOR_PARALLEL_SIZE: 8
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -1640,8 +1618,6 @@ all:
             VLLM_USE_V1: 1
             VLLM_ENABLE_MC2: 1
             OMNI_USE_DSV3: 1
-            OMNI_REUSE_PREFILLED_TOKENS: 1
-            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OVERWRITE_REQ_IDS: 1
           host_ip: 127.0.0.8
