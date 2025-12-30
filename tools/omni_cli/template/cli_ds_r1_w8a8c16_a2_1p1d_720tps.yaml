@@ -360,7 +360,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_DECODE: 4096
+            MODEL_LEN_MAX_DECODE: 32768
             MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 1
