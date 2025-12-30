@@ -49,6 +49,7 @@ all:
               max-num-seqs: 45
               no-enable-prefix-caching: ''
               preemption-mode: swap
+              swap-space: 8
             gpu-util: '0.85'
             kv-transfer-config:
               engine_id: 2
@@ -178,6 +179,7 @@ all:
               max-num-seqs: 45
               no-enable-prefix-caching: ''
               preemption-mode: swap
+              swap-space: 8
             gpu-util: '0.85'
             kv-transfer-config:
               engine_id: 2
