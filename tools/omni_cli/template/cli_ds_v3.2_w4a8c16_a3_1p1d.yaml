@@ -18,7 +18,7 @@ all:
             CODE_PATH: /workspace/omniinfer
             LOG_PATH: /data/logs
             ROLE: proxy
-            MODEL_PATH: /data/model/DeepSeek-V3.2-Exp-INT4
+            MODEL_PATH: /data/model/DeepSeek-V3.2-INT4
     D:
       hosts:
         d0:
@@ -121,7 +121,7 @@ all:
             LOG_PATH: /data/lz/logs
             MASTER_PORT: 8000
             MODEL_LEN_MAX_DECODE: 4096
-            MODEL_PATH: /data/model/DeepSeek-V3.2-Exp-INT4
+            MODEL_PATH: /data/model/DeepSeek-V3.2-INT4
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 1
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -241,7 +241,7 @@ all:
             LOG_PATH: /data/lz/logs
             MASTER_PORT: 8001
             MODEL_LEN_MAX_PREFILL: 4096
-            MODEL_PATH: /data/model/DeepSeek-V3.2-Exp-INT4
+            MODEL_PATH: /data/model/DeepSeek-V3.2-INT4
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 1
             PREFILL_SERVER_LIST: 8,9,10,11,12,13,14,15

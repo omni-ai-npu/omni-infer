@@ -419,13 +419,18 @@ class DeepseekMoE(nn.Module):
                     if self.ep_size > 64:
                         self.w2_prefetch_size = model_extra_config.operator_opt_config.expert_down_prefetch * 1024 * 1024
 
-        self.tuning_config = None
+        self.tuning_config_13 = None
+        self.tuning_config_2 = None
         if not model_extra_config.operator_opt_config.gmm_nz:
-            self.tuning_config = model_extra_config.task_config.decode_gear_list[:1]
+            self.tuning_config_13 = model_extra_config.task_config.decode_gear_list[:1]
+            self.tuning_config_2 = model_extra_config.task_config.decode_gear_list[:1]
         elif model_extra_config.operator_opt_config.new_w4_op:
-            self.tuning_config = [model_extra_config.task_config.decode_gear_list[0], 1]
+            self.tuning_config_13 = [1, 1]
+            if model_extra_config.task_config.decode_gear_list[0] >= 32:
+                self.tuning_config_2 = [256]
         elif model_extra_config.task_config.decode_gear_list[0] >= 32:
-            self.tuning_config = [256]
+            self.tuning_config_13 = [256]
+            self.tuning_config_2 = [256]
         
         self.experts_pruning = (model_extra_config.operator_opt_config.experts_pruning and 
                                 model_extra_config.operator_opt_config.prefill_moe_all_to_all)
@@ -773,7 +778,7 @@ class DeepseekMoE(nn.Module):
                                                  activation_input=None, activation_quant_scale=None,
                                                  activation_quant_offset=None, split_item=3, group_type=0,
                                                  group_list_type=1, act_type=0,
-                                                 tuning_config=self.tuning_config, output_dtype=torch.bfloat16)[0]
+                                                 tuning_config=self.tuning_config_13, output_dtype=torch.bfloat16)[0]
 
                 fake_scale = torch.ones(weight_bias1_3.shape, dtype=torch.float32, device="npu").view(-1,weight_bias1_3.shape[1])
                 pertoken_scale = torch.ones(pertoken_scale.shape, dtype=torch.float32, device="npu")
@@ -793,7 +798,7 @@ class DeepseekMoE(nn.Module):
                                                                      output_dtype=act_dtype,
                                                                      group_type=0,
                                                                      group_list_type=1,
-                                                                     tuning_config=self.tuning_config)[0]
+                                                                     tuning_config=self.tuning_config_2)[0]
             else:
                 raise NotImplementedError(f"Unsupported compress tensor type. num bits: {self.experts.weight_num_bits}")
         else:

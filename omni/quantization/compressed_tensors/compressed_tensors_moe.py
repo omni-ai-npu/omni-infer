@@ -437,28 +437,20 @@ class AscendCompressedTensorsW4A8Int8MoEMethod(CompressedTensorsMoEMethod):
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         if not model_extra_config.operator_opt_config.new_w4_op:
             layer.w13_weight = torch.nn.Parameter(layer.w13_weight.transpose(1, 2).contiguous(), requires_grad=False)
-            layer.w2_weight = torch.nn.Parameter(layer.w2_weight.transpose(1, 2).contiguous(), requires_grad=False)
+        layer.w2_weight = torch.nn.Parameter(layer.w2_weight.transpose(1, 2).contiguous(), requires_grad=False)
 
         if model_extra_config.operator_opt_config.gmm_nz:
             if model_extra_config.operator_opt_config.new_w4_op:
                 e, n, k = layer.w13_weight.data.shape
                 w13_tmp = torch.empty((e, n * 2, k // 2), dtype=layer.w13_weight.data.dtype, device=layer.w13_weight.data.device)
-                layer.w13_weight_int4_scale.data = self.convert_scale(layer.w13_weight_int4_scale.data).contiguous()
                 for i in range(e):
                     w13_tmp[i] = self.convert_weight(layer.w13_weight.data[i]).contiguous()
                     w13_tmp[i] = torch.from_numpy(self.nd_to_nz_variable_block(w13_tmp[i].cpu().numpy(), 'int8')).npu()
                 layer.w13_weight.data = w13_tmp.contiguous().view(e, k, n)
 
-                e, n, k = layer.w2_weight.data.shape
-                w2_tmp = torch.empty((e, n * 2, k // 2), dtype=layer.w2_weight.data.dtype, device=layer.w2_weight.data.device)
-                layer.w2_weight_int4_scale.data = self.convert_scale(layer.w2_weight_int4_scale.data).contiguous()
-                for i in range(e):
-                    w2_tmp[i] = self.convert_weight(layer.w2_weight.data[i]).contiguous()
-                    w2_tmp[i] = torch.from_numpy(self.nd_to_nz_variable_block(w2_tmp[i].cpu().numpy(), 'int8')).npu()
-                layer.w2_weight.data = w2_tmp.contiguous().view(e, k, n)
             else:
                 layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight, 29)
-                layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight, 29)
+            layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight, 29)
 
         layer.w13_weight.data = layer.w13_weight.data.view(torch.int32).contiguous()
         layer.w2_weight.data = layer.w2_weight.data.view(torch.int32).contiguous()

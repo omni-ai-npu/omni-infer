@@ -18,7 +18,6 @@ all:
             CODE_PATH: /workspace/omniinfer
             LOG_PATH: /tmp/log_path
             ROLE: proxy
-            MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
     D:
       hosts:
         d0:
@@ -31,13 +30,15 @@ all:
             additional-config:
               graph_model_compile_config:
                 level: 1
+                use_ge_graph_cached: true
+              enable_omni_attn: true
               enable_omni_placement: true
               omni_placement_config:
                 pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_2p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: true
-                max_redundant_per_expert: 1
-                max_redundant_per_rank: 0
+                max_redundant_per_expert: 10
+                max_redundant_per_rank: 1
                 enable_rank_round_robin: true
                 enable_dump: false
                 dump_dir: "../dump_data"
@@ -48,14 +49,12 @@ all:
               enable-expert-parallel: ''
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-              preemption-mode: 'swap'
-              swap_space: 6
-            gpu-util: '0.90'
+            gpu-util: '0.92'
             kv-transfer-config:
-              engine_id: 1
+              engine_id: 4
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: $((PREFILL_POD_NUM + 1))
+              kv_parallel_size: 1
               kv_rank: $KV_RANK
               kv_role: kv_consumer
             log-dir: $LOG_PATH
@@ -74,36 +73,9 @@ all:
             API_PORT: 9000
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
-            ASCEND_LAUNCH_BLOCKING: 1
+            ASCEND_LAUNCH_BLOCKING: 0
             ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
             ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
-            ASDOPS_LOG_LEVEL: ERROR
-            ASDOPS_LOG_PATH: /root
-            ASDOPS_LOG_TO_BOOST_TYPE: atb
-            ASDOPS_LOG_TO_FILE: 1
-            ASDOPS_LOG_TO_FILE_FLUSH: 0
-            ASDOPS_LOG_TO_STDOUT: 0
-            ASDSIP_HOME_PATH: /usr/local/Ascend/nnal/asdsip/latest/
-            ASDSIP_LOG_LEVEL: INFO
-            ASDSIP_LOG_PATH: /root
-            ASDSIP_LOG_TO_BOOST_TYPE: asdsip
-            ASDSIP_LOG_TO_FILE: 0
-            ASDSIP_LOG_TO_FILE_FLUSH: 0
-            ASDSIP_LOG_TO_STDOUT: 0
-            ATB_COMPARE_TILING_EVERY_KERNEL: 0
-            ATB_DEVICE_TILING_BUFFER_BLOCK_NUM: 32
-            ATB_HOME_PATH: /usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1
-            ATB_HOST_TILING_BUFFER_BLOCK_NUM: 128
-            ATB_MATMUL_SHUFFLE_K_ENABLE: 1
-            ATB_OPSRUNNER_KERNEL_CACHE_GLOABL_COUNT: 5
-            ATB_OPSRUNNER_KERNEL_CACHE_LOCAL_COUNT: 1
-            ATB_OPSRUNNER_SETUP_CACHE_ENABLE: 1
-            ATB_SHARE_MEMORY_NAME_SUFFIX: ''
-            ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE: 0
-            ATB_STREAM_SYNC_EVERY_OPERATION_ENABLE: 0
-            ATB_STREAM_SYNC_EVERY_RUNNER_ENABLE: 0
-            ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE: 1
-            ATB_WORKSPACE_MEM_ALLOC_GLOBAL: 0
             AUTO_USE_UC_MEMORY: 1
             CODE_PATH: /workspace/omniinfer
             DECODE_POD_NUM: 1
@@ -124,7 +96,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_LEN_MAX_DECODE: 67584
-            MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
+            MODEL_PATH: /data/models/DeepSeek-R1-0528-INT8
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -159,13 +131,15 @@ all:
             additional-config:
               graph_model_compile_config:
                 level: 1
+                use_ge_graph_cached: true
+              enable_omni_attn: true
               enable_omni_placement: true
               omni_placement_config:
                 pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_2p1d_d.npy"
                 max_moe_layer_num: 58
                 enable_dynamic: true
-                max_redundant_per_expert: 1
-                max_redundant_per_rank: 0
+                max_redundant_per_expert: 10
+                max_redundant_per_rank: 1
                 enable_rank_round_robin: true
                 enable_dump: false
                 dump_dir: "../dump_data"
@@ -176,14 +150,12 @@ all:
               enable-expert-parallel: ''
               max-num-seqs: 32
               no-enable-prefix-caching: ''
-              preemption-mode: 'swap'
-              swap_space: 6
-            gpu-util: '0.90'
+            gpu-util: '0.92'
             kv-transfer-config:
-              engine_id: 1
+              engine_id: 4
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: $((PREFILL_POD_NUM + 1))
+              kv_parallel_size: 1
               kv_rank: $KV_RANK
               kv_role: kv_consumer
             log-dir: $LOG_PATH
@@ -202,36 +174,9 @@ all:
             API_PORT: 9000
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
-            ASCEND_LAUNCH_BLOCKING: 1
+            ASCEND_LAUNCH_BLOCKING: 0
             ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
             ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
-            ASDOPS_LOG_LEVEL: ERROR
-            ASDOPS_LOG_PATH: /root
-            ASDOPS_LOG_TO_BOOST_TYPE: atb
-            ASDOPS_LOG_TO_FILE: 1
-            ASDOPS_LOG_TO_FILE_FLUSH: 0
-            ASDOPS_LOG_TO_STDOUT: 0
-            ASDSIP_HOME_PATH: /usr/local/Ascend/nnal/asdsip/latest/
-            ASDSIP_LOG_LEVEL: INFO
-            ASDSIP_LOG_PATH: /root
-            ASDSIP_LOG_TO_BOOST_TYPE: asdsip
-            ASDSIP_LOG_TO_FILE: 0
-            ASDSIP_LOG_TO_FILE_FLUSH: 0
-            ASDSIP_LOG_TO_STDOUT: 0
-            ATB_COMPARE_TILING_EVERY_KERNEL: 0
-            ATB_DEVICE_TILING_BUFFER_BLOCK_NUM: 32
-            ATB_HOME_PATH: /usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1
-            ATB_HOST_TILING_BUFFER_BLOCK_NUM: 128
-            ATB_MATMUL_SHUFFLE_K_ENABLE: 1
-            ATB_OPSRUNNER_KERNEL_CACHE_GLOABL_COUNT: 5
-            ATB_OPSRUNNER_KERNEL_CACHE_LOCAL_COUNT: 1
-            ATB_OPSRUNNER_SETUP_CACHE_ENABLE: 1
-            ATB_SHARE_MEMORY_NAME_SUFFIX: ''
-            ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE: 0
-            ATB_STREAM_SYNC_EVERY_OPERATION_ENABLE: 0
-            ATB_STREAM_SYNC_EVERY_RUNNER_ENABLE: 0
-            ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE: 1
-            ATB_WORKSPACE_MEM_ALLOC_GLOBAL: 0
             AUTO_USE_UC_MEMORY: 1
             CODE_PATH: /workspace/omniinfer
             DECODE_POD_NUM: 1
@@ -252,7 +197,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_LEN_MAX_DECODE: 67584
-            MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
+            MODEL_PATH: /data/models/DeepSeek-R1-0528-INT8
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
@@ -287,6 +232,7 @@ all:
           ansible_user: root
           args:
             additional-config:
+              enable_omni_attn: true
               enable_omni_placement: true
               omni_placement_config:
                 pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_2p1d_p.npy"
@@ -306,12 +252,12 @@ all:
               max-num-batched-tokens: 67584
               max-num-seqs: 16
               no-enable-prefix-caching: ''
-            gpu-util: '0.90'
+            gpu-util: '0.92'
             kv-transfer-config:
               engine_id: 0
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: $((PREFILL_POD_NUM + 1))
+              kv_parallel_size: 1
               kv_rank: $KV_RANK
               kv_role: kv_producer
             log-dir: $LOG_PATH
@@ -328,39 +274,12 @@ all:
           container_name: 2p1d_p0
           env:
             API_PORT: 9000
-            ENABLE_OVERWRITE_REQ_IDS: 1
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
+            ASCEND_LAUNCH_BLOCKING: 0
             ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
             ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
             ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
-            ASDOPS_LOG_LEVEL: ERROR
-            ASDOPS_LOG_PATH: /root
-            ASDOPS_LOG_TO_BOOST_TYPE: atb
-            ASDOPS_LOG_TO_FILE: 1
-            ASDOPS_LOG_TO_FILE_FLUSH: 0
-            ASDOPS_LOG_TO_STDOUT: 0
-            ASDSIP_HOME_PATH: /usr/local/Ascend/nnal/asdsip/latest/
-            ASDSIP_LOG_LEVEL: INFO
-            ASDSIP_LOG_PATH: /root
-            ASDSIP_LOG_TO_BOOST_TYPE: asdsip
-            ASDSIP_LOG_TO_FILE: 0
-            ASDSIP_LOG_TO_FILE_FLUSH: 0
-            ASDSIP_LOG_TO_STDOUT: 0
-            ATB_COMPARE_TILING_EVERY_KERNEL: 0
-            ATB_DEVICE_TILING_BUFFER_BLOCK_NUM: 32
-            ATB_HOME_PATH: /usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1
-            ATB_HOST_TILING_BUFFER_BLOCK_NUM: 128
-            ATB_MATMUL_SHUFFLE_K_ENABLE: 1
-            ATB_OPSRUNNER_KERNEL_CACHE_GLOABL_COUNT: 5
-            ATB_OPSRUNNER_KERNEL_CACHE_LOCAL_COUNT: 1
-            ATB_OPSRUNNER_SETUP_CACHE_ENABLE: 1
-            ATB_SHARE_MEMORY_NAME_SUFFIX: ''
-            ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE: 0
-            ATB_STREAM_SYNC_EVERY_OPERATION_ENABLE: 0
-            ATB_STREAM_SYNC_EVERY_RUNNER_ENABLE: 0
-            ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE: 1
-            ATB_WORKSPACE_MEM_ALLOC_GLOBAL: 0
             AUTO_USE_UC_MEMORY: 1
             CODE_PATH: /workspace/omniinfer
             DECODE_POD_NUM: 1
@@ -379,7 +298,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_LEN_MAX_PREFILL: 67584
-            MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
+            MODEL_PATH: /data/models/DeepSeek-R1-0528-INT8
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
@@ -415,6 +334,7 @@ all:
           ansible_user: root
           args:
             additional-config:
+              enable_omni_attn: true
               enable_omni_placement: true
               omni_placement_config:
                 pattern_path: "../../tests/test_config/ep_ds_r1_w8a8c16_a3_2p1d_p.npy"
@@ -434,12 +354,12 @@ all:
               max-num-batched-tokens: 67584
               max-num-seqs: 16
               no-enable-prefix-caching: ''
-            gpu-util: '0.90'
+            gpu-util: '0.92'
             kv-transfer-config:
-              engine_id: 0
+              engine_id: 1
               kv_buffer_device: npu
               kv_connector: AscendHcclConnectorV1
-              kv_parallel_size: $((PREFILL_POD_NUM + 1))
+              kv_parallel_size: 1
               kv_rank: $KV_RANK
               kv_role: kv_producer
             log-dir: $LOG_PATH
@@ -456,39 +376,12 @@ all:
           container_name: 2p1d_p1
           env:
             API_PORT: 9000
-            ENABLE_OVERWRITE_REQ_IDS: 1
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
+            ASCEND_LAUNCH_BLOCKING: 0
             ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
             ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
             ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
-            ASDOPS_LOG_LEVEL: ERROR
-            ASDOPS_LOG_PATH: /root
-            ASDOPS_LOG_TO_BOOST_TYPE: atb
-            ASDOPS_LOG_TO_FILE: 1
-            ASDOPS_LOG_TO_FILE_FLUSH: 0
-            ASDOPS_LOG_TO_STDOUT: 0
-            ASDSIP_HOME_PATH: /usr/local/Ascend/nnal/asdsip/latest/
-            ASDSIP_LOG_LEVEL: INFO
-            ASDSIP_LOG_PATH: /root
-            ASDSIP_LOG_TO_BOOST_TYPE: asdsip
-            ASDSIP_LOG_TO_FILE: 0
-            ASDSIP_LOG_TO_FILE_FLUSH: 0
-            ASDSIP_LOG_TO_STDOUT: 0
-            ATB_COMPARE_TILING_EVERY_KERNEL: 0
-            ATB_DEVICE_TILING_BUFFER_BLOCK_NUM: 32
-            ATB_HOME_PATH: /usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1
-            ATB_HOST_TILING_BUFFER_BLOCK_NUM: 128
-            ATB_MATMUL_SHUFFLE_K_ENABLE: 1
-            ATB_OPSRUNNER_KERNEL_CACHE_GLOABL_COUNT: 5
-            ATB_OPSRUNNER_KERNEL_CACHE_LOCAL_COUNT: 1
-            ATB_OPSRUNNER_SETUP_CACHE_ENABLE: 1
-            ATB_SHARE_MEMORY_NAME_SUFFIX: ''
-            ATB_STREAM_SYNC_EVERY_KERNEL_ENABLE: 0
-            ATB_STREAM_SYNC_EVERY_OPERATION_ENABLE: 0
-            ATB_STREAM_SYNC_EVERY_RUNNER_ENABLE: 0
-            ATB_WORKSPACE_MEM_ALLOC_ALG_TYPE: 1
-            ATB_WORKSPACE_MEM_ALLOC_GLOBAL: 0
             AUTO_USE_UC_MEMORY: 1
             CODE_PATH: /workspace/omniinfer
             DECODE_POD_NUM: 1
@@ -507,7 +400,7 @@ all:
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
             MODEL_LEN_MAX_PREFILL: 67584
-            MODEL_PATH: /data/models/DeepSeek-R1-w8a8-fusion
+            MODEL_PATH: /data/models/DeepSeek-R1-0528-INT8
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15

@@ -20,6 +20,7 @@
       "expert_gate_up_prefetch": 50,
       "expert_down_prefetch": 0,
       "attn_prefetch": 96,
-      "decode_experts_pruning": true
+      "decode_experts_pruning": true,
+      "new_w4_op": false
     }
   }
