@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple, Type
 import torch.nn.functional as F
 from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
                                               AttentionLayer, AttentionType)
-from vllm.attention.backends.utils import CommonAttentionState
+from vllm.attention.backends.utils import PAD_SLOT_ID, CommonAttentionState
 from vllm.model_executor.layers.rotary_embedding import DynamicNTKScalingRotaryEmbedding
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.forward_context import ForwardContext, get_forward_context
@@ -333,7 +333,7 @@ class AscendAttentionMetadataBuilder(DummyAttentionMetadataBuilder):
 
         if graph_pad_size > 0:
             padding = torch.full((graph_pad_size, ),
-                                    0,
+                                    PAD_SLOT_ID, # sink value stored in block 0, so pad values should not be 0
                                     dtype=slot_mapping.dtype,
                                     device=self.runner.device)
             slot_mapping = torch.cat([slot_mapping, padding])
