@@ -85,7 +85,12 @@ default_kv_parallel_size=$((PREFILL_POD_NUM + 1))
 set_env "KV_PARALLEL_SIZE" "${default_kv_parallel_size}" "1 more than ENV PREFILL_POD_NUM"
 set_env "SERVER_IP_LIST" "${DECODE_SERVER_IP_LIST}" "Identical to ENV DECODE_SERVER_IP_LIST"
 
-api_port_list=$(seq "${PD_BASE_API_PORT}" $((PD_BASE_API_PORT + 16 - 1)) | tr '\n' ',' | sed 's/,$//')
+if [ ${NUM_SERVERS} ]; then
+    NUM_SERVERS=$NUM_SERVERS
+else
+    NUM_SERVERS=${local_device_size}
+fi
+api_port_list=$(seq "${PD_BASE_API_PORT}" $((PD_BASE_API_PORT + ${NUM_SERVERS} - 1)) | tr '\n' ',' | sed 's/,$//')
 decode_endpoints=$(cross_join_ips_and_ports "${DECODE_SERVER_IP_LIST}" "${api_port_list}")
 set_env "DECODE_SERVERS" "${decode_endpoints}" "Endpoints of all decode api servers"
 
