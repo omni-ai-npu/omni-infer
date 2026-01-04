@@ -102,7 +102,7 @@ set_env_from_arg_or_default "MODEL_EXTRA_CFG_PATH" "--model-extra-cfg-path" "${C
 
 set_env_from_arg_or_default "SERVER_OFFSET" "--server-offset" "$((role_node_rank * LOCAL_DEVICE_SIZE))" "$@"
 set_env_from_arg_or_default "TP" "--tp" 1 "$@"
-
+set_env "KV_PARALLEL_SIZE" "${TP}" "the same as tp_size"
 
 set_env_from_arg_or_default "VLLM_LOGGING_LEVEL" "--vllm-logging-level" "INFO" "$@"
 

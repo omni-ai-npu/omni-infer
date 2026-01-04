@@ -92,7 +92,7 @@ set_env "ROLE_POD_SIZE" "${role_node_size}" "Pod count of entire Prefill instanc
 set_env "ROLE_SERVERS" "${HEAD_IP}:${PD_BASE_API_PORT}" "API servers of entire Prefill instance"
 
 set_env_from_arg_or_default "TP" "--tp" "${role_device_size}" "$@"
-
+set_env "KV_PARALLEL_SIZE" "${TP}" "the same as tp_size"
 
 visible_devices=$(seq 0 $((LOCAL_DEVICE_SIZE - 1)) | tr '\n' ',' | sed 's/,$//')
 set_env "ASCEND_RT_VISIBLE_DEVICES" "${visible_devices}" "A sequence with a step of 1 from 0 whose size equals device count of single Pod ${LOCAL_DEVICE_SIZE}"
