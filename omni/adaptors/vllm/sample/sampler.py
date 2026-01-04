@@ -133,6 +133,7 @@ class AscendSamplerV1(SamplerV1):
         top_p = None if sampling_metadata.top_p is None else sampling_metadata.top_p.repeat_interleave(**repeat_parameters)
         top_k = None if sampling_metadata.top_k is None else sampling_metadata.top_k.repeat_interleave(**repeat_parameters)
         min_p = None if sampling_metadata.min_p is None else sampling_metadata.min_p.repeat_interleave(**repeat_parameters)
+        seq_data = None if sampling_metadata.seq_data is None else sampling_metadata.seq_data
         allowed_token_ids_mask = None if sampling_metadata.allowed_token_ids_mask is None \
             else sampling_metadata.allowed_token_ids_mask.repeat_interleave(**repeat_parameters)
 
@@ -155,6 +156,7 @@ class AscendSamplerV1(SamplerV1):
             logit_bias=sampling_metadata.logit_bias,
             allowed_token_ids_mask=allowed_token_ids_mask,
             bad_words_token_ids=sampling_metadata.bad_words_token_ids,
+            seq_data=seq_data
         )
 
     # TODO apply min p on logits directly
