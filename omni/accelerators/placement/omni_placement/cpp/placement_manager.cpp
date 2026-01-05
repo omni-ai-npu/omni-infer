@@ -470,10 +470,6 @@ void Placement::placement_handle_instrucions(
         }
 
         if (need_split_batch) {
-            while (!dist_ptr_->sync_round_shakehand(cur_round, cur_batch)) {
-                std::this_thread::yield();
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
             placement_handle_one_batch(changeInstructions_one_batch);
             dist_ptr_->sync_round_shakehand(cur_round, cur_batch);
             cur_batch++;
@@ -503,6 +499,10 @@ void Placement::placement_handle_instrucions(
                     dist_ptr_->sync_round_shakehand(-1, -1);
                     cnt = 0;
                 }
+            }
+            while (!dist_ptr_->sync_round_shakehand(cur_round, cur_batch)) {
+                std::this_thread::yield();
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
 
             need_wait_main = false;
