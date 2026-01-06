@@ -32,12 +32,15 @@ def init_reasoner_compression_configs(vllm_config):
     if not ThinkCompressDict.think_start_str is None and ThinkCompressDict.think_start_str != "":
         ThinkCompressDict.think_start_token_ids = tuple(tokenize_without_special_tokens(tokenizer, ThinkCompressDict.think_start_str))
     elif not ThinkCompressDict.think_start_token_ids is None:
+        start_token_ids = ThinkCompressDict.think_start_token_ids
+        ThinkCompressDict.think_start_token_ids = start_token_ids if isinstance(start_token_ids, list) else eval(start_token_ids)
         ThinkCompressDict.think_start_token_ids = tuple(ThinkCompressDict.think_start_token_ids)
 
     if not ThinkCompressDict.think_end_str is None and ThinkCompressDict.think_end_str != "":
         ThinkCompressDict.think_end_token_ids = tokenize_without_special_tokens(tokenizer, ThinkCompressDict.think_end_str)
     elif not ThinkCompressDict.think_end_token_ids is None:
-        ThinkCompressDict.think_end_token_ids = eval(ThinkCompressDict.think_end_token_ids)
+        end_token_ids = ThinkCompressDict.think_end_token_ids
+        ThinkCompressDict.think_end_token_ids = end_token_ids if isinstance(end_token_ids, list) else eval(end_token_ids)
 
     ThinkCompressDict.thinking_token_budget = int(ThinkCompressDict.thinking_token_budget)
     if ThinkCompressDict.thinking_token_budget is None or ThinkCompressDict.thinking_token_budget <= 0:

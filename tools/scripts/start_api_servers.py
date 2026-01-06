@@ -97,6 +97,7 @@ def start_single_node_api_servers(
     no_enable_prefix_caching=False,
     num_speculative_tokens=1,
     no_enable_chunked_prefill=False,
+    reasoning_config=None,
 ):
     """Start multiple VLLM API servers with specified configurations."""
 
@@ -167,6 +168,8 @@ def start_single_node_api_servers(
             cmd.extend(["--no-enable-prefix-caching"])
         if no_enable_chunked_prefill:
             cmd.extend(["--no-enable-chunked-prefill"])
+        if reasoning_config:
+            cmd.extend(["--reasoning-config", str(reasoning_config)])
 
         logger_path = os.path.join(log_dir, f"server_{rank}.log")
         existed_logger_files = [f for f in glob.glob(logger_path + "*") if re.search(f"server_{rank}\.log(\.\d+)?$", f)]
@@ -293,6 +296,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-enable-prefix-caching", default=False, action="store_true")
     parser.add_argument("--no-enable-chunked-prefill", default=False, action="store_true")
     parser.add_argument("--num-speculative-tokens", type=int, default=1)
+    parser.add_argument("--reasoning-config", type=str, default="", help="reasoning config for VLLM")
 
     args = parser.parse_args()
     if not args.num_dp:
@@ -324,7 +328,8 @@ if __name__ == "__main__":
         enable_mtp=args.enable_mtp,
         enable_prompt_tokens_details=args.enable_prompt_tokens_details,
         num_speculative_tokens=args.num_speculative_tokens,
-        no_enable_chunked_prefill=args.no_enable_chunked_prefill
+        no_enable_chunked_prefill=args.no_enable_chunked_prefill,
+        reasoning_config = args.reasoning_config
     )
 
     # Register SIGINT handler for Ctrl+C
