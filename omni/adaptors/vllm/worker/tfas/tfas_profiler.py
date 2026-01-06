@@ -26,8 +26,8 @@ tfas_profiler.py - 分析prefill服务器日志并进行性能分析
 脚本功能：
     1. 从日志中提取运行序列数，执行时间，token数和等待请求数
     2. 计算每个序列的输入长度
-    3. 筛选出输入长度为1025的记录进行分析
-    4. 使用IQR方法过滤异常值
+    3. 筛选出输入长度为1024的记录进行分析
+    4. 使用IQR方法过滤异常值，使用dot_to_exclude排除初始的异常点
     5. 对性能数据进行分段线性拟合
     6. 输出拟合结果和系统甜点值分析
     
@@ -37,14 +37,20 @@ tfas_profiler.py - 分析prefill服务器日志并进行性能分析
     - 动态调整参数 adjust_param
     - 分析曲线图.png
 """
-    
+
+# 要排除的偏离异常点数量，建议0～3
+dot_to_exclude = 3
+# prefill启动参数的MTP配置，默认是0
+mtp = 0
+
+
 def get_best_split(x, y):
     # 初始化
     min_error = float("inf")
     best_split = None 
     # 穷举所有可能的分割点（排除最前和最后一个点）
-    for i in range(4, len(x) -1):
-        x1, y1 = x[3:i], y[3:i]
+    for i in range(1 + dot_to_exclude, len(x) - 1):
+        x1, y1 = x[dot_to_exclude:i], y[dot_to_exclude:i]
         x2, y2 = x[i:], y[i:]
         # 拟合每一段
         model1 = LinearRegression().fit(x1, y1)
@@ -55,14 +61,15 @@ def get_best_split(x, y):
         error = np.mean((y1 - y1_pred) ** 2) + np.mean((y2 - y2_pred) ** 2)
         if error < min_error:
             min_error = error
-            best_split = i 
-    return best_split 
+            best_split = i
+    return best_split
+
 
 def get_update_params(output_path, segments, models, x, y):
     # 计算动态调整参数
     intercept_set = []
     slope_set = []
-    plt.figure(figsize=(10,6))
+    plt.figure(figsize=(10, 6))
     plt.scatter(x, y, s=1, label="Profiling data", alpha=0.5)
     for (x_seg, y_seg), model in zip(segments, models):
         x_pred = x_seg
@@ -146,18 +153,18 @@ def profiler_1K_fixed(log_file_path, output_path):
     df = df[df.seqs>0]
     df["input_len"] = df["tokens"] / df["seqs"]
  
-    # 获取prefiler统计结果
-    df_sel = df[df.input_len == 1025]
+    # 获取profiler统计结果
+    df_sel = df[df.input_len == (1024 + mtp)]
     my_result = IQR_filter(df_sel)
     
     # 计算初始甜点值
     x = np.array(list(my_result.keys()))
     y = np.array(list(my_result.values()))
     x = x.reshape(-1, 1)
-    best_split = get_best_split(x, y)
-    
+    best_split = get_best_split(x, y, dot_to_exclude)
+
     # 分段线性拟合
-    x1, y1 = x[3:best_split], y[3:best_split]
+    x1, y1 = x[dot_to_exclude:best_split], y[dot_to_exclude:best_split]
     x2, y2 = x[best_split:], y[best_split:]
     model1 = LinearRegression().fit(x1, y1)
     model2 = LinearRegression().fit(x2, y2)
