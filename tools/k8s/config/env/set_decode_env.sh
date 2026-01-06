@@ -12,7 +12,7 @@ source "${TOOL_DIR}"/env/env_tools.sh
 
 # 启动脚本使用的环境变量
 set_env_from_arg_or_default "CANN_JSON_PATH" "--cann-json-path" "/usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json" "$@"
-
+set_env_from_arg_or_default "HCCL_BUFFSIZE" "--hccl-buffsize" 400 "$@"
 set_env "CURRENT_STARTUP_ROLE" "decode"
 set_env_from_arg_or_default "MAX_MODEL_LEN" "--max-model-len" 65536 "$@"
 set_env_from_arg_or_default "MAX_NUM_SEQS" "--max-num-seqs" 8 "$@"
@@ -54,15 +54,28 @@ if [ ${NODE_IPS} ]; then
     role_node_size=$(echo "$DECODE_SERVER_IP_LIST" | tr ',' '\n' | grep -c '^')
     export ADDITIONAL_CONFIG=${DECODE_ADDITIONAL_CONFIG}
     echo "DECODE_ADDITIONAL_CONFIG is "${DECODE_ADDITIONAL_CONFIG}
+    if [ ${DECODE_HCCL_BUFFSIZE} ]; then
+        export HCCL_BUFFSIZE=${DECODE_HCCL_BUFFSIZE}
+    fi
     set_env_from_arg_or_default "EXTRA_ARGS" "--extra-args" "--disable-log-requests --enable-expert-parallel --max-num-seqs 60 --no-enable-prefix-caching --preemption-mode swap ${ADD_ARGS}" "$@"
     set_env_from_arg_or_default "MODEL_PATH" "--model-path" "/tmp/home/mind/model" "$@"
     set_env_from_arg_or_default "VLLM_ENABLE_MC2" "--vllm-enable-mc2" 0 "$@"
+    if [ ${DECODE_TENSOR_PARALLEL_SIZE} ]; then
+        export TP=${DECODE_TENSOR_PARALLEL_SIZE}
+    else
+        export TP=1
+    fi
+    if [ ${DECODE_KV_PARALLEL_SIZE} ]; then
+        export KV_PARALLEL_SIZE=${DECODE_KV_PARALLEL_SIZE}
+    else
+        export KV_PARALLEL_SIZE=${TP}
+    fi
 else
     set_env "RANK_TABLE_PATH" "${CONFIG_DIR}"/ranktable
     set_env "LOCAL_RANK_TABLE_FILE_NAME" "rank_table.json"
     set_env "RANK_TABLE_FILE_PATH" "${RANK_TABLE_PATH}"/"${LOCAL_RANK_TABLE_FILE_NAME}"
     set_env_from_arg_or_default "MODEL_PATH" "--model-path" "/home/mind/model" "$@"
-
+    set_env_from_arg_or_default "TP" "--tp" 1 "$@"
     role_head_ip=$(python3 -u "${TOOL_DIR}"/ranktable/get_role_head_ip.py)  #  done
 
     local_device_size=$(python3 -u "${TOOL_DIR}"/ranktable/get_local_device_size.py)  #  每个ip的device数量
@@ -75,6 +88,7 @@ else
     set_env_from_arg_or_default "VLLM_ENABLE_MC2" "--vllm-enable-mc2" 1 "$@"
     set_env_from_arg_or_default "ADDITIONAL_CONFIG" "--additional-config" '{"graph_model_compile_config": {"level":1, "use_ge_graph_cached":false}, "enable_omni_attn":false}' "$@"
     set_env_from_arg_or_default "EXTRA_ARGS" "--extra-args" "--enable-expert-parallel --disable-log-requests --max-num-seqs ${MAX_NUM_SEQS} --no-enable-prefix-caching --no-enable-chunked-prefill --preemption-mode swap --enable-reasoning --reasoning-parser deepseek_r1 --enable-auto-tool-choice --tool-call-parser=ascend_adapt_bf16 --chat-template ${CONFIG_DIR}/chattemplate/tool_chat_template_bf16_v3_clear.jinja --tool-parser-plugin=${CONFIG_DIR}/chattemplate/ascend_deepseekv31_tool_parser.py ${ADD_ARGS}" "$@"
+    set_env_from_arg_or_default "KV_PARALLEL_SIZE" "--kv-parallel-size" ${TP} "$@"
 fi
 set_env "HEAD_IP" "${role_head_ip}" "Head Pod IP of Decode instance"
 set_env "LOCAL_DEVICE_SIZE" "${local_device_size}" "Device count of single Pod"
@@ -101,9 +115,6 @@ set_env_from_arg_or_default "NUM_SERVERS" "--num-servers" "${LOCAL_DEVICE_SIZE}"
 set_env_from_arg_or_default "MODEL_EXTRA_CFG_PATH" "--model-extra-cfg-path" "${CODE_PATH}/tests/test_config/test_config_decode.json"
 
 set_env_from_arg_or_default "SERVER_OFFSET" "--server-offset" "$((role_node_rank * LOCAL_DEVICE_SIZE))" "$@"
-set_env_from_arg_or_default "TP" "--tp" 1 "$@"
-set_env "KV_PARALLEL_SIZE" "${TP}" "the same as tp_size"
-
 set_env_from_arg_or_default "VLLM_LOGGING_LEVEL" "--vllm-logging-level" "INFO" "$@"
 
 # set_env_from_arg_or_default "VALIDATORS_CONFIG_PATH" "--validators-config-path" "${CONFIG_DIR}/validation/validators_config.json" "$@"

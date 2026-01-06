@@ -52,6 +52,9 @@ if [ ${NODE_IPS} ]; then
     role_node_rank=$((${PREFILL_RANK} % ${NUM_PER_PREFILL_POD}))
     export ADDITIONAL_CONFIG=${PREFILL_ADDITIONAL_CONFIG}
     echo "PREFILL_ADDITIONAL_CONFIG is "${PREFILL_ADDITIONAL_CONFIG}
+    if [ ${PREFILL_HCCL_BUFFSIZE} ]; then
+        export HCCL_BUFFSIZE=${PREFILL_HCCL_BUFFSIZE}
+    fi
     if [[ ${role_node_size} != "1" ]]; then
         set_env_from_arg_or_default "EXTRA_ARGS" "--extra-args" "--disable-log-requests --enable-expert-parallel --enforce-eager --max-num-batched-tokens 16384 --max-num-seqs 8 --no-enable-prefix-caching --distributed-executor-backend ray ${ADD_ARGS}" "$@"
     else
@@ -59,6 +62,16 @@ if [ ${NODE_IPS} ]; then
     fi
     set_env_from_arg_or_default "MODEL_PATH" "--model-path" "/tmp/home/mind/model" "$@"
     set_env_from_arg_or_default "VLLM_ENABLE_MC2" "--vllm-enable-mc2" 0 "$@"
+    if [ ${PREFILL_TENSOR_PARALLEL_SIZE} ]; then
+        export TP=${PREFILL_TENSOR_PARALLEL_SIZE}
+    else
+        export TP=${role_device_size}
+    fi
+    if [ ${PREFILL_KV_PARALLEL_SIZE} ]; then
+        export KV_PARALLEL_SIZE=${PREFILL_KV_PARALLEL_SIZE}
+    else
+        export KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
+    fi
 else
     set_env_from_arg_or_default "ADDITIONAL_CONFIG" "--additional-config" '' "$@"
     set_env "RANK_TABLE_PATH" "${CONFIG_DIR}"/ranktable
@@ -72,6 +85,8 @@ else
     role_ip_list=$(python3 -u "${TOOL_DIR}"/ranktable/get_role_ip_list.py)
     role_node_size=$(python3 -u "${TOOL_DIR}"/ranktable/get_role_node_size.py)
     role_node_rank=$(python3 -u "${TOOL_DIR}"/ranktable/get_role_node_rank.py)
+    set_env_from_arg_or_default "TP" "--tp" "${role_device_size}" "$@"
+    set_env_from_arg_or_default "KV_PARALLEL_SIZE" "--kv-parallel-size" 1 "$@"
     if [[ ${ROLE_POD_SIZE} != "1" ]]; then
         set_env_from_arg_or_default "EXTRA_ARGS" "--extra-args" "--max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs ${MAX_NUM_SEQS} --no-enable-prefix-caching --no-enable-chunked-prefill --enable-reasoning --reasoning-parser deepseek_r1 --enable-auto-tool-choice --tool-call-parser=ascend_adapt_bf16 --chat-template ${CONFIG_DIR}/chattemplate/tool_chat_template_bf16_v3_clear.jinja --tool-parser-plugin=${CONFIG_DIR}/chattemplate/ascend_deepseekv31_tool_parser.py --long-prefill-token-threshold ${LONG_PREFILL_TOKEN_THRESHOLD} --distributed-executor-backend ray ${ADD_ARGS}" "$@"
     else
@@ -90,9 +105,6 @@ set_env "ROLE_IP_LIST" "${role_ip_list}" "Pod IPs of entire Prefill instance"
 
 set_env "ROLE_POD_SIZE" "${role_node_size}" "Pod count of entire Prefill instance"
 set_env "ROLE_SERVERS" "${HEAD_IP}:${PD_BASE_API_PORT}" "API servers of entire Prefill instance"
-
-set_env_from_arg_or_default "TP" "--tp" "${role_device_size}" "$@"
-set_env "KV_PARALLEL_SIZE" "${TP}" "the same as tp_size"
 
 visible_devices=$(seq 0 $((LOCAL_DEVICE_SIZE - 1)) | tr '\n' ',' | sed 's/,$//')
 set_env "ASCEND_RT_VISIBLE_DEVICES" "${visible_devices}" "A sequence with a step of 1 from 0 whose size equals device count of single Pod ${LOCAL_DEVICE_SIZE}"
