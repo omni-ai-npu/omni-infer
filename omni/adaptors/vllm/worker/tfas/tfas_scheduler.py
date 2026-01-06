@@ -8,6 +8,7 @@ from vllm.config import VllmConfig
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.logger import logger
+from vllm.v1.core.sched.request_queue import FCFSRequestQueue
 
 class TFASScheduler(Scheduler):
     DEFAULT_TFAS_CONFIG = {
@@ -52,7 +53,7 @@ class TFASScheduler(Scheduler):
 
         # 从字典中读取配置
         self.tfas_adjust_param = tfas_config["adjust_param"]
-        self.tfas_waiting_time_out = 60
+        self.tfas_waiting_time_out = 20
         self.tfas_token_budget = tfas_config["token_budget"]
 
 
@@ -64,10 +65,10 @@ class TFASScheduler(Scheduler):
             
     def schedule(self):
         now_time = time.time()
-        self.waiting = deque(
+        self.waiting = FCFSRequestQueue(deque(
             sorted(self.waiting, key=lambda req: self._length_sort_time_decay(
                 now_time, req))
-        )
+        ))
         upper_bound = self._compute_upper_bound(self.waiting)
         upper_bound = self._accumulate_until_bound(
             self.waiting, upper_bound)
@@ -135,7 +136,7 @@ class TFASProfilerScheduler(Scheduler):
             kv_cache_config, 
             structured_output_manager, 
             mm_registry, 
-            include_finished_set, 
+            include_finished_set,
             log_stats)
         if (self.vllm_config.kv_transfer_config is not None and 
             self.vllm_config.kv_transfer_config.is_kv_consumer):
