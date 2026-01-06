@@ -15,4 +15,5 @@ class ThinkCompressDict(dict):
             raise AttributeError(f"No such think compress variable: {name}") from e
 
 
-ThinkCompressDict = ThinkCompressDict()
+ThinkCompressDict = ThinkCompressDict()
+ThinkCompressDict.reasoner_early_think_stopping_enabled = False

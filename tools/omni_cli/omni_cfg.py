@@ -45,7 +45,7 @@ def convert_to_dict(s):
     return {key: value_str}
 
 def parse_remaining_args_for_set(arg, remaining_args, sections, i):
-    if remaining_args[i+1] in ['--additional-config', '--extra-args', '--kv-transfer-config']:
+    if remaining_args[i+1] in ['--additional-config', '--extra-args', '--kv-transfer-config', '--reasoning-config']:
         if i + 2 >= len(remaining_args):
             raise ValueError(f"Missing value for key: '{remaining_args[i+1]}'")
         extra_args_list = shlex.split(remaining_args[i+2])
@@ -68,7 +68,7 @@ def parse_remaining_args_for_set(arg, remaining_args, sections, i):
         sections[arg][remaining_args[i+1][2:]] = remaining_args[i+2]
 
 def parse_remaining_args_for_delete(arg, remaining_args, sections, i):
-    if remaining_args[i+1] in ['--additional-config', '--extra-args', '--kv-transfer-config']:
+    if remaining_args[i+1] in ['--additional-config', '--extra-args', '--kv-transfer-config', '--reasoning-config']:
         if i + 2 >= len(remaining_args):
             raise ValueError(f"Missing value for key: '{remaining_args[i+1]}'")
         additional_config_list = shlex.split(remaining_args[i+2])
@@ -115,7 +115,7 @@ def parse_remaining_args(node_type, node_name, is_set, remaining_args, yml_file_
                     'ansible_ssh_private_key_file': '', 'ansible_host': '', 'host_ip': '', 'master_node': ''}
     else:
         sections = {'env': [], 'args': [], 'DOCKER_IMAGE_ID': '', 'ascend_rt_visible_devices': '', \
-            'container_name': '', 'extra-args': [], 'additional-config': [], 'kv-transfer-config': []}
+            'container_name': '', 'extra-args': [], 'additional-config': [], 'kv-transfer-config': [], 'reasoning-config': []}
     seen_sections = set()
 
     i = 0
@@ -212,7 +212,7 @@ def update_cfg_yml(node_type, node_name, sections, yml_file_path):
 
 def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
     ascend_rt_visible_devices, container_name, extra_args_list, additional_config_list, \
-    kv_transfer_config_list):
+    kv_transfer_config_list, reasoning_list):
     vars_dict = data['all']['children'][node_type]['hosts'][node_name]
     for key in env_list:
         if key in vars_dict['env']:
@@ -262,6 +262,15 @@ def delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCK
     if 'kv-transfer-config' in vars_dict['args'] and vars_dict['args']['kv-transfer-config'] == {}:
         vars_dict['args']['kv-transfer-config'] = ''
 
+    for key in reasoning_list:
+        if key in vars_dict['args']['reasoning-config']:
+            del vars_dict['args']['reasoning-config'][key]
+        else:
+            print(f"{WARNING} No matching configuration {key} found in {node_name}.")
+
+    if 'reasoning-config' in vars_dict['args'] and vars_dict['args']['reasoning-config'] == {}:
+        vars_dict['args']['reasoning-config'] = ''
+
 def delete_model_path(sections):
     default_cfg_path = f'{os.path.dirname(__file__)}/configs/default_profiles.yml'
     default_cfg = get_data_from_yaml(default_cfg_path)
@@ -285,6 +294,7 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
     extra_args_list = sections['extra-args']
     additional_config_list = sections['additional-config']
     kv_transfer_config_list = sections['kv-transfer-config']
+    reasoning_list = sections['reasoning-config']
     delete_model_path(sections)
     data = get_data_from_yaml(yml_file_path)
     if data:
@@ -293,18 +303,18 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
                 for n_name in data['all']['children'][n_type]['hosts']:
                     delete_cfg_yml_for_node(data, n_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                         ascend_rt_visible_devices, container_name, extra_args_list, \
-                        additional_config_list, kv_transfer_config_list)
+                        additional_config_list, kv_transfer_config_list, reasoning_list)
             print(f"{INFO} You have deleted the configuration of all nodes")
         elif node_name == 'p' or node_name == 'd' or node_name == 'c':
             for n_name in data['all']['children'][node_type]['hosts']:
                 delete_cfg_yml_for_node(data, node_type, n_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                     ascend_rt_visible_devices, container_name, extra_args_list, \
-                    additional_config_list, kv_transfer_config_list)
+                    additional_config_list, kv_transfer_config_list, reasoning_list)
             print(f"{INFO} You have deleted the configuration of all nodes in group {node_type}")
         else:
             delete_cfg_yml_for_node(data, node_type, node_name, env_list, arg_list, DOCKER_IMAGE_ID, \
                 ascend_rt_visible_devices, container_name, extra_args_list, \
-                additional_config_list, kv_transfer_config_list)
+                additional_config_list, kv_transfer_config_list, reasoning_list)
             print(f"{INFO} You have deleted the configuration of node {node_name}")
 
         with open(yml_file_path, 'w') as file:

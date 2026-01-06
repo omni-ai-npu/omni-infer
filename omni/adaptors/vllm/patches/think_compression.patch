@@ -1,150 +1,133 @@
-diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
-index fab1b1005..572ad9681 100644
---- a/vllm/entrypoints/openai/protocol.py
-+++ b/vllm/entrypoints/openai/protocol.py
-@@ -409,7 +409,12 @@ class ChatCompletionRequest(OpenAIBaseModel):
-     kv_transfer_params: Optional[dict[str, Any]] = Field(
-         default=None,
-         description="KVTransfer parameters used for disaggregated serving.")
--
-+    
-+    vllm_xargs: Optional[dict[str, Union[str, int, float]]] = Field(
-+        default=None,
-+        description=("Additional request parameters with string or "
-+                     "numeric values, used by custom extensions."),
-+    )
-     # --8<-- [end:chat-completion-extra-params]
- 
-     # Default sampling parameters for chat completion requests
-@@ -518,7 +523,10 @@ class ChatCompletionRequest(OpenAIBaseModel):
-             whitespace_pattern=self.guided_whitespace_pattern,
-             structural_tag=self.structural_tag,
+diff --git a/vllm/config.py b/vllm/config.py
+index c14e3c00c..a18ebf19c 100644
+--- a/vllm/config.py
++++ b/vllm/config.py
+@@ -4041,6 +4041,43 @@ class CompilationConfig:
+                 "vllm.unified_attention_with_output",
+             ]
+
++@config
++@dataclass
++class ReasoningConfig:
++    """Configuration for reasoning models."""
++    thinking_token_budget: int | None = None
++    """Max thinking size."""
++
++    think_start_token_ids: list[int] | None = None
++    """Token ID that indicates the start of reasoning."""
++
++    think_end_token_ids: list[int] | None = None
++    """Token ID that changes the end of reasoning."""
++
++    think_start_str: str | None = None
++    """Token str that indicates the start of reasoning."""
++
++    think_end_str: str | None = None
++    """Token str that changes the end of reasoning."""
++
++    def compute_hash(self) -> str:
++        """
++        WARNING: Whenever a new field is added to this config,
++        ensure that it is included in the factors list if
++        it affects the computation graph.
++
++        Provide a hash that uniquely identifies all the configs
++        that affect the structure of the computation
++        graph from input ids/embeddings to the final hidden states,
++        excluding anything before input ids/embeddings and after
++        the final hidden states.
++        """
++        # no factors to consider.
++        # this config will not affect the computation graph.
++        factors: list[Any] = []
++        hash_str = hashlib.md5(str(factors).encode(),
++                               usedforsecurity=False).hexdigest()
++        return hash_str
+
+ @config
+ @dataclass
+@@ -4105,6 +4142,8 @@ class VllmConfig:
+     you are using. Contents must be hashable."""
+     instance_id: str = ""
+     """The ID of the vLLM instance."""
++    reasoning_config: Optional[ReasoningConfig] = None
++    """The reasoning config."""
+
+     def compute_hash(self) -> str:
+         """
+@@ -4182,6 +4221,8 @@ class VllmConfig:
+             vllm_factors.append("None")
+         if self.kv_transfer_config:
+             vllm_factors.append(self.kv_transfer_config.compute_hash())
++        if self.reasoning_config:
++            vllm_factors.append(self.reasoning_config.compute_hash())
+         else:
+             vllm_factors.append("None")
+         if self.additional_config:
+diff --git a/vllm/engine/arg_utils.py b/vllm/engine/arg_utils.py
+index 8fa622fe1..03632d075 100644
+--- a/vllm/engine/arg_utils.py
++++ b/vllm/engine/arg_utils.py
+@@ -28,7 +28,7 @@ from vllm.config import (BlockSize, CacheConfig, CacheDType, CompilationConfig,
+                          PrefixCachingHashAlgo, PromptAdapterConfig,
+                          SchedulerConfig, SchedulerPolicy, SpeculativeConfig,
+                          TaskOption, TokenizerMode, TokenizerPoolConfig,
+-                         VllmConfig, get_attr_docs, get_field)
++                         VllmConfig, get_attr_docs, get_field, ReasoningConfig)
+ from vllm.executor.executor_base import ExecutorBase
+ from vllm.logger import init_logger
+ from vllm.model_executor.layers.quantization import QuantizationMethods
+@@ -421,6 +421,7 @@ class EngineArgs:
+
+     use_tqdm_on_load: bool = LoadConfig.use_tqdm_on_load
+     pt_load_map_location: str = LoadConfig.pt_load_map_location
++    reasoning_config: Optional[ReasoningConfig] = None
+
+     def __post_init__(self):
+         # support `EngineArgs(compilation_config={...})`
+@@ -841,6 +842,8 @@ class EngineArgs:
+                                 **vllm_kwargs["compilation_config"])
+         vllm_group.add_argument("--additional-config",
+                                 **vllm_kwargs["additional_config"])
++        vllm_group.add_argument("--reasoning-config",
++                                **vllm_kwargs["reasoning_config"])
+
+         # Other arguments
+         parser.add_argument('--use-v2-block-manager',
+@@ -1193,6 +1196,7 @@ class EngineArgs:
+             kv_transfer_config=self.kv_transfer_config,
+             kv_events_config=self.kv_events_config,
+             additional_config=self.additional_config,
++            reasoning_config=self.reasoning_config,
          )
--
-+        extra_args: dict[str, Any] = self.vllm_xargs if self.vllm_xargs else {}
-+        if self.kv_transfer_params:
-+            # Pass in kv_transfer_params via extra_args
-+            extra_args["kv_transfer_params"] = self.kv_transfer_params
-         return SamplingParams.from_optional(
-             n=self.n,
-             best_of=self.best_of,
-@@ -547,8 +555,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
-                 else RequestOutputKind.FINAL_ONLY,
-             guided_decoding=guided_decoding,
-             logit_bias=self.logit_bias,
--            extra_args=({"kv_transfer_params": self.kv_transfer_params}
--                        if self.kv_transfer_params else None))
-+            extra_args=extra_args or None)
- 
-     def _get_guided_json_from_tool(
-             self) -> Optional[Union[str, dict, BaseModel]]:
-@@ -861,6 +868,11 @@ class CompletionRequest(OpenAIBaseModel):
-         default=None,
-         description="KVTransfer parameters used for disaggregated serving.")
- 
-+    vllm_xargs: Optional[dict[str, Union[str, int, float]]] = Field(
-+        default=None,
-+        description=("Additional request parameters with string or "
-+                     "numeric values, used by custom extensions."),
-+    )
-     # --8<-- [end:completion-extra-params]
- 
-     # Default sampling parameters for completion requests
-@@ -957,7 +969,11 @@ class CompletionRequest(OpenAIBaseModel):
-             backend=self.guided_decoding_backend,
-             whitespace_pattern=self.guided_whitespace_pattern,
-         )
--
-+        
-+        extra_args: dict[str, Any] = self.vllm_xargs if self.vllm_xargs else {}
-+        if self.kv_transfer_params:
-+            # Pass in kv_transfer_params via extra_args
-+            extra_args["kv_transfer_params"] = self.kv_transfer_params
-         return SamplingParams.from_optional(
-             n=self.n,
-             best_of=self.best_of,
-@@ -987,8 +1003,7 @@ class CompletionRequest(OpenAIBaseModel):
-             guided_decoding=guided_decoding,
-             logit_bias=self.logit_bias,
-             allowed_token_ids=self.allowed_token_ids,
--            extra_args=({"kv_transfer_params": self.kv_transfer_params}
--                        if self.kv_transfer_params else None))
-+            extra_args=extra_args or None)
- 
-     @model_validator(mode="before")
-     @classmethod
-diff --git a/vllm/sampling_params.py b/vllm/sampling_params.py
-index 500f3644c..4e4c7feca 100644
---- a/vllm/sampling_params.py
-+++ b/vllm/sampling_params.py
-@@ -247,6 +247,8 @@ class SamplingParams(
-     # Fields used for bad words
-     bad_words: Optional[list[str]] = None
-     _bad_words_token_ids: Optional[list[list[int]]] = None
-+    
-+    thinking_budget: int = None
- 
-     @staticmethod
-     def from_optional(
+
+         return config
 diff --git a/vllm/sequence.py b/vllm/sequence.py
-index d359f897d..50c6b8da4 100644
+index d359f897d..4fe9f9dfe 100644
 --- a/vllm/sequence.py
 +++ b/vllm/sequence.py
-@@ -187,6 +187,23 @@ class SequenceData(msgspec.Struct,
- 
+@@ -187,6 +187,12 @@ class SequenceData(msgspec.Struct,
+
      # It is used to compute mrope_position_ids.
      _mrope_position_delta: Optional[int] = None
-+    
++
 +    is_think_finished: bool = False
 +    is_think_started: bool = False
-+    thinking_budget: int = None
-+    stop_length: int = None
-+    stop_type: str = None
++    thinking_token_budget: int = None
 +    seq_id: int = None
-+    prompt: str = None
-+    output_text: str = ""
-+    output_cursor: int = 0
-+    prev_think_checking_pos: int = 0 # record each request checking status
 +    cur_seq_length: int = 0 # record each request generation length
-+    subsequences: list = []
-+    reward_scores: dict = {}
-+    reward_in_progress: dict = {}
-+    valid_reasoning_chains: dict = {}
-+    valid_reasoning_in_progress: dict = {}
- 
+
      @staticmethod
      def from_prompt_token_counts(
-diff --git a/vllm/transformers_utils/tokenizer_group.py b/vllm/transformers_utils/tokenizer_group.py
-index 8b9e4881e..d193c15b6 100644
---- a/vllm/transformers_utils/tokenizer_group.py
-+++ b/vllm/transformers_utils/tokenizer_group.py
-@@ -9,7 +9,7 @@ from vllm.transformers_utils.tokenizer import (AnyTokenizer, encode_tokens,
-                                                get_lora_tokenizer_async,
-                                                get_tokenizer)
- from vllm.utils import LRUCache
--
-+from omni.accelerators.reasoning_compression.config import ThinkCompressDict
- 
- class TokenizerGroup:
-     """A group of tokenizers that can be used for LoRA adapters."""
-@@ -107,6 +107,8 @@ class TokenizerGroup:
- def init_tokenizer_from_configs(model_config: ModelConfig,
-                                 scheduler_config: SchedulerConfig,
-                                 lora_config: Optional[LoRAConfig]):
-+    # Set the global tokenizer path for think compression and other applications
-+    ThinkCompressDict.PRECHECKPOINT_PATH = model_config.tokenizer
-     return TokenizerGroup(
-         tokenizer_id=model_config.tokenizer,
-         enable_lora=bool(lora_config),
 diff --git a/vllm/v1/sample/metadata.py b/vllm/v1/sample/metadata.py
 index e97e1235f..b1816d758 100644
 --- a/vllm/v1/sample/metadata.py
 +++ b/vllm/v1/sample/metadata.py
 @@ -41,3 +41,5 @@ class SamplingMetadata:
- 
+
      # req_index -> bad_words_token_ids
      bad_words_token_ids: dict[int, list[list[int]]]
-+    
++
 +    seq_data: list
 diff --git a/vllm/v1/sample/sampler.py b/vllm/v1/sample/sampler.py
 index 16561d30a..225965b41 100644
@@ -158,27 +141,27 @@ index 16561d30a..225965b41 100644
 +from omni.accelerators.reasoning_compression.think_compressor import (
 +    ThinkCompressor,
 +)
- 
+
  _SAMPLING_EPS = 1e-5
- 
+
 @@ -19,6 +23,13 @@ class Sampler(nn.Module):
      def __init__(self):
          super().__init__()
          self.topk_topp_sampler = TopKTopPSampler()
-+      
++
 +        # additional think_compressor instance to not significantly modify sampler
 +        self.think_compressor = None
 +        self.enable_early_stop = False
 +        if ThinkCompressDict.reasoner_early_think_stopping_enabled:
 +            self.think_compressor = ThinkCompressor()
 +            self.enable_early_stop = self.think_compressor.enable_early_stop
- 
+
      def forward(
          self,
 @@ -61,6 +72,8 @@ class Sampler(nn.Module):
          # Use int32 to reduce the tensor size.
          sampled = sampled.to(torch.int32)
- 
+
 +        sampled = self.update_sampled_token_ids(sampled, sampling_metadata)
 +
          # These are GPU tensors.
@@ -215,7 +198,7 @@ index 16561d30a..225965b41 100644
 +        return token_ids
 \ No newline at end of file
 diff --git a/vllm/v1/worker/gpu_input_batch.py b/vllm/v1/worker/gpu_input_batch.py
-index 7628272ee..b0534ed73 100644
+index 7628272ee..2f5c4a3b4 100644
 --- a/vllm/v1/worker/gpu_input_batch.py
 +++ b/vllm/v1/worker/gpu_input_batch.py
 @@ -15,6 +15,9 @@ from vllm.v1.outputs import LogprobsTensors
@@ -225,85 +208,38 @@ index 7628272ee..b0534ed73 100644
 +from omni.accelerators.reasoning_compression.config import ThinkCompressDict
 +import array
 +from vllm.sequence import SequenceData
- 
+
  _SAMPLING_EPS = 1e-5
- 
-@@ -224,6 +227,12 @@ class InputBatch:
- 
+
+@@ -224,6 +227,9 @@ class InputBatch:
+
          # This is updated each time the batch constituents change.
          self.sampling_metadata = self._make_sampling_metadata()
-+        
++
 +        # save req_id to sequence data
 +        self.sequence_data: dict[str, SequenceData] = {}
-+        
-+        # patch for thinking budget control for each request. req_index -> thinking_budget
-+        self.thinking_budget: dict[int, int] = {}
- 
+
      @property
      def req_ids(self) -> list[str]:
-@@ -307,6 +316,13 @@ class InputBatch:
-         if sampling_params.min_tokens:
-             self.min_tokens[req_index] = (sampling_params.min_tokens,
-                                           sampling_params.all_stop_token_ids)
-+            
-+        # patch for thinking budget control for each request
-+        if sampling_params.extra_args and "thinking_budget" in sampling_params.extra_args and\
-+            sampling_params.extra_args["thinking_budget"] > 0:
-+            self.thinking_budget[req_index] = sampling_params.extra_args["thinking_budget"]
-+        else:
-+            self.thinking_budget[req_index] = None
- 
-         # NOTE(woosuk): self.generators should not include the requests that
-         # do not have their own generator.
-@@ -378,6 +394,7 @@ class InputBatch:
-         self.num_logprobs.pop(req_id, None)
-         self.num_prompt_logprobs.pop(req_id, None)
-         self.in_progress_prompt_logprobs_cpu.pop(req_id, None)
-+        self.thinking_budget.pop(req_index, None)
- 
-         # LoRA
-         lora_id = self.request_lora_mapping[req_index]
-@@ -428,6 +445,9 @@ class InputBatch:
-             self.repetition_penalties_cpu[i2], self.repetition_penalties_cpu[i1]
-         self.min_p_cpu[i1], self.min_p_cpu[i2] =\
-             self.min_p_cpu[i2], self.min_p_cpu[i1]
-+            
-+            
-+        swap_dict_values(self.thinking_budget, i1, i2)
- 
-         # NOTE: the following is unsafe
-         # self.token_ids_cpu[i1, ...], self.token_ids_cpu[i2, ...], =\
-@@ -507,6 +527,11 @@ class InputBatch:
-             self.repetition_penalties_cpu[
-                 empty_index] = self.repetition_penalties_cpu[last_req_index]
-             self.min_p_cpu[empty_index] = self.min_p_cpu[last_req_index]
-+            
-+            thinking_budget = self.thinking_budget.pop(last_req_index, None)
-+            if thinking_budget is not None:
-+                self.thinking_budget[empty_index] = thinking_budget
-+                
-             generator = self.generators.pop(last_req_index, None)
-             if generator is not None:
-                 self.generators[empty_index] = generator
-@@ -577,6 +602,8 @@ class InputBatch:
+@@ -577,6 +583,8 @@ class InputBatch:
              copy_slice(self.allowed_token_ids_mask_cpu_tensor,
                         self.allowed_token_ids_mask, num_reqs)
              allowed_token_ids_mask = self.allowed_token_ids_mask[:num_reqs]
-+            
++
 +        all_seq_data = self._handle_early_think_stopping(num_reqs)
- 
+
          return SamplingMetadata(
              temperature=temperature,
-@@ -597,7 +624,32 @@ class InputBatch:
+@@ -597,7 +605,31 @@ class InputBatch:
              logit_bias=self.logit_bias[:num_reqs],
              allowed_token_ids_mask=allowed_token_ids_mask,
              bad_words_token_ids=self.bad_words_token_ids,
 +            seq_data=all_seq_data,
          )
-+        
++
 +    def _handle_early_think_stopping(self, num_reqs):
 +        all_seq_data = [None] * num_reqs
-+        if ThinkCompressDict.reasoner_early_think_stopping_enabled == 1:
++        if ThinkCompressDict.reasoner_early_think_stopping_enabled:
 +            if num_reqs > 0:
 +                max_prompt_len = self.num_prompt_tokens[: self.num_reqs].max()
 +                prompt_token_ids_list = self.token_ids_cpu[:num_reqs, :max_prompt_len].tolist()
@@ -316,8 +252,7 @@ index 7628272ee..b0534ed73 100644
 +                                "l",
 +                                prompt_token_ids_list[index][: self.num_prompt_tokens[index]],
 +                            ),
-+                            seq_id=req_id,
-+                            thinking_budget=self.thinking_budget[index]
++                            seq_id=req_id
 +                        )
 +                        self.sequence_data[req_id] = seq_data
 +

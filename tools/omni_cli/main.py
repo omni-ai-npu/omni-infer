@@ -229,6 +229,9 @@ def _build_args_line(args: Dict[str, Any]) -> str:
         elif k == "additional-config" and isinstance(v, dict):
             inline = _build_json_args(v)
             parts.append(f"{flag} {_double_quotes(inline)}")
+        elif k == "reasoning-config" and isinstance(v, dict):
+            inline = _build_json_args(v)
+            parts.append(f"{flag} {_double_quotes(inline)}")
         else:
             parts.append(f"{flag} {_double_quotes(v)}")
     return " ".join(parts)
@@ -535,13 +538,15 @@ def omni_cli_start(
 
         export_block = _build_export_block(env)
         args_line = _build_args_line(args)
+        args_line_print = args_line
+        args_line_print = args_line_print.replace("<", "'<'").replace(">", "'>'")
 
         start_server_cmd = f"""
 # Exec the command
 cd {_double_quotes(code_path)}/tools/scripts
 echo "cd {_double_quotes(code_path)}/tools/scripts" >> {log_path}/omni_cli.log
 {python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &
-echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> {log_path}/omni_cli.log
+echo "{python_bin} {entry_py} {args_line_print} >> {log_path}/omni_cli.log 2>&1 &" >> {log_path}/omni_cli.log
 """
 
         with tempfile.NamedTemporaryFile(
