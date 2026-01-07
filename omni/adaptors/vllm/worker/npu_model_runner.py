@@ -583,6 +583,14 @@ class NPUModelRunner(GPUModelRunner):
         self.input_ids[:total_num_scheduled_tokens].copy_(
             self.input_ids_cpu[:total_num_scheduled_tokens], non_blocking=True)
 
+        if model_extra_config.parall_config.attn_sp_size > 1:
+            sp_size = model_extra_config.parall_config.attn_sp_size * 2
+            cu_num_tokens = np.empty_like(num_scheduled_tokens)
+            cu_num_tokens[0] = num_scheduled_tokens[0]
+            for i in range(1, num_scheduled_tokens.size):
+                prev_aligned = ((cu_num_tokens[i - 1] + sp_size - 1) // sp_size) * sp_size
+                cu_num_tokens[i] = prev_aligned + num_scheduled_tokens[i]
+
         if self.use_spec_decode:
             # Get the number of draft tokens for each request.
             # Iterate over the dictionary rather than all requests since not all
@@ -596,13 +604,6 @@ class NPUModelRunner(GPUModelRunner):
                 num_draft_tokens, cu_num_tokens)
             sample_indices = spec_decode_metadata.logits_indices
         else:
-            if model_extra_config.parall_config.attn_sp_size > 1:
-                sp_size = model_extra_config.parall_config.attn_sp_size * 2
-                cu_num_tokens = np.empty_like(num_scheduled_tokens)
-                cu_num_tokens[0] = num_scheduled_tokens[0]
-                for i in range(1, num_scheduled_tokens.size):
-                    prev_aligned = ((cu_num_tokens[i - 1] + sp_size - 1) // sp_size) * sp_size
-                    cu_num_tokens[i] = prev_aligned + num_scheduled_tokens[i]
             sample_indices = cu_num_tokens - 1
             sample_indices = torch.from_numpy(sample_indices).to(self.device, non_blocking=True)
             spec_decode_metadata = None
