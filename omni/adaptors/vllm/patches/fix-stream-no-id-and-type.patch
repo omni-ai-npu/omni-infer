@@ -1,0 +1,16 @@
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+index 993c427..cfef42a 100644
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -1563,6 +1563,8 @@ class OpenAIServingChat(OpenAIServing):
+             if delta_message.tool_calls[-1].function.name is not None:
+                 delta_message = DeltaMessage(tool_calls=[
+                     DeltaToolCall(index=index,
++                                  id=delta_message.tool_calls[-1].id,
++                                  type=delta_message.tool_calls[-1].type,
+                                   function=DeltaFunctionCall(
+                                       name=delta_message.tool_calls[-1].function.name,
+                                       arguments=remaining_call).
+-- 
+
+

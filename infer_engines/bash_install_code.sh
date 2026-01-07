@@ -56,3 +56,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/adapt_deepseek_v32_tokenizer.patch
 git apply --whitespace=nowarn $PATCH_ROOT/think_compression.patch
 git apply --whitespace=nowarn $PATCH_ROOT/vllm_bench_serve_v090.patch
 git apply --whitespace=nowarn $PATCH_ROOT/gpt_oss_make_request_by_chat_template.patch
+git apply --whitespace=nowarn $PATCH_ROOT/fix-stream-no-id-and-type.patch
