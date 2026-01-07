@@ -502,7 +502,11 @@ class NPUModelRunner(GPUModelRunner):
         else:
             attn_state = AscendAttentionState.ChunkedPrefill
 
-        if self.is_hybrid_chunked_prefill_graph_mode and attn_state == AscendAttentionState.DecodeOnly:
+        # When hybrid chunked prefill is enabled, ensure the first forward pass uses PrefillNoCache
+        # for new requests, and convert DecodeOnly state to ChunkedPrefill for proper handling
+        if self.is_hybrid_chunked_prefill_graph_mode and len(scheduler_output.scheduled_new_reqs) > 0:
+            attn_state = AscendAttentionState.PrefillNoCache
+        elif self.is_hybrid_chunked_prefill_graph_mode and attn_state == AscendAttentionState.DecodeOnly:
             attn_state = AscendAttentionState.ChunkedPrefill
 
         self.attn_state = attn_state
