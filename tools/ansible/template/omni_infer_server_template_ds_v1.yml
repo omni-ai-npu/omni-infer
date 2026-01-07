@@ -23,7 +23,7 @@
     # Global Configuration
     LOG_PATH: "/data/log_path"
     MODEL_PATH: "/data/models/DeepSeek-V31-Terminus-INT8"
-    MODEL_LEN_MAX_PREFILL: "32000" # 此为跑性能配置，跑精度应改为64000
+    MODEL_LEN_MAX_PREFILL: "32000" # 此为跑性能配置，跑精度应改为60000
     MODEL_LEN_MAX_DECODE: "16384" # 此为跑性能配置，跑精度应改为64000
     LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
     CODE_PATH: "/data/local_code_path"
@@ -85,17 +85,16 @@
       export ASCEND_GLOBAL_LOG_LEVEL=3
       export TASK_QUEUE_ENABLE=2
       export VLLM_CUSTOM_MODEL_ENABLE=False   # use open-souce model when set False
+      export OMNI_NPU_VLLM_PATCHES_ALL=1
+      export VLLM_PLUGINS="omni_npu,omni_patches"
+      # 使用高性能脚本应改为 export VLLM_PLUGINS="omni_npu,omni_patches,omni_custom_models"
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
       KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
-      # 此为跑性能配置，跑精度应改为--max-num-batched-tokens 64000
-      if [ ${USE_OMNI_PROXY} = "1" ]; then
-        EXTRA_ARGS="--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --max-num-seqs 16 --no-enable-prefix-caching  --distributed-executor-backend mp --dtype bfloat16" 
-      else
-        EXTRA_ARGS="--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --max-num-seqs 16 --no-enable-prefix-caching  --distributed-executor-backend mp --dtype bfloat16"
-      fi
-      GPU_UTIL=0.92
+      # 此为跑性能配置，跑精度应改为--max-num-batched-tokens 60000
+      EXTRA_ARGS="--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --max-num-seqs 16 --no-enable-prefix-caching  --distributed-executor-backend mp --dtype bfloat16"
+      GPU_UTIL=0.92 # 此为跑性能配置，跑精度应改为0.965
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
@@ -148,7 +147,7 @@
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
-        --num-speculative-tokens 0 \
+        --num-speculative-tokens 1 \
         --log-dir "${LOG_PATH}/{{ inventory_hostname }}" > ${LOG_PATH}/{{ inventory_hostname }}/run_prefill.log 2>&1 &
     
     run_vllm_server_decode_cmd: |
@@ -164,6 +163,9 @@
       export VLLM_DISABLE_COMPILE_CACHE=1
       export TASK_QUEUE_ENABLE=1
       export VLLM_CUSTOM_MODEL_ENABLE=False   # use open-souce model when set False
+      export OMNI_NPU_VLLM_PATCHES_ALL=1
+      export VLLM_PLUGINS="omni_npu,omni_patches"
+      # 使用高性能脚本应改为 export VLLM_PLUGINS="omni_npu,omni_patches,omni_custom_models"
       dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
       ((dp++))
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
@@ -173,9 +175,10 @@
           [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
           {% endfor %}
       )
-      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32], "backend":"eager", "compile_sizes":[1,2,8]}'
-      GPU_UTIL=0.92
-      # ADDITIONAL_CONFIG='{"enable_omni_attn": true, "omni_attn_config": {"sink": 2, "recent": 6, "beta": 0.4}, "graph_model_compile_config": {"level":1, "use_ge_graph_cached":true},"enable_omni_placement":true,"omni_placement_config":{"pattern_path":"../../omni/accelerators/placement/patterns/base_patterns/DSV3_baseline_64_devices_58_MoE_Layers.npy","max_moe_layer_num":58,"enable_dynamic":true,"max_redundant_per_expert":10,"max_redundant_per_rank":1,"enable_rank_round_robin":true,"enable_dump":false,"dump_dir":"/home/profiling/dump_data"}}'
+      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode": "FULL_AND_PIECEWISE", "cudagraph_capture_sizes":[2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62,64], "backend":"eager", "compile_sizes":[2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62,64]}'
+      # 此为跑性能配置，跑精度配置如下
+      # EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 8 --no-enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode": "FULL_AND_PIECEWISE", "cudagraph_capture_sizes":[2,4,6,8,10,12,14,16], "backend":"eager", "compile_sizes":[2,4,6,8,10,12,14,16]}'
+      GPU_UTIL=0.8 #跑精度应改为0.81
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
@@ -218,7 +221,7 @@
         --additional-config "$ADDITIONAL_CONFIG" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
-        --num-speculative-tokens 0 \
+        --num-speculative-tokens 1 \
         --log-dir "${LOG_PATH}/{{ inventory_hostname }}" > ${LOG_PATH}/{{ inventory_hostname }}/run_decode.log 2>&1 &
 
     # --additional-config "$ADDITIONAL_CONFIG" \
@@ -268,7 +271,8 @@
           --omni-proxy-model-path $MODEL_PATH \
           --omni-proxy-max-batch-num-token 100000 \
           --omni-proxy-prefill-max-num-seqs 32 \
-          --omni-proxy-decode-max-num-seqs 48
+          --omni-proxy-decode-max-num-seqs 32
+      # 此为跑性能配置，跑精度应改为--omni-proxy-decode-max-num-seqs 8
       else
         cd /workspace/omniinfer/tools/scripts
         bash global_proxy.sh \
@@ -283,7 +287,8 @@
           --prefill-lb-sdk ${PREFILL_LB_SDK} \
           --decode-lb-sdk ${DECODE_LB_SDK} \
           --prefill-max-num-seqs 32 \
-          --decode-max-num-seqs 48
+          --decode-max-num-seqs 32
+      # 此为跑性能配置，跑精度应改为--omni-proxy-decode-max-num-seqs 8
       fi
 
     generate_mooncake_config_json: |
