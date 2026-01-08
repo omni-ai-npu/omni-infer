@@ -1,11 +1,11 @@
 diff --git a/vllm/config.py b/vllm/config.py
-index c14e3c00c..a18ebf19c 100644
+index c14e3c00c..94261ed68 100644
 --- a/vllm/config.py
 +++ b/vllm/config.py
 @@ -4041,6 +4041,43 @@ class CompilationConfig:
                  "vllm.unified_attention_with_output",
              ]
-
+ 
 +@config
 +@dataclass
 +class ReasoningConfig:
@@ -43,7 +43,7 @@ index c14e3c00c..a18ebf19c 100644
 +        hash_str = hashlib.md5(str(factors).encode(),
 +                               usedforsecurity=False).hexdigest()
 +        return hash_str
-
+ 
  @config
  @dataclass
 @@ -4105,6 +4142,8 @@ class VllmConfig:
@@ -52,7 +52,7 @@ index c14e3c00c..a18ebf19c 100644
      """The ID of the vLLM instance."""
 +    reasoning_config: Optional[ReasoningConfig] = None
 +    """The reasoning config."""
-
+ 
      def compute_hash(self) -> str:
          """
 @@ -4182,6 +4221,8 @@ class VllmConfig:
@@ -78,11 +78,11 @@ index 8fa622fe1..03632d075 100644
  from vllm.logger import init_logger
  from vllm.model_executor.layers.quantization import QuantizationMethods
 @@ -421,6 +421,7 @@ class EngineArgs:
-
+ 
      use_tqdm_on_load: bool = LoadConfig.use_tqdm_on_load
      pt_load_map_location: str = LoadConfig.pt_load_map_location
 +    reasoning_config: Optional[ReasoningConfig] = None
-
+ 
      def __post_init__(self):
          # support `EngineArgs(compilation_config={...})`
 @@ -841,6 +842,8 @@ class EngineArgs:
@@ -91,7 +91,7 @@ index 8fa622fe1..03632d075 100644
                                  **vllm_kwargs["additional_config"])
 +        vllm_group.add_argument("--reasoning-config",
 +                                **vllm_kwargs["reasoning_config"])
-
+ 
          # Other arguments
          parser.add_argument('--use-v2-block-manager',
 @@ -1193,6 +1196,7 @@ class EngineArgs:
@@ -100,23 +100,23 @@ index 8fa622fe1..03632d075 100644
              additional_config=self.additional_config,
 +            reasoning_config=self.reasoning_config,
          )
-
+ 
          return config
 diff --git a/vllm/sequence.py b/vllm/sequence.py
 index d359f897d..4fe9f9dfe 100644
 --- a/vllm/sequence.py
 +++ b/vllm/sequence.py
 @@ -187,6 +187,12 @@ class SequenceData(msgspec.Struct,
-
+ 
      # It is used to compute mrope_position_ids.
      _mrope_position_delta: Optional[int] = None
-+
++    
 +    is_think_finished: bool = False
 +    is_think_started: bool = False
 +    thinking_token_budget: int = None
 +    seq_id: int = None
 +    cur_seq_length: int = 0 # record each request generation length
-
+ 
      @staticmethod
      def from_prompt_token_counts(
 diff --git a/vllm/v1/sample/metadata.py b/vllm/v1/sample/metadata.py
@@ -124,10 +124,10 @@ index e97e1235f..b1816d758 100644
 --- a/vllm/v1/sample/metadata.py
 +++ b/vllm/v1/sample/metadata.py
 @@ -41,3 +41,5 @@ class SamplingMetadata:
-
+ 
      # req_index -> bad_words_token_ids
      bad_words_token_ids: dict[int, list[list[int]]]
-+
++    
 +    seq_data: list
 diff --git a/vllm/v1/sample/sampler.py b/vllm/v1/sample/sampler.py
 index 16561d30a..225965b41 100644
@@ -141,27 +141,27 @@ index 16561d30a..225965b41 100644
 +from omni.accelerators.reasoning_compression.think_compressor import (
 +    ThinkCompressor,
 +)
-
+ 
  _SAMPLING_EPS = 1e-5
-
+ 
 @@ -19,6 +23,13 @@ class Sampler(nn.Module):
      def __init__(self):
          super().__init__()
          self.topk_topp_sampler = TopKTopPSampler()
-+
++      
 +        # additional think_compressor instance to not significantly modify sampler
 +        self.think_compressor = None
 +        self.enable_early_stop = False
 +        if ThinkCompressDict.reasoner_early_think_stopping_enabled:
 +            self.think_compressor = ThinkCompressor()
 +            self.enable_early_stop = self.think_compressor.enable_early_stop
-
+ 
      def forward(
          self,
 @@ -61,6 +72,8 @@ class Sampler(nn.Module):
          # Use int32 to reduce the tensor size.
          sampled = sampled.to(torch.int32)
-
+ 
 +        sampled = self.update_sampled_token_ids(sampled, sampling_metadata)
 +
          # These are GPU tensors.
@@ -198,45 +198,69 @@ index 16561d30a..225965b41 100644
 +        return token_ids
 \ No newline at end of file
 diff --git a/vllm/v1/worker/gpu_input_batch.py b/vllm/v1/worker/gpu_input_batch.py
-index 7628272ee..2f5c4a3b4 100644
+index 7628272ee..2338a0ffb 100644
 --- a/vllm/v1/worker/gpu_input_batch.py
 +++ b/vllm/v1/worker/gpu_input_batch.py
-@@ -15,6 +15,9 @@ from vllm.v1.outputs import LogprobsTensors
+@@ -1,6 +1,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # Datastructures defining an input batch
+-
++import os
+ from dataclasses import dataclass
+ from typing import Optional, cast
+ 
+@@ -15,7 +15,10 @@ from vllm.v1.outputs import LogprobsTensors
  from vllm.v1.sample.metadata import SamplingMetadata
  from vllm.v1.utils import copy_slice
  from vllm.v1.worker.block_table import MultiGroupBlockTable
+-
 +from omni.accelerators.reasoning_compression.config import ThinkCompressDict
 +import array
 +from vllm.sequence import SequenceData
-
++reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
  _SAMPLING_EPS = 1e-5
-
-@@ -224,6 +227,9 @@ class InputBatch:
-
+ 
+ 
+@@ -224,6 +227,12 @@ class InputBatch:
+ 
          # This is updated each time the batch constituents change.
          self.sampling_metadata = self._make_sampling_metadata()
-+
++        
 +        # save req_id to sequence data
 +        self.sequence_data: dict[str, SequenceData] = {}
-
++
++        # save reuse prefill token
++        self.reuse_prefill_token = None
+ 
      @property
      def req_ids(self) -> list[str]:
-@@ -577,6 +583,8 @@ class InputBatch:
+@@ -248,6 +257,10 @@ class InputBatch:
+             self._req_ids[req_index] = req_id
+             self.req_output_token_ids[req_index] = request.output_token_ids
+ 
++        if reuse_prefilled_tokens:
++            if request.sampling_params.extra_args['kv_transfer_params'] and "prefilled_token" in request.sampling_params.extra_args['kv_transfer_params']:
++                self.reuse_prefill_token = request.sampling_params.extra_args['kv_transfer_params']['prefilled_token']
++
+         self.req_id_to_index[req_id] = req_index
+ 
+         if request.sampling_params.guided_decoding is not None:
+@@ -577,6 +590,8 @@ class InputBatch:
              copy_slice(self.allowed_token_ids_mask_cpu_tensor,
                         self.allowed_token_ids_mask, num_reqs)
              allowed_token_ids_mask = self.allowed_token_ids_mask[:num_reqs]
-+
++            
 +        all_seq_data = self._handle_early_think_stopping(num_reqs)
-
+ 
          return SamplingMetadata(
              temperature=temperature,
-@@ -597,7 +605,31 @@ class InputBatch:
+@@ -597,7 +612,33 @@ class InputBatch:
              logit_bias=self.logit_bias[:num_reqs],
              allowed_token_ids_mask=allowed_token_ids_mask,
              bad_words_token_ids=self.bad_words_token_ids,
 +            seq_data=all_seq_data,
          )
-+
++        
 +    def _handle_early_think_stopping(self, num_reqs):
 +        all_seq_data = [None] * num_reqs
 +        if ThinkCompressDict.reasoner_early_think_stopping_enabled:
@@ -257,6 +281,8 @@ index 7628272ee..2f5c4a3b4 100644
 +                        self.sequence_data[req_id] = seq_data
 +
 +                    seq_data._output_token_ids = array.array("l", self.req_output_token_ids[index])
++                    if self.reuse_prefill_token is not None:
++                        seq_data._output_token_ids.extend(self.reuse_prefill_token)
 +                    all_seq_data[index] = seq_data
 +        return all_seq_data
  
