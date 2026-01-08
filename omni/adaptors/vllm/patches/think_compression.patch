@@ -239,7 +239,7 @@ index 7628272ee..2338a0ffb 100644
              self.req_output_token_ids[req_index] = request.output_token_ids
  
 +        if reuse_prefilled_tokens:
-+            if request.sampling_params.extra_args['kv_transfer_params'] and "prefilled_token" in request.sampling_params.extra_args['kv_transfer_params']:
++            if request.sampling_params.extra_args is not None and request.sampling_params.extra_args['kv_transfer_params'] and "prefilled_token" in request.sampling_params.extra_args['kv_transfer_params']:
 +                self.reuse_prefill_token = request.sampling_params.extra_args['kv_transfer_params']['prefilled_token']
 +
          self.req_id_to_index[req_id] = req_index
