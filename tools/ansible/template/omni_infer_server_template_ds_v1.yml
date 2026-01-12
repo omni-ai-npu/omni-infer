@@ -86,8 +86,8 @@
       export TASK_QUEUE_ENABLE=2
       export VLLM_CUSTOM_MODEL_ENABLE=False   # use open-souce model when set False
       export OMNI_NPU_VLLM_PATCHES_ALL=1
-      export VLLM_PLUGINS="omni_npu,omni_patches"
-      # 使用高性能脚本应改为 export VLLM_PLUGINS="omni_npu,omni_patches,omni_custom_models"
+      export VLLM_PLUGINS="omni-npu,omni_npu_patches"
+      # 使用高性能脚本应改为 export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
@@ -164,8 +164,8 @@
       export TASK_QUEUE_ENABLE=1
       export VLLM_CUSTOM_MODEL_ENABLE=False   # use open-souce model when set False
       export OMNI_NPU_VLLM_PATCHES_ALL=1
-      export VLLM_PLUGINS="omni_npu,omni_patches"
-      # 使用高性能脚本应改为 export VLLM_PLUGINS="omni_npu,omni_patches,omni_custom_models"
+      export VLLM_PLUGINS="omni-npu,omni_npu_patches"
+      # 使用高性能脚本应改为 export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
       dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
       ((dp++))
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
