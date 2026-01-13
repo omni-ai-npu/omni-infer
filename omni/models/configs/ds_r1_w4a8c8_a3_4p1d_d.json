@@ -21,6 +21,7 @@
       "expert_down_prefetch": 0,
       "attn_prefetch": 96,
       "decode_experts_pruning": true,
-      "new_w4_op": false
+      "new_w4_op": false,
+      "enable_omni_attn_optimization": false
     }
   }

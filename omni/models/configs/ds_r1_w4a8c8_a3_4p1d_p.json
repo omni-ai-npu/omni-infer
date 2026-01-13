@@ -14,6 +14,7 @@
       "enable_prefill_micro_batch": false,
       "experts_pruning": true,
       "use_mlaprolog": true,
-      "fa_quant": true
+      "fa_quant": true,
+      "enable_omni_attn_optimization": false
     }
   }

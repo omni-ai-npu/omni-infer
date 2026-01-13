@@ -14,6 +14,7 @@
         "fa_quant": false,
         "control_accept_rate": -1,
         "enable_prefill_micro_batch": false,
-        "experts_pruning": true
+        "experts_pruning": true,
+        "enable_omni_attn_optimization": false
     }
 }

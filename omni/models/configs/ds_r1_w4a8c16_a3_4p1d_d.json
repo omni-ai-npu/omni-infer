@@ -21,6 +21,7 @@
         "expert_gate_up_prefetch": 50,
         "expert_down_prefetch": 0,
         "attn_prefetch": 96,
-        "decode_experts_pruning": true
+        "decode_experts_pruning": true,
+        "enable_omni_attn_optimization": false
     }
 }
