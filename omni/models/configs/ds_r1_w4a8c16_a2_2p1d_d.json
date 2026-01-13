@@ -18,6 +18,7 @@
         "pd_seperate_prefill": false,
         "prefill_enable_long_seq": false,
         "use_prefetch": true,
-        "prefill_enable_mla_alltoall_local": false
+        "prefill_enable_mla_alltoall_local": false,
+        "enable_omni_attn_optimization": false
     }
 }
