@@ -103,7 +103,7 @@ def update_container_name(node_type, node_name, container_name_prefix, yml_file_
                     f'{container_name_prefix}_{node_name}'
 
         with open(yml_file_path, 'w') as file:
-            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+            yaml.dump(data, file, default_flow_style=False, sort_keys=False, allow_unicode=True)
     else:
         raise ValueError(f"There is no data in {yml_file_path}")
         return
@@ -205,7 +205,7 @@ def update_cfg_yml(node_type, node_name, sections, yml_file_path):
             print(f"{INFO} You have modified the configuration of node {node_name}")
 
         with open(yml_file_path, 'w') as file:
-            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+            yaml.dump(data, file, default_flow_style=False, sort_keys=False, allow_unicode=True)
     else:
         print(f"{ERROR} There is no data in {yml_file_path}.")
         return
@@ -283,7 +283,7 @@ def delete_model_path(sections):
         del default_cfg['model_path_used']
 
     with open(default_cfg_path , 'w') as file:
-        yaml.dump(default_cfg, file, default_flow_style=False, sort_keys=False)
+        yaml.dump(default_cfg, file, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
     env_list = sections['env']
@@ -318,7 +318,7 @@ def delete_cfg_yml(node_type, node_name, sections, yml_file_path):
             print(f"{INFO} You have deleted the configuration of node {node_name}")
 
         with open(yml_file_path, 'w') as file:
-            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+            yaml.dump(data, file, default_flow_style=False, sort_keys=False, allow_unicode=True)
     else:
         print(f"{ERROR} There is no data in {yml_file_path}.")
         return
@@ -334,7 +334,7 @@ def cfg_set_process(node_type, node_name, args, sections, deploy_path):
     data =  get_data_from_yaml(deploy_path)
     if data:
         with open(deploy_path , 'w') as file:
-            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+            yaml.dump(data, file, default_flow_style=False, sort_keys=False, allow_unicode=True)
     else:
         raise ValueError(f"There is no data in {deploy_path}")
         return
