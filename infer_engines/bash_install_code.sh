@@ -44,3 +44,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/support_v1_priority_schedule_for_xiaoy
 git apply --whitespace=nowarn $PATCH_ROOT/patch_support_prefilled_token_skip_tokenize_completion.patch
 git apply --whitespace=nowarn $PATCH_ROOT/automatic_prefix_caching_response_details.patch
 git apply --whitespace=nowarn $PATCH_ROOT/think_compression.patch
+git apply --whitespace=nowarn $PATCH_ROOT/automatic_prefix_caching_response_details_bugfix.patch
