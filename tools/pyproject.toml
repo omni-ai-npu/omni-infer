@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omni_cli"
-version = "0.4.0"
+dynamic = ["version"]
 description = "Standalone CLI tool from Omni Infer"
 authors = [
     { name="Huawei" }
@@ -24,4 +24,7 @@ where = ["."]
 include = ["omni_cli*"]
 
 [tool.setuptools.package-data]
-"omni_cli" = ["configs/*.yml"]
+"omni_cli" = ["configs/**/*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "omni_cli._version.__version__"}

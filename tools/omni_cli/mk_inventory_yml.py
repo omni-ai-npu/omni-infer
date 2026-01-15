@@ -1,9 +1,16 @@
 import yaml
 import os
+import re
 
 INFO    = "\033[92m[INFO]\033[0m"      # green
 WARNING = "\033[93m[WARNING]\033[0m"   # yellow
 ERROR   = "\033[91m[ERROR]\033[0m"     # red
+FRAMEWORK = "vllm"                     # vllm
+
+DEFAULT_PROFILE_CONFIG = {
+    'deepseek': 'default_profiles.yml',
+    'qwen': 'default_qwen_profiles.yml',
+}
 
 def load_yaml(path):
     """Load YAML file content, return empty dict if file doesn't exist"""
@@ -19,15 +26,27 @@ def save_yaml(path, data):
 
 def add_node(args):
     """Add a node to server_profiles.yml under all.children.{role}.hosts"""
+
+    model_name = args.model_name
+    if model_name not in DEFAULT_PROFILE_CONFIG:
+        print(f"{WARNING} model_name config is not supported, use deepseek config as default")
+        default_file_name = DEFAULT_PROFILE_CONFIG['deepseek']
+    else:
+        default_file_name = DEFAULT_PROFILE_CONFIG[model_name]
+
     # Locate default_profiles.yml and server_profiles.yml
     base_dir = os.path.dirname(__file__)
-    default_path = os.path.join(base_dir, 'configs', 'default_profiles.yml')
+    default_path = os.path.join(base_dir, 'configs', default_file_name)
     deploy_path = args.deploy_path
     default_profiles = load_yaml(default_path)
 
     # Validate default profiles structure
-    if not default_profiles or 'profiles' not in default_profiles or 'vllm' not in default_profiles['profiles']:
-        print(f"{ERROR} default_profiles.yml not found or invalid.")
+    if not default_profiles or 'profiles' not in default_profiles or FRAMEWORK not in default_profiles['profiles']:
+        print(f"{ERROR} {default_file_name} not found or invalid.")
+        return
+
+    if model_name not in default_profiles['profiles'][FRAMEWORK]:
+        print(f"{ERROR} {model_name} is not supported.")
         return
 
     # Load or create deployment file
@@ -80,7 +99,7 @@ def add_node(args):
         'ansible_ssh_private_key_file': args.ssh_private_key_file,
         'ansible_host': args.host_ip,
         'container_name': f"{container_name_prefix}_{args.name}",  # Set container name
-        'ascend_rt_visible_devices': '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15'
+        'ascend_rt_visible_devices': args.ascend_rt_visible_devices
     }
 
     # Add DOCKER_IMAGE_ID if provided
@@ -88,7 +107,7 @@ def add_node(args):
         node['DOCKER_IMAGE_ID'] = args.docker_image_id
 
     # Get role-specific configuration from default profiles
-    role_config = default_profiles['profiles']['vllm']['deepseek'].get(args.role)
+    role_config = default_profiles['profiles'][FRAMEWORK][model_name].get(args.role)
     env = role_config.get('env', {}).copy()
 
     # Set master IP if not provided
@@ -127,10 +146,62 @@ def add_node(args):
 
     node['env'] = env
 
+    # Verify whether the devices parameter is valid
+    _validate_and_process_devices(children, args, node)
+
     # Add node to hosts and save deployment
     hosts[args.name] = node
     save_yaml(deploy_path, deployment)
     print(f"{INFO} Node '{args.name}' added successfully to role '{args.role}'.")
+
+def _validate_and_process_devices(children, args, node):
+    role = args.role
+    if role == 'C':
+        return
+    devices = args.ascend_rt_visible_devices
+    devices_pattern = r'^\d+(?:,\d+)*$'
+    if not re.fullmatch(devices_pattern, devices):
+        raise ValueError(f"{ERROR} '{devices}' is not a valid device.")
+    if role not in ['P', 'D'] and devices:
+        raise ValueError(f"{ERROR} Node '{args.name}' role '{role}' not supported.")
+
+    # Check for duplicate devices across instances with the same IP
+    numbers = set(devices.split(','))
+    for key, value in children[role]['hosts'].items():
+        ip = value['ansible_host']
+        if ip != node['ansible_host']:
+            continue
+        duplicate_devices = numbers.intersection(set(value['ascend_rt_visible_devices'].split(',')))
+        if numbers.intersection(set(value['ascend_rt_visible_devices'].split(','))):
+            raise ValueError(f"{ERROR} The ansible_host:"
+                             f" '{ip}' has already been used by ascend_rt_visible_devices: {duplicate_devices}.")
+
+    # Set the devices for the instance
+    node['ascend_rt_visible_devices'] = devices
+    env = node['env']
+    args = node['args']
+
+    env['ASCEND_RT_VISIBLE_DEVICES'] = devices
+
+    # The prefill node defaults to tp
+    if role == 'P':
+        devices_length = len(devices.split(','))
+        args['tp'] = devices_length
+        env['PREFILL_SERVER_LIST'] = devices
+        env['PREFILL_TENSOR_PARALLEL_SIZE'] = devices_length
+
+    # The decode node defaults to dp
+    if role == 'D':
+        devices_length = len(devices.split(','))
+        args['num-dp'] = devices_length // args['tp']
+        env['DECODE_SERVER_LIST'] = devices
+
+    num_servers = len(devices.split(',')) / args['tp']
+    if num_servers % 1 != 0:
+        raise ValueError(f"{ERROR} num_servers = devices / tp,  '{num_servers}' must be an integer.")
+    args['num-servers'] = int(num_servers)
+
+    node['env'] = env
 
 def rm_node(args):
     """Remove node from server_profiles.yml and reassign ports for the role"""
@@ -154,7 +225,7 @@ def rm_node(args):
     # Reassign ports for remaining nodes in this role
     default_path = os.path.join(base_dir, 'configs', 'default_profiles.yml')
     default_profiles = load_yaml(default_path)
-    role_config = default_profiles['profiles']['vllm']['deepseek'].get(args.role)
+    role_config = default_profiles['profiles'][FRAMEWORK][args.model_name].get(args.role)
     env_template = role_config.get('env', {}).copy()
 
     # Set offset based on role
