@@ -93,7 +93,7 @@
       export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
       KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
       # 此为跑性能配置，跑精度应改为--max-num-batched-tokens 60000
-      EXTRA_ARGS="--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --max-num-seqs 16 --no-enable-prefix-caching  --distributed-executor-backend mp --dtype bfloat16"
+      EXTRA_ARGS="--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --max-num-seqs 16 --no-enable-prefix-caching --dtype bfloat16"
       GPU_UTIL=0.92 # 此为跑性能配置，跑精度应改为0.965
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
@@ -117,9 +117,11 @@
         export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
         export RAY_CGRAPH_get_timeout=7200
         ray stop --force
-        EXTRA_ARGS="${EXTRA_ARGS} --distributed-executor-backend mp"
+        EXTRA_ARGS="${EXTRA_ARGS} --distributed-executor-backend ray"
         node_count=$(( $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) + 1 ))
         PREFILL_TENSOR_PARALLEL_SIZE=$(( PREFILL_TENSOR_PARALLEL_SIZE * node_count ))
+      else
+        EXTRA_ARGS="${EXTRA_ARGS} --distributed-executor-backend mp"
       fi
 
       cd /workspace/omniinfer/tools/scripts
@@ -176,8 +178,10 @@
           {% endfor %}
       )
       EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode": "FULL_AND_PIECEWISE", "cudagraph_capture_sizes":[2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62,64], "backend":"eager", "compile_sizes":[64]}'
-      # 此为跑性能配置，跑精度配置如下
-      # EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 8 --no-enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode": "FULL_AND_PIECEWISE", "cudagraph_capture_sizes":[2,4,6,8,10,12,14,16], "backend":"eager", "compile_sizes":[64]}'
+      # 此为适配流水线配置，跑性能配置如下
+      # EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode": "FULL_AND_PIECEWISE", "cudagraph_capture_sizes":[2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62,64], "backend":"eager", "compile_sizes":[2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62,64]}'
+      # 跑精度配置如下
+      # EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 8 --no-enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode": "FULL_AND_PIECEWISE", "cudagraph_capture_sizes":[2,4,6,8,10,12,14,16], "backend":"eager", "compile_sizes":[2,4,6,8,10,12,14,16}'
       GPU_UTIL=0.8 #跑精度应改为0.81
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
@@ -417,12 +421,13 @@
       {{ docker_exec_cmd }}
       -e KV_CONNECTOR=$KV_CONNECTOR
       $DOCKER_NAME_P
-      /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/build && git config --global --add safe.directory /workspace/omniinfer && pip uninstall omni_infer -y && bash build.sh -m "omni-npu"> ${LOG_PATH}/{{ inventory_hostname }}/install.log;'
+      /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/build && git config --global --add safe.directory /workspace/omniinfer && pip uninstall omni_infer -y && bash build.sh -m "omni-npu,omni-cache,omni-eplb"> ${LOG_PATH}/{{ inventory_hostname }}/install.log;'
+    # bash build.sh -m "omni-npu,omni-cache,omni-eplb"为编译omni-npu,omni-cache,omni-eplb模块，可根据需要去除不需要的模块，比如bash build.sh -m "omni-npu" 仅编译omni-npu模块
     docker_update_decode_code_cmd: >
       {{ docker_exec_cmd }}
       -e KV_CONNECTOR=$KV_CONNECTOR
       $DOCKER_NAME_D
-      /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/build && git config --global --add safe.directory /workspace/omniinfer && pip uninstall omni_infer -y && bash build.sh -m "omni-npu"> ${LOG_PATH}/{{ inventory_hostname }}/install.log;'
+      /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/build && git config --global --add safe.directory /workspace/omniinfer && pip uninstall omni_infer -y && bash build.sh -m "omni-npu,omni-cache,omni-eplb"> ${LOG_PATH}/{{ inventory_hostname }}/install.log;'
     docker_start_etcd_cmd: >
       {{ docker_exec_cmd }}
       -e KV_CONNECTOR=$KV_CONNECTOR
