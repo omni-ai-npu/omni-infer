@@ -208,7 +208,7 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES_ALL: 1
+            OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.5
           master_node: d0
@@ -397,7 +397,7 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES_ALL: 1
+            OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.5
           master_node: d0
@@ -586,7 +586,7 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES_ALL: 1
+            OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.5
           master_node: d0
@@ -775,7 +775,7 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES_ALL: 1
+            OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.5
           master_node: d0
@@ -900,7 +900,7 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES_ALL: 1
+            OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.1
           master_node: p0
@@ -1023,7 +1023,7 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES_ALL: 1
+            OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.2
           master_node: p1
@@ -1146,7 +1146,7 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES_ALL: 1
+            OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.3
           master_node: p2
@@ -1269,7 +1269,7 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES_ALL: 1
+            OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.4
           master_node: p3

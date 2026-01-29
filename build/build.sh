@@ -7,6 +7,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 ALL_MODULES=()
+SKIP_PULL=0
+SKIP_INSTALL=0
 
 # 定义各模块所用的git仓库及分支
 declare -A GIT_PATH_OF_MODULE
@@ -237,6 +239,14 @@ parse_args() {
                     exit 1
                 fi
                 ;;
+            -sp|--skip-pull)
+                SKIP_PULL=1
+                shift
+                ;;
+            -si|--skip-install)
+                SKIP_INSTALL=1
+                shift
+                ;;
             -h|--help)
                 show_help
                 exit 0
@@ -281,12 +291,16 @@ main() {
     local project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
     
     # 初始化子模块
-    init_submodules "$project_root"
+    if [[ "$SKIP_PULL" == "0" ]]; then
+        init_submodules "$project_root"
+    fi
     
     log_info "项目根目录: $project_root"
     
     # 遍历并处理所有子模块
-    traverse_submodules "$project_root"
+    if [[ "$SKIP_INSTALL" == "0" ]]; then
+        traverse_submodules "$project_root"
+    fi
     
     log_info "${MODULES_TO_BUILD[*]}子模块处理完成！"
 }
