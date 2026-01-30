@@ -84,12 +84,12 @@ def start_single_node_api_servers(
     master_port,
     total_dp_size,
     gpu_util,
-    block_size,
-    tp,
-    pp,
-    distributed_executor_backend,
     served_model_name,
     server_offset=0,
+    block_size=128,
+    tp=1,
+    pp=1,
+    distributed_executor_backend=None,
     kv_transfer_config=None,
     log_dir="logs",
     max_port_attempts=10,
@@ -125,17 +125,9 @@ def start_single_node_api_servers(
 
     os.makedirs(log_dir, exist_ok=True)
     processes = []
-
-    # Check if base api port is available. Raise error if it's unavailable.
-    if not is_port_available(base_api_port):
-        raise RuntimeError(
-            f"Port {base_api_port} is not available. "
-            "Use --base_api_port to specify a different port, or terminate the process using this port."
-        )
     
     api_port_start = base_api_port
     servers_api_ports = {}
-
     for rank in range(num_servers):
         # Set environment variables for each server
         env = os.environ.copy()
@@ -262,13 +254,6 @@ def start_single_node_api_servers(
 
     process_manager = ProcessManager(processes)
 
-    # this file records the API ports assigned to each server instance for RL
-    rl_service_mode = os.getenv("RL_SERVICE_MODE", "0") == "1"
-    if rl_service_mode:
-        ports_config_file = os.path.join(log_dir, f"servers_api_ports.json")
-        with open(ports_config_file, "w") as f:
-            json.dump(servers_api_ports, f)
-
     # Define cleanup function for weakref.finalize
     def cleanup_processes():
         for i, (proc, log) in enumerate(process_manager.processes):
@@ -287,7 +272,13 @@ def start_single_node_api_servers(
         if os.path.exists(ports_config_file):
             print("clean up temp file...")
             os.remove(ports_config_file)
-
+    # this file records the API ports assigned to each server instance for RL
+    rl_service_mode = os.getenv("RL_SERVICE_MODE", "0") == "1"
+    if rl_service_mode:
+        ports_config_file = os.path.join(log_dir, f"servers_api_ports.json")
+        with open(ports_config_file, "w") as f:
+            json.dump(servers_api_ports, f)
+        return processes, process_manager, servers_api_ports
     # Set up finalizer for garbage collection
     weakref.finalize(process_manager, cleanup_processes)
 
@@ -295,7 +286,7 @@ def start_single_node_api_servers(
     print('-' * terminal_width)
     print(f"Started {num_servers} servers. Logs are in {log_dir}/")
     print(f"Run 'tail -f {log_dir}/server_*.log' to monitor logs in real-time.")
-    return processes, process_manager
+    return processes, process_manager, servers_api_ports
 
 
 def signal_handler(sig, frame):
@@ -374,7 +365,7 @@ if __name__ == "__main__":
             "Number of DP should be larger or eaqual to number of API servers."
         )
 
-    processes, process_manager = start_single_node_api_servers(
+    processes, process_manager, _ = start_single_node_api_servers(
         num_servers=args.num_servers,
         model_path=args.model_path,
         base_api_port=args.base_api_port,

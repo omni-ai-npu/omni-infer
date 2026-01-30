@@ -5,6 +5,7 @@ import time
 import math
 from contextlib import nullcontext, contextmanager
 from typing import Any, Optional, Tuple, Dict
+import multiprocessing
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -698,9 +699,12 @@ class DeepseekMLA(nn.Module):
     def _process_mla_prolog_weight(self, weight):
         if weight.dtype == torch.int8:
             return weight
+        current_method = multiprocessing.get_start_method()
+        multiprocessing.set_start_method('spawn', force=True)
         weight.data = torch_npu.npu_format_cast(weight.data, 2)
         weight.data = weight.data.transpose(0, 1).contiguous()
         weight.data = torch_npu.npu_format_cast(weight.data, 29)
+        multiprocessing.set_start_method(current_method, force=True)
         if not hasattr(weight, "is_weight_transposed"):
             set_weight_attrs(weight, {"is_weight_transposed": True})
         return weight

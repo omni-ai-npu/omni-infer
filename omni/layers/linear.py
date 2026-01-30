@@ -52,7 +52,11 @@ class AscendReplicatedLinear(ReplicatedLinear):
         super().weight_loader(param, loaded_weight)
         # veRL special case: transpose the weight to use torch npu operator
         if is_weight_transposed:
+            current_method = multiprocessing.get_start_method()
+            multiprocessing.set_start_method('spawn', force=True)
             param.data = torch_npu.npu_format_cast(param.data.t_(), 29)
+            multiprocessing.set_start_method(current_method, force=True)
+
 
 class AscendColumnParallelLinear(ColumnParallelLinear):
 
@@ -64,7 +68,10 @@ class AscendColumnParallelLinear(ColumnParallelLinear):
         super().weight_loader(param, loaded_weight)
         # veRL special case: transpose the weight to use torch npu operator
         if is_weight_transposed:
+            current_method = multiprocessing.get_start_method()
+            multiprocessing.set_start_method('spawn', force=True)
             param.data = torch_npu.npu_format_cast(param.data.t_(), 29)
+            multiprocessing.set_start_method(current_method, force=True)
 
 class AscendUnquantizedLinearMethod(UnquantizedLinearMethod):
 
