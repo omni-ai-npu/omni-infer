@@ -124,7 +124,7 @@ class LLMDataDistConnector(KVConnectorBase_V1):
             raise RuntimeError("vllm_config.kv_transfer_config cannot be None")
 
         if vllm_config.model_config.is_deepseek_mla:
-            if model_extra_config.operator_opt_config.use_dcp:
+            if vllm_config.parallel_config.decode_context_parallel_size > 1:
                 kv_parallel_size = vllm_config.additional_config.get("attn_tp_size", 1)
                 vllm_config.kv_transfer_config.kv_parallel_size = kv_parallel_size
             else:

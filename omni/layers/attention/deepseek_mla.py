@@ -1865,14 +1865,14 @@ def update_attn_out_a2a(out: torch.Tensor, lse: torch.Tensor, cp_group: GroupCoo
         output: [ N, B, L ]
         lse   : [ B, N, 1 ]
     """
-
+    dtype = out.dtype
     num_head, bs, head_dim = out.shape
     
     with tng.scope.npu_stream_switch('out'):
         with tng.scope.limit_core_num("0", "12"):
             out_parallel = out.new_empty(cp_group.world_size, num_head // cp_group.world_size, *out.shape[1:])
             dist.all_to_all_single(out_parallel.view(-1), out.view(-1), group=cp_group.device_group)
-            out_parallel_list = [item.view(-1, head_dim) for item in out_parallel.unbind(0)]
+            out_parallel_list = [item.view(-1, head_dim).float() for item in out_parallel.unbind(0)] #FIXME: need latest npu_attention_update to support bfloat16 in
     with tng.scope.npu_stream_switch('lse'):
         with tng.scope.limit_core_num("0", "12"):
             lse = lse.transpose(0,1).contiguous()
@@ -1884,7 +1884,7 @@ def update_attn_out_a2a(out: torch.Tensor, lse: torch.Tensor, cp_group: GroupCoo
 
     output_local_head = output_local_head[0].view(num_head // cp_group.world_size, bs, head_dim)   # [ N / cp_size, B , L]
 
-    return output_local_head
+    return output_local_head.to(dtype)
 
 def update_attn_out_a2a_torch(out: torch.Tensor, lse: torch.Tensor, cp_group: GroupCoordinator):
     """
@@ -1898,22 +1898,22 @@ def update_attn_out_a2a_torch(out: torch.Tensor, lse: torch.Tensor, cp_group: Gr
         output: [ N, B, L ]
         lse   : [ B, N, 1 ]
     """
-
+    dtype = out.dtype
     num_head, bs, head_dim = out.shape
     
     out_parallel = out.new_empty(cp_group.world_size, num_head // cp_group.world_size, *out.shape[1:])
     dist.all_to_all_single(out_parallel.view(-1), out.view(-1), group=cp_group.device_group)
     out_parallel = out_parallel.view(cp_group.world_size, -1, head_dim)
-    outs = out_parallel.transpose(0,1).float()
+    outs = out_parallel.transpose(0, 1).float()
     
-    lse = lse.transpose(0,1).contiguous()
+    lse = lse.view(-1, num_head).transpose(0, 1).contiguous()
     lse_parallel = lse.new_empty(cp_group.world_size, num_head // cp_group.world_size, *lse.shape[1:])
     dist.all_to_all_single(lse_parallel.view(-1), lse.view(-1), group=cp_group.device_group)
     lse_parallel = lse_parallel.view(cp_group.world_size, -1)
-    lses = lse_parallel.transpose(0,1).float()
+    lses = lse_parallel.transpose(0, 1).float()
     
-    assert outs.dim() == 3 and lse.dim() == 2
-    assert outs.size(0) == lse.size(0) and outs.size(1) == lse.size(1)
+    assert outs.dim() == 3 and lses.dim() == 2
+    assert outs.size(0) == lses.size(0) and outs.size(1) == lses.size(1)
     
     # inf -> _inf
     _inf = torch.tensor(float("-inf"), device=lses.device)
@@ -1924,16 +1924,13 @@ def update_attn_out_a2a_torch(out: torch.Tensor, lse: torch.Tensor, cp_group: Gr
     se = ses.sum(dim=-1)
     valid = se > 0
     
-    lse = torch.where(
-        valid, torch.log(se) + max_lses, _inf
-    )
     sc = torch.where(
         valid.view(-1, 1), ses / se.view(-1, 1), torch.zeros_like(ses)
     ).unsqueeze(2)
     
     out = (outs * sc).sum(1)
-    output_local_head = out.to(torch.float16).view(num_head // cp_group.world_size, bs, head_dim)
-    return output_local_head
+    output_local_head = out.view(num_head // cp_group.world_size, bs, head_dim)
+    return output_local_head.to(dtype)
     
  
 def cp_lse_out_a2a(cp_attn_out: torch.Tensor,
@@ -1947,7 +1944,7 @@ def cp_lse_out_a2a(cp_attn_out: torch.Tensor,
         return cp_attn_out
     cp_attn_lse = cp_attn_lse.contiguous()
 
-    if model_extra_config.operator_opt_config.use_attn_update:
+    if model_extra_config.operator_opt_config.enable_attn_update and cp_group.world_size <= 16:
         out = update_attn_out_a2a(cp_attn_out, cp_attn_lse, cp_group)
     else:
         out = update_attn_out_a2a_torch(cp_attn_out, cp_attn_lse, cp_group)

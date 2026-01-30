@@ -1146,7 +1146,7 @@ class NPUModelRunner(GPUModelRunner):
         for self.curr_step in range(self.total_step):
             start_1 = time.time()
             if not scheduler_output.total_num_scheduled_tokens:
-                if get_dp_group().world_size > 1 and (not self.enable_sleep_mode):
+                if get_dp_group().world_size > 1:
                    self._dummy_run(1)
                 else:
                     time.sleep(0.001) # release GIL

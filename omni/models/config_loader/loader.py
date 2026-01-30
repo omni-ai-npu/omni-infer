@@ -7,7 +7,6 @@ import os
 import torch
 
 import logging
-from vllm.config import get_current_vllm_config
 from omni.models.config_loader.features import apply_eager_mode_config, apply_fusion_pass
 
 def init_logger(name: str) -> logging.Logger:
@@ -137,7 +136,7 @@ class ModelOperatorOptConfig:
     enable_e_score_correction_bias: bool = False # moe部分是否启用e_score_correction_bias
     use_dcp: bool = False # 开启KV切片和decode context parallel
     enable_omni_attn_optimization: bool = True
-    use_attn_update: bool = True # use_dcp场景下是否使用attn update融合算子
+    enable_attn_update: bool = False # use_dcp场景下是否使用attention update融合算子; 1230商发CANN不支持入图
 
     def __post_init__(self):
 
@@ -381,7 +380,6 @@ def _init_model_extra_config(task_config):
         setattr(operator_opt_config, 'use_omni_cache', getattr(operator_opt_config, 'use_omni_cache', False))
         setattr(operator_opt_config, 'use_omni_cache', os.getenv("ENABLE_OMNI_CACHE") == "1")
         setattr(operator_opt_config, 'tp_nnodes', int(os.environ.get("OMNI_CACHE_TP_NNODES", "1")))
-        setattr(operator_opt_config, 'use_dcp', get_current_vllm_config().parallel_config.decode_context_parallel_size > 1)
 
         setattr(model_extra_config, 'task_config', task_config)
         setattr(model_extra_config, 'parall_config', parall_config)
