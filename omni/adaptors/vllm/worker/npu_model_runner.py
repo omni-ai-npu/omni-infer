@@ -1562,7 +1562,10 @@ class NPUModelRunner(GPUModelRunner):
     def profile_run(self) -> None:
         if self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer" \
             and not model_extra_config.task_config.enable_attn_ffn_disaggregation:
-            hidden_states = self._dummy_run(self.max_batch_size * get_dp_group().world_size * get_tensor_model_parallel_world_size())
+            num_reqs_per_device = get_dp_group().world_size
+            if self.vllm_config.model_config.use_mla:
+                num_reqs_per_device *= get_tensor_model_parallel_world_size()
+            hidden_states = self._dummy_run(self.max_batch_size * num_reqs_per_device)
         elif model_extra_config.task_config.enable_attn_ffn_disaggregation:
             hidden_states = self._dummy_run(self.max_num_reqs)
         else:

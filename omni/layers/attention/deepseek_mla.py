@@ -904,7 +904,7 @@ class DeepseekMLA(nn.Module):
         if kv_cache is not None and isinstance(kv_cache, Tuple) and kv_cache[0].numel() > 0:
             slot_mapping = attn_metadata.slot_mapping
             _, _, k_pe, kv_a = torch_npu.npu_kv_rmsnorm_rope_cache(
-                latent_cache.view(-1, 1, 1, 576), # bnsd
+                latent_cache.view(-1, 1, 1, self.kv_lora_rank + self.qk_rope_head_dim), # bnsd
                 self.kv_a_layernorm.weight,
                 cos,
                 sin,
@@ -1612,11 +1612,6 @@ class DeepseekMLA(nn.Module):
                 actual_seq_lengths_kv=attn_metadata.decode.seq_lens,
                 softmax_lse_flag=model_extra_config.operator_opt_config.use_dcp
             )
-            if model_extra_config.operator_opt_config.use_dcp:
-                out_mask = attn_metadata.decode.batch_seq_out_mask
-                attn_output = torch.where(out_mask, 0, attn_output)
-                lse_mask = attn_metadata.decode.batch_seq_lse_mask
-                lse = torch.where(lse_mask, float('-inf'), lse)
         
         if model_extra_config.operator_opt_config.use_dcp:
             assert lse is not None, (
