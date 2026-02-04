@@ -23,8 +23,8 @@
     # Global Configuration
     LOG_PATH: "/data/log_path"
     MODEL_PATH: "/your/path/models/DeepSeek-V3.2-INT8"
-    MODEL_LEN_MAX_PREFILL: "16384" # 此为跑性能配置，跑精度应改为60000
-    MODEL_LEN_MAX_DECODE: "8192" # 此为跑性能配置，跑精度应改为64000
+    MODEL_LEN_MAX_PREFILL: "33792" # 此为跑性能配置，跑精度应改为60000
+    MODEL_LEN_MAX_DECODE: "64000" # 此为跑性能配置，跑精度应改为64000
     LOG_PATH_IN_EXECUTOR: "/your/path/log_path"
     CODE_PATH: "/your/path/ds32"
     KV_CONNECTOR: "LLMDataDistConnector"
@@ -80,7 +80,7 @@
       #!/bin/bash
 
       . ~/.bashrc
-      export OMNI_NPU_VLLM_PATCHES_ALL=1
+      export OMNI_NPU_VLLM_PATCHES="ALL"
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
       export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
@@ -89,15 +89,15 @@
       export HCCL_INTRA_ROCE_ENABLE="1"
       export HCCL_INTRA_PCIE_ENABLE="0"
       export VLLM_WORKER_MULTIPROC_METHOD="fork"
-      export TASK_QUEUE_ENABLE=2
+      export TASK_QUEUE_ENABLE=1
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
       KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
       if [ ${USE_OMNI_PROXY} = "1" ]; then
-        EXTRA_ARGS="--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --max-num-seqs 16 --no-enable-prefix-caching  --distributed-executor-backend mp --no-enable-chunked-prefill --dtype bfloat16 --kv-cache-dtype bfloat16"
+        EXTRA_ARGS="--max-num-batched-tokens 33792 --enforce-eager --enable-expert-parallel --max-num-seqs 4 --no-enable-prefix-caching  --distributed-executor-backend mp --dtype bfloat16 --kv-cache-dtype bfloat16"
       else
-        EXTRA_ARGS="--max-num-batched-tokens 30000 --enforce-eager --enable-expert-parallel --max-num-seqs 16 --no-enable-prefix-caching  --distributed-executor-backend mp --no-enable-chunked-prefill --dtype bfloat16 --kv-cache-dtype bfloat16"
+        EXTRA_ARGS="--max-num-batched-tokens 33792 --enforce-eager --enable-expert-parallel --max-num-seqs 4 --no-enable-prefix-caching  --distributed-executor-backend mp --dtype bfloat16 --kv-cache-dtype bfloat16"
       fi
       GPU_UTIL=0.92
       VLLM_ENABLE_MC2=1
@@ -165,18 +165,17 @@
 
       . ~/.bashrc
       HCCL_BUFFSIZE=400
-      export OMNI_NPU_VLLM_PATCHES_ALL=1
+      export OMNI_NPU_VLLM_PATCHES="ALL"
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
       export HCCL_EXEC_TIMEOUT=1800
-      export ASCEND_LAUNCH_BLOCKING=1
       export ASCEND_GLOBAL_LOG_LEVEL=3
       export VLLM_LOGGING_LEVEL="INFO"
       export HCCL_INTRA_ROCE_ENABLE="1"
       export HCCL_INTRA_PCIE_ENABLE="0"
       export VLLM_WORKER_MULTIPROC_METHOD="fork"
-      rm -rf /root/.cache/vllm/torch_compile_cache
-      export VLLM_DISABLE_COMPILE_CACHE=1
+      #rm -rf /root/.cache/vllm/torch_compile_cache
+      #export VLLM_DISABLE_COMPILE_CACHE=1
       export TASK_QUEUE_ENABLE=1
       # export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
       export VLLM_PLUGINS="omni-npu,omni_npu_patches"
@@ -189,9 +188,8 @@
           [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
           {% endfor %}
       )
-      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16 --no-enable-chunked-prefill'
-      GPU_UTIL=0.92
-      ADDITIONAL_CONFIG='{"compilation-config": {"level": 3, "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[1,2,3,4], "backend":"eager", "compile_sizes":[1,2,3,4]}}'
+      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 4 --no-enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16 --max-num-batched-tokens 256 --compilation-config {"level": 3, "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[4], "backend":"eager", "compile_sizes":[4]}'
+      GPU_UTIL=0.9
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
@@ -234,7 +232,6 @@
         --gpu-util ${GPU_UTIL} \
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
         --extra-args "${EXTRA_ARGS}" \
-        --additional-config "$ADDITIONAL_CONFIG" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
         --num-speculative-tokens 0 \
