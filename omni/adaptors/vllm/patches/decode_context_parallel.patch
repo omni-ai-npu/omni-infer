@@ -1,5 +1,5 @@
 diff --git a/vllm/config.py b/vllm/config.py
-index 1e0f6fbf5..22a73c540 100644
+index 1e0f6fbf5..3f2e9e297 100644
 --- a/vllm/config.py
 +++ b/vllm/config.py
 @@ -1680,7 +1680,10 @@ DistributedExecutorBackend = Literal["ray", "mp", "uni", "external_launcher"]
@@ -15,7 +15,7 @@ index 1e0f6fbf5..22a73c540 100644
      """Number of pipeline parallel groups."""
      tensor_parallel_size: int = 1
 diff --git a/vllm/engine/arg_utils.py b/vllm/engine/arg_utils.py
-index f63c6c5b6..bc9064706 100644
+index f63c6c5b6..27a7460a1 100644
 --- a/vllm/engine/arg_utils.py
 +++ b/vllm/engine/arg_utils.py
 @@ -285,6 +285,8 @@ class EngineArgs:
@@ -62,7 +62,7 @@ index e9648cc31..2b1479db7 100644
                  max_model_len_str, max_concurrency)
  
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 870f132ad..5f1d97e50 100644
+index bfa94c979..feeb1048f 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
 @@ -342,7 +342,8 @@ class Scheduler(SchedulerInterface):
@@ -75,6 +75,15 @@ index 870f132ad..5f1d97e50 100644
                  if new_blocks is None:
                      # The request cannot be scheduled.
                      # Preempt the lowest-priority request.
+@@ -502,7 +503,7 @@ class Scheduler(SchedulerInterface):
+                     # Get locally-cached tokens.
+                     new_computed_blocks, num_new_local_computed_tokens = \
+                         self.kv_cache_manager.get_computed_blocks(
+-                            request)
++                            request, dcp_size=self.vllm_config.parallel_config.decode_context_parallel_size)
+ 
+                     # Get externally-cached tokens if using a KVConnector.
+                     if self.connector is not None:
 @@ -566,6 +567,7 @@ class Scheduler(SchedulerInterface):
                      num_new_local_computed_tokens,
                      new_computed_blocks,

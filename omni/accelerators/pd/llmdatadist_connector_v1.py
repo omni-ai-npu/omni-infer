@@ -69,7 +69,8 @@ class ReqMeta:
     spec_token_ids: Optional[list[int]]
     remote_dp_rank: Optional[int]
     remote_request_id: Optional[str]
-    num_tokens:Optional[int]
+    num_tokens: Optional[int]
+    num_external_tokens: Optional[int]
     trace_headers: Optional[Mapping[str, str]] = None
 
 @dataclass
@@ -88,6 +89,7 @@ class DatadistConnectorMetadata(KVConnectorMetadata):
         local_block_ids: list[int],
         kv_transfer_params: dict[str, Any],
         num_tokens: Optional[int],
+        num_external_tokens: Optional[int],
         trace_headers: Optional[Mapping[str, str]] = None,
     ):
         self.requests[request_id] = ReqMeta(
@@ -99,6 +101,7 @@ class DatadistConnectorMetadata(KVConnectorMetadata):
             remote_dp_rank=kv_transfer_params.get("remote_dp_rank", 0),
             remote_request_id=kv_transfer_params.get("remote_request_id", None),
             num_tokens=num_tokens,
+            num_external_tokens=num_external_tokens,
             trace_headers=trace_headers  or {},
         )
 
@@ -488,7 +491,7 @@ class DecodeConnectorScheduler:
             if params.get("remote_block_ids"):
                 if all(p in params for p in ("remote_cluster_id", "remote_host_ip")):
                     self._reqs_need_recv[request.request_id] = (
-                        request, blocks.get_unhashed_block_ids())
+                        request, blocks.get_unhashed_block_ids(), num_external_tokens)
                 else:
                     logger.warning(
                         "Got invalid KVTransferParams: %s.", params)
@@ -498,7 +501,7 @@ class DecodeConnectorScheduler:
         scheduler_output: SchedulerOutput,
     ) -> KVConnectorMetadata:
         metadata = DatadistConnectorMetadata()
-        for req_id, (req, block_ids) in self._reqs_need_recv.items():
+        for req_id, (req, block_ids, num_external_tokens) in self._reqs_need_recv.items():
             if req.kv_transfer_params is None:
                 logger.warning(f"For reuqest {req_id}: kv_transfer_params now is None")
             else:
@@ -507,6 +510,7 @@ class DecodeConnectorScheduler:
                     local_block_ids=block_ids,
                     kv_transfer_params=req.kv_transfer_params,
                     num_tokens = req.num_tokens,
+                    num_external_tokens=num_external_tokens,
                     trace_headers=getattr(req, 'trace_headers', None) or {},
                 )
             req.kv_transfer_params = None
@@ -733,8 +737,10 @@ class DecodeConnectorWorker:
                     (meta.num_tokens % block_size if idx == remaining_blocks-1 else 0)
                     for idx in range(prefill_tp)
                 ]
-            start_block = 0
-            end_block = 0
+                hit_block = block_total - meta.num_external_tokens // block_size
+                hit_block_per_rank = hit_block // self.vllm_config.parallel_config.decode_context_parallel_size
+                meta.local_block_ids = hit_block_per_rank * [-1] + meta.local_block_ids
+
             for remote_dp_rank in range(self.pull_cnt):
                 # if the local_block_ids is empty, skip pulling kv for the request
                 if len(meta.local_block_ids) == 0:
@@ -745,17 +751,13 @@ class DecodeConnectorWorker:
                     meta.remote_dp_rank = remote_dp_rank
                     remaining_token = last_col_block_token[self.tp_rank + self.vllm_config.parallel_config.decode_context_parallel_size * remote_dp_rank]    
                     remote_block_ids = meta.remote_block_ids
-                    if remaining_token > 0:
-                        end_block = start_block + completed_blocks + 1
-                    elif remaining_token == 0:
-                        end_block = start_block + completed_blocks
-                        remote_block_ids = meta.remote_block_ids[:-1]
-                    local_block_ids = meta.local_block_ids[start_block:end_block]
-                    
-                    if remaining_token > 0 and remaining_token < block_size:
-                        end_block -= 1
-                        local_block_ids[-1] = meta.local_block_ids[completed_blocks * self.pull_cnt + remote_dp_rank]
-                    start_block = end_block
+                    if remaining_token == 0 and remote_block_ids:
+                        remote_block_ids.pop()
+
+                    local_block_ids = [meta.local_block_ids[remote_dp_rank + self.pull_cnt * i] for i in range(len(meta.remote_block_ids))]
+                    # remove hit blocks
+                    n_1 = next((i for i , x in enumerate(local_block_ids) if x != -1), len(local_block_ids))
+                    local_block_ids, remote_block_ids = local_block_ids[n_1:], remote_block_ids[n_1:]
                 else:
                     
                     # If local_block_ids is a flat list of int, omni-attention is not used
@@ -886,8 +888,7 @@ class DecodeConnectorWorker:
                         prefill_dp_rank=meta.remote_dp_rank,
                         trace_headers=meta.trace_headers or {},
                     )
-                    futures.append(future)            
-            
+                    futures.append(future)
 
         if not self.multi_thread_pull_kv or FLAG_ENABLE_DYNAMIC_LLMDATADIST:
             for future in futures:

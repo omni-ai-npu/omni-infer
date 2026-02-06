@@ -67,10 +67,10 @@ def group_request_list(seq_lens, query_lens, block_tables, threshold):
         blocks_result.append(blocks_current_group)
     return s_lens_result, q_lens_result, blocks_result
 
-def determine_has_context(seq_lens_group, chunksize):
+def determine_has_context(seq_lens_group, seq_qlen_group):
     has_context_result = []
-    for seq_lens in seq_lens_group:
-        has_context = any(seq_len > chunksize for seq_len in seq_lens)
+    for (seq_lens, query_lens) in zip(seq_lens_group, seq_qlen_group):
+        has_context = any(seq_len > query_len for (seq_len, query_len) in zip(seq_lens, query_lens))
         has_context_result.append(has_context)
     return has_context_result
 
@@ -651,7 +651,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                     block_table,
                     self.runner.max_num_tokens)
 
-                has_context_group = determine_has_context(seq_kvlen_group, chunksize)
+                has_context_group = determine_has_context(seq_kvlen_group, seq_qlen_group)
                 # Prepare kv index for prefill get kv_latent from kv_cache
                 if self.runner.attn_state == AscendAttentionState.ChunkedPrefill:
                     kv_index_list = []

@@ -157,10 +157,10 @@ def test_get_kv_index(metadata_builder):
 
 def test_determine_has_context():
     seq_lens_group = [[10, 20, 30], [5, 15, 25], [8, 18, 28]]
-    chunksize = 20
+    seq_qlen_group = [[10, 18, 30], [5, 10, 25], [8, 18, 15]]
     
-    result = mla_mod.determine_has_context(seq_lens_group, chunksize)
-    expected = [True, True, True] 
+    result = mla_mod.determine_has_context(seq_lens_group, seq_qlen_group)
+    expected = [True, False, True] 
     
     assert result == expected
 

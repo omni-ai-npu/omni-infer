@@ -9,6 +9,8 @@ def patch_pangu():
     from typing import Optional
     from vllm.config import ModelConfig
     from vllm.v1.core.kv_cache_manager import KVCacheManager, KVCacheBlocks
+    from vllm.v1.core.kv_cache_utils import BlockHashType, KVCacheBlock, hash_request_tokens
+    from vllm.v1.core.single_type_kv_cache_manager import FullAttentionManager, SingleTypeKVCacheManager
     from vllm.v1.request import Request
 
     @property
@@ -485,10 +487,116 @@ def patch_pangu():
         num_tokens_to_cache = min(num_computed_tokens + num_new_tokens, request.num_tokens)
         self.single_type_manager.cache_blocks(
             request, self.req_to_block_hashes[request.request_id],
-            num_tokens_to_cache)
+            num_tokens_to_cache, dcp_size)
 
         return KVCacheBlocks(new_blocks)
+    
+    def find_longest_cache_hit(self, block_hashes: list[BlockHashType],
+                               max_length: int,
+                               dcp_size: Optional[int] = 1) -> list[KVCacheBlock]:
+        computed_blocks: list[KVCacheBlock] = []
+
+        dcp_block_size = dcp_size * self.block_size
+        max_num_blocks = max_length // dcp_block_size
+
+        for i in range(max_num_blocks):
+            block_hash = block_hashes[i]
+            # block_hashes is a chain of block hashes. If a block hash is not
+            # in the cached_block_hash_to_id, the following block hashes are
+            # not computed yet for sure.
+            if cached_block := self.block_pool.get_cached_block(block_hash):
+                computed_blocks.append(cached_block)
+            else:
+                break
+        if self.use_eagle and len(computed_blocks) > 0:
+            computed_blocks.pop()
+        return computed_blocks
+    
+    def get_computed_blocks(self,
+                            request: Request,
+                            dcp_size: Optional[int] = 1) -> tuple[KVCacheBlocks, int]:
+        """Get the computed (cached) blocks for the request.
+        Note that the computed blocks must be full.
+
+        Args:
+            request: The request to get the computed blocks.
+
+        Returns:
+            A tuple containing:
+                - A list of blocks that are computed for the request.
+                - The number of computed tokens.
+        """
+        # Prefix caching is disabled or
+        # When the request requires prompt logprobs, we skip prefix caching.
+        if (not self.enable_caching
+                or request.sampling_params.prompt_logprobs is not None):
+            return KVCacheBlocks.create_empty(), 0
+
+        # The block hashes for the request may already be computed
+        # if the scheduler has tried to schedule the request before.
+        block_hashes = self.req_to_block_hashes[request.request_id]
+        dcp_block_size = dcp_size * self.block_size
+        if not block_hashes:
+            block_hashes = hash_request_tokens(self.caching_hash_fn,
+                                               dcp_block_size, request)
+            self.req_to_block_hashes[request.request_id] = block_hashes
+
+        if self.log_stats:
+            assert self.prefix_cache_stats is not None
+            self.prefix_cache_stats.requests += 1
+
+        # NOTE: When all tokens hit the cache, we must recompute the last token
+        # to obtain logits. Thus, set max_cache_hit_length to prompt_length - 1.
+        # This can trigger recomputation of an entire block, rather than just
+        # the single last token, because allocate_slots() requires
+        # num_computed_tokens to be block-size aligned. Removing this limitation
+        # could slightly improve performance in the future.
+        max_cache_hit_length = request.num_tokens - 1
+
+        computed_blocks = self.single_type_manager.find_longest_cache_hit(
+            block_hashes, max_cache_hit_length, dcp_size)
+        # NOTE(woosuk): Since incomplete blocks are not eligible for
+        # sharing, `num_computed_tokens` is always a multiple of
+        # `block_size`.
+        num_computed_tokens = len(computed_blocks) * dcp_block_size
+
+        if self.log_stats:
+            assert self.prefix_cache_stats is not None
+            self.prefix_cache_stats.queries += request.num_tokens
+            self.prefix_cache_stats.hits += num_computed_tokens
+
+        return KVCacheBlocks(computed_blocks), num_computed_tokens
+    
+    def cache_blocks(self, request: Request, block_hashes: list[BlockHashType],
+                     num_tokens: int, dcp_size: Optional[int] = 1) -> None:
+        """
+        Cache the blocks for the request.
+
+        Args:
+            request: The request.
+            block_hashes: The block hashes of the request.
+            num_tokens: The total number of tokens that need to be cached 
+                (including tokens that are already cached).
+        """
+        num_cached_blocks = self.num_cached_block[request.request_id]
+        num_full_blocks = num_tokens // (self.block_size * dcp_size)
+
+        self.block_pool.cache_full_blocks(
+            request=request,
+            blocks=self.req_to_blocks[request.request_id],
+            block_hashes=block_hashes,
+            num_cached_blocks=num_cached_blocks,
+            num_full_blocks=num_full_blocks,
+            block_size=self.block_size * dcp_size,
+            hash_fn=self.caching_hash_fn,
+        )
+
+        self.num_cached_block[request.request_id] = num_full_blocks
+
     KVCacheManager.allocate_slots = allocate_slots
+    KVCacheManager.get_computed_blocks = get_computed_blocks
+    FullAttentionManager.find_longest_cache_hit = find_longest_cache_hit
+    SingleTypeKVCacheManager.cache_blocks = cache_blocks
 
     ModelConfig.is_deepseek_mla = is_deepseek_mla
     ModelConfig._verify_with_expert_parallelism = _verify_with_expert_parallelism
