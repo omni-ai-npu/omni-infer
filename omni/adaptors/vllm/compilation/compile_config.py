@@ -26,10 +26,6 @@ def get_torchair_config(vllm_config: VllmConfig):
     if os.environ.get("FROZEN_PARAMETER_DISABLED", "0") == "0":
         config.experimental_config.frozen_parameter = True
     config.experimental_config.tiling_schedule_optimize = True
-    is_pd_seperate_d = vllm_config.kv_transfer_config is not None and vllm_config.kv_transfer_config.kv_role == "kv_consumer"
-    enable_torchair_graph_mode = (vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
-    if enable_torchair_graph_mode and not is_pd_seperate_d and model_extra_config.operator_opt_config.use_tnd_pa:
-       config.experimental_config.tiling_schedule_optimize = False
     torch.npu.set_compile_mode(jit_compile=False)
     config.ge_config.optimization_switch=model_extra_config.operator_opt_config.ascend_operator_fusion_pass_set
     return config

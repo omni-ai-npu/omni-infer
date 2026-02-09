@@ -836,7 +836,10 @@ class PanguProMoEV2MoEBlock(DeepseekMoE):
         hidden_states_3d = hidden_states.unsqueeze(1)
         hidden_states = hidden_states_3d.squeeze(1)
 
-        if self.enable_torchair_graph_mode:
+        # when is prefill, must use eager mode.
+        should_use_eager_mode = attn_metadata.attn_state == AscendAttentionState.PrefillNoCache or not self.enable_torchair_graph_mode
+
+        if not should_use_eager_mode:
             if self.quant_symbol:
                 with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
                     hidden_states = tng.scope.npu_wait_tensor(hidden_states, hidden_states_float)
@@ -913,7 +916,7 @@ class PanguProMoEV2MoEBlock(DeepseekMoE):
                 row_idx_type=0
         )
 
-        if self.enable_torchair_graph_mode:
+        if not should_use_eager_mode:
             with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
                 wait_gate = gate_up_share if isinstance(gate_up_share, torch.Tensor) else gate_up_share[0]
                 wait_gate = tng.scope.npu_wait_tensor(wait_gate, sorted_tokens)
@@ -984,7 +987,7 @@ class PanguProMoEV2MoEBlock(DeepseekMoE):
                 group_type=0,
                 group_list_type=1)[0]
 
-        if self.enable_torchair_graph_mode:
+        if not should_use_eager_mode:
             with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
                 if isinstance(intermediate_hiddenstates_share, dict):
                     intermediate_hiddenstates_share['x_int8'] = tng.scope.npu_wait_tensor(intermediate_hiddenstates_share.get('x_int8'), hidden_states_experts)
