@@ -21,20 +21,19 @@
 
   environment:
     # Global Configuration
-    LOG_PATH: "<REDACTED>"
-    MODEL_PATH: "<REDACTED>"
-    MODEL_LEN_MAX_PREFILL: "32000"
-    MODEL_LEN_MAX_DECODE: "16384"
-    LOG_PATH_IN_EXECUTOR: "<REDACTED>"
-    CODE_PATH: "<REDACTED>"
-    KV_CONNECTOR: "<REDACTED>"
+    LOG_PATH: "/data/log_path"
+    MODEL_PATH: "/data/models/DeepSeek-V31-Terminus-INT8"
+    MODEL_LEN_MAX_PREFILL: "32000" # 此为跑性能配置，跑精度应改为32000
+    MODEL_LEN_MAX_DECODE: "16384" # 此为跑性能配置，跑精度应改为64000
+    LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
+    CODE_PATH: "/data/local_code_path"
+    KV_CONNECTOR: "LLMDataDistConnector"
 
     # Configuration for containers
-    # DOCKER_IMAGE_ID: "<REDACTED>"
-    DOCKER_IMAGE_ID: "<REDACTED>"
-    DOCKER_NAME_P: "<REDACTED>"
-    DOCKER_NAME_D: "<REDACTED>"
-    DOCKER_NAME_C: "<REDACTED>"
+    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer/omniinfer-a3-arm:dev_v1.0.0-202602042300-vllm"
+    DOCKER_NAME_P: "you_name_omni_infer_prefill"
+    DOCKER_NAME_D: "you_name_omni_infer_decode"
+    DOCKER_NAME_C: "you_name_omni_infer_proxy"
     SCRIPTS_PATH: "/tmp/scripts_path"
 
     #Configuration for lb_sdk in global proxy
@@ -80,29 +79,25 @@
       #!/bin/bash
 
       . ~/.bashrc
-      HCCL_BUFFSIZE=1000
+      HCCL_BUFFSIZE=500
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
       export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
       export ASCEND_GLOBAL_LOG_LEVEL=3
-      export TASK_QUEUE_ENABLE=2
+      export TASK_QUEUE_ENABLE=1
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-
-      # placement
-      # export OMNI_NPU_VLLM_PATCHES="EPLBParallelConfig,EPLBFusedMoE"
-      # export VLLM_PLUGINS="omni-npu,omni_npu_patches"
-
-      # mtp
-      export OMNI_NPU_VLLM_PATCHES_ALL=1
       export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
+      #base layer应该设置为 export VLLM_PLUGINS="omni-npu,omni_npu_patches"
+
+      export OMNI_NPU_VLLM_PATCHES="ALL"
+
 
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
       KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
-      EXTRA_ARGS="--max-num-batched-tokens 32000 --enforce-eager --enable-expert-parallel --max-num-seqs 16 --no-enable-prefix-caching --distributed-executor-backend mp --no-enable-chunked-prefill --dtype bfloat16"
-      # EXTRA_ARGS="--max-num-batched-tokens 32000 --enforce-eager --enable-expert-parallel --max-num-seqs 16 --no-enable-prefix-caching --distributed-executor-backend mp --no-enable-chunked-prefill --dtype bfloat16 --enable-eplb"
-      GPU_UTIL=0.9
+      EXTRA_ARGS="--max-num-batched-tokens 32000 --enforce-eager --enable-expert-parallel --max-num-seqs 16 --no-enable-prefix-caching  --distributed-executor-backend mp --no-enable-chunked-prefill --dtype bfloat16"
+      GPU_UTIL=0.88 # 此为跑性能配置,跑精度应改为0.88
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
@@ -155,40 +150,24 @@
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
-        --num-speculative-tokens 0 \
+        --num-speculative-tokens 1 \
         --log-dir "${LOG_PATH}/{{ inventory_hostname }}" > ${LOG_PATH}/{{ inventory_hostname }}/run_prefill.log 2>&1 &
     
     run_vllm_server_decode_cmd: |
       #!/bin/bash
 
       . ~/.bashrc
-      HCCL_BUFFSIZE=1000
+      HCCL_BUFFSIZE=600
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
       export HCCL_EXEC_TIMEOUT=1800
       export ASCEND_GLOBAL_LOG_LEVEL=3
 
-      # placement
-      # export OMNI_NPU_VLLM_PATCHES="EPLBParallelConfig,EPLBFusedMoE"
-      # export VLLM_PLUGINS="omni-npu,omni_npu_patches"
-
-      # mtp
-      export OMNI_NPU_VLLM_PATCHES_ALL=1
       export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
+      #base layer应该设置为 export VLLM_PLUGINS="omni-npu,omni_npu_patches"
 
-      # profiling
-      # mkdir -p rm -rf /data/y00866897/1216/profiling/d
-      # rm -rf /data/y00866897/1216/profiling/d/*
-      # export VLLM_TORCH_PROFILER_DIR="/data/y00866897/1216/profiling/d"
-      # export PROFILER_TOKEN_THRESHOLD=24
-      # export PROFILER_STEP=5
-      # export VLLM_TORCH_PROFILER_RECORD_SHAPES=0
-      # export VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY=0
-      # export VLLM_TORCH_PROFILER_WITH_STACK=0
-      # export VLLM_TORCH_PROFILER_WITH_FLOPS=0
+      export OMNI_NPU_VLLM_PATCHES="ALL"
 
-      # rm -rf /root/.cache/vllm/torch_compile_cache
-      # export VLLM_DISABLE_COMPILE_CACHE=1
       export TASK_QUEUE_ENABLE=1
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
       dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
@@ -201,8 +180,7 @@
           {% endfor %}
       )
 
-      EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16 --no-enable-chunked-prefill --compilation-config {"level": 3, "cudagraph_mode":"FULL_AND_PIECEWISE", "cudagraph_capture_sizes":[2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62, 64], "backend":"eager", "compile_sizes":[2, 4, 8, 16, 32, 64]}'
-
+      EXTRA_ARGS='--max-num-batched-tokens 512 --enable-expert-parallel --disable-log-requests --max-num-seqs 32 --no-enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode":"FULL", "backend":"eager","cudagraph_capture_sizes":[64], "compile_sizes":[64]} --enable-eplb'
 
       GPU_UTIL=0.87
       VLLM_ENABLE_MC2=1
@@ -246,10 +224,8 @@
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
-        --num-speculative-tokens 0 \
+        --num-speculative-tokens 1 \
         --log-dir "${LOG_PATH}/{{ inventory_hostname }}" > ${LOG_PATH}/{{ inventory_hostname }}/run_decode.log 2>&1 &
-
-    # --additional-config "$ADDITIONAL_CONFIG" \
     
     run_proxy_cmd: |
       #!/bin/bash
@@ -426,26 +402,30 @@
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
 
-    docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/"
-    docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/"
-    # docker_cp_proxy_code_cmd: >
-    #   [ "${KV_CONNECTOR}" != "LMCacheConnectorV1" ] || { docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_C:/workspace/;}
-    docker_cp_proxy_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_C:/workspace/"
-    # docker_update_proxy_code_cmd: >
-    #   {{ docker_exec_cmd }}
-    #   -e KV_CONNECTOR=$KV_CONNECTOR
-    #   $DOCKER_NAME_C
-    #   /bin/bash -c 'source ~/.bashrc && git config --global http.proxy "http://y00866897:%28Yyn971014%21%29@proxy.huawei.com:8080" && git config --global https.proxy "https://y00866897:%28Yyn971014%21%29@proxy.huawei.com:8080" && git config --global http.sslverify false && git config --global https.sslverify false && export http_proxy='http://p_atlas:proxy%40123@proxy.huawei.com:8080' && export https_proxy=$http_proxy && cd /workspace/omniinfer/build && echo y | bash build.sh -m "omni-proxy" > ${LOG_PATH}/{{ inventory_hostname }}/install.log;'
+    docker_cp_prefill_code_cmd: "docker exec $DOCKER_NAME_P rm -rf /workspace/omniinfer && docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/ && docker exec $DOCKER_NAME_P pip uninstall -y omni-placement && docker exec $DOCKER_NAME_P sh /workspace/omniinfer/components/omni-eplb/build/build.sh"
+    # docker_cp_prefill_code_cmd: "docker exec $DOCKER_NAME_P rm -rf /workspace/omniinfer && docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_P:/workspace/"
+    
+    docker_cp_decode_code_cmd: "docker exec $DOCKER_NAME_D rm -rf /workspace/omniinfer && docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/ && docker exec $DOCKER_NAME_D pip uninstall -y omni-placement && docker exec $DOCKER_NAME_D sh /workspace/omniinfer/components/omni-eplb/build/build.sh"
+    # docker_cp_decode_code_cmd: "docker exec $DOCKER_NAME_D rm -rf /workspace/omniinfer && docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_D:/workspace/"
+    
+    docker_cp_proxy_code_cmd: "docker exec $DOCKER_NAME_C rm -rf /workspace/omniinfer && docker cp {{ ansible_env.CODE_PATH }}/omniinfer $DOCKER_NAME_C:/workspace/"
+    docker_update_proxy_code_cmd: >
+      {{ docker_exec_cmd }}
+      -e KV_CONNECTOR=$KV_CONNECTOR
+      $DOCKER_NAME_C
+      /bin/bash -c 'source ~/.bashrc && cd /workspace/omniinfer/build && bash build.sh -m "omni-proxy"> ${LOG_PATH}/{{ inventory_hostname }}/install.log;'
     docker_update_prefill_code_cmd: >
       {{ docker_exec_cmd }}
       -e KV_CONNECTOR=$KV_CONNECTOR
       $DOCKER_NAME_P
-      /bin/bash -c '. ~/.bashrc && git config --global http.proxy "http://y00866897:%28Yyn971014%21%29@proxy.huawei.com:8080" && git config --global https.proxy "https://y00866897:%28Yyn971014%21%29@proxy.huawei.com:8080" && git config --global http.sslverify false && git config --global https.sslverify false && export http_proxy=http://p_llmdevops:4A_dq%21R_@proxy.huawei.com:8080/ && export https_proxy=$http_proxy && cd /workspace/omniinfer/build  && git config --global --add safe.directory /workspace/omniinfer && pip uninstall omni_infer -y &&cd /workspace/omniinfer/components/omni-npu && bash build/build.sh > ${LOG_PATH}/{{ inventory_hostname }}/install.log;'
+      /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/build && git config --global --add safe.directory /workspace/omniinfer && pip uninstall omni_infer -y && bash build.sh -m "omni-npu"> ${LOG_PATH}/{{ inventory_hostname }}/install.log;'
+    # bash build.sh -m "omni-npu,omni-cache,omni-eplb"为编译omni-npu,omni-cache,omni-eplb模块，可根据需要去除不需要的模块，比如bash build.sh -m "omni-npu" 仅编译omni-npu模块
     docker_update_decode_code_cmd: >
       {{ docker_exec_cmd }}
       -e KV_CONNECTOR=$KV_CONNECTOR
       $DOCKER_NAME_D
-      /bin/bash -c '. ~/.bashrc && git config --global http.proxy "http://y00866897:%28Yyn971014%21%29@proxy.huawei.com:8080" && git config --global https.proxy "https://y00866897:%28Yyn971014%21%29@proxy.huawei.com:8080" && git config --global http.sslverify false && git config --global https.sslverify false && export http_proxy=http://p_llmdevops:4A_dq%21R_@proxy.huawei.com:8080/ && export https_proxy=$http_proxy && cd /workspace/omniinfer/build  && git config --global --add safe.directory /workspace/omniinfer && pip uninstall omni_infer -y && cd /workspace/omniinfer/components/omni-npu && bash build/build.sh > ${LOG_PATH}/{{ inventory_hostname }}/install.log;'
+      /bin/bash -c '. ~/.bashrc && cd /workspace/omniinfer/build && git config --global --add safe.directory /workspace/omniinfer && pip uninstall omni_infer -y && bash build.sh -m "omni-npu,omni-eplb"> ${LOG_PATH}/{{ inventory_hostname }}/install.log;'
+
   tasks:
     - name: generate container name.
       set_fact:
