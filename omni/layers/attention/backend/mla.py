@@ -289,6 +289,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         self.decode_num_tokens_cpu = torch.zeros(
             runner.max_num_reqs, dtype=torch.int32, pin_memory=is_pin_memory_available(),
         )
+        self.is_hybrid = self.runner.vllm_config.additional_config.get("enable_hybrid_graph_mode", False)
 
     def generate_activate_mask(self, actual_seqs_num, batch_size):
         if len(self.decode_gear_list) > 1:
@@ -335,7 +336,8 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             # currently the TritonMLA._forward_decode only supports
             # num_tokens = 1
             # Only in decode the spec tokens are scheduled
-            if req_id in scheduler_output.scheduled_spec_decode_tokens or num_tokens == 1:
+            if (not self.is_hybrid and (req_id in scheduler_output.scheduled_spec_decode_tokens or num_tokens == 1)) or \
+                (self.is_hybrid and (req_id in scheduler_output.scheduled_spec_decode_tokens or len(scheduler_output.scheduled_cached_reqs) != 0)):
                 decodes.append(i)
                 decode_num_tokens.append(num_tokens)
                 num_decode_tokens += num_tokens

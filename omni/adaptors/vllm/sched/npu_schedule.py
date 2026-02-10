@@ -32,6 +32,7 @@ from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
+import omni.adaptors.vllm.envs as envs_ascend
 
 @dataclass
 class HybridSchedulerConfig(SchedulerConfig):
@@ -208,7 +209,10 @@ class NpuHybridScheduler(Scheduler):
             if request.status == RequestStatus.WAITING:
                 scheduled_new_reqs.append(request)
             elif request.status == RequestStatus.PREEMPTED:
-                scheduled_resumed_reqs.append(request)
+                if envs_ascend.RECOMPUTE_AFTER_PREEMPTED:
+                    scheduled_new_reqs.append(request)
+                else:
+                    scheduled_resumed_reqs.append(request)
             else:
                 raise RuntimeError(f"Invalid request status: {request.status}")
 
