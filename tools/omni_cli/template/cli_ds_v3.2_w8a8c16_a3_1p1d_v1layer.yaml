@@ -148,7 +148,7 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            VLLM_PLUGINS: omni-npu,omni_npu_patches
+            VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
           host_ip: 127.0.0.2
           master_node: d0
         d1:
@@ -277,7 +277,7 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            VLLM_PLUGINS: omni-npu,omni_npu_patches
+            VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
           host_ip: 127.0.0.2
           master_node: d0
     P:
@@ -301,7 +301,7 @@ all:
               distributed-executor-backend: mp
               dtype: bfloat16
               kv-cache-dtype: bfloat16
-            gpu-util: '0.92'
+            gpu-util: '0.9'
             kv-transfer-config:
               kv_buffer_device: npu
               kv_connector: LLMDataDistConnector
@@ -404,6 +404,6 @@ all:
             VLLM_LOGGING_LEVEL: INFO
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            VLLM_PLUGINS: omni-npu,omni_npu_patches
+            VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
           host_ip: 127.0.0.1
           master_node: p0

@@ -95,13 +95,13 @@
       export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
       KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
       if [ ${USE_OMNI_PROXY} = "1" ]; then
-        EXTRA_ARGS="--no-enable-chunked-prefill --max-num-batched-tokens 33792 --enforce-eager --enable-expert-parallel --max-num-seqs 4 --no-enable-prefix-caching  --distributed-executor-backend mp --dtype bfloat16 --kv-cache-dtype bfloat16"
+        EXTRA_ARGS="--max-num-batched-tokens 33792 --enforce-eager --no-enable-chunked-prefill --enable-expert-parallel --max-num-seqs 4 --no-enable-prefix-caching  --distributed-executor-backend mp --dtype bfloat16 --kv-cache-dtype bfloat16"
       else
-        EXTRA_ARGS="--no-enable-chunked-prefill --max-num-batched-tokens 33792 --enforce-eager --enable-expert-parallel --max-num-seqs 4 --no-enable-prefix-caching  --distributed-executor-backend mp --dtype bfloat16 --kv-cache-dtype bfloat16"
+        EXTRA_ARGS="--max-num-batched-tokens 33792 --enforce-eager --no-enable-chunked-prefill --enable-expert-parallel --max-num-seqs 4 --no-enable-prefix-caching  --distributed-executor-backend mp --dtype bfloat16 --kv-cache-dtype bfloat16"
       fi
-      GPU_UTIL=0.92
+      GPU_UTIL=0.9
       VLLM_ENABLE_MC2=1
-      export VLLM_PLUGINS="omni-npu,omni_npu_patches"
+      export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
       unset https_proxy
@@ -176,7 +176,7 @@
       #rm -rf /root/.cache/vllm/torch_compile_cache
       #export VLLM_DISABLE_COMPILE_CACHE=1
       export TASK_QUEUE_ENABLE=1
-      export VLLM_PLUGINS="omni-npu,omni_npu_patches"
+      export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
       dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
       ((dp++))
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
