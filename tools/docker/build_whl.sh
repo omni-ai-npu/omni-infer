@@ -14,6 +14,8 @@ export https_proxy=${HTTP_PROXY}
 # Use it directly if provided, otherwise default to 'master'.
 branch="${BRANCH:-master}"
 install_modules="${INSTALL_MODULES:-omni-npu,omni-proxy}"
+# vllm_version="v0.12.0"
+vllm_version="${VLLM_VERSION:-v0.12.0}"
 
 cd /opt/
 
@@ -21,21 +23,21 @@ if [ -d "$/opt/vllm" ]; then
     echo "vllm already exists in infer_engines. Skipping clone."
 else
     # Check if vllm exists in codes directory, copy if exists, otherwise clone
-    if [ -d "${BASE_DIR}/codes/vllm" ]; then
-        echo "Directory ${BASE_DIR}/codes/vllm already exists. Copying to infer_engines..."
-        cp -r "${BASE_DIR}/codes/vllm" "/opt/"
+    if [ -d "${BASE_DIR}/dist/codes/vllm" ]; then
+        echo "Directory ${BASE_DIR}/dist/codes/vllm already exists. Copying to infer_engines..."
+        cp -r "${BASE_DIR}/dist/codes/vllm" "/opt/"
+        cd /opt/vllm 
+        git checkout ${vllm_version} 
     else
         echo "Cloning vllm repo from remote..."
-        if ! git clone https://github.com/vllm-project/vllm.git; then
+        if ! git clone --depth 10 -b ${vllm_version} https://github.com/vllm-project/vllm.git; then
             echo "ERROR: Failed to clone vllm from remote repository."
             echo "Please manually download vllm to ./codes/vllm and run this script again."
             exit 1
         fi
     fi
 fi
-vllm_version="v0.12.0"
-cd vllm 
-git checkout ${vllm_version} ||
+cd /opt/vllm 
 echo "Successfully switched to commit ${vllm_version}."
 sed -i 's/^gpt-oss >= 0\.0\.7$/#&/' /opt/vllm/requirements/common.txt
 
@@ -49,17 +51,17 @@ git config --global credential.helper store
 git config --global http.sslverify false
 git config --global https.sslverify false
 # echo "https://gitee:password@gitee.com" > ~/.git-credentials
-chmod 600 ~/.git-credentials
+# chmod 600 ~/.git-credentials
 
-# Check if omniinfer exists in codes directory, copy if exists, otherwise clone
-if [ -d "${BASE_DIR}/codes/omniinfer" ]; then
-    echo "Directory ${BASE_DIR}/codes/omniinfer already exists. Copying to current path..."
-    cp -r "${BASE_DIR}/codes/omniinfer" "${BASE_DIR}/"
+# Check if omniinfer exists in dist/codes directory, copy if exists, otherwise clone
+if [ -d "${BASE_DIR}/dist/codes/omniinfer" ]; then
+    echo "Directory ${BASE_DIR}/dist/codes/omniinfer already exists. Copying to current path..."
+    cp -r "${BASE_DIR}/dist/codes/omniinfer" "${BASE_DIR}/"
     cd ${BASE_DIR}/omniinfer
     git checkout "${branch}" || echo "Warning: failed to checkout branch ${branch} in omniinfer."
 else
     echo "Cloning omniinfer repo (branch: ${branch})..."
-    if ! git clone -b "${branch}" https://gitee.com/omniai/omniinfer.git; then
+    if ! git clone --depth 10 -b "${branch}" https://gitee.com/omniai/omniinfer.git; then
         echo "ERROR: Failed to clone omniinfer from remote repository."
         echo "Please manually download omniinfer to ./codes/omniinfer and run this script again."
         exit 1
@@ -67,7 +69,7 @@ else
 fi
 
 
-cd omniinfer && bash build/build.sh -m "${install_modules}"
+cd ${BASE_DIR}/omniinfer && bash build/build.sh -m "${install_modules}"
 
-rm -rf ~/.git-credentials
+# rm -rf ~/.git-credentials
 

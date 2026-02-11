@@ -14,7 +14,16 @@ ARG INSTALL_MODULES
 WORKDIR /workspace
 # If CUSTOM_OPS is provided (a comma-separated list or install script), iterate
 # over each name and attempt to run matching .sh scripts.
-COPY codes /workspace/codes/
+COPY codes /workspace/dist/codes/
+COPY requirements /workspace/dist/requirements
+
+# Install packages for build whl
+RUN export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --no-cache-dir \
+        -r /workspace/dist/requirements/common.txt && \
+    yum install -y git gcc g++ make cmake zlib-devel pcre-devel openssl-devel wget tar rpm-build etcd libuuid-devel python3-devel grep
+
 RUN export http_proxy=${HTTP_PROXY} && \
     export https_proxy=${HTTP_PROXY} && \
     echo "export HCCL_IF_BASE_PORT=59000" >> ~/.bashrc; \
@@ -22,7 +31,7 @@ RUN export http_proxy=${HTTP_PROXY} && \
     source ~/.bashrc && \
     if [ -n "${CUSTOM_OPS}" ]; then \
         pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} \
-            google==3.0.0 expecttest==0.1.6 hypothesis==6.82.0 psutil==7.0.0 PyYAML==6.0 decorator==5.2.1 scipy==1.15.3 \
+            google==3.0.0 expecttest==0.1.6 hypothesis==6.82.0 psutil==7.0.0 scipy==1.15.3 \
             attrs==25.3.0 numpy==2.2.6  protobuf==4.25.8 && \
         echo "CUSTOM_OPS specified: ${CUSTOM_OPS}"; \
         # Split on commas and iterate; trim whitespace from each entry.
@@ -45,12 +54,6 @@ RUN export http_proxy=${HTTP_PROXY} && \
         done; \
     fi
 
-# Install packages for build whl
-RUN export http_proxy=${HTTP_PROXY} && \
-    export https_proxy=${HTTP_PROXY} && \
-    pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --no-cache-dir \
-        regex==2025.7.31 pybind11==3.0.0 pyproject_hooks==1.2.0 setuptools-scm==8.3.1 build==1.2.2.post1 pyyaml==6.0.2 Cython numpy numba decorator && \
-    yum install -y git gcc g++ make cmake zlib-devel pcre-devel openssl-devel wget tar rpm-build etcd libuuid-devel python3-devel
 
 # Download source code and build whl
 COPY build_whl.sh /workspace/

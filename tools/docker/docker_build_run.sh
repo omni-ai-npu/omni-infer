@@ -31,6 +31,9 @@ BRANCH=master
 # - both: build Dockerfile.base first, then Dockerfile.omniinfer (default)
 BUILD_TARGET="both"
 INSTALL_MODULES="omni-npu,omni-proxy"
+VLLM_VERSION="v0.12.0"
+BUILD_FOR_ROMA="false"
+ROMA_IMAGE="test-infer-ROMA:0.1"
 
 
 # Print usage/help
@@ -56,6 +59,9 @@ Options:
     --python-version <version>        Python version to use during build (default: ${PYTHON_VERSION})
     --build-target <L1|L2|both|skip> Select which builds to run (default: ${BUILD_TARGET})
     --start-server <True|False>     Whether to start the apiserver after build (default: ${START_SERVER})
+    --vllm-version <version>        vLLM version to install (default: ${VLLM_VERSION})
+    --build-for-roma <True|False>  Whether to build the Roma image (default: ${BUILD_FOR_ROMA})
+    --roma-image <image>            Tag for the Roma image build (default: ${ROMA_IMAGE})
     --install-modules <modules>      Comma-separated list of omniinfer modules to install (default: ${INSTALL_MODULES})
 
 Examples:
@@ -121,6 +127,15 @@ parse_long_option() {
         --install-modules)
             INSTALL_MODULES="$2"
             ;;
+        --vllm-version)
+            VLLM_VERSION="$2"
+            ;;
+        --build-for-roma)
+            BUILD_FOR_ROMA="$2"
+            ;;
+        --roma-image)
+            ROMA_IMAGE="$2"
+            ;;
         --build-target)
             BUILD_TARGET="$2"
             ;;
@@ -176,6 +191,10 @@ echo "CUSTOM_OPS: ${CUSTOM_OPS}"
 echo "BUILD_TARGET: ${BUILD_TARGET}"
 echo "START_SERVER: ${START_SERVER}"
 echo "PYTHON_VERSION: ${PYTHON_VERSION}"
+echo "INSTALL_MODULES: ${INSTALL_MODULES}"
+echo "VLLM_VERSION: ${VLLM_VERSION}"
+echo "BUILD_FOR_ROMA: ${BUILD_FOR_ROMA}"
+echo "ROMA_IMAGE: ${ROMA_IMAGE}"
 echo "=================="
 
 # Validate BUILD_TARGET
@@ -234,13 +253,21 @@ if [[ "${BUILD_TARGET}" == "L2" || "${BUILD_TARGET}" == "both" ]]; then
         --build-arg BASE_IMAGE=${L1_IMAGE} \
         --build-arg CUSTOM_OPS="${CUSTOM_OPS}" \
         --build-arg INSTALL_MODULES="${INSTALL_MODULES}" \
+        --build-arg VLLM_VERSION="${VLLM_VERSION}" \
         --target omininfer_openai \
         -t ${L2_IMAGE} .
 else
     echo "Skipping L2 image build (BUILD_TARGET=${BUILD_TARGET})"
 fi
 
-
+if [[ ("${BUILD_FOR_ROMA}" == "True" || "${BUILD_FOR_ROMA}" == "true" || "${BUILD_FOR_ROMA}" == "1")  && "${BUILD_TARGET}" != "L1" ]]; then
+    echo "Building Roma image (Dockerfile.roma) -> ${ROMA_IMAGE}"
+    docker build --progress=plain --no-cache -f Dockerfile.roma \
+        --build-arg BASE_IMAGE=${L2_IMAGE} \
+        -t ${ROMA_IMAGE} .
+else
+    echo "Skipping Roma image build (BUILD_FOR_ROMA=${BUILD_FOR_ROMA}, BUILD_TARGET=${BUILD_TARGET})"
+fi
 
 ## get dist whl,rpm files
 # Create a temp container name that includes a sanitized L2 image identifier

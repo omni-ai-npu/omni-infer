@@ -1,7 +1,5 @@
 ## 安装前准备
 安装前需要提供以下本地包（aarch64环境下）：
-0.6.0版本、0.7.0版本需要的包：
-- [msgpack-c-6.1.0.tar.gz](https://github.com/msgpack/msgpack-c/releases/download/c-6.1.0/msgpack-c-6.1.0.tar.gz)
 - [torchvision-0.24.0-cp311-cp311-linux_aarch64.whl](https://download.pytorch.org/whl/torchvision/)
 - [torch_npu-2.9.0.post2-cp311-cp311-manylinux_2_28_aarch64.whl](https://download.pytorch.org/whl/cu126/torch/)
 - Atlas-A3-cann-kernels_8.3.T1_linux-aarch64.run
