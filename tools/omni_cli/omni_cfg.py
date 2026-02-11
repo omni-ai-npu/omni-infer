@@ -39,10 +39,17 @@ def convert_to_dict(s):
     parts = s.split(":", 1)
     key = parts[0].strip()
     value_str = parts[1].strip()
+    
     if not key or not value_str:
         return s
 
-    return {key: value_str}
+    # This modification aims to solve the type error raised when setting graph_model_compile_config.level, 
+    # where 'int' type is expected, not 'str'.
+    # Not sure if this is an appropriate change for all other fields.
+    if value_str.isdigit():
+        return {key: int(value_str)}
+    else:
+        return {key: value_str}
 
 def parse_remaining_args_for_set(arg, remaining_args, sections, i):
     if remaining_args[i+1] in ['--additional-config', '--extra-args', '--kv-transfer-config']:
