@@ -590,6 +590,8 @@ class PanguProMoEV2MoEBlock(DeepseekMoE):
 
         if not self.is_init_gate:
             self.gate.weight.data = torch_npu.npu_format_cast(self.gate.weight.data, 2)
+            if hasattr(self.gate.weight, "is_weight_nz"):
+                self.gate.weight.is_weight_nz = False
             self.is_init_gate = True
 
         if is_prefill:

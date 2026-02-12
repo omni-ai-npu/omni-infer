@@ -430,6 +430,8 @@ class NPUWorker(WorkerBase):
     def compile_or_warm_up_model(self) -> None:
         if self.enable_torchair_graph_mode:
             self.model_runner.capture_model()
+            # Add synchronization to fix errors with enable_torchair_graph_mode in RL
+            torch.npu.synchronize()
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.
         set_random_seed(self.model_config.seed)

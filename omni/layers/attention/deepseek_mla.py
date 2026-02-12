@@ -707,6 +707,8 @@ class DeepseekMLA(nn.Module):
         multiprocessing.set_start_method(current_method, force=True)
         if not hasattr(weight, "is_weight_transposed"):
             set_weight_attrs(weight, {"is_weight_transposed": True})
+        if not hasattr(weight, "is_weight_nz"):
+            set_weight_attrs(weight, {"is_weight_nz": True})
         return weight
 
     def _forward_prefill_absorb(

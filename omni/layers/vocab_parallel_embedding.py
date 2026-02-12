@@ -27,7 +27,6 @@ from omni.adaptors.vllm.distributed.communication_op import all_gather_local, re
 from omni.models.config_loader.loader import model_extra_config
 
 DEFAULT_VOCAB_PADDING_SIZE = 64
- 
 
 def get_masked_input_and_mask(
         input_: torch.Tensor, org_vocab_start_index: int,
@@ -241,5 +240,10 @@ class ParallelLMHead(VocabParallelEmbedding):
         return logits
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
+        is_weight_nz = getattr(param, "is_weight_nz", False)
+        if is_weight_nz:
+            param.data = torch_npu.npu_format_cast(param.data, 2)
         super().weight_loader(param, loaded_weight)
         param.data = torch_npu.npu_format_cast(param.data, 29)
+        if not hasattr(param, "is_weight_nz"):
+            set_weight_attrs(param, {"is_weight_nz": True})

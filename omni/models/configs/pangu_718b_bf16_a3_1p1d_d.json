@@ -1,8 +1,9 @@
 {
     "model_parallel_config": {
-        "dense_mlp_tp_size": 4,
+        "dense_mlp_tp_size": 16,
         "o_proj_tp_size": 16,
-        "eh_proj_tp_size": 4
+        "eh_proj_tp_size": 4,
+        "enable_share_expert_tp":true
     },
     "operator_optimization_config": {
         "enable_kv_rmsnorm_rope_cache": true,
@@ -13,6 +14,7 @@
         "use_super_kernel": true,
         "use_mlaprolog": true,
         "gmm_nz": true,
+        "unquant_bmm_nz": true,
         "use_prefetch": true,
         "expert_gate_up_prefetch": 0,
         "expert_down_prefetch": 0,

@@ -164,7 +164,7 @@ class ModelOperatorOptConfig:
                 "Please disable one of these communication modes."
             )
         
-        if self.unquant_bmm_nz:
+        if self.unquant_bmm_nz or self.use_mlaprolog:
             # if use weight nz, this config must be True
             torch.npu.config.allow_internal_format = True
 

@@ -460,6 +460,8 @@ class DeepseekMoE(nn.Module):
         else:
             if not self.is_init_gate:
                 self.gate.weight.data = torch_npu.npu_format_cast(self.gate.weight.data, 2)
+                if hasattr(self.gate.weight, "is_weight_nz"):
+                    self.gate.weight.is_weight_nz = False
                 self.is_init_gate = True
             if is_prefill:
                 if self.is_A2 and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:

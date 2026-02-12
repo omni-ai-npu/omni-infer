@@ -19,7 +19,7 @@ from vllm.model_executor.layers.linear import (LinearBase,
                                                adjust_marlin_shard,
                                                adjust_scalar_to_fused_array,
                                                UnquantizedLinearMethod)
-from vllm import logger
+from vllm.logger import logger
 
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig, QuantizeMethodBase
 from vllm.model_executor.utils import set_weight_attrs
@@ -46,40 +46,47 @@ class AscendReplicatedLinear(ReplicatedLinear):
         
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         # veRL special case: transpose the weight back to original shape
+        is_weight_nz = getattr(param, "is_weight_nz", False)
+        if is_weight_nz:
+            param.data = torch_npu.npu_format_cast(param.data, 2)
         is_weight_transposed = getattr(param, "is_weight_transposed", False)
         if is_weight_transposed:
             param.data = param.data.t_()
         super().weight_loader(param, loaded_weight)
         # veRL special case: transpose the weight to use torch npu operator
         if is_weight_transposed:
-            current_method = multiprocessing.get_start_method()
-            multiprocessing.set_start_method('spawn', force=True)
-            param.data = torch_npu.npu_format_cast(param.data.t_(), 29)
-            multiprocessing.set_start_method(current_method, force=True)
+            param.data = param.data.t_()
+        if is_weight_nz:
+            param.data = torch_npu.npu_format_cast(param.data, 29)
 
 
 class AscendColumnParallelLinear(ColumnParallelLinear):
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         # veRL special case: transpose the weight back to original shape
+        is_weight_nz = getattr(param, "is_weight_nz", False)
+        if is_weight_nz:
+            param.data = torch_npu.npu_format_cast(param.data, 2)
         is_weight_transposed = getattr(param, "is_weight_transposed", False)
         if is_weight_transposed:
             param.data = param.data.t_()
         super().weight_loader(param, loaded_weight)
         # veRL special case: transpose the weight to use torch npu operator
         if is_weight_transposed:
-            current_method = multiprocessing.get_start_method()
-            multiprocessing.set_start_method('spawn', force=True)
-            param.data = torch_npu.npu_format_cast(param.data.t_(), 29)
-            multiprocessing.set_start_method(current_method, force=True)
+            param.data = param.data.t_()
+        if is_weight_nz:
+            param.data = torch_npu.npu_format_cast(param.data, 29)
 
 class AscendUnquantizedLinearMethod(UnquantizedLinearMethod):
 
     def process_weights_after_loading(self, layer):
         if model_extra_config.operator_opt_config.unquant_bmm_nz:
-            weight = layer.weight
-            weight.data = torch_npu.npu_format_cast(weight.data, 29)
-            layer.weight = Parameter(weight, requires_grad=False)
+            current_method = multiprocessing.get_start_method()
+            multiprocessing.set_start_method('spawn', force=True)
+            layer.weight.data = torch_npu.npu_format_cast(layer.weight.data, 29)
+            multiprocessing.set_start_method(current_method, force=True)
+            if not hasattr(layer.weight, "is_weight_nz"):
+                set_weight_attrs(layer.weight, {"is_weight_nz": True})
         return
 
     def apply(self,
@@ -88,7 +95,6 @@ class AscendUnquantizedLinearMethod(UnquantizedLinearMethod):
               bias: Optional[torch.Tensor] = None,
               **kwargs):
         return super().apply(layer, x, bias)
-
 
 class AscendMergedColumnParallelLinear(LinearBase):
     def __init__(self,
@@ -169,7 +175,9 @@ class AscendMergedColumnParallelLinear(LinearBase):
                       param: Parameter,
                       loaded_weight: torch.Tensor,
                       loaded_shard_id: Optional[int] = None):
-
+        is_weight_nz = getattr(param, "is_weight_nz", False)
+        if is_weight_nz:
+            param.data = torch_npu.npu_format_cast(param.data, 2)
         # Special case for GGUF
         # initialize GGUF param after we know the quantize type
         is_gguf_weight = getattr(param, "is_gguf_weight", False)
@@ -211,6 +219,8 @@ class AscendMergedColumnParallelLinear(LinearBase):
                 if param_data.shape != loaded_weight.shape:
                     raise RuntimeError("param_data.shape != loaded_weight.shape")
                 param_data.copy_(loaded_weight)
+                if is_weight_nz:
+                    param.data = torch_npu.npu_format_cast(param.data, 29)
                 return
             current_shard_offset = 0
             shard_offsets: List[Tuple[int, int, int]] = []
@@ -288,7 +298,8 @@ class AscendMergedColumnParallelLinear(LinearBase):
         if param_data.shape != loaded_weight.shape:
             raise RuntimeError("param_data.shape != loaded_weight.shape")
         param_data.copy_(loaded_weight)
-
+        if is_weight_nz:
+            param.data = torch_npu.npu_format_cast(param.data, 29)
 
 class AscendRowParallelLinear(LinearBase):
 
@@ -352,6 +363,9 @@ class AscendRowParallelLinear(LinearBase):
             self.register_parameter("bias", None)
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
+        is_weight_nz = getattr(param, "is_weight_nz", False)
+        if is_weight_nz:
+            param.data = torch_npu.npu_format_cast(param.data, 2)
         input_dim = getattr(param, "input_dim", None)
         use_bitsandbytes_4bit = getattr(param, "use_bitsandbytes_4bit", False)
 
@@ -385,6 +399,8 @@ class AscendRowParallelLinear(LinearBase):
         if param_data.shape != loaded_weight.shape:
             raise RuntimeError("param_data.shape != loaded_weight.shape")
         param_data.copy_(loaded_weight)
+        if is_weight_nz:
+            param.data = torch_npu.npu_format_cast(param.data, 29)
 
     def forward(self, input_):
         if self.input_is_parallel:
@@ -694,6 +710,9 @@ class MergedReplicatedLinear(ReplicatedLinear):
                       param: Parameter,
                       loaded_weight: torch.Tensor,
                       loaded_shard_id: Optional[int] = None):
+        is_weight_nz = getattr(param, "is_weight_nz", False)
+        if is_weight_nz:
+            param.data = torch_npu.npu_format_cast(param.data, 2)
 
         # Special case for GGUF
         # initialize GGUF param after we know the quantize type
@@ -702,6 +721,8 @@ class MergedReplicatedLinear(ReplicatedLinear):
         if is_gguf_weight_type:
             param.data[loaded_shard_id].copy_(loaded_weight)
             param.shard_weight_type[loaded_shard_id] = loaded_weight.item()
+            if is_weight_nz:
+                param.data = torch_npu.npu_format_cast(param.data, 29)
             return
 
         if is_gguf_weight:
@@ -736,6 +757,8 @@ class MergedReplicatedLinear(ReplicatedLinear):
                 if param_data.shape != loaded_weight.shape:
                     raise RuntimeError("param_data.shape != loaded_weight.shape")
                 param_data.copy_(loaded_weight)
+                if is_weight_nz:
+                    param.data = torch_npu.npu_format_cast(param.data, 29)
                 return
             current_shard_offset = 0
             shard_offsets: List[Tuple[int, int, int]] = []
@@ -814,6 +837,8 @@ class MergedReplicatedLinear(ReplicatedLinear):
         if param_data.shape != loaded_weight.shape:
             raise RuntimeError("param_data.shape != loaded_weight.shape")
         param_data.copy_(loaded_weight)
+        if is_weight_nz:
+            param.data = torch_npu.npu_format_cast(param.data, 29)
 
 class RowParallelLinearCross(LinearBase):
     def __init__(self,
@@ -1058,6 +1083,7 @@ class RowParallelFlashCommLinear(FlashCommLinearBase):
         # veRL special case: transpose the weight back to original shape
         is_weight_transposed = getattr(param, "is_weight_transposed", False)
         if is_weight_transposed:
+            param.data = torch_npu.npu_format_cast(param.data, 2)
             param.data = param.data.t_()
         input_dim = getattr(param, "input_dim", None)
         param_data = param.data
@@ -1161,6 +1187,7 @@ class ColumnParallelFlashCommLinear(FlashCommLinearBase):
         # veRL special case: transpose the weight back to original shape
         is_weight_transposed = getattr(param, "is_weight_transposed", False)
         if is_weight_transposed:
+            param.data = torch_npu.npu_format_cast(param.data, 2)
             param.data = param.data.t_()
         output_dim = getattr(param, "output_dim", None)
 

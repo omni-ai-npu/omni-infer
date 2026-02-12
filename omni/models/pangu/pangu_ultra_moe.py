@@ -752,16 +752,11 @@ class PanguUltraMoEForCausalLM(nn.Module):
         self.model = self.get_model()
 
         is_decode_dcp_node = model_extra_config.operator_opt_config.use_dcp and not model_extra_config.task_config.is_prefill_node
-        rl_service_mode = os.getenv("RL_SERVICE_MODE", "0") == "1"
-        if rl_service_mode:
-            parallel_lmhead_enable = False
-        else:
-            parallel_lmhead_enable = (get_dp_group().world_size > 1)
 
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
                                       quant_config=self.quant_config,
-									  parallel_lmhead=parallel_lmhead_enable and not is_decode_dcp_node)
+									  parallel_lmhead=(get_dp_group().world_size > 1) and not is_decode_dcp_node)
         self.logits_processor = LogitsProcessor(self.config.vocab_size,
                                                 logits_as_input=True)
         self.sampler = Sampler()

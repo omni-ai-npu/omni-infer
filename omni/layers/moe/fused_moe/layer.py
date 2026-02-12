@@ -6,6 +6,7 @@ import os
 import torch, torch_npu
 import torchair as tng
 import torch.distributed as dist
+import multiprocessing
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.distributed import get_world_group, get_pp_group, get_ep_group, get_tp_group
 from vllm.attention import AttentionMetadata
@@ -156,8 +157,15 @@ class UnquantizedFusedMoEMethod(GPUUnquantizedFusedMoEMethod):
         layer.w13_weight.data = layer.w13_weight.data.transpose(1, 2).contiguous()
         layer.w2_weight.data = layer.w2_weight.data.transpose(1, 2).contiguous()
         if model_extra_config.operator_opt_config.gmm_nz:
+            current_method = multiprocessing.get_start_method()
+            multiprocessing.set_start_method('spawn', force=True)
             layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight.data, 29)
             layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight.data, 29)
+            multiprocessing.set_start_method(current_method, force=True)
+            if not hasattr(layer.w13_weight, "is_weight_nz"):
+                set_weight_attrs(layer.w13_weight, {"is_weight_nz": True})
+            if not hasattr(layer.w2_weight, "is_weight_nz"):
+                set_weight_attrs(layer.w2_weight, {"is_weight_nz": True})
         self.n_routed_experts = len(layer.w13_weight)
         self.local_expert_indices_offset = (
                 get_ep_group().rank_in_group * self.n_routed_experts
@@ -463,10 +471,6 @@ class FusedMoE(torch.nn.Module):
 
         expert_data = param.data[expert_id]
 
-        is_weight_transposed = getattr(param, "is_weight_transposed", False)
-        if is_weight_transposed:
-            expert_data = expert_data.t_()
-
         # is_transposed: if the dim to shard the weight
         # should be flipped. Required by GPTQ, compressed-tensors
         # should be whatever dimension intermediate_size is
@@ -545,6 +549,12 @@ class FusedMoE(torch.nn.Module):
 
         # Case model weights
         if "weight" in weight_name:
+            is_weight_nz = getattr(param, "is_weight_nz", False)
+            if is_weight_nz:
+                param.data = torch_npu.npu_format_cast(param.data, 2)
+            is_weight_transposed = getattr(param, "is_weight_transposed", False)
+            if is_weight_transposed:
+                expert_data = expert_data.t_()
             self._load_model_weight_or_group_weight_scale(
                 shard_id=shard_id,
                 shard_dim=shard_dim,
@@ -554,6 +564,8 @@ class FusedMoE(torch.nn.Module):
             if is_weight_transposed:
                 expert_data = expert_data.t_()
                 param.data[expert_id] = expert_data
+            if is_weight_nz:
+                param.data = torch_npu.npu_format_cast(param.data, 29)
             return
 
 class FakeMoe():
