@@ -21,3 +21,7 @@
 [submodule "components/omni-npu"]
 	path = components/omni-npu
 	url  = https://gitee.com/omniai/omni-npu
+
+[submodule "components/omni-proxy"]
+	path = components/omni-proxy
+	url  = https://gitee.com/omniai/omni-proxy
