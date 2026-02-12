@@ -1620,7 +1620,9 @@ class DeepseekMLA(nn.Module):
                 "For a mla backend want to enable"
                 "DCP, it is mandatory that the corresponding decode attn"
                 "kernel return the softmax lse.")
-            attn_output = cp_lse_out_a2a(attn_output, lse, get_mla_cp_group())
+            lse_mask = attn_metadata.decode.batch_seq_lse_mask
+            lse = torch.where(lse_mask, float("-inf"), lse)
+            attn_output = cp_lse_out_a2a(attn_output, lse, get_mla_cp_group(), get_tp_group())
         
         if model_extra_config.operator_opt_config.enable_dsa:
             attn_output = attn_output.squeeze(1).transpose(0, 1)
@@ -1854,7 +1856,26 @@ class DeepseekMLA(nn.Module):
         attn_output = None
         return output
 
-def update_attn_out_a2a(out: torch.Tensor, lse: torch.Tensor, cp_group: GroupCoordinator):
+def update_attn_out_a2a(out, lse):
+    """
+    Apply the all-gathered lses to correct each local rank's attention
+    output. we still need perform a cross-rank reduction to obtain the
+    final attention output.
+    Args:
+        output: [ N, B, L ]
+        lses   :  [ B, N, 1 ]
+    Return:
+        output: [ N, B, L ]
+        lse   : [ B, N, 1 ]
+    """
+    head_dim = out.shape[-1]
+    out_parallel_list = [item.view(-1, head_dim) for item in out.unbind(0)]
+    lse_parallel_list = [item.view(-1) for item in lse.unbind(0)]
+
+    reduce_sum = torch_npu.npu_attention_update(lse_parallel_list, out_parallel_list, 0)   # [ N / cp_size * B , L]
+    return reduce_sum[0]
+
+def update_attn_out_a2a_torch(out, lse):
     """
     Apply the all-gathered lses to correct each local rank's attention
     output. we still need perform a cross-rank reduction to obtain the
@@ -1867,87 +1888,51 @@ def update_attn_out_a2a(out: torch.Tensor, lse: torch.Tensor, cp_group: GroupCoo
         lse   : [ B, N, 1 ]
     """
     dtype = out.dtype
-    num_head, bs, head_dim = out.shape
+    cp_size, head_dim = out.shape[0], out.shape[-1]
     
-    with tng.scope.npu_stream_switch('out'):
-        with tng.scope.limit_core_num("0", "12"):
-            out_parallel = out.new_empty(cp_group.world_size, num_head // cp_group.world_size, *out.shape[1:])
-            dist.all_to_all_single(out_parallel.view(-1), out.view(-1), group=cp_group.device_group)
-            out_parallel_list = [item.view(-1, head_dim).float() for item in out_parallel.unbind(0)] #FIXME: need latest npu_attention_update to support bfloat16 in
-    with tng.scope.npu_stream_switch('lse'):
-        with tng.scope.limit_core_num("0", "12"):
-            lse = lse.transpose(0,1).contiguous()
-            lse_parallel = lse.new_empty(cp_group.world_size, num_head // cp_group.world_size, *lse.shape[1:])
-            dist.all_to_all_single(lse_parallel.view(-1), lse.view(-1), group=cp_group.device_group)
-            lse_parallel_list = [item.view(-1) for item in lse_parallel.unbind(0)]
-    
-    output_local_head = torch_npu.npu_attention_update(lse_parallel_list, out_parallel_list, 0)   # [ N / cp_size * B , L]
+    outs = out.view(cp_size, -1, head_dim).transpose(0, 1).float()
+    lses = lse.view(cp_size, -1).transpose(0, 1).float()
 
-    output_local_head = output_local_head[0].view(num_head // cp_group.world_size, bs, head_dim)   # [ N / cp_size, B , L]
-
-    return output_local_head.to(dtype)
-
-def update_attn_out_a2a_torch(out: torch.Tensor, lse: torch.Tensor, cp_group: GroupCoordinator):
-    """
-    Apply the all-gathered lses to correct each local rank's attention
-    output. we still need perform a cross-rank reduction to obtain the
-    final attention output.
-    Args:
-        output: [ N, B, L ]
-        lses   :  [ B, N, 1 ]
-    Return:
-        output: [ N, B, L ]
-        lse   : [ B, N, 1 ]
-    """
-    dtype = out.dtype
-    num_head, bs, head_dim = out.shape
-    
-    out_parallel = out.new_empty(cp_group.world_size, num_head // cp_group.world_size, *out.shape[1:])
-    dist.all_to_all_single(out_parallel.view(-1), out.view(-1), group=cp_group.device_group)
-    out_parallel = out_parallel.view(cp_group.world_size, -1, head_dim)
-    outs = out_parallel.transpose(0, 1).float()
-    
-    lse = lse.view(-1, num_head).transpose(0, 1).contiguous()
-    lse_parallel = lse.new_empty(cp_group.world_size, num_head // cp_group.world_size, *lse.shape[1:])
-    dist.all_to_all_single(lse_parallel.view(-1), lse.view(-1), group=cp_group.device_group)
-    lse_parallel = lse_parallel.view(cp_group.world_size, -1)
-    lses = lse_parallel.transpose(0, 1).float()
-    
     assert outs.dim() == 3 and lses.dim() == 2
     assert outs.size(0) == lses.size(0) and outs.size(1) == lses.size(1)
-    
-    # inf -> _inf
-    _inf = torch.tensor(float("-inf"), device=lses.device)
-    lses = torch.where(lses == float("inf"), _inf, lses)
     
     max_lses = lses.max(dim=-1)[0]
     ses = torch.exp(lses - max_lses.view(-1, 1))
     se = ses.sum(dim=-1)
     valid = se > 0
-    
+
     sc = torch.where(
         valid.view(-1, 1), ses / se.view(-1, 1), torch.zeros_like(ses)
     ).unsqueeze(2)
+
+    reduce_sum = (outs * sc).sum(1)
+    return reduce_sum.to(dtype)
     
-    out = (outs * sc).sum(1)
-    output_local_head = out.view(num_head // cp_group.world_size, bs, head_dim)
-    return output_local_head.to(dtype)
-    
- 
 def cp_lse_out_a2a(cp_attn_out: torch.Tensor,
-                     cp_attn_lse: torch.Tensor,
-                     cp_group: GroupCoordinator):
+                   cp_attn_lse: torch.Tensor,
+                   cp_group1: GroupCoordinator,
+                   cp_group2: GroupCoordinator):
     """
     cp_attn_out: [ N, B, D ]
     cp_attn_lse: [ B, N, 1 ]
     """
-    if cp_group.world_size == 1:
+    if cp_group1.world_size == 1:
         return cp_attn_out
-    cp_attn_lse = cp_attn_lse.contiguous()
 
-    if model_extra_config.operator_opt_config.enable_attn_update and cp_group.world_size <= 16:
-        out = update_attn_out_a2a(cp_attn_out, cp_attn_lse, cp_group)
-    else:
-        out = update_attn_out_a2a_torch(cp_attn_out, cp_attn_lse, cp_group)
+    num_head, bs, head_dim = cp_attn_out.shape
+
+    with ConditionalTNGScope(core_num='0|16'):
+        cp_attn_lse = cp_attn_lse.view(-1, num_head).transpose(0, 1).contiguous()
+        lse_parallel = cp_attn_lse.new_empty(cp_group2.world_size, num_head // cp_group2.world_size, *cp_attn_lse.shape[1:])
+        dist.all_to_all_single(lse_parallel.view(-1), cp_attn_lse.view(-1), group=cp_group2.device_group)
+
+    with ConditionalTNGScope(core_num='0|32'):
+        out_parallel = cp_attn_out.new_empty(cp_group1.world_size, num_head // cp_group1.world_size, *cp_attn_out.shape[1:])
+        dist.all_to_all_single(out_parallel.view(-1), cp_attn_out.view(-1), group=cp_group1.device_group)
     
-    return out
+
+    if model_extra_config.operator_opt_config.enable_attn_update and cp_group1.world_size <= 16:
+        out = update_attn_out_a2a(out_parallel, lse_parallel)
+    else:
+        out = update_attn_out_a2a_torch(out_parallel, lse_parallel)
+    out = out.view(num_head // cp_group1.world_size, bs, head_dim)

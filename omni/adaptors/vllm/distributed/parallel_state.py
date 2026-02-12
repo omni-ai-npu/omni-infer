@@ -627,9 +627,28 @@ def initialize_o_proj_dp_group(backend) -> None:
     )
 
 def initialize_mla_cp_group(backend) -> None:
-    # dcp now is using tp 
+    # Get world size and rank. Ensure some consistencies.
+    if not torch.distributed.is_initialized():
+        raise RuntimeError("torch.distributed must be initialized")
+    world_size: int = get_world_group().world_size
+    mla_cp_size = get_current_vllm_config().parallel_config.tensor_parallel_size
+    if world_size % mla_cp_size != 0:
+        raise RuntimeError(f"mla CP Size ({mla_cp_size}) should be divisible by world size ({world_size})")
+    backend = backend or torch.distributed.get_backend(get_world_group().device_group)
+
     global _MLA_CP
-    _MLA_CP = get_tp_group()
+    if _MLA_CP is not None:
+        raise RuntimeError("_MLA_CP must be None")
+    group_ranks = torch.tensor(get_world_group().ranks).reshape(-1, mla_cp_size)
+    group_ranks = [x.tolist() for x in group_ranks]
+    # message queue broadcaster is only used in tensor model parallel group
+    _MLA_CP = init_model_parallel_group(
+        group_ranks,
+        get_world_group().local_rank,
+        backend,
+        use_message_queue_broadcaster=False,
+        group_name="mla_cp_group",
+    ) 
 
 def initialize_eh_proj_tp_group(backend) -> None:
     # Get world size and rank. Ensure some consistencies.
