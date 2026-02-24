@@ -3,6 +3,7 @@
 
 import torch
 import torch_npu
+import multiprocessing
 from torch.nn.parameter import Parameter
 from typing import Optional, Tuple
 from vllm.model_executor.layers.vocab_parallel_embedding import (
@@ -240,10 +241,13 @@ class ParallelLMHead(VocabParallelEmbedding):
         return logits
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
+        current_method = multiprocessing.get_start_method()
+        multiprocessing.set_start_method('spawn', force=True)
         is_weight_nz = getattr(param, "is_weight_nz", False)
         if is_weight_nz:
             param.data = torch_npu.npu_format_cast(param.data, 2)
         super().weight_loader(param, loaded_weight)
         param.data = torch_npu.npu_format_cast(param.data, 29)
+        multiprocessing.set_start_method(current_method, force=True)
         if not hasattr(param, "is_weight_nz"):
             set_weight_attrs(param, {"is_weight_nz": True})

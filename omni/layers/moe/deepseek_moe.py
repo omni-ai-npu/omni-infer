@@ -24,6 +24,7 @@
 # limitations under the License.
 """Inference-only DeepseekV3 model."""
 import os
+import multiprocessing
 from typing import Dict, Optional, Tuple
 import torch, torch_npu
 from torch import nn
@@ -459,7 +460,10 @@ class DeepseekMoE(nn.Module):
                 return self.forward_separate_expert_decode(hidden_states, residual, attn_metadata, next_attention_weights)
         else:
             if not self.is_init_gate:
+                current_method = multiprocessing.get_start_method()
+                multiprocessing.set_start_method('spawn', force=True)
                 self.gate.weight.data = torch_npu.npu_format_cast(self.gate.weight.data, 2)
+                multiprocessing.set_start_method(current_method, force=True)
                 if hasattr(self.gate.weight, "is_weight_nz"):
                     self.gate.weight.is_weight_nz = False
                 self.is_init_gate = True

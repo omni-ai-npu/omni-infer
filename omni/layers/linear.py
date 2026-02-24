@@ -31,7 +31,8 @@ from vllm.distributed import (
     tensor_model_parallel_all_reduce,
     tensor_model_parallel_all_gather,
     tensor_model_parallel_reduce_scatter,
-    get_tp_group
+    get_tp_group,
+    get_world_group
 )
 
 from omni.adaptors.vllm.distributed.communication_op import mla_tensor_model_parallel_reduce_scatter
@@ -46,6 +47,8 @@ class AscendReplicatedLinear(ReplicatedLinear):
         
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         # veRL special case: transpose the weight back to original shape
+        current_method = multiprocessing.get_start_method()
+        multiprocessing.set_start_method('spawn', force=True)
         is_weight_nz = getattr(param, "is_weight_nz", False)
         if is_weight_nz:
             param.data = torch_npu.npu_format_cast(param.data, 2)
@@ -58,12 +61,15 @@ class AscendReplicatedLinear(ReplicatedLinear):
             param.data = param.data.t_()
         if is_weight_nz:
             param.data = torch_npu.npu_format_cast(param.data, 29)
+        multiprocessing.set_start_method(current_method, force=True)
 
 
 class AscendColumnParallelLinear(ColumnParallelLinear):
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         # veRL special case: transpose the weight back to original shape
+        current_method = multiprocessing.get_start_method()
+        multiprocessing.set_start_method('spawn', force=True)
         is_weight_nz = getattr(param, "is_weight_nz", False)
         if is_weight_nz:
             param.data = torch_npu.npu_format_cast(param.data, 2)
@@ -76,6 +82,7 @@ class AscendColumnParallelLinear(ColumnParallelLinear):
             param.data = param.data.t_()
         if is_weight_nz:
             param.data = torch_npu.npu_format_cast(param.data, 29)
+        multiprocessing.set_start_method(current_method, force=True)
 
 class AscendUnquantizedLinearMethod(UnquantizedLinearMethod):
 
@@ -539,7 +546,7 @@ class Tp2DpAndTpRowParallelLinear(AscendRowParallelLinear):
         param_data = param.data
         # bitsandbytes loads the weights of the specific portion
         # adapter
-        world_size = torch.distributed.get_world_size()
+        world_size = get_world_group().world_size
         rank_list = torch.arange(world_size).reshape(-1, self.tp_size).T
         dp_size = world_size // self.tp_size
         if input_dim is not None and not use_bitsandbytes_4bit:

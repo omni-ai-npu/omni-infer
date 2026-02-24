@@ -890,11 +890,10 @@ class TestLinear(unittest.TestCase):
             )
         expected = torch.cat(expected_slices, dim=1)  # [2, 12]
 
-        with mock.patch.object(
-            layer_mod.torch.distributed,
-            "get_world_size",
-            return_value=world_size,
-        ):
+        with mock.patch.object(layer_mod, "get_world_group") as mock_get_group:
+            mock_group = mock.Mock()
+            mock_group.world_size = world_size
+            mock_get_group.return_value = mock_group
             layer.weight_loader(param, loaded_weight)
 
         self.assertEqual(tuple(param.data.shape), (2, input_size))
@@ -918,7 +917,10 @@ class TestLinear(unittest.TestCase):
 
         loaded_weight = torch.randn(2, 8, dtype=torch.float32)
 
-        with mock.patch.object(layer_mod.torch.distributed, "get_world_size", return_value=4):
+        with mock.patch.object(layer_mod, "get_world_group") as mock_get_group:
+            mock_group = mock.Mock()
+            mock_group.world_size = 4
+            mock_get_group.return_value = mock_group
             layer.weight_loader(param, loaded_weight)
 
         self.assertTrue(torch.allclose(param.data, loaded_weight))
@@ -941,7 +943,10 @@ class TestLinear(unittest.TestCase):
         param_type.is_gguf_weight = False
         loaded_type = torch.tensor(5, dtype=torch.int32)
 
-        with mock.patch.object(layer_mod.torch.distributed, "get_world_size", return_value=2):
+        with mock.patch.object(layer_mod, "get_world_group") as mock_get_group:
+            mock_group = mock.Mock()
+            mock_group.world_size = 2
+            mock_get_group.return_value = mock_group
             layer.weight_loader(param_type, loaded_type)
 
         self.assertEqual(param_type.weight_type, 5)
@@ -952,7 +957,10 @@ class TestLinear(unittest.TestCase):
         param_uninit.input_dim = 1
         loaded_weight = torch.randn(2, 8, dtype=torch.float32)  # dim1=8 -> 8//tp_size=4
 
-        with mock.patch.object(layer_mod.torch.distributed, "get_world_size", return_value=2):
+        with mock.patch.object(layer_mod, "get_world_group") as mock_get_group:
+            mock_group = mock.Mock()
+            mock_group.world_size = 2
+            mock_get_group.return_value = mock_group
             layer.weight_loader(param_uninit, loaded_weight)
 
         # materialize 后 shape[1] 被除以 tp_size
