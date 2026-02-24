@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import numpy as np
 from abc import ABC
+from pathlib import Path
 from typing import Optional
 from multiprocessing import shared_memory
 from unittest.mock import patch
@@ -22,36 +23,39 @@ from vllm.sampling_params import RequestOutputKind
 
 _global_experts_capturer: Optional["RoutedExpertsCapturer"] = None
 _global_experts_reader: Optional["RoutedExpertsReader"] = None
+
 SAVE_DIR = os.getenv("EXPORT_MOE_EXPERTS_TEST_PATH", None)
+ROLE = os.getenv("ROLE", None)
 INVALID_INDICES = -1
 FMT = "i"
 SIZE = struct.calcsize(FMT)
 BUFFER_PREFIX = "vllm_routed_experts_buffer"
-EXPORT_MOE_EXPERTS_TMP_DIR = os.getenv("EXPORT_MOE_EXPERTS_TMP_DIR", "./")
+EXPORT_MOE_EXPERTS_TMP_DIR = os.getenv("EXPORT_MOE_EXPERTS_TMP_DIR", "./tmp_lock_dir")
 LOCK_FILE_PREFIX = os.path.join(
     EXPORT_MOE_EXPERTS_TMP_DIR, 
     "vllm_routed_experts"
 )
+Path(EXPORT_MOE_EXPERTS_TMP_DIR).mkdir(exist_ok=True)
 
-def save_data(indices: np.ndarray, data: np.ndarray, save_dir: str) -> None:
+def save_data(indices: np.ndarray, data: np.ndarray, save_dir: str, part_key: str) -> None:
     """Save indices and data to a compressed pickle file."""
     if save_dir is None:
         return
 
-    data_dict = {int(indices[i]): v for i, v in enumerate(data)}
+    data_dict = {part_key : {int(indices[i]): v for i, v in enumerate(data)}}
     save_name = os.path.join(save_dir, f"data_{time.time()}.pkl")
 
     with gzip.open(save_name, "wb") as file:
         pickle.dump(data_dict, file, protocol=pickle.HIGHEST_PROTOCOL)
 
-def save_indices(indices: np.ndarray, request_id: str, save_dir: str) -> None:
+def save_indices(indices: np.ndarray, request_id: str, save_dir: str, part_key: str) -> None:
     """Save request indices to a compressed pickle file."""
     if save_dir is None:
         return
     
     save_name = os.path.join(save_dir, f"indices_{time.time()}.pkl")
     with gzip.open(save_name, "wb") as file:
-        pickle.dump({request_id: indices.tolist()}, file, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump({request_id: {part_key: indices.tolist()}}, file, protocol=pickle.HIGHEST_PROTOCOL)
 
 def pad_3d(data, target_shape):
     """padding 3d tensor"""
@@ -125,8 +129,10 @@ class _RoutedExpertsCapturer:
         enable_init_shared_memory: bool,
     ) -> None:
         """Initialize the experts capturer buffer."""
+        self.is_pd_disaggregation = bool(ROLE)
+        self.is_pd_prefill = ROLE == "prefill"
         num_hidden_layers = getattr(hf_config, "num_hidden_layers", 0)
-        num_dense_layers = getattr(hf_config, "num_dense_layers", 0)
+        num_dense_layers = getattr(hf_config, "num_dense_layers", None)
         if num_dense_layers is None:
             mlp_only_layers = getattr(hf_config, "mlp_only_layers", None)
             num_dense_layers = len(mlp_only_layers) if mlp_only_layers else 0
@@ -134,7 +140,6 @@ class _RoutedExpertsCapturer:
         self.instance_id = instance_id
         self.num_moe_layers = num_hidden_layers - num_dense_layers
         self.num_selected_experts = num_experts_per_tok
-
         self.torch_dtype = (
             torch.uint8
             if self.num_selected_experts - 1 <= torch.iinfo(torch.uint8).max
@@ -233,11 +238,11 @@ class _RoutedExpertsCapturer:
             if tp_rank == 0:
                 all_data = [torch.empty_like(data) for _ in range(get_tp_group().world_size)]
                 all_real_mapping = [torch.empty_like(real_mapping) for _ in range(get_tp_group().world_size)]
-                dist.gather(data, gather_list=all_data, dst=0, group=get_tp_group().device_group)
-                dist.gather(real_mapping, gather_list=all_real_mapping, dst=0, group=get_tp_group().device_group)
+                dist.gather(data, gather_list=all_data, dst=get_tp_group().first_rank, group=get_tp_group().device_group)
+                dist.gather(real_mapping, gather_list=all_real_mapping, dst=get_tp_group().first_rank, group=get_tp_group().device_group)
             else:
-                dist.gather(data, dst=0, group=get_tp_group().device_group)
-                dist.gather(real_mapping, dst=0, group=get_tp_group().device_group)
+                dist.gather(data, dst=get_tp_group().first_rank, group=get_tp_group().device_group)
+                dist.gather(real_mapping, dst=get_tp_group().first_rank, group=get_tp_group().device_group)
                 return
             concatenated_data = torch.cat(all_data, dim=0)
             concatenated_real_mapping = torch.cat(all_real_mapping, dim=0)
@@ -259,7 +264,11 @@ class _RoutedExpertsCapturer:
                     and self._experts_capturer_device_buffer is not None
                 ):
                     self._host_buffer_view[indices, :, :] = data
-                    save_data(indices, data, SAVE_DIR)
+                    if self.is_pd_disaggregation:
+                        part_key = 'prefill' if self.is_pd_prefill else 'decode'
+                    else:
+                        part_key = 'total'
+                    save_data(indices, data, SAVE_DIR, part_key)
                 if self._shm_total_token_num is not None:
                     current_count = struct.unpack_from(
                         FMT, self._shm_total_token_num.buf, 0
@@ -354,14 +363,14 @@ class _RoutedExpertsReader:
         if self._shm is not None:
             return
         num_hidden_layers = getattr(hf_config, "num_hidden_layers", 0)
-        num_dense_layers = getattr(hf_config, "num_dense_layers", 0)
+        num_dense_layers = getattr(hf_config, "num_dense_layers", None)
         if num_dense_layers is None:
             mlp_only_layers = getattr(hf_config, "mlp_only_layers", None)
             num_dense_layers = len(mlp_only_layers) if mlp_only_layers else 0
         num_experts_per_tok = getattr(hf_config, "num_experts_per_tok", 0)
         num_moe_layers = num_hidden_layers - num_dense_layers
-        self.is_pd_disaggregation = bool(os.getenv("ROLE"))
-        self.is_pd_prefill = (os.getenv("ROLE") == "prefill") if self.is_pd_disaggregation else False
+        self.is_pd_disaggregation = bool(ROLE)
+        self.is_pd_prefill = ROLE == "prefill"
         self.block_size = block_size
         self.lock_file = f"{LOCK_FILE_PREFIX}_{instance_id}.lock"
         self.np_dtype = (
@@ -415,14 +424,21 @@ class _RoutedExpertsReader:
         indices = (
             block_ids_array.reshape((-1, 1)) * self.block_size
             + np.arange(self.block_size)
-        )
-        if indices is not None and stopped and not (self.is_pd_disaggregation and is_prefill):
-            save_indices(indices, request.request_id, SAVE_DIR)
-        indices = indices.flatten()[start_tokens:num_tokens]
+        ).flatten()[start_tokens:num_tokens]
+        if indices is not None and stopped:
+            if self.is_pd_disaggregation:
+                part_key = 'prefill' if is_prefill else 'decode'
+            else:
+                part_key = 'total'
+            save_indices(indices, request.request_id, SAVE_DIR, part_key)
         if not is_prefill and is_stream:
             indices = indices[-num_new_token:]
+        expect_token_num = indices.size
+        if is_prefill or not self.is_pd_disaggregation:
+            expect_token_num = indices.size - request.num_cached_tokens
+
         while (
-            struct.unpack_from(FMT, self._shm_total_token_num.buf, 0)[0] < indices.size
+            struct.unpack_from(FMT, self._shm_total_token_num.buf, 0)[0] < expect_token_num
         ):
             pass
 
@@ -433,7 +449,7 @@ class _RoutedExpertsReader:
                     FMT,
                     self._shm_total_token_num.buf,
                     0,
-                    struct.unpack_from(FMT, self._shm_total_token_num.buf, 0)[0] - indices.size,
+                    struct.unpack_from(FMT, self._shm_total_token_num.buf, 0)[0] - expect_token_num,
                 )
                 if self._host_buffer_view is None:
                     raise RuntimeError("Buffer not attached.")
