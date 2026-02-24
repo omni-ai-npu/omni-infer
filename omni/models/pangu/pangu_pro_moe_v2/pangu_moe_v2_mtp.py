@@ -44,6 +44,7 @@ from vllm.model_executor.model_loader.weight_utils import (
     sharded_weight_loader,
 )
 from vllm.utils import supports_dynamo
+from vllm.model_executor.models.utils import is_pp_missing_parameter
 
 from omni.adaptors.vllm.distributed import get_eh_proj_tp_group
 from omni.layers.attention.backend.attention import AscendAttentionState
@@ -304,6 +305,10 @@ class PanguProMoEMTP(nn.Module):
             ckpt_up_proj_name="up_proj",
             num_experts=self.config.num_experts)
 
+        duplicate_params_mapping = [
+            ("a2a_o_proj", "o_proj"),
+        ]
+
         params_dict = dict(self.named_parameters())
         loaded_params: set[str] = set()
         for name, loaded_weight in weights:
@@ -410,10 +415,36 @@ class PanguProMoEMTP(nn.Module):
 
                     param = params_dict[name]
                     if name.endswith("param_sink_key") or name.endswith("param_sink_value"):
-                        weight_loader = getattr(param, "weight_loader", sharded_weight_loader(-2))
+                        tp_rank = get_tensor_model_parallel_rank()
+                        tp_size = get_tensor_model_parallel_world_size()
+ 
+                        shard_size = param.data.shape[-2]
+                        num_kv_heads = loaded_weight.shape[-2]
+                        index_factor = 1
+                        if tp_size > num_kv_heads:
+                            index_factor = tp_size // num_kv_heads
+                        start_idx = tp_rank // index_factor * shard_size
+                        loaded_weight = loaded_weight.narrow(-2, start_idx, shard_size)
+                        weight_loader = getattr(param, "weight_loader", default_weight_loader) # [S,N,D]
                     else:
                         weight_loader = getattr(param, "weight_loader", default_weight_loader)
                     weight_loader(param, loaded_weight)
+
+                    for param_name, weight_name in duplicate_params_mapping:
+                        if weight_name not in name:
+                            continue
+                        duplicate_name = name.replace(weight_name, param_name)
+                        if is_pp_missing_parameter(duplicate_name, self):
+                            continue
+                        if duplicate_name not in params_dict:
+                            continue
+                        param = params_dict[duplicate_name]
+                        weight_loader = getattr(
+                            param, "weight_loader", default_weight_loader
+                        )
+                        weight_loader(param, loaded_weight)
+                        loaded_params.add(duplicate_name)
+                        break
 
             loaded_params.add(name)
         return loaded_params

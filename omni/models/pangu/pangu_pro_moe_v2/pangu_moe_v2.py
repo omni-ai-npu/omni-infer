@@ -1342,6 +1342,9 @@ class PanguProMoEV2ForCausalLM(nn.Module, SupportsPP):
             not vllm_config.additional_config.get("enable_hybrid_graph_mode", False) and
             vllm_config.scheduler_config.enable_chunked_prefill)
 
+        assert vllm_config.kv_transfer_config is not None or get_dp_group().world_size <= 1 or self.is_hybrid_chunked_prefill_graph_mode, (
+            f"Hybrid mode with DP world size {get_dp_group().world_size} > 1 requires is_hybrid_chunked_prefill_graph_mode to be enabled")
+
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
 
