@@ -555,7 +555,7 @@ class DeepseekMoE(nn.Module):
             comm_group=get_ep_group()
         )
 
-        if model_extra_config.operator_opt_config.prefill_moe_all_to_all:
+        if isinstance(final_hidden_states_list, tuple):
             if len(final_hidden_states_list) != 4:
                 raise RuntimeError("len(final_hidden_states_list) != 4")
             final_hidden_states = final_hidden_states_list[0]
@@ -595,6 +595,11 @@ class DeepseekMoE(nn.Module):
             with tng.scope.npu_stream_switch('21'):
                 hidden_states = tng.scope.npu_wait_tensor(hidden_states, hidden_states)
                 shared_output = self.shared_experts(hidden_states)
+        elif model_extra_config.parall_config.enable_share_expert_tp:
+            with tng.scope.npu_stream_switch('21'):
+                hidden_states = tng.scope.npu_wait_tensor(hidden_states, hidden_states)
+                shared_output = self.shared_experts(hidden_states)
+            tng.scope.npu_wait_tensor(hidden_states, shared_output)
         else:
             shared_output = self.shared_experts(hidden_states)
 
@@ -652,7 +657,7 @@ class DeepseekMoE(nn.Module):
             attn_metadata=attn_metadata
         )
 
-        if not self.quant_symbol:
+        if isinstance(final_hidden_states_list, tuple):
             if len(final_hidden_states_list) != 4:
                 raise RuntimeError("len(final_hidden_states_list) != 4")
             final_hidden_states = final_hidden_states_list[0]
@@ -664,7 +669,7 @@ class DeepseekMoE(nn.Module):
         if not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
             final_hidden_states = reduce_scatter_two_stage(final_hidden_states, idx=0)
 
-        if not self.quant_symbol:
+        if not self.quant_symbol and not model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
             final_hidden_states = torch_npu.npu_moe_finalize_routing(
                 gathered_tokens,
                 skip1=shared_output,
