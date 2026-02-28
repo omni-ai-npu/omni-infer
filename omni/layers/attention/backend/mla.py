@@ -318,6 +318,25 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         else:
             self.mc2_mask.zero_()
         self.mc2_mask[:actual_seqs_num].fill_(True)
+        if model_extra_config.operator_opt_config.use_dcp:
+            from omni.adaptors.vllm.distributed.parallel_state import get_mla_cp_group
+            sp_size = get_mla_cp_group().world_size
+            sp_rank = get_mla_cp_group().rank_in_group
+
+            # Pad mc2_mask to be divisible by sp_size
+            seq_len = self.mc2_mask.size(0)
+            remainder = seq_len % sp_size
+            if remainder != 0:
+                pad_len = sp_size - remainder
+                padded_mask = torch.nn.functional.pad(self.mc2_mask, (0, pad_len), value=False)
+            else:
+                padded_mask = self.mc2_mask
+
+            # Chunk and select the portion for current rank
+            chunk_size = padded_mask.size(0) // sp_size
+            start = sp_rank * chunk_size
+            end = start + chunk_size
+            self.mc2_mask = padded_mask[start:end].contiguous()
 
     def reorder_batch(self, input_batch: "InputBatch",
                       scheduler_output: "SchedulerOutput") -> bool:

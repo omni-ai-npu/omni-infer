@@ -1936,3 +1936,4 @@ def cp_lse_out_a2a(cp_attn_out: torch.Tensor,
     else:
         out = update_attn_out_a2a_torch(out_parallel, lse_parallel)
     out = out.view(num_head // cp_group1.world_size, bs, head_dim)
+    return out

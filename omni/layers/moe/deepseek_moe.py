@@ -33,7 +33,12 @@ import torchair as tng
 torch._logging.set_logs(recompiles=True)
 # vllm adaptor
 from vllm.platforms import current_platform
-from vllm.config import QuantizationConfig
+from vllm.config import (
+    QuantizationConfig,
+    CompilationLevel,
+    get_current_vllm_config
+)
+from vllm.utils import supports_dynamo
 from vllm.attention import AttentionMetadata
 from vllm.distributed import (
     get_ep_group,
@@ -60,6 +65,7 @@ from omni.adaptors.vllm.distributed.communication_op import (
 )
 from omni.adaptors.vllm.distributed.parallel_state import (
     get_round_cross_group_from_list,
+    get_mla_cp_group,
     get_mlp_tp_group,
     get_local_world_group,
     GroupCoordinator
@@ -72,6 +78,7 @@ from omni.adaptors.vllm.sched.routed_experts_capturer import RoutedExpertsCaptur
 
 """NPU Stream Switch Names"""
 STREAM_SHARED_EXPERT = 'stream_shared_expert'
+MOE_SP = 'moe_sp'
 SEQ_SPLIT_LENGTH = 4096
 
 
@@ -448,6 +455,8 @@ class DeepseekMoE(nn.Module):
         if model_extra_config.operator_opt_config.enable_moe_prefill_multi_stream:
             self.Prefill_shared_expert_stream = torch.npu.Stream()
 
+        cur_vllm_config = get_current_vllm_config()
+        self.enable_graph_mode = (cur_vllm_config.compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
     def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
         is_prefill = attn_metadata is None or (hasattr(attn_metadata, "prefill") and attn_metadata.prefill is not None) or \
                     (hasattr(attn_metadata, "is_pd_seperate_d") and not attn_metadata.is_pd_seperate_d)
@@ -591,11 +600,16 @@ class DeepseekMoE(nn.Module):
         if model_extra_config.operator_opt_config.moe_multi_stream_tune and \
             model_extra_config.operator_opt_config.decode_moe_dispatch_combine:
             return self._forward_decode_dispatch_combine(hidden_states, residual, attn_metadata, layer_id, next_attention_weights)
+        
+        if model_extra_config.operator_opt_config.use_dcp:
+            num_tokens, _ = hidden_states.shape
+            hidden_states = self.sequence_parallel_chunk(hidden_states)
+            
         if model_extra_config.operator_opt_config.moe_multi_stream_tune:
             with tng.scope.npu_stream_switch('21'):
                 hidden_states = tng.scope.npu_wait_tensor(hidden_states, hidden_states)
                 shared_output = self.shared_experts(hidden_states)
-        elif model_extra_config.parall_config.enable_share_expert_tp:
+        elif model_extra_config.parall_config.enable_share_expert_tp and self.enable_graph_mode:
             with tng.scope.npu_stream_switch('21'):
                 hidden_states = tng.scope.npu_wait_tensor(hidden_states, hidden_states)
                 shared_output = self.shared_experts(hidden_states)
@@ -682,12 +696,21 @@ class DeepseekMoE(nn.Module):
             )
         else:
             final_hidden_states = final_hidden_states + shared_output
-
+            
+        if model_extra_config.operator_opt_config.use_dcp:
+            final_hidden_states = get_mla_cp_group().all_gather(final_hidden_states, 0)
+            final_hidden_states = final_hidden_states[:num_tokens]
+            
         return final_hidden_states, residual
 
     def _forward_decode_dispatch_combine(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
         is_prefill = attn_metadata is None or (hasattr(attn_metadata, "prefill") and attn_metadata.prefill is not None) or \
                     (hasattr(attn_metadata, "is_pd_seperate_d") and not attn_metadata.is_pd_seperate_d)
+
+        if model_extra_config.operator_opt_config.use_dcp:
+            num_tokens, _ = hidden_states.shape
+            hidden_states = self.sequence_parallel_chunk(hidden_states)
+
         hidden_states_float = hidden_states.float()
         router_logits, _ = self.gate.forward(hidden_states_float)
         # Here, we do a 2D to 3D conversion, and then convert back to 2D to trigger the fusion rule, fusing add rms and cast into AddRmsNormCast.
@@ -915,7 +938,14 @@ class DeepseekMoE(nn.Module):
 
         if shared_output is not None:
             final_hidden_states = (hidden_states_route, shared_output)
-
+            
+        if model_extra_config.operator_opt_config.use_dcp:
+            final_hidden_states = hidden_states_route + shared_output
+            with tng.scope.npu_stream_switch(MOE_SP):
+                final_hidden_states = get_mla_cp_group().all_gather(final_hidden_states, 0)
+            tng.scope.npu_wait_tensor(final_hidden_states, final_hidden_states)
+            final_hidden_states = final_hidden_states[:num_tokens]
+            
         return final_hidden_states, residual
 
     def forward_separate_expert_decode(self,
@@ -1106,6 +1136,23 @@ class DeepseekMoE(nn.Module):
                             topk_ids=topk_ids,
                             pertoken_scale=pertoken_scale,
                             attn_metadata=attn_metadata)
+        
+    def sequence_parallel_chunk(self, x):
+        sp_size = get_mla_cp_group().world_size
+        sp_rank = get_mla_cp_group().rank_in_group
+
+        # all_gather needs the sequence length to be divisible by tp_size
+        seq_len = x.size(0)
+        remainder = seq_len % sp_size
+        if remainder != 0:
+            pad_len = sp_size - remainder
+            y = nn.functional.pad(x, (0, 0, 0, pad_len))
+        else:
+            y = x
+
+        chunk = y.shape[0] // sp_size
+        start = sp_rank * chunk
+        return torch.narrow(y, 0, start, chunk)
     
     def forward_decode_a2(self, hidden_states: torch.Tensor, residual: torch.Tensor,
                        attn_metadata: AttentionMetadata, layer_id: int, kv_prefetch: torch.Tensor = None) -> torch.Tensor:
