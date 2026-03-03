@@ -160,7 +160,7 @@ index 160557186..43dd27980 100644
                                  prompt_token_ids=prompt["prompt_token_ids"],
                                  outputs=[CompletionOutput(index=0,
 -                                    cumulative_logprob=None, logprobs=None,
-+                                    cumulative_logprob=None, logprobs=prompt["logprobs"],
++                                    cumulative_logprob=None, logprobs=prompt.get('logorobs', None),
                                      text= prompt["prefilled_texts"],
                                      token_ids=prompt["prefilled_token_ids"])])
                      else:
