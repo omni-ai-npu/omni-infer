@@ -34,11 +34,8 @@ torch._logging.set_logs(recompiles=True)
 # vllm adaptor
 from vllm.platforms import current_platform
 from vllm.config import (
-    QuantizationConfig,
-    CompilationLevel,
-    get_current_vllm_config
+    QuantizationConfig
 )
-from vllm.utils import supports_dynamo
 from vllm.attention import AttentionMetadata
 from vllm.distributed import (
     get_ep_group,
@@ -455,8 +452,6 @@ class DeepseekMoE(nn.Module):
         if model_extra_config.operator_opt_config.enable_moe_prefill_multi_stream:
             self.Prefill_shared_expert_stream = torch.npu.Stream()
 
-        cur_vllm_config = get_current_vllm_config()
-        self.enable_graph_mode = (cur_vllm_config.compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
     def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor, attn_metadata: AttentionMetadata, layer_id: int, next_attention_weights: Optional[dict]=None) -> torch.Tensor:
         is_prefill = attn_metadata is None or (hasattr(attn_metadata, "prefill") and attn_metadata.prefill is not None) or \
                     (hasattr(attn_metadata, "is_pd_seperate_d") and not attn_metadata.is_pd_seperate_d)
@@ -609,7 +604,7 @@ class DeepseekMoE(nn.Module):
             with tng.scope.npu_stream_switch('21'):
                 hidden_states = tng.scope.npu_wait_tensor(hidden_states, hidden_states)
                 shared_output = self.shared_experts(hidden_states)
-        elif model_extra_config.parall_config.enable_share_expert_tp and self.enable_graph_mode:
+        elif model_extra_config.parall_config.enable_share_expert_tp and model_extra_config.task_config.enable_graph_mode:
             with tng.scope.npu_stream_switch('21'):
                 hidden_states = tng.scope.npu_wait_tensor(hidden_states, hidden_states)
                 shared_output = self.shared_experts(hidden_states)
@@ -753,7 +748,10 @@ class DeepseekMoE(nn.Module):
                                                                 )
 
         best_topk = attn_metadata.decode.best_topk if attn_metadata is not None and hasattr(attn_metadata, "decode") else None
-        mc2_mask = attn_metadata.decode.mc2_mask if attn_metadata is not None and hasattr(attn_metadata, "decode") else None
+        if model_extra_config.operator_opt_config.use_dcp:
+            mc2_mask = attn_metadata.decode.sp_mc2_mask if attn_metadata is not None and hasattr(attn_metadata, "decode") else None
+        else:
+            mc2_mask = attn_metadata.decode.mc2_mask if attn_metadata is not None and hasattr(attn_metadata, "decode") else None
         topk_ids = self.experts.apply_expert_load_balance(topk_ids=topk_ids, best_topk_ids=best_topk)
         capture = RoutedExpertsCapturer.get_instance()
         if capture is not None:
@@ -1141,16 +1139,16 @@ class DeepseekMoE(nn.Module):
         sp_size = get_mla_cp_group().world_size
         sp_rank = get_mla_cp_group().rank_in_group
 
-        # all_gather needs the sequence length to be divisible by tp_size
         seq_len = x.size(0)
-        remainder = seq_len % sp_size
-        if remainder != 0:
-            pad_len = sp_size - remainder
+        if seq_len % sp_size != 0:
+            padded_len = ((seq_len + sp_size - 1) // sp_size) * sp_size
+            pad_len = padded_len - seq_len
             y = nn.functional.pad(x, (0, 0, 0, pad_len))
         else:
             y = x
+            padded_len = seq_len
 
-        chunk = y.shape[0] // sp_size
+        chunk = padded_len // sp_size
         start = sp_rank * chunk
         return torch.narrow(y, 0, start, chunk)
     

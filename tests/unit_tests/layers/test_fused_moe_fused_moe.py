@@ -162,6 +162,7 @@ class TestFusedMoe(unittest.TestCase):
             prefill_enable_long_seq=False,
             enable_kv_rmsnorm_rope_cache=False,
             shared_experts_to_gmm=False,
+            use_dcp=False
         )
         parall_config = SimpleNamespace(redundancy_shared_expert_num=0, attn_dies=0, o_proj_tp_size=1)
         task_config = SimpleNamespace(enable_omni_placement=False, enable_attn_ffn_disaggregation=False,

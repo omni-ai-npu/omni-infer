@@ -170,7 +170,10 @@ class UnquantizedFusedMoEMethod(GPUUnquantizedFusedMoEMethod):
             attn_metadata = get_forward_context().attn_metadata
             if isinstance(attn_metadata, dict):
                 attn_metadata = attn_metadata[next(iter(attn_metadata))]
-            mc2_mask = attn_metadata.decode.mc2_mask if attn_metadata is not None and hasattr(attn_metadata, "decode") else None
+            if model_extra_config.operator_opt_config.use_dcp:
+                mc2_mask = attn_metadata.decode.sp_mc2_mask if attn_metadata is not None and hasattr(attn_metadata, "decode") else None
+            else:
+                mc2_mask = attn_metadata.decode.mc2_mask if attn_metadata is not None and hasattr(attn_metadata, "decode") else None
             act_dtype = hidden_states.dtype
             # route
             shared_expert_rank_num = 0
