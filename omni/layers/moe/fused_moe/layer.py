@@ -648,6 +648,8 @@ class FusedMoE(torch.nn.Module):
             is_weight_nz = getattr(param, "is_weight_nz", False)
             if is_weight_nz:
                 param.data = torch_npu.npu_format_cast(param.data, 2)
+                # expert_data should be in ND(2) format
+                expert_data = param.data[expert_id]
             is_weight_transposed = getattr(param, "is_weight_transposed", False)
             if is_weight_transposed:
                 expert_data = expert_data.t_()

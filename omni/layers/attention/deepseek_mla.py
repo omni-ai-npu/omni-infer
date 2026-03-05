@@ -531,30 +531,11 @@ class DeepseekMLA(nn.Module):
             prefix=f"{prefix}.attn",
         )
 
-        self.is_init = True
         self.W_UK = None
         self.W_UV = None
         # decode use mla absorb
         if get_dp_group().world_size > 1 or model_extra_config.operator_opt_config.enable_dsa:
-            kv_b_proj_weight = self.kv_b_proj.weight.T
-
-            expected_shape = (
-                self.kv_lora_rank,
-                self.num_local_heads * (self.qk_nope_head_dim + self.v_head_dim)
-            )
-            if kv_b_proj_weight.shape != expected_shape:
-                raise RuntimeError(f"{kv_b_proj_weight.shape} != {expected_shape}")
-
-            kv_b_proj_weight = kv_b_proj_weight.view(
-                self.kv_lora_rank,
-                self.num_local_heads,
-                self.qk_nope_head_dim + self.v_head_dim,
-            )
-            self.W_UK, self.W_UV = kv_b_proj_weight.split(
-                [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
-            self.W_UK = self.W_UK.permute(1, 2, 0)
-            self.W_UV = self.W_UV.transpose(0, 1)
-            self.is_init = False
+            create_uk_and_uv(self)
             self.num_speculative_tokens = 0 if not cur_vllm_config.speculative_config or not model_extra_config.operator_opt_config.mtp_remove_redundant_kv else cur_vllm_config.speculative_config.num_speculative_tokens
             self.norm_res = {}
             self.actual_seq_lengths = {}
@@ -665,10 +646,6 @@ class DeepseekMLA(nn.Module):
         attn_metadata: AttentionMetadata,
         comm_group: Optional[GroupCoordinator] = None,
     ) -> torch.Tensor:
-        if not self.is_init and self.enable_graph_mode:
-            self.W_UK = torch.nn.Parameter(self.W_UK.contiguous(), requires_grad=False)
-            self.W_UV = torch.nn.Parameter(self.W_UV.contiguous(), requires_grad=False)
-            self.is_init = True
         if self.kv_scale is not None and self.kv_scale_reci_tile is None:
             self.kv_scale_reci_tile = torch.nn.Parameter(
                 torch.reciprocal(self.kv_scale).repeat(self.kv_lora_rank).view(1, -1), requires_grad=False)
@@ -1937,3 +1914,74 @@ def cp_lse_out_a2a(cp_attn_out: torch.Tensor,
         out = update_attn_out_a2a_torch(out_parallel, lse_parallel)
     out = out.view(num_head // cp_group1.world_size, bs, head_dim)
     return out
+
+def create_uk_and_uv(attn: DeepseekMLA):
+    """
+    Create W_UK and W_UV matrices from kv_b_proj weights for DeepseekMLA attention.
+
+    This function extracts and transforms the kv_b_proj weights into
+    separate W_UK (for key projection) and W_UV (for value projection) matrices.
+    The matrices are then assigned to the attention layer, with the storage method
+    determined by the RL_SERVICE_MODE environment variable.
+
+    Args:
+        attn (DeepseekMLA): The DeepseekMLA attention layer instance containing
+            kv_b_proj weights and layer configuration parameters.
+
+    Raises:
+        RuntimeError: If the kv_b_proj weight shape does not match the expected
+            dimensions based on the attention layer configuration.
+
+    Notes:
+        - W_UK shape: (num_local_heads, qk_nope_head_dim, kv_lora_rank)
+        - W_UV shape: (kv_lora_rank, num_local_heads, v_head_dim)
+        - In RL service mode (RL_SERVICE_MODE=1), weights are stored as nn.Parameter
+          to support CPU offload during sleep
+        - Otherwise, weights are stored as regular tensors
+    """
+
+    kv_b_proj_weight = attn.kv_b_proj.weight.T
+
+    expected_shape = (
+        attn.kv_lora_rank,
+        attn.num_local_heads * (attn.qk_nope_head_dim + attn.v_head_dim)
+    )
+    if kv_b_proj_weight.shape != expected_shape:
+        raise RuntimeError(f"{kv_b_proj_weight.shape} != {expected_shape}")
+
+    kv_b_proj_weight = kv_b_proj_weight.view(
+        attn.kv_lora_rank,
+        attn.num_local_heads,
+        attn.qk_nope_head_dim + attn.v_head_dim,
+    )
+    W_UK, W_UV = kv_b_proj_weight.split(
+        [attn.qk_nope_head_dim, attn.v_head_dim], dim=-1)
+    W_UK = W_UK.permute(1, 2, 0).contiguous()
+    W_UV = W_UV.transpose(0, 1).contiguous()
+
+    if os.getenv("RL_SERVICE_MODE", "0") == "1":
+        # In RL service mode, should use Parameter to support W_UK and W_UV offload to cpu when doing sleep.
+        attn.W_UK = torch.nn.Parameter(W_UK, requires_grad=False)
+        attn.W_UV = torch.nn.Parameter(W_UV, requires_grad=False)
+    else:
+        attn.W_UK = W_UK
+        attn.W_UV = W_UV
+
+def mla_update_after_load_kv_b_proj(attn: DeepseekMLA):
+    # if attn.W_UK is not created in DeepseekMLA.__init__, there is no need to do update.
+    if attn.W_UK is not None:
+        is_weight_nz = getattr(attn.kv_b_proj.weight, "is_weight_nz", False)
+        if is_weight_nz:
+            current_method = multiprocessing.get_start_method()
+            try:
+                multiprocessing.set_start_method('spawn', force=True)
+            except RuntimeError as e:
+                raise RuntimeError(f"Failed to set multiprocessing start method to 'spawn': {e}")
+            attn.kv_b_proj.weight.data = torch_npu.npu_format_cast(attn.kv_b_proj.weight.data, 2)
+        create_uk_and_uv(attn)
+        if is_weight_nz:
+            attn.kv_b_proj.weight.data = torch_npu.npu_format_cast(attn.kv_b_proj.weight.data, 29)
+            try:
+                multiprocessing.set_start_method(current_method, force=True)
+            except RuntimeError as e:
+                raise RuntimeError(f"Failed to restore multiprocessing start method to '{current_method}': {e}")

@@ -16,7 +16,7 @@
 """Inference-only PanguUltraMoE model."""
 import copy
 import itertools
-import os
+import re
 from typing import Iterable, List, Optional, Set, Tuple, Union
 import torch
 import torch_npu
@@ -68,7 +68,7 @@ from omni.adaptors.vllm.distributed.parallel_state import (
 
 from omni.layers.moe.fused_moe.layer import FusedMoE
 from omni.layers.moe.deepseek_moe import DeepseekMoE 
-from omni.layers.attention.deepseek_mla import DeepseekMLA 
+from omni.layers.attention.deepseek_mla import DeepseekMLA, mla_update_after_load_kv_b_proj
 from omni.models.config_loader.loader import model_extra_config
 from omni.layers.attention.backend.mla import group_request_list
 from omni.layers.utils import ConditionalTNGScope
@@ -946,6 +946,16 @@ class PanguUltraMoEForCausalLM(nn.Module):
                     weight_loader = getattr(param, "weight_loader",
                                             default_weight_loader)
                     weight_loader(param, loaded_weight)
+            if 'self_attn.kv_b_proj' in name:
+                try:
+                    match = re.search(r'layers\.(\d+)', name)
+                    if match is None:
+                        raise ValueError(f"No layer index found in name: {name}")
+                    layer_idx = int(match.group(1))
+                except (ValueError, AttributeError, IndexError) as e:
+                    raise RuntimeError(f"Failed to parse layer index from name '{name}': {e}")
+                attn = self.model.layers[layer_idx].self_attn
+                mla_update_after_load_kv_b_proj(attn)
             loaded_params.add(name)
         return loaded_params
 
