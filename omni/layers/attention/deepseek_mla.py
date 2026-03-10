@@ -531,11 +531,13 @@ class DeepseekMLA(nn.Module):
             prefix=f"{prefix}.attn",
         )
 
+        self.is_init = True
         self.W_UK = None
         self.W_UV = None
         # decode use mla absorb
         if get_dp_group().world_size > 1 or model_extra_config.operator_opt_config.enable_dsa:
             create_uk_and_uv(self)
+            self.is_init = False
             self.num_speculative_tokens = 0 if not cur_vllm_config.speculative_config or not model_extra_config.operator_opt_config.mtp_remove_redundant_kv else cur_vllm_config.speculative_config.num_speculative_tokens
             self.norm_res = {}
             self.actual_seq_lengths = {}
@@ -646,6 +648,10 @@ class DeepseekMLA(nn.Module):
         attn_metadata: AttentionMetadata,
         comm_group: Optional[GroupCoordinator] = None,
     ) -> torch.Tensor:
+        if not self.is_init and self.W_UK is not None:
+            # update uk and uv after load weights
+            create_uk_and_uv(self)
+            self.is_init = True
         if self.kv_scale is not None and self.kv_scale_reci_tile is None:
             self.kv_scale_reci_tile = torch.nn.Parameter(
                 torch.reciprocal(self.kv_scale).repeat(self.kv_lora_rank).view(1, -1), requires_grad=False)
