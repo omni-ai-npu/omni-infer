@@ -29,3 +29,7 @@
 [submodule "components/omni-eplb"]
 	path = components/omni-eplb
 	url  = https://gitee.com/omniai/omni-eplb
+
+[submodule "components/omni-models"]
+	path = components/omni-models
+	url  = https://gitee.com/omniai/omni-models
