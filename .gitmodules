@@ -25,3 +25,7 @@
 [submodule "components/omni-proxy"]
 	path = components/omni-proxy
 	url  = https://gitee.com/omniai/omni-proxy
+
+[submodule "components/omni-eplb"]
+	path = components/omni-eplb
+	url  = https://gitee.com/omniai/omni-eplb
