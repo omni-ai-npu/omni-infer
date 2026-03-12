@@ -88,14 +88,17 @@ def start_single_node_api_servers(
     master_port,
     total_dp_size,
     gpu_util,
-    block_size,
-    tp,
     served_model_name,
     server_offset=0,
+    block_size=128,
+    tp=1,
+    pp=1,
+    distributed_executor_backend=None,
     kv_transfer_config=None,
     log_dir="logs",
     max_port_attempts=10,
     max_tokens=4096,
+    load_format="auto",
     extra_args=None,
     additional_config=None,
     enable_mtp=False,
@@ -107,6 +110,7 @@ def start_single_node_api_servers(
 
     # Hard code dp=1, cuz current we want one api server one DP
     dp_per_server = 1
+    print(f"kv_transfer_config in {kv_transfer_config}")
 
     if additional_config:
         try:
@@ -118,13 +122,15 @@ def start_single_node_api_servers(
 
     os.makedirs(log_dir, exist_ok=True)
     processes = []
+    api_port_start = base_api_port
+    servers_api_ports = {}
 
-    # Check if base api port is available. Raise error if it's unavailable.
-    if not is_port_available(base_api_port):
-        raise RuntimeError(
-            f"Port {base_api_port} is not available. "
-            "Use --base_api_port to specify a different port, or terminate the process using this port."
-        )
+    # # Check if base api port is available. Raise error if it's unavailable.
+    # if not is_port_available(base_api_port):
+    #     raise RuntimeError(
+    #         f"Port {base_api_port} is not available. "
+    #         "Use --base_api_port to specify a different port, or terminate the process using this port."
+    #     )
 
     for rank in range(num_servers):
         # Set environment variables for each server
@@ -138,25 +144,32 @@ def start_single_node_api_servers(
 
         # Find an available port
         try:
-            port = find_available_port(base_api_port + rank, max_attempts=max_port_attempts)
+            port = find_available_port(api_port_start, max_attempts=max_port_attempts)
         except RuntimeError as e:
             print(f"Error: {e}")
             cleanup_processes(processes)
             sys.exit(1)
 
+        servers_api_ports[f"server_{rank}"] = port
+        api_port_start = port + 1
+
         # Construct the vllm serve command
         cmd = [
             "vllm", "serve", model_path,
             "--trust-remote-code",
+            "--pipeline-parallel-size", str(pp),
             "--gpu-memory-utilization", str(gpu_util),
-            "--block_size", str(block_size),
+            "--block-size", str(block_size),
             "--tensor-parallel-size", str(tp),
             "--data-parallel-address", master_ip,         # 'Address of data parallel cluster '
             "--data-parallel-rpc-port", str(master_port), # 'Port for data parallel RPC '
             "--port", str(port),
             "--served-model-name", served_model_name,
-            "--max-model-len", str(max_tokens)
+            "--max-model-len", str(max_tokens),
+            "--load-format", str(load_format)
         ]
+        if distributed_executor_backend is not None and distributed_executor_backend != "None":
+            cmd.extend(["--distributed-executor-backend", str(distributed_executor_backend)])
         if os.getenv('ROLE', 'prefill') == 'decode':
             cmd.extend([
                 "--data-parallel-size", str(total_dp_size), # one engine core for one dp
@@ -215,7 +228,7 @@ def start_single_node_api_servers(
     print('-' * terminal_width)
     print(f"Started {num_servers} servers. Logs are in {log_dir}/")
     print(f"Run 'tail -f {log_dir}/server_*.log' to monitor logs in real-time.")
-    return processes, process_manager
+    return processes, process_manager, servers_api_ports
 
 
 def signal_handler(sig, frame):
@@ -274,6 +287,8 @@ if __name__ == "__main__":
     parser.add_argument("--no-enable-prefix-caching", default=False, action="store_true")
     parser.add_argument("--no-enable-chunked-prefill", default=False, action="store_true")
     parser.add_argument("--num-speculative-tokens", type=int, default=1)
+    parser.add_argument("--pp", type=int, default=1, help="Pipeline parallelism size")
+    parser.add_argument("--distributed-executor-backend", type=str, default=None, help="Distributed executor backend for vLLM (e.g., 'mp', 'ray')")
 
     args = parser.parse_args()
     if not args.num_dp:
@@ -283,7 +298,7 @@ if __name__ == "__main__":
             "Number of DP should be larger or eaqual to number of API servers."
         )
 
-    processes, process_manager = start_single_node_api_servers(
+    processes, process_manager, _ = start_single_node_api_servers(
         num_servers=args.num_servers,
         model_path=args.model_path,
         base_api_port=args.base_api_port,
@@ -295,11 +310,13 @@ if __name__ == "__main__":
         gpu_util=args.gpu_util,
         block_size=args.block_size,
         tp=args.tp,
+        pp=args.pp,
+        distributed_executor_backend=args.distributed_executor_backend,
         served_model_name=args.served_model_name,
         log_dir=args.log_dir,
         max_port_attempts=args.max_port_attempts,
         kv_transfer_config=args.kv_transfer_config,
-        max_tokens=args.max_model_len, 
+        max_tokens=args.max_model_len,
         extra_args=args.extra_args,
         additional_config=args.additional_config,
         enable_mtp=args.enable_mtp,
