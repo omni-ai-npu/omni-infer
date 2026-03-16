@@ -371,6 +371,7 @@ def _init_model_extra_config(task_config):
         setattr(operator_opt_config, 'use_omni_cache', getattr(operator_opt_config, 'use_omni_cache', False))
         setattr(operator_opt_config, 'use_omni_cache', os.getenv("ENABLE_OMNI_CACHE") == "1")
         setattr(operator_opt_config, 'tp_nnodes', int(os.environ.get("OMNI_CACHE_TP_NNODES", "1")))
+        setattr(operator_opt_config, 'control_accept_rate', float(os.environ.get("CONTROL_ACCEPT_RATE", "-1")))
 
         setattr(model_extra_config, 'task_config', task_config)
         setattr(model_extra_config, 'parall_config', parall_config)
