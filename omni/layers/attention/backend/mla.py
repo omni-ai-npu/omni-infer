@@ -34,6 +34,7 @@ from omni.models.config_loader.loader import model_extra_config
 from omni.layers.attention.backend.attention import AscendAttentionState
 from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
 from omni.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
+from omni.layers.attention.backend.utils import create_aligend_tensor
 from omni.accelerators.cache import OmniAttentionSpec, compute_omni_attn_metadata
 from omni.accelerators.cache.omni_cache import BaseOmniCache, PrefixCopyMeta
 from omni.adaptors.vllm.utils import get_attr_by_names
@@ -107,13 +108,13 @@ class AscendMLABackend(AttentionBackend):
         qk_rope_dim_names = ['attention_qk_rope_dim', 'qk_rope_head_dim']
         kv_lora_dim = get_attr_by_names(model_config.hf_text_config, kv_lora_dim_names, 0)
         qk_rope_dim = get_attr_by_names(model_config.hf_text_config, qk_rope_dim_names, 0)
-        layer_kv_cache_nope = torch.zeros(
+        layer_kv_cache_nope = create_aligend_tensor(
                         kv_cache_shape[:-2] +
                         (1, kv_lora_dim, ),
                         dtype=dtype if not model_extra_config.operator_opt_config.fa_quant else torch.int8,
                         pin_memory=True,
                         device=device)
-        layer_kv_cache_pe = torch.zeros(
+        layer_kv_cache_pe = create_aligend_tensor(
                             kv_cache_shape[:-2] +
                             (1, qk_rope_dim, ),
                             dtype=dtype,
@@ -124,13 +125,13 @@ class AscendMLABackend(AttentionBackend):
             layer_kv_cache_nope = torch_npu.npu_format_cast(layer_kv_cache_nope, 2)
             layer_kv_cache_pe = torch_npu.npu_format_cast(layer_kv_cache_pe, 2)
         if model_extra_config.operator_opt_config.enable_dsa:
-            layer_indexer_k_nope = torch.zeros(
+            layer_indexer_k_nope = create_aligend_tensor(
                             kv_cache_shape[:-2] +
                             (1, 128, ),
                             dtype= dtype if not model_extra_config.operator_opt_config.enable_indexer_quant else torch.int8,
                             pin_memory=True,
                             device=device)
-            layer_indexer_k_nope_scale = torch.zeros(
+            layer_indexer_k_nope_scale = create_aligend_tensor(
                             kv_cache_shape[:-2] +
                             (1, 1, ),
                             dtype=torch.float16,

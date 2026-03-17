@@ -43,6 +43,7 @@ from vllm.platforms import current_platform
 from vllm.config import (get_current_vllm_config, CompilationLevel)
 from omni.layers.rotary_embedding import QwenMRotaryEmbedding
 from omni.layers.attention.backend.attention_dummy_builder import DummyAttentionMetadataBuilder
+from omni.layers.attention.backend.utils import create_aligend_tensor
 from omni.models.config_loader.loader import model_extra_config
 
 # 延迟导入避免循环依赖
@@ -1573,12 +1574,8 @@ class AscendAttentionBackend(AttentionBackend):
         # adapted for Pangu 72Bv2,  for different K and V head sizes
         if isinstance(kv_cache_shape, tuple) and len(kv_cache_shape) == 2 and isinstance(kv_cache_shape[0], tuple):
             k_cache_shape, v_cache_shape = kv_cache_shape
-            layer_k_cache = torch.zeros(k_cache_shape,
-                                        dtype=dtype,
-                                        device=device)
-            layer_v_cache = torch.zeros(v_cache_shape,
-                                        dtype=dtype,
-                                        device=device)
+            layer_k_cache = create_aligend_tensor(k_cache_shape, dtype, device)
+            layer_v_cache = create_aligend_tensor(v_cache_shape, dtype, device)
             if not int(os.getenv("NO_NPU_MOCK", "0")) and device != "cpu":
                 layer_k_cache = torch_npu.npu_format_cast(layer_k_cache, 2)
                 layer_v_cache = torch_npu.npu_format_cast(layer_v_cache, 2)
@@ -1586,11 +1583,9 @@ class AscendAttentionBackend(AttentionBackend):
             return (layer_k_cache, layer_v_cache)
         else:
             # Original implementation for same K and V head sizes
-            layer_kv_caches = torch.zeros(
-                kv_cache_shape,
-                dtype=dtype if not getattr(model_extra_config.operator_opt_config, "enable_c8", False) else torch.int8,
-                device=device,
-            )
+            c8_enabled = getattr(model_extra_config.operator_opt_config, "enable_c8", False)
+            actual_dtype = torch.int8 if c8_enabled else dtype
+            layer_kv_caches = create_aligend_tensor(kv_cache_shape, actual_dtype, device)
             if not int(os.getenv("NO_NPU_MOCK", "0")) and device != "cpu":
                 torch_npu.npu_format_cast(layer_kv_caches, 2)
             return (layer_kv_caches[0], layer_kv_caches[1])
