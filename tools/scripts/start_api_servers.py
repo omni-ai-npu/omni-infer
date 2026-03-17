@@ -125,6 +125,22 @@ def start_single_node_api_servers(
     api_port_start = base_api_port
     servers_api_ports = {}
 
+    process_manager = ProcessManager(processes)
+
+    # Define cleanup function for weakref.finalize
+    def cleanup_processes():
+        for i, (proc, log) in enumerate(process_manager.processes):
+            if proc.poll() is None:  # Process is still running
+                print(f"Cleaning up: Terminating server {i} (PID: {proc.pid})")
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)  # Wait up to 5 seconds for clean exit
+                except subprocess.TimeoutExpired:
+                    proc.kill()  # Force kill if timeout occurs
+                    print(f"API Server {i} did not terminate gracefully, killed")
+            log.close()
+            print(f"Closed log file for server {i}")
+
     # # Check if base api port is available. Raise error if it's unavailable.
     # if not is_port_available(base_api_port):
     #     raise RuntimeError(
@@ -147,7 +163,7 @@ def start_single_node_api_servers(
             port = find_available_port(api_port_start, max_attempts=max_port_attempts)
         except RuntimeError as e:
             print(f"Error: {e}")
-            cleanup_processes(processes)
+            cleanup_processes()
             sys.exit(1)
 
         servers_api_ports[f"server_{rank}"] = port
@@ -204,22 +220,6 @@ def start_single_node_api_servers(
             stderr=subprocess.STDOUT  # Redirect stderr to stdout (same log file)
         )
         processes.append((process, log_file))
-
-    process_manager = ProcessManager(processes)
-
-    # Define cleanup function for weakref.finalize
-    def cleanup_processes():
-        for i, (proc, log) in enumerate(process_manager.processes):
-            if proc.poll() is None:  # Process is still running
-                print(f"Cleaning up: Terminating server {i} (PID: {proc.pid})")
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)  # Wait up to 5 seconds for clean exit
-                except subprocess.TimeoutExpired:
-                    proc.kill()  # Force kill if timeout occurs
-                    print(f"API Server {i} did not terminate gracefully, killed")
-            log.close()
-            print(f"Closed log file for server {i}")
 
     # Set up finalizer for garbage collection
     weakref.finalize(process_manager, cleanup_processes)
@@ -344,3 +344,4 @@ if __name__ == "__main__":
                 break
     except KeyboardInterrupt:
         signal_handler(signal.SIGINT, None)
+        
