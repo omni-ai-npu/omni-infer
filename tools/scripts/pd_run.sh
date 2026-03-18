@@ -112,6 +112,7 @@ print_help() {
     echo "  --kv-parallel-size               vLLM framework: PD separation parameter, kv parallel size (equal to num_p + num_d) (default: $KV_PARALLEL_SIZE)"
     echo "  --kv-producer-dp-size            vLLM framework: PD separation parameter, kv producer dp size (default: $KV_PRODUCER_DP_SIZE)"
     echo "  --kv-producer-pp-size            vLLM framework: PD separation parameter, kv producer pp size (default: $KV_PRODUCER_PP_SIZE)"
+    echo "  --kv-transfer-config             vLLM framework: PD separation parameter, kv transfer config (default: $KV_TRANSFER_CONFIG)"
     echo "  --llm-waiting-out                vLLM framework: PD separation parameter, P instance requests waiting time out (default: $LLM_WAITING_OUT)"
     echo "  --extra-args                     vLLM framework: Additional VLLM arguments (space-separated, e.g., '--enable-expert-parallel') (default: $EXTRA_ARGS)"
     echo "  --additional-args                vLLM framework: Additional VLLM arguments"
@@ -248,6 +249,9 @@ parse_long_option() {
         --kv-producer-pp-size)
             KV_PRODUCER_PP_SIZE="$2"
             ;;
+        --kv-transfer-config)
+            KV_TRANSFER_CONFIG="$2"
+            ;;
         --llm-waiting-out)
             LLM_WAITING_OUT="$2"
             ;;
@@ -316,6 +320,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ -z "$KV_TRANSFER_CONFIG" ]]; then
 # Build KV transfer config JSON
 KV_TRANSFER_CONFIG=$(cat <<EOF
 {
@@ -329,6 +334,7 @@ KV_TRANSFER_CONFIG=$(cat <<EOF
 }
 EOF
 )
+fi
 
 # Export environment variables
 export GLOBAL_RANK_TABLE_FILE_PATH
