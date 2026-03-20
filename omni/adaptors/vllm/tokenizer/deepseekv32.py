@@ -99,6 +99,11 @@ class DeepseekV32Tokenizer(HfTokenizer):
 
         encode_config = dict(thinking_mode=thinking_mode, drop_thinking=drop_thinking)
         prompt_str = encode_messages(messages, **encode_config)  # type: ignore
+        if len(messages) > 0 and (messages[-1].get("role") == "assistant" or messages[-1].get("role") == "system"):
+            if thinking_mode == "thinking":
+                prompt_str += "<｜Assistant｜> <think>"
+            else:
+                prompt_str += "<｜Assistant｜>"
         return prompt_str
 
     def num_special_tokens_to_add(self) -> int:
