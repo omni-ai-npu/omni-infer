@@ -350,6 +350,10 @@ class DeepseekMLA(nn.Module):
         # FA is fully quantized, KVCache is not quantized, and the function is not enabled.
         self.quant_symbol = quant_config is not None
         self.layer_idx = extract_layer_index(self.prefix)
+        # adapt: add current_init_count to count the init times of MTP layer
+        self.current_init_count =0
+        self.max_init_count = 1
+        # adapt end
 
         self.merge_qkv = model_extra_config.operator_opt_config.merge_qkv
         if self.q_lora_rank is not None:
@@ -669,7 +673,12 @@ class DeepseekMLA(nn.Module):
                     output = self._forward_prefill(positions, hidden_states, kv_cache, attn_metadata, comm_group=comm_group)
         else:
             output = self._forward_decode(positions, hidden_states, kv_cache, attn_metadata)
-        if model_extra_config.operator_opt_config.use_mlaprolog and not self.is_mla_prolog_init:
+
+        # adapt: to count MTP layer init times and only last mtp layer should change weight
+        if not self.is_mla_prolog_init and self.current_init_count < self.max_init_count:
+            self.current_init_count += 1
+        # adapt end
+        if model_extra_config.operator_opt_config.use_mlaprolog and self.current_init_count == self.max_init_count and not self.is_mla_prolog_init:
             self.is_mla_prolog_init = True
             if model_extra_config.parall_config.attn_sp_size > 1:
                 self.q_a_proj_weight_copy = self._process_hybrid_mla_prolog_weight(self.q_a_proj.weight)

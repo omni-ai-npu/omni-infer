@@ -80,6 +80,9 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
                          quant_config=self.quant_config,
                          **({"is_ffn_die": True} if is_ffn_die else {})
                         )
+        # adapt: add max init times to determine how many time the MTP layer will be initialized
+        self.self_attn.max_init_count = vllm_config.speculative_config.num_speculative_tokens
+        # adapt end
 
         self.ignore_share_weight = True # TODO get from config
         self.embed_tokens = None if self.ignore_share_weight else \
