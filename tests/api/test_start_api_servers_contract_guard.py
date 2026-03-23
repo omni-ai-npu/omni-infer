@@ -29,21 +29,12 @@ import pytest
 import importlib.util
 from pathlib import Path
 
-def _find_repo_root(start: Path) -> Path:
-    cur = start.resolve()
-    for p in [cur, *cur.parents]:
-        if (p / "pyproject.toml").exists() or (p / ".git").exists():
-            return p
-    raise FileNotFoundError("Cannot locate repo root from current test file path.")
-
-
 def _load_module():
-    repo_root = _find_repo_root(Path(__file__).parent)
-    
-    target = repo_root / "tools" / "scripts" / "start_api_servers.py"
-    assert target.exists(), f"target file not found: {target}"
+    """相对于当前测试文件加载 start_api_servers 模块"""
+    target_file = Path(__file__).parent.parent.parent / "tools" / "scripts" / "start_api_servers.py"
+    assert target_file.exists(), f"target file not found: {target_file}"
 
-    spec = importlib.util.spec_from_file_location("start_api_servers", target)
+    spec = importlib.util.spec_from_file_location("start_api_servers", target_file)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -703,4 +694,3 @@ def test_signal_handler_terminates_processes_and_exits(monkeypatch):
 
     assert log1.closed is True
     assert log2.closed is True
-
