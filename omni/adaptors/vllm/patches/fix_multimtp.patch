@@ -11,7 +11,7 @@ index 4b6a3937d..4cc341cc1 100644
      state.openai_serving_completion = OpenAIServingCompletion(
          engine_client,
 diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
-index 52092867b..705cc44f6 100644
+index f3fc77ca1..3fd63fd01 100755
 --- a/vllm/entrypoints/openai/serving_chat.py
 +++ b/vllm/entrypoints/openai/serving_chat.py
 @@ -55,6 +55,7 @@ from vllm.utils import random_uuid, as_list
@@ -40,14 +40,13 @@ index 52092867b..705cc44f6 100644
          # set up tool use
          self.enable_auto_tools: bool = enable_auto_tools
          if self.enable_auto_tools:
-@@ -306,7 +311,8 @@ class OpenAIServingChat(OpenAIServing):
+@@ -306,6 +311,9 @@ class OpenAIServingChat(OpenAIServing):
                          else:
                              engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
                              engine_prompt["prefilled_texts"] = delta_text
--                            engine_prompt["max_tokens"] = min(request.max_tokens or self.max_model_len, self.max_model_len-len(engine_prompt["prompt_token_ids"]))
 +                            max_model_len = self.max_model_len - max(0, self.num_spec_tokens + (self.num_spec_tokens - 1) - 1)
 +                            engine_prompt["max_tokens"] = min(request.max_tokens or self.max_model_len, max(1, max_model_len-len(engine_prompt["prompt_token_ids"])))
-                             request.kv_transfer_params["max_tokens"] = engine_prompt["max_tokens"]
++                            request.kv_transfer_params["max_tokens"] = engine_prompt["max_tokens"]
                  default_max_tokens = self.max_model_len - len(
                      engine_prompt["prompt_token_ids"])
-
+                 if request.use_beam_search:

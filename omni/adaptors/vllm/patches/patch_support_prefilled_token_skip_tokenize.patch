@@ -22,7 +22,7 @@ index bc11686d7..9d6906adf 100644
 +                        delta_text = tokenizer.convert_tokens_to_string([new_tokens])
 +                        # If the decoded text ends with '�', it indicates an incomplete UTF-8 sequence — abandon reuse.
 +                        # If the prefilled side has already triggered a stop reason, we also fall back to normal generation.
-+                        if delta_text.endswith("�") or any(s is not None for s in request.kv_transfer_params["stop_reasons"]) or request.kv_transfer_params["prefilled_token"][0] == tokenizer.eos_token_id:
++                        if min(request.max_tokens or self.max_model_len, self.max_model_len-len(engine_prompt["prompt_token_ids"]))==1 or delta_text.endswith("�") or any(s is not None for s in request.kv_transfer_params["stop_reasons"]) or request.kv_transfer_params["prefilled_token"][0] == tokenizer.eos_token_id:
 +                            request.kv_transfer_params.pop("prefilled_token", None)
 +                        else:
 +                            engine_prompt["prefilled_token_ids"] = request.kv_transfer_params["prefilled_token"]
