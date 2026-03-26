@@ -220,9 +220,10 @@ class ConfigUpdater:
         vllm_config.npu_compilation_config = NPUCompilationConfig()
         if additional_config:
             graph_model_compile_config = additional_config.get("graph_model_compile_config", {})
-            vllm_config.npu_compilation_config.build_from_cli(graph_model_compile_config, vllm_config)
-            logger.debug(f"Graph model compile config: {graph_model_compile_config}")
-            cls._handle_graph_mode(vllm_config)
+            if len(graph_model_compile_config) > 0:
+                vllm_config.npu_compilation_config.build_from_cli(graph_model_compile_config, vllm_config)
+                logger.debug(f"Graph model compile config: {graph_model_compile_config}")
+                cls._handle_graph_mode(vllm_config)
 
         cls._update_parallel_config(vllm_config)
         cls._update_cache_config(vllm_config)
