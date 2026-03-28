@@ -185,13 +185,14 @@ index c0d68bef4..88a460c53 100644
  
  class Scheduler(SchedulerInterface):
  
-@@ -1002,6 +1004,12 @@ class Scheduler(SchedulerInterface):
+@@ -1002,6 +1004,13 @@ class Scheduler(SchedulerInterface):
          num_computed_tokens = len(block_ids) * self.block_size
          if num_computed_tokens == request.num_tokens:
              num_computed_tokens -= 1
 +
 +        if reuse_prefilled_tokens:
-+            if request.sampling_params.extra_args['kv_transfer_params'] and "prefilled_token" in request.sampling_params.extra_args['kv_transfer_params']:
++            kv_params = (request.sampling_params.extra_args or {}).get('kv_transfer_params') if request.sampling_params else None
++            if kv_params and "prefilled_token" in kv_params:
 +                request.prompt_token_ids.extend(request.sampling_params.extra_args['kv_transfer_params']['prefilled_token'])
 +                request.append_output_token_ids(request.sampling_params.extra_args['kv_transfer_params']['prefilled_token'])
 +        
