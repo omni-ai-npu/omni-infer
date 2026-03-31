@@ -111,7 +111,7 @@ all:
             PREFILL_POD_NUM: 1
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/1p4_4d1_ranktable
-            RANK_TABLE_FILE_PATH: $(ls /tmp/1p4_4d1_ranktable/global/collect_files_d/local_*merge.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json)
             ROLE: decode
             SERVER_IP_LIST: 127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8
             SERVER_OFFSET: 0
@@ -215,7 +215,7 @@ all:
             PREFILL_POD_NUM: 1
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/1p4_4d1_ranktable
-            RANK_TABLE_FILE_PATH: $(ls /tmp/1p4_4d1_ranktable/global/collect_files_d/local_*merge.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json)
             ROLE: decode
             SERVER_IP_LIST: 127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8
             SERVER_OFFSET: 8
@@ -319,7 +319,7 @@ all:
             PREFILL_POD_NUM: 1
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/1p4_4d1_ranktable
-            RANK_TABLE_FILE_PATH: $(ls /tmp/1p4_4d1_ranktable/global/collect_files_d/local_*merge.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json)
             ROLE: decode
             SERVER_IP_LIST: 127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8
             SERVER_OFFSET: 16
@@ -423,7 +423,7 @@ all:
             PREFILL_POD_NUM: 1
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/1p4_4d1_ranktable
-            RANK_TABLE_FILE_PATH: $(ls /tmp/1p4_4d1_ranktable/global/collect_files_d/local_*merge.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json)
             ROLE: decode
             SERVER_IP_LIST: 127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8
             SERVER_OFFSET: 24
@@ -462,6 +462,7 @@ all:
               num-gpu-blocks-override: 32000
               max-num-batched-tokens: 161280
               max-num-seqs: 16
+              long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
               reasoning-parser: GlmMoe
@@ -498,7 +499,7 @@ all:
             ASCEND_PLATFORM: A2
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
-            ASCEND_LAUNCH_BLOCKING: '1'
+            ASCEND_LAUNCH_BLOCKING: '0'
             ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
             ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
             ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
@@ -529,7 +530,7 @@ all:
             PREFILL_TENSOR_PARALLEL_SIZE: 32
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/1p4_4d1_ranktable
-            RANK_TABLE_FILE_PATH: $(ls /tmp/1p4_4d1_ranktable/global/collect_files_p/127.0.0.1/local_*merge.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_p/${HOST_IP}/local_*merge.json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8
             SERVER_OFFSET: 0
@@ -567,6 +568,7 @@ all:
               num-gpu-blocks-override: 32000
               max-num-batched-tokens: 161280
               max-num-seqs: 16
+              long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
               reasoning-parser: GlmMoe
@@ -603,7 +605,7 @@ all:
             ASCEND_PLATFORM: A2
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
-            ASCEND_LAUNCH_BLOCKING: '1'
+            ASCEND_LAUNCH_BLOCKING: '0'
             ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
             ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
             ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
@@ -634,7 +636,7 @@ all:
             PREFILL_TENSOR_PARALLEL_SIZE: 32
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/1p4_4d1_ranktable
-            RANK_TABLE_FILE_PATH: $(ls /tmp/1p4_4d1_ranktable/global/collect_files_p/127.0.0.1/local_*merge.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_p/${HOST_IP}/local_*merge.json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8
             SERVER_OFFSET: 0
@@ -672,6 +674,7 @@ all:
               num-gpu-blocks-override: 32000
               max-num-batched-tokens: 161280
               max-num-seqs: 16
+              long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
               reasoning-parser: GlmMoe
@@ -708,7 +711,7 @@ all:
             ASCEND_PLATFORM: A2
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
-            ASCEND_LAUNCH_BLOCKING: '1'
+            ASCEND_LAUNCH_BLOCKING: '0'
             ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
             ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
             ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
@@ -739,7 +742,7 @@ all:
             PREFILL_TENSOR_PARALLEL_SIZE: 32
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/1p4_4d1_ranktable
-            RANK_TABLE_FILE_PATH: $(ls /tmp/1p4_4d1_ranktable/global/collect_files_p/127.0.0.1/local_*merge.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_p/${HOST_IP}/local_*merge.json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8
             SERVER_OFFSET: 0
@@ -777,6 +780,7 @@ all:
               num-gpu-blocks-override: 32000
               max-num-batched-tokens: 161280
               max-num-seqs: 16
+              long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
               reasoning-parser: GlmMoe
@@ -813,7 +817,7 @@ all:
             ASCEND_PLATFORM: A2
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
-            ASCEND_LAUNCH_BLOCKING: '1'
+            ASCEND_LAUNCH_BLOCKING: '0'
             ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
             ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
             ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
@@ -844,7 +848,7 @@ all:
             PREFILL_TENSOR_PARALLEL_SIZE: 32
             PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
             RANKTABLE_SAVE_PATH: /tmp/1p4_4d1_ranktable
-            RANK_TABLE_FILE_PATH: $(ls /tmp/1p4_4d1_ranktable/global/collect_files_p/127.0.0.1/local_*merge.json)
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_p/${HOST_IP}/local_*merge.json)
             ROLE: prefill
             SERVER_IP_LIST: 127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8
             SERVER_OFFSET: 0
