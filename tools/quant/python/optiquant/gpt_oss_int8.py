@@ -1,4 +1,5 @@
 import os
+import shutil
 import json
 from glob import glob
 from tqdm import tqdm
@@ -16,12 +17,30 @@ from huggingface_hub import snapshot_download
 def weight_quant(tensor: torch.Tensor):
     assert tensor.dim() == 3
     qmax = 127.0
-    abs_max = torch.abs(tensor).max(dim=-1, keepdim=True)[0]
+    abs_max = torch.abs(tensor).max(dim=-2, keepdim=True)[0]
     scale = abs_max / qmax
-    assert scale.shape == (tensor.shape[0], 1)
+    assert scale.shape == (tensor.shape[0], 1, tensor.shape[-1])
     quantized = torch.round(tensor / scale)
     quantized = torch.clamp(quantized, -qmax, qmax)
     return quantized.to(torch.int8), scale.to(torch.float32)
+
+def copy_except_safetensors(src_dir: str, dst_dir: str):
+    src_dir = os.path.abspath(src_dir)
+    dst_dir = os.path.abspath(dst_dir)
+
+    for root, dirs, files in os.walk(src_dir):
+        rel_path = os.path.relpath(root, src_dir)
+        target_root = os.path.join(dst_dir, rel_path) if rel_path != "." else dst_dir
+        os.makedirs(target_root, exist_ok=True)
+
+        for fname in files:
+            if fname.endswith(".safetensors"):
+                continue
+
+            src_file = os.path.join(root, fname)
+            dst_file = os.path.join(target_root, fname)
+
+            shutil.copy2(src_file, dst_file)
 
 
 def main(args, bf16_path, output_path, model_type):
@@ -31,9 +50,12 @@ def main(args, bf16_path, output_path, model_type):
     for i in range(layer_num):
         int8_names.append(f"model.layers.{i}.mlp.experts.down_proj.weight")
         int8_names.append(f"model.layers.{i}.mlp.experts.gate_up_proj.weight")
+        int8_names.append(f"model.layers.{i}.mlp.experts.down_proj")
+        int8_names.append(f"model.layers.{i}.mlp.experts.gate_up_proj")
 
     torch.set_default_dtype(torch.bfloat16)
     os.makedirs(output_path, exist_ok=True)
+    copy_except_safetensors(bf16_path, output_path)
     model_index_file = os.path.join(output_path, "model.safetensors.index.json")
 
     with open(model_index_file, "r") as f:
@@ -58,11 +80,14 @@ def main(args, bf16_path, output_path, model_type):
             if weight_name in int8_names:
                 assert weight.element_size() == 2
                 quant_count += 1
-                # print(weight_name, "int8")
+
                 int8_weight, scale_inv = weight_quant(weight)
                 new_state_dict[weight_name] = int8_weight
-                new_scale_name = weight_name.replace(".weight", ".scale")
+                new_scale_name = weight_name + ".scale"
+                if new_scale_name.endswith(".weight.scale"):
+                    new_scale_name = new_scale_name.replace(".weight.scale", ".scale")
                 new_state_dict[new_scale_name] = scale_inv
+                print(weight_name, "int8", "scale_inv.shape", scale_inv.shape)
 
                 new_weight_map[weight_name] = file_name
                 new_weight_map[new_scale_name] = file_name

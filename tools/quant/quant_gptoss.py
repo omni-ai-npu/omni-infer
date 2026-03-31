@@ -18,13 +18,45 @@ if __name__ == "__main__":
     num_bits = 8
 
     quant_config = {
-        "modules_to_not_convert": [
-            "model.layer.*.self_attn",
-            "model.layer.*.mlp.router",
-            "model.embed_tokens",
-            "lm_head",
-        ],
-        "quant_method": "mxfp4"
+        "config_groups": {
+            "group_0": {
+                "input_activations": {
+                    "actorder": None,
+                    "block_structure": None,
+                    "dynamic": True,
+                    "group_size": None,
+                    "num_bits": 8,
+                    "observer": "memoryless",
+                    "observer_kwargs": {},
+                    "strategy": "token",
+                    "symmetric": True,
+                    "type": "int"
+                },
+                "output_activations": None,
+                "targets": ["Linear"],
+                "weights": {
+                    "actorder": None,
+                    "block_structure": None,
+                    "dynamic": False,
+                    "group_size": None,
+                    "num_bits": {
+                        "self_attn": 16,
+                        "mlp.router": 16,
+                        "mlp.experts": 8
+                    },
+                    "observer": "minmax",
+                    "observer_kwargs": {},
+                    "strategy": "channel",
+                    "symmetric": True,
+                    "type": "int"
+                }
+            }
+        },
+        "format": "int-quantized",
+        "ignore": ["lm_head"],
+        "kv_cache_scheme": None,
+        "quant_method": "compressed-tensors",
+        "quantization_status": "compressed"
     }
 
     config_path = os.path.join(args.output_path, "config.json")

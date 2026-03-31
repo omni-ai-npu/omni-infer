@@ -1,0 +1,66 @@
+apiversion: modelslim_v1
+metadata:
+  config_id: glm_5_w8a8
+  score: 90
+  verified_model_types:
+    - GLM-5
+  label:
+    w_bit: 8
+    a_bit: 8
+    is_sparse: False
+    kv_cache: False
+
+default_w8a8_dynamic: &default_w8a8_dynamic
+  act:
+    scope: "per_token"
+    dtype: "int8"
+    symmetric: True
+    method: "minmax"
+  weight:
+    scope: "per_channel"
+    dtype: "int8"
+    symmetric: True
+    method: "minmax"
+
+spec:
+  process:
+    - type: "quarot"
+    
+    - type: "flex_smooth_quant" # W8A8
+      enable_subgraph_type:
+        - 'norm-linear'
+        - 'ov'
+        - 'up-down'
+      include:
+        - "*self_attn*"
+        - "model.layers.0.mlp.*"
+        - "model.layers.1.mlp.*"
+        - "model.layers.2.mlp.*"
+        - "*mlp.shared_experts.*"
+        - "*input_layernorm*"
+      exclude:
+        - "*post_attention_layernorm*"
+
+    - type: "group"
+      configs:
+        - type: "linear_quant"
+          qconfig: *default_w8a8_dynamic
+          include:
+            - "*self_attn*"
+          exclude:
+            - "*kv_b_proj"
+            - "*weights_proj*"
+            - "*wk*"
+            - "*q_a_proj*"
+            - "*kv_a_proj_with_mqa*"
+        - type: "linear_quant"
+          qconfig: *default_w8a8_dynamic
+          include:
+            - "*mlp*"
+          exclude:
+            - "*gate"
+
+  dataset: qwen3_cot_w4a4.json
+  save:
+    - type: "ascendv1_saver"
+      part_file_size: 4
