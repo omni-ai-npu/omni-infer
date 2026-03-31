@@ -144,6 +144,19 @@ class KVCacheMemoryPool:
         self.fd = os.open(hugepage_path, os.O_RDWR)
         self.mmap_obj = mmap.mmap(self.fd, mmap_size, access=mmap.ACCESS_WRITE)
 
+        # mlock the memory using ctypes
+        try:
+            libc = ctypes.CDLL("libc.so.6", use_errno=True)
+            buf = (ctypes.c_char * mmap_size).from_buffer(self.mmap_obj)
+            result = libc.mlock(ctypes.byref(buf), mmap_size)
+            if result != 0:
+                errno = ctypes.get_errno()
+                logger.warning(f"Warning: OmniCache mlock failed with error: {errno}")
+            else:
+                logger.info(f"OmniCache mlock {hugepage_path} succeeded")
+        except Exception as e:
+            logger.warning(f"Warning: OmniCache mlock failed: {e}")
+
         offset_bytes = rank * self.size_total
         buf_view = memoryview(self.mmap_obj)[offset_bytes:]
 

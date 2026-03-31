@@ -296,31 +296,40 @@ def signal_handler(sig, frame):
 
 if __name__ == "__main__":
     
-    # Check if ENABLE_OMNI_CACHE is set to "1" and run hugetlbfs setup
+    # Check if ENABLE_OMNI_CACHE is set to "1" and run appropriate setup script based on MEMMAP_PATH
     if os.environ.get("ENABLE_OMNI_CACHE") == "1":
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        hugetlbfs_script = os.path.join(script_dir, "setup_hugetlbfs_2MB.sh")
-        if os.path.exists(hugetlbfs_script):
-            print(f"ENABLE_OMNI_CACHE is set, running {hugetlbfs_script}")
-            cmd = ["bash", hugetlbfs_script]
-            map_size = os.environ.get("MAP_SIZE_BYTES", "")
+        memmap_path = os.environ.get("OMNI_CACHE_MEMMAP_PATH", "/dev/hugepages/omni_cache")
+        map_size = os.environ.get("MAP_SIZE_BYTES", "214748364800")  # 默认 200GB
+
+        # Determine which setup script to run based on MEMMAP_PATH
+        if memmap_path == "/dev/shm/omni_cache":
+            setup_script = os.path.join(script_dir, "setup_shm_1MB.sh")
+            print(f"MEMMAP_PATH is {memmap_path}, running {setup_script}")
+        else:
+            # Default to hugetlbfs for /dev/hugepages/omni_cache or any other path
+            setup_script = os.path.join(script_dir, "setup_hugetlbfs_2MB.sh")
+            print(f"MEMMAP_PATH is {memmap_path}, running {setup_script}")
+
+        if os.path.exists(setup_script):
+            cmd = ["bash", setup_script]
             if map_size:
                 cmd.append(map_size)
-                print(f"Passing MAP_SIZE_BYTES={map_size} to hugetlbfs setup script")
+                print(f"Passing MAP_SIZE_BYTES={map_size} to setup script")
             subprocess.run(cmd, check=True)
         else:
-            print(f"WARNING: {hugetlbfs_script} not found, skipping hugetlbfs setup")
+            print(f"WARNING: {setup_script} not found, skipping setup")
 
-    role = os.environ.get("ROLE")
-    if role == "prefill":
-        host_ip = os.environ.get("HOST_IP")
-        local_host_ip = os.environ.get("LOCAL_HOST_IP")        
-        if host_ip != local_host_ip:
-            print(f"Current HOST_IP is {host_ip} and LOCAL_HOST_IP is {local_host_ip}")
-            print("This appears to be a slave node in Ray cluster. Skipping API server startup.")
-            sys.exit(0)  # Clean exit for slave nodes
-        else:
-            print("This is the master prefill node. Starting API server...")
+        role = os.environ.get("ROLE")
+        if role == "prefill":
+            host_ip = os.environ.get("HOST_IP")
+            local_host_ip = os.environ.get("LOCAL_HOST_IP")        
+            if host_ip != local_host_ip:
+                print(f"Current HOST_IP is {host_ip} and LOCAL_HOST_IP is {local_host_ip}")
+                print("This appears to be a slave node in Ray cluster. Skipping API server startup.")
+                sys.exit(0)  # Clean exit for slave nodes
+            else:
+                print("This is the master prefill node. Starting API server...")
 
     parser = argparse.ArgumentParser(
     description=(

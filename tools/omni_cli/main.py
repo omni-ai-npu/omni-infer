@@ -516,6 +516,7 @@ def omni_cli_start(
         pod_info = cluster_info.p_pod_info if role == "prefill" else cluster_info.d_pod_info
         pod_info = pod_info.get(master_node, None)
         is_master = host == master_node
+        enable_omni_cache = int(env.get("ENABLE_OMNI_CACHE"),"0")
 
         code_path = str(env.get("CODE_PATH") or "").strip()
         log_path = str(env.get("LOG_PATH") or "").strip()
@@ -571,8 +572,10 @@ echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> 
 
             if need_start_ray:
                 tf.write(f"{ray_cmd}\n")
-
-            tf.write(start_server_cmd)
+                if is_master or enable_omni_cache:
+                    tf.write(start_server_cmd)
+            else:
+                tf.write(start_server_cmd)
             tf.write("EOF\n")
 
         os.chmod(script_path, 0o755)

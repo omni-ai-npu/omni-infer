@@ -34,7 +34,7 @@ dump_data = False
 
 SCALE_RATIO = int(os.getenv("DEVICE_CACHE_SCALE_RATIO", "1"))
 D2H_CHUNK_SIZE = int(os.getenv("D2H_CHUNK_SIZE", "512")) # CHUNK_SIZE for D2H offloading when seq is long
-SIZE_BYTES_PER_LAYER = int(os.getenv("SIZE_BYTES_PER_LAYER", "6442450944")) # 6GB per layer, which is calculated by 6 * 1024 * 1024 * 1024. Adjust this number if the actual per layer size is different, e.g., for models with larger head size.
+SIZE_BYTES_PER_LAYER = int(os.getenv("SIZE_BYTES_PER_LAYER", "2147483648")) # 2GB per layer, which is calculated by 2 * 1024 * 1024 * 1024. Adjust this number if the actual per layer size is different, e.g., for models with larger head size.
 
 
 # Load ACL library and define structures (should be done at module level)
@@ -80,7 +80,7 @@ except Exception as e:
     ACL_BATCH_COPY_AVAILABLE = False
 
 class BaseOmniCache(ABC):
-    MEMMAP_PATH = '/dev/hugepages/omni_cache'
+    MEMMAP_PATH = os.getenv("OMNI_CACHE_MEMMAP_PATH", "/dev/hugepages/omni_cache")
 
     def __init__(
         self,
