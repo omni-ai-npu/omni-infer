@@ -329,6 +329,10 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         decode_num_tokens = []
         num_decode_tokens = 0
         num_prefill_tokens = 0
+        cached_req_ids = {
+            req.req_id for req in scheduler_output.scheduled_cached_reqs
+            if (not req.resumed_from_preemption) or req.num_computed_tokens > 0
+        }
 
         for i, req_id in enumerate(input_batch.req_ids):
             num_tokens = scheduler_output.num_scheduled_tokens[req_id]
@@ -338,7 +342,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             # num_tokens = 1
             # Only in decode the spec tokens are scheduled
             if (not self.is_hybrid and (req_id in scheduler_output.scheduled_spec_decode_tokens or num_tokens == 1)) or \
-                (self.is_hybrid and (req_id in scheduler_output.scheduled_spec_decode_tokens or len(scheduler_output.scheduled_cached_reqs) != 0)):
+                (self.is_hybrid and (req_id in scheduler_output.scheduled_spec_decode_tokens or req_id in cached_req_ids)):
                 decodes.append(i)
                 decode_num_tokens.append(num_tokens)
                 num_decode_tokens += num_tokens

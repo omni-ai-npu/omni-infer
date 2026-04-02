@@ -21,10 +21,10 @@ from typing import Iterable, Optional, Type, Union
 from vllm.config import VllmConfig, SchedulerConfig
 from vllm.logger import logger
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
-from vllm.utils import cdiv
+from vllm.utils import cdiv, Device
 from vllm.v1.core.sched.output import NewRequestData, SchedulerOutput
 from vllm.v1.core.sched.request_queue import create_request_queue, SchedulingPolicy
-from vllm.v1.core.sched.scheduler import Scheduler
+from vllm.v1.core.sched.scheduler import PreemptionMode, Scheduler
 from vllm.v1.core.sched.utils import check_stop
 from vllm.v1.engine import EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.kv_cache_interface import KVCacheConfig
@@ -129,9 +129,14 @@ class NpuHybridScheduler(Scheduler):
         # Record scheduled LoRA requests.
         scheduled_loras: set[int] = set()
 
+        num_groups = len(self.kv_cache_config.kv_cache_groups)
+        blocks_to_swap_out: list[list[tuple[int, int]]] = [[] for _ in range(num_groups)]
+        blocks_to_swap_in: list[list[tuple[int, int]]] = [[] for _ in range(num_groups)]
+
         # Use a temporary deque to collect requests that need to be skipped
         # and put back at the head of the waiting queue later
         skipped_waiting_requests = create_request_queue(SchedulingPolicy.FCFS)
+        priority_preempted = (self.waiting and self.waiting.peek_request().status == RequestStatus.PREEMPTED)
 
         # Schedule prefill requests first.
         while self.waiting and token_budget > 0:
@@ -139,6 +144,9 @@ class NpuHybridScheduler(Scheduler):
                 break
 
             request = self.waiting.peek_request()
+            if envs_ascend.ENABLE_SWAP == '1' and priority_preempted and request.status != RequestStatus.PREEMPTED:
+                break
+            
             def skip_cur_request():
                 self.waiting.pop_request()
                 skipped_waiting_requests.prepend_request(request)
@@ -156,6 +164,10 @@ class NpuHybridScheduler(Scheduler):
             # Get already-cached tokens.
             computed_blocks, num_computed_tokens = (
                 self.kv_cache_manager.get_computed_blocks(request))
+            
+            if envs_ascend.ENABLE_SWAP == '1' and self.preemption_mode == PreemptionMode.SWAP and request.status == RequestStatus.PREEMPTED:
+                num_computed_tokens = request.num_computed_tokens
+            
             num_new_tokens = request.num_tokens - num_computed_tokens
             if (0 < self.scheduler_config.long_prefill_token_threshold <
                     num_new_tokens):
@@ -196,8 +208,14 @@ class NpuHybridScheduler(Scheduler):
                     # The request cannot be scheduled.
                     break
             
-            new_blocks = self.kv_cache_manager.allocate_slots(
-                request, num_new_tokens, num_computed_tokens, computed_blocks)
+            if envs_ascend.ENABLE_SWAP == '1' and self.preemption_mode == PreemptionMode.SWAP and request.status == RequestStatus.PREEMPTED:
+                if not self.cpu_npu_kv_cache_manager.can_swap_in(request, num_new_tokens, num_computed_tokens, self.num_lookahead_tokens):
+                    logger.info(f"Request {request.request_id} cannot be swapped in")
+                    break
+                self._swap_in(request, blocks_to_swap_in)
+                logger.info(f"Request {request.request_id} swapped in, blocks_to_swap_in:{blocks_to_swap_in}")
+
+            new_blocks = self.kv_cache_manager.allocate_slots(request, num_new_tokens, num_computed_tokens, computed_blocks)
             if new_blocks is None:
                 # The request cannot be scheduled.
                 break
@@ -209,10 +227,7 @@ class NpuHybridScheduler(Scheduler):
             if request.status == RequestStatus.WAITING:
                 scheduled_new_reqs.append(request)
             elif request.status == RequestStatus.PREEMPTED:
-                if envs_ascend.RECOMPUTE_AFTER_PREEMPTED == '1':
-                    scheduled_new_reqs.append(request)
-                else:
-                    scheduled_resumed_reqs.append(request)
+                scheduled_resumed_reqs.append(request)
             else:
                 raise RuntimeError(f"Invalid request status: {request.status}")
 
@@ -265,10 +280,20 @@ class NpuHybridScheduler(Scheduler):
                     if new_blocks is None:
                         # The request cannot be scheduled.
                         # Preempt the lowest-priority request.
+                        preempted_req = self.running[-1]
+                        if envs_ascend.ENABLE_SWAP == '1' and self.preemption_mode == PreemptionMode.SWAP:
+                            if not self.cpu_npu_kv_cache_manager.can_swap_out(preempted_req):
+                                self.finish_requests(preempted_req.request_id, RequestStatus.FINISHED_ABORTED)
+                                logger.info(f"Preempting request {preempted_req.request_id} has been released.")
+                                can_schedule = False
+                                break
+                            self._swap_out(preempted_req, blocks_to_swap_out)
+                            logger.info(f"Request {request.request_id} swapped out, blocks_to_swap_out:{blocks_to_swap_out}")
+                        else:
+                            self.kv_cache_manager.free(preempted_req)
+                            preempted_req.num_computed_tokens = 0
                         preempted_req = self.running.pop()
-                        self.kv_cache_manager.free(preempted_req)
                         preempted_req.status = RequestStatus.PREEMPTED
-                        preempted_req.num_computed_tokens = 0
                         self.waiting.prepend_request(preempted_req)
                         preempted_reqs.append(preempted_req)
                         if preempted_req == request:
@@ -360,6 +385,8 @@ class NpuHybridScheduler(Scheduler):
             free_encoder_input_ids=self.encoder_cache_manager.get_freed_ids(),
             structured_output_request_ids={},
             grammar_bitmask=None,
+            blocks_to_swap_in=blocks_to_swap_in,
+            blocks_to_swap_out=blocks_to_swap_out,
         )
 
         # NOTE(Kuntai): this function is designed for multiple purposes:
@@ -401,6 +428,42 @@ class NpuHybridScheduler(Scheduler):
             return request.lora_request.long_lora_max_len
         else:
             return prompt_limit
+
+    def can_swap_in(self, request: Request, num_new_tokens: int,
+                    num_new_local_computed_tokens: int,
+                    num_lookahead_tokens: int) -> bool:
+        if self.preemption_mode != PreemptionMode.SWAP:
+            return False
+        return self.cpu_npu_kv_cache_manager.can_swap_in(
+            request, num_new_tokens, num_new_local_computed_tokens,
+            num_lookahead_tokens)
+
+    def can_swap_out(self, request: Request) -> bool:
+        if self.preemption_mode != PreemptionMode.SWAP:
+            return False
+        return self.cpu_npu_kv_cache_manager.can_swap_out(request)
+
+    def _swap_in(self, request: Request,
+                 blocks_to_swap_in: list[list[tuple[int, int]]]) -> None:
+        if self.preemption_mode != PreemptionMode.SWAP:
+            return
+        mapping_list = self.cpu_npu_kv_cache_manager.swap(
+            request, Device.CPU, Device.GPU)
+        if not mapping_list:
+            return
+        for i in range(len(self.cpu_kv_cache_config.kv_cache_groups)):
+            blocks_to_swap_in[i].extend(mapping_list[i])
+
+    def _swap_out(self, request: Request,
+                  blocks_to_swap_out: list[list[tuple[int, int]]]) -> None:
+        if self.preemption_mode != PreemptionMode.SWAP:
+            return
+        mapping_list = self.cpu_npu_kv_cache_manager.swap(
+            request, Device.GPU, Device.CPU)
+        if not mapping_list:
+            return
+        for i in range(len(self.cpu_kv_cache_config.kv_cache_groups)):
+            blocks_to_swap_out[i].extend(mapping_list[i])
 
     def finish_requests(
         self,

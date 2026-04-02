@@ -60,8 +60,8 @@ env_variables: Dict[str, Callable[[], Any]] = {
     lambda: os.getenv("TORCHAIR_CACHE_HOME", os.path.join(os.getcwd(), ".torchair_cache")),
     "HOST_RAM_AVAILABLE_BYTES":
     lambda: os.getenv("HOST_RAM_AVAILABLE_BYTES", '0'),
-    "RECOMPUTE_AFTER_PREEMPTED":
-    lambda: os.getenv("RECOMPUTE_AFTER_PREEMPTED", '0')
+    "ENABLE_SWAP":
+    lambda: os.getenv("ENABLE_SWAP", '0')
 }
 
 # end-env-vars-definition
