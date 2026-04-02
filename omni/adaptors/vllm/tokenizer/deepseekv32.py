@@ -23,7 +23,8 @@ class DeepseekV32Tokenizer(HfTokenizer):
     @classmethod
     def validate_messages(cls, messages):
         try:
-            if len(messages) > 0 and messages[-1].get("role") == "assistant":
+            assistant_without_prefix = len(messages) > 0 and messages[-1].get("role") == "assistant" and not (isinstance( messages[-1].get("prefix"), bool) and messages[-1].get("prefix"))
+            if assistant_without_prefix:
                 return False, f"Invalid consecutive assistant message at message index {len(messages) - 1}"
             for index in range(len(messages)):
                 msg = messages[index]
