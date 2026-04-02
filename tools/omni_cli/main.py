@@ -645,6 +645,7 @@ def omni_cli_stop(
             tf.write("pkill -9 python || true\n")
             tf.write("pkill -9 vllm   || true\n")
             tf.write("pkill -9 -f ray || true\n")
+            tf.write("pkill -9 -f ox/ox || true\n")
             tf.write("EOF\n")
         os.chmod(script_path, 0o755)
 

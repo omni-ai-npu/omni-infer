@@ -34,6 +34,45 @@ from process_logging_config import set_env_logger_file
 # Get the terminal width
 terminal_width = shutil.get_terminal_size().columns
 
+def get_default_network_interface():
+    """Auto-detect the default network interface.
+
+    Returns the interface used for default route, or the first non-lo interface.
+    Returns None if detection fails.
+    """
+    try:
+        # Method 1: Get interface from default route
+        result = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout:
+            # Output format: default via x.x.x.x dev eth0 ...
+            parts = result.stdout.split()
+            if "dev" in parts:
+                idx = parts.index("dev")
+                if idx + 1 < len(parts):
+                    return parts[idx + 1]
+
+        # Method 2: Get first non-lo interface
+        result = subprocess.run(
+            ["ip", "link", "show"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            for line in result.stdout.split('\n'):
+                if ':' in line and 'lo:' not in line:
+                    # Format: 2: eth0: <BROADCAST...>
+                    parts = line.split(':')
+                    if len(parts) >= 2:
+                        iface = parts[1].strip()
+                        if iface and iface != 'lo' and not iface.startswith('veth'):
+                            return iface
+    except Exception as e:
+        print(f"Warning: Could not auto-detect network interface: {e}")
+
+    return None
+
 
 def is_port_available(port, host="0.0.0.0"):
     """Check if a port is available on the specified host."""
@@ -319,6 +358,26 @@ if __name__ == "__main__":
             subprocess.run(cmd, check=True)
         else:
             print(f"WARNING: {setup_script} not found, skipping setup")
+
+        # Configure MTU for Jumbo Frames when OmniCache is enabled
+        # Priority: env variable > auto-detect
+        mtu_interface = os.environ.get("OMNI_CACHE_MTU_INTERFACE")
+        if not mtu_interface:
+            mtu_interface = get_default_network_interface()
+        if not mtu_interface:
+            mtu_interface = "eth0"  # Fallback to common default
+            print(f"Warning: Could not auto-detect network interface, give up to use Jumbo Frames")
+        else:
+            mtu_value = os.environ.get("OMNI_CACHE_MTU_VALUE", "9000")
+            print(f"Setting MTU {mtu_value} on interface {mtu_interface} for OmniCache")
+            mtu_cmd = ["sudo", "ifconfig", mtu_interface, "mtu", mtu_value]
+            try:
+                subprocess.run(mtu_cmd, check=True)
+                print(f"Successfully set MTU {mtu_value} on {mtu_interface}")
+            except subprocess.CalledProcessError as e:
+                print(f"WARNING: Failed to set MTU on {mtu_interface}: {e}")
+                print("This is expected in container environments where network config is managed by the host.")
+                print("MTU must be configured at the host/node level if needed.")
 
         role = os.environ.get("ROLE")
         if role == "prefill":

@@ -1679,6 +1679,8 @@ class NPUModelRunner(GPUModelRunner):
         if len(kv_cache_config.kv_cache_groups) > 1 and self.vllm_config.kv_transfer_config.kv_role != "kv_consumer":
             raise RuntimeError(f"Only support single KV cache group in Prefill nodes, but got {len(kv_cache_config.kv_cache_groups)}.")
 
+        cpu_caches: Dict[str, torch.Tensor] = {}
+        preemption_mode = self.vllm_config.scheduler_config.preemption_mode
         self.kv_cache_config = kv_cache_config
         self.input_batch = InputBatch(
             max_num_reqs=self.max_num_reqs,
@@ -1703,6 +1705,26 @@ class NPUModelRunner(GPUModelRunner):
             vllm_config=self.vllm_config,
             runner=self,
         )
+
+        for i, kv_cache_group in enumerate(kv_cache_config.kv_cache_groups):
+            kv_cache_spec = kv_cache_group.kv_cache_spec
+            for layer_name in kv_cache_group.layer_names:
+                if isinstance(kv_cache_spec, AttentionSpec):
+                    if preemption_mode and preemption_mode == "swap":
+                            cpu_num_blocks = int(self.vllm_config.cache_config.swap_space_bytes //
+                                            kv_cache_spec.page_size_bytes // len(kv_cache_config.tensors))
+                            cpu_kv_cache_shape = self.attn_backends[i].get_kv_cache_shape(
+                                cpu_num_blocks, kv_cache_spec.block_size,
+                                kv_cache_spec.num_kv_heads, kv_cache_spec.head_size)
+                            cpu_caches[layer_name] = self.attn_backends[i].init_kv_cache_each_layer(cpu_kv_cache_shape, self.dtype,
+                                                                                            "cpu",
+                                                                                            self.model_config,
+                                                                                            self.enable_torchair_graph_mode)
+                else:
+                    raise ValueError("Unknown KV cache spec type.")
+
+        if preemption_mode and preemption_mode == "swap":
+            self.cache_engine = CacheEngine(self.attn_backends, self.kv_cache_config, gpu_cache=omni_cache.device_cache, cpu_cache=cpu_caches)
 
         get_kv_transfer_group().register_kv_caches(
             omni_cache.MEMMAP_PATH,
