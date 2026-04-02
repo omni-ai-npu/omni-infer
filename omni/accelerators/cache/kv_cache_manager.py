@@ -22,6 +22,7 @@ from vllm.v1.request import Request, RequestStatus
 from omni.models.config_loader.loader import model_extra_config
 from .omni_cache import PrefillOmniCache, DecodeOmniCache
 from .kv_cache_interface import OmniKVCacheConfig, OmniAttentionSpec
+from vllm.config import SpeculativeConfig
 
 logger = init_logger("vllm.v1.omni")
 
@@ -74,6 +75,7 @@ class OmniKVCacheManager(KVCacheManager):
         use_eagle: bool = False,
         log_stats: bool = False,
         enable_kv_cache_events: bool = False,
+        speculative_config: Optional[SpeculativeConfig] = None,
     ) -> None:
         if len(kv_cache_config.kv_cache_groups) > 2:
             raise ValueError(
@@ -137,6 +139,7 @@ class OmniKVCacheManager(KVCacheManager):
                 use_eagle=self.use_eagle,
                 num_kv_cache_groups=1,
                 caching_hash_fn=self.caching_hash_fn,
+                speculative_config=speculative_config,
             )
             if isinstance(group.kv_cache_spec, FullAttentionSpec):
                 full_attn_pool = BlockPool(
