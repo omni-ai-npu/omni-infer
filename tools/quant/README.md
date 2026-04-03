@@ -61,6 +61,7 @@ python quant_deepseek_kimi2.py --input-bf16-hf-path {bf16权重路径} --output-
 
 **GLM5.0**：
 [GLM5.0-W8A8C16](./modelslim/GLM5.0-W8A8C16.md)
+[GLM5.0-W4A8C16](./modelslim/GLM5.0-W4A8C16.md)
 
 **MiniMax-2.5**：
 [MiniMax-2.5-W8A8C16](./modelslim/MiniMax-2.5-W8A8C16.md)
