@@ -424,6 +424,7 @@ EOF
 
         location = /omni_proxy/metrics {
             omni_proxy_metrics on;
+            access_log off;
             default_type text/plain;
         }
 

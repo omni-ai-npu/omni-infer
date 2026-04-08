@@ -826,7 +826,7 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs, ngx_http_omni_loc_conf_
 
             uint32_t load_tokens = gs->decode_states[j].num_tokens;
             uint32_t running = gs->decode_states[j].num_running;
-            if (running > olcf->decode_max_num_seqs)
+            if (running >= olcf->decode_max_num_seqs)
             {
                 continue;
             }
@@ -840,27 +840,40 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs, ngx_http_omni_loc_conf_
                 best_idx = j;
             }
         }
-        cnt = 0;
-        for (int m = gs->last_selected_decode;
-            m < MAX_DECODE_UPSTREAMS + gs->last_selected_decode && cnt < gs->num_decode_endpoints; m++) {
-            int j = m % MAX_DECODE_UPSTREAMS;
-            omni_upstream_decode_t *decode = &gs->decode_states[j];
-            if (decode->comm.status != STATUS_ENABLE) {
-                if (decode->comm.status == STATUS_UNUSED) {
-                    m = MAX_DECODE_UPSTREAMS - 1; /* skip unuse upstream and start from 0 */
+        if ( best_match > 0 && best_idx != UINT32_MAX){
+            selected = best_idx;
+            ngx_log_error(NGX_LOG_INFO, ngx_cycle->log, 0, "[Decode-%d] Prefix cache hit on: %d with match_depth %d",
+                            req->slot_index, selected, req->decode_match_depths[selected]);
+        } else {
+            cnt = 0;
+            for (int m = gs->last_selected_decode;
+                m < MAX_DECODE_UPSTREAMS + gs->last_selected_decode && cnt < gs->num_decode_endpoints; m++) {
+                int j = m % MAX_DECODE_UPSTREAMS;
+                omni_upstream_decode_t *decode = &gs->decode_states[j];
+                if (decode->comm.status != STATUS_ENABLE) {
+                    if (decode->comm.status == STATUS_UNUSED) {
+                        m = MAX_DECODE_UPSTREAMS - 1; /* skip unuse upstream and start from 0 */
+                    }
+                    continue;
                 }
-                continue;
-            }
-            cnt++;
-            if (gs->decode_states[j].num_tokens < least_load && gs->decode_states[j].num_running < olcf->decode_max_num_seqs)
-            {
-                least_load = gs->decode_states[j].num_tokens;
-                selected = j;
-                if (least_load == 0)
+                cnt++;
+                if (gs->decode_states[j].num_tokens < least_load && gs->decode_states[j].num_running < olcf->decode_max_num_seqs)
                 {
-                    break;
+                    least_load = gs->decode_states[j].num_tokens;
+                    selected = j;
+                    if (least_load == 0)
+                    {
+                        break;
+                    }
                 }
             }
+            ngx_log_error(NGX_LOG_INFO,
+                              ngx_cycle->log,
+                              0,
+                              "[Decode-%d] No Prefix cache hit, choose least workload Decode %d with load %d",
+                              req->slot_index,
+                              selected,
+                              least_load);
         }
 
         req->decode_upstream_endpoint_idx = selected;
