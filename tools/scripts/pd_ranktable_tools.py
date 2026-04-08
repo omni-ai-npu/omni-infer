@@ -340,10 +340,12 @@ def get_host_ip():
     ip = None
 
     try:
-        hostname = socket.gethostname()
-        ip = socket.gethostbyname(hostname)
-    except EOFError:
-        pass
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(('8.8.8.8', 80))
+            ip = s.getsockname()[0]
+    except Exception:
+        raise RuntimeError("Failed to auto-detect IP. Please provide it via --ip argument."
+)
 
     return ip
 
