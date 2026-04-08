@@ -1,0 +1,17 @@
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+index 483e7f0..ce3afde 100644
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -261,6 +261,10 @@ class OpenAIServingChat(OpenAIServing):
+                     truncate_prompt_tokens=request.truncate_prompt_tokens,
+                     add_special_tokens=request.add_special_tokens,
+                 )
++                if isinstance(tokenizer, DeepseekV32Tokenizer):
++                    is_validate, error_info = DeepseekV32Tokenizer.validate_sufficient_tools(conversation)
++                    if not is_validate:
++                        return self.create_error_response(error_info)
+             else:
+                 # For GPT-OSS.
+                 (
+-- 
+

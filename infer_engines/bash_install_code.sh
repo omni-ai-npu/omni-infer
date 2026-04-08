@@ -63,3 +63,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/fix_content_to_reasoning_content_for_n
 git apply --whitespace=nowarn $PATCH_ROOT/fix_apc_mtp_conflict.patch
 git apply --whitespace=nowarn $PATCH_ROOT/fix_multimtp.patch
 git apply --whitespace=nowarn $PATCH_ROOT/fix_reasoning_content_to_content.patch
+git apply --whitespace=nowarn $PATCH_ROOT/validate_assistant_with_sufficient_tools.patch

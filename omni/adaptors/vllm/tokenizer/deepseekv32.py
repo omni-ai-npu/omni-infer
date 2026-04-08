@@ -23,19 +23,48 @@ class DeepseekV32Tokenizer(HfTokenizer):
     @classmethod
     def validate_messages(cls, messages):
         try:
-            assistant_without_prefix = len(messages) > 0 and messages[-1].get("role") == "assistant" and not (isinstance( messages[-1].get("prefix"), bool) and messages[-1].get("prefix"))
-            if assistant_without_prefix:
+            if len(messages) > 0 and messages[-1].get("role") == "assistant":
+                if isinstance( messages[-1].get("prefix"), bool) and messages[-1].get("prefix"):
+                    return True, ""
+                if messages[-1].get("tool_calls") is not None:
+                    return True, ""
                 return False, f"Invalid consecutive assistant message at message index {len(messages) - 1}"
+
             for index in range(len(messages)):
                 msg = messages[index]
                 role = msg.get("role")
-                content = msg.get("content")
-
                 if role not in ["system", "developer", "user", "tool","assistant"]:
                     return False, f"Unkown role: {role}. Role just can be [system, developer, user, tool,assistant]"
-
             return True, ""
-        except Exception as e:
+        except Exception:
+            return True, ""
+
+    @classmethod
+    def validate_sufficient_tools(cls, messages):
+        try:
+            for index in range(len(messages)):
+                msg = messages[index]
+                role = msg.get("role")
+                if role == "assistant":
+                    tool_calls_id = []
+                    message_tool_id = []
+                    tool_calls = msg.get("tool_calls")
+                    if isinstance(tool_calls, list) and len(tool_calls) == 0:
+                        return False, f"Invalid message at message[{index}].tool_calls: empty error. Expected an array with minimum length 1, but got an empty array instead."
+                    if tool_calls and isinstance(tool_calls, list):
+                        tool_counter = 0
+                        for tool_call in tool_calls:
+                            tool_counter += 1
+                            if index + tool_counter >= len(messages) or messages[index + tool_counter].get("role") != "tool":
+                                return False, "An assistant message with tool calls must be followed by a tool messages responding to each tool call"
+                            else:
+                                tool_calls_id.append(tool_call.get("id"))
+                                message_tool_id.append(messages[index + tool_counter].get("tool_call_id"))
+                        if sorted(tool_calls_id) != sorted(message_tool_id):
+                            return False, "An assistant message with tool calls must be followed by a tool messages responding to each tool call"
+                        index += tool_counter
+            return True, ""
+        except Exception:
             return True, ""
 
     @classmethod
