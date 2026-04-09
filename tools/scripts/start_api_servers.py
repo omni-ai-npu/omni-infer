@@ -211,7 +211,31 @@ def start_single_node_api_servers(
         if kv_transfer_config:
             cmd.extend(["--kv-transfer-config", str(kv_transfer_config)])
         if extra_args:
-            cmd.extend(extra_args.split())
+            # Parse extra_args and adjust kv-events-config endpoint port based on server_offset + rank
+            extra_args_list = extra_args.split()
+            i = 0
+            while i < len(extra_args_list):
+                arg = extra_args_list[i]
+                if arg == "--kv-events-config" and i + 1 < len(extra_args_list):
+                    config_value = extra_args_list[i + 1]
+                    try:
+                        kv_events_json = json.loads(config_value)
+                        if "endpoint" in kv_events_json:
+                            endpoint = kv_events_json["endpoint"]
+                            # Parse endpoint like "tcp://*:9600" or "tcp://0.0.0.0:9600"
+                            match = re.search(r':(\d+)$', endpoint)
+                            if match:
+                                base_kv_port = int(match.group(1))
+                                new_kv_port = base_kv_port + server_offset + rank
+                                kv_events_json["endpoint"] = re.sub(r':(\d+)$', f':{new_kv_port}', endpoint)
+                        cmd.extend(["--kv-events-config", json.dumps(kv_events_json)])
+                    except json.JSONDecodeError:
+                        # If not valid JSON, pass as-is
+                        cmd.extend([arg, config_value])
+                    i += 2
+                else:
+                    cmd.append(arg)
+                    i += 1
         if additional_config:
             cmd.extend(["--additional-config", additional_config])
         if no_enable_prefix_caching:

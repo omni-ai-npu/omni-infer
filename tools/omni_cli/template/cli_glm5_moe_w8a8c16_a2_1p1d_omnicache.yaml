@@ -8,9 +8,6 @@ all:
           ansible_ssh_common_args: -o StrictHostKeyChecking=no -o IdentitiesOnly=yes
           ansible_ssh_private_key_file: /path/to/key
           ansible_user: root
-          args:
-            decode-lb-sdk: pd_score_balance
-            prefill-lb-sdk: pd_score_balance
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7
           container_name: glm5_c0
           use_omni_proxy: 1
@@ -24,7 +21,7 @@ all:
             OMNI_PROXY_PD_POLICY: sequential
             OMNI_PROXY_MAX_BATCH_NUM_TOKEN: 200000
             OMNI_PROXY_PREFILL_MAX_NUM_SEQS: 16
-            OMNI_PROXY_DECODE_MAX_NUM_SEQS: 6
+            OMNI_PROXY_DECODE_MAX_NUM_SEQS: 2
             PYTHONHASHSEED: 123
     D:
       hosts:
@@ -45,7 +42,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               max-num-seqs: 6
-              no-enable-prefix-caching: ''
+              # no-enable-prefix-caching: ''
               preemption-mode: swap
               swap_space: 32
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
@@ -54,7 +51,12 @@ all:
               enable-auto-tool-choice: ''
               tool-call-parser: GlmMoe
               tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
-              prefix-caching-hash-algo: 'sha256'
+              # prefix-caching-hash-algo: 'sha256'
+              kv-events-config:
+                enable_kv_cache_events: true
+                publisher: zmq
+                topic: kv-events
+                endpoint: tcp://*:${ENDPOINT_PORT}
             gpu-util: '0.92'
             kv-transfer-config:
               engine_id: 2
@@ -78,6 +80,7 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9100
+            ENDPOINT_PORT: $((API_PORT + 100))
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_PLATFORM: A2
@@ -130,6 +133,7 @@ all:
             ENABLE_OMNI_CACHE: 1
             P_NODE_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             TP_NNODES: 4
+            ENABLE_APC_EVENT: 1
           host_ip: 127.0.0.5
           master_node: d0
         d1:
@@ -149,7 +153,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               max-num-seqs: 6
-              no-enable-prefix-caching: ''
+              # no-enable-prefix-caching: ''
               preemption-mode: swap
               swap_space: 32
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
@@ -158,7 +162,12 @@ all:
               enable-auto-tool-choice: ''
               tool-call-parser: GlmMoe
               tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
-              prefix-caching-hash-algo: 'sha256'
+              # prefix-caching-hash-algo: 'sha256'
+              kv-events-config:
+                enable_kv_cache_events: true
+                publisher: zmq
+                topic: kv-events
+                endpoint: tcp://*:${ENDPOINT_PORT}
             gpu-util: '0.92'
             kv-transfer-config:
               engine_id: 2
@@ -182,6 +191,7 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9116
+            ENDPOINT_PORT: $((API_PORT + 100))
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_PLATFORM: A2
@@ -234,6 +244,7 @@ all:
             ENABLE_OMNI_CACHE: 1
             P_NODE_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             TP_NNODES: 4
+            ENABLE_APC_EVENT: 1
           host_ip: 127.0.0.5
           master_node: d0
         d2:
@@ -253,7 +264,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               max-num-seqs: 6
-              no-enable-prefix-caching: ''
+              # no-enable-prefix-caching: ''
               preemption-mode: swap
               swap_space: 32
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
@@ -262,7 +273,12 @@ all:
               enable-auto-tool-choice: ''
               tool-call-parser: GlmMoe
               tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
-              prefix-caching-hash-algo: 'sha256'
+              # prefix-caching-hash-algo: 'sha256'
+              kv-events-config:
+                enable_kv_cache_events: true
+                publisher: zmq
+                topic: kv-events
+                endpoint: tcp://*:${ENDPOINT_PORT}
             gpu-util: '0.92'
             kv-transfer-config:
               engine_id: 2
@@ -286,6 +302,7 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9132
+            ENDPOINT_PORT: $((API_PORT + 100))
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_PLATFORM: A2
@@ -338,6 +355,7 @@ all:
             ENABLE_OMNI_CACHE: 1
             P_NODE_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             TP_NNODES: 4
+            ENABLE_APC_EVENT: 1
           host_ip: 127.0.0.5
           master_node: d0
         d3:
@@ -357,7 +375,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               max-num-seqs: 6
-              no-enable-prefix-caching: ''
+              # no-enable-prefix-caching: ''
               preemption-mode: swap
               swap_space: 32
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
@@ -366,7 +384,12 @@ all:
               enable-auto-tool-choice: ''
               tool-call-parser: GlmMoe
               tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
-              prefix-caching-hash-algo: 'sha256'
+              # prefix-caching-hash-algo: 'sha256'
+              kv-events-config:
+                enable_kv_cache_events: true
+                publisher: zmq
+                topic: kv-events
+                endpoint: tcp://*:${ENDPOINT_PORT}
             gpu-util: '0.92'
             kv-transfer-config:
               engine_id: 2
@@ -390,6 +413,7 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9148
+            ENDPOINT_PORT: $((API_PORT + 100))
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_PLATFORM: A2
@@ -442,6 +466,7 @@ all:
             ENABLE_OMNI_CACHE: 1
             P_NODE_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             TP_NNODES: 4
+            ENABLE_APC_EVENT: 1
           host_ip: 127.0.0.5
           master_node: d0
     P:
@@ -470,7 +495,7 @@ all:
               enable-auto-tool-choice: ''
               tool-call-parser: GlmMoe
               tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
-              prefix-caching-hash-algo: 'sha256'
+              # prefix-caching-hash-algo: 'sha256'
             gpu-util: '0.92'
             kv-transfer-config:
               engine_id: 0
@@ -576,7 +601,7 @@ all:
               enable-auto-tool-choice: ''
               tool-call-parser: GlmMoe
               tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
-              prefix-caching-hash-algo: 'sha256'
+              # prefix-caching-hash-algo: 'sha256'
             gpu-util: '0.92'
             kv-transfer-config:
               engine_id: 0
@@ -682,7 +707,7 @@ all:
               enable-auto-tool-choice: ''
               tool-call-parser: GlmMoe
               tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
-              prefix-caching-hash-algo: 'sha256'
+              # prefix-caching-hash-algo: 'sha256'
             gpu-util: '0.92'
             kv-transfer-config:
               engine_id: 0
@@ -788,7 +813,7 @@ all:
               enable-auto-tool-choice: ''
               tool-call-parser: GlmMoe
               tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
-              prefix-caching-hash-algo: 'sha256'
+              # prefix-caching-hash-algo: 'sha256'
             gpu-util: '0.92'
             kv-transfer-config:
               engine_id: 0
