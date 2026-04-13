@@ -6,42 +6,69 @@ import re
 import os
 from collections import defaultdict
 import sys
+import argparse
 import pandas as pd
 import openpyxl
 import traceback
 
 
-def parse_trace_logs(root_dir):
+_INTERNAL_REQUEST_ID_RE = re.compile(
+    r"^(?P<base>(?:chatcmpl|cmpl|generate-tokens|pool|score|rerank|tokn)-.+)-(?P<suffix>[0-9a-f]{8})$"
+)
+
+
+def _normalize_request_id(request_id):
+    match = _INTERNAL_REQUEST_ID_RE.match(request_id)
+    if match:
+        return match.group("base")
+    return request_id
+
+
+def parse_trace_logs(log_dir, disable_encode=False):
     pattern = (
         r"<<<Action: (.*?); Timestamp:([\d.]+); RequestID:([a-z0-9-]+)(?:; Role:(\S+))?"
     )
     data_by_request = defaultdict(dict)
     request_role = defaultdict(dict)
     action_timestamps = {}
-    engine_step_lines = []
+    prefill_engine_step_lines = []
+    encode_engine_step_lines = []
     decode_engine_step_lines = []
     engine_core_info = {}
 
-    time_analysis_path = os.path.join(root_dir, "time_analysis.xlsx")
-    engine_step_path = os.path.join(root_dir, "engine_step.xlsx")
+    time_analysis_path = os.path.join(log_dir, "time_analysis.xlsx")
+    engine_step_path = os.path.join(log_dir, "engine_step.xlsx")
     try:
-        for dirpath, _, filenames in os.walk(root_dir):
+        log_files = []
+        for dirpath, _, filenames in os.walk(log_dir):
             for filename in filenames:
-                _get_step_line(
-                    pattern,
-                    data_by_request,
-                    request_role,
-                    action_timestamps,
-                    engine_step_lines,
-                    decode_engine_step_lines,
-                    engine_core_info,
-                    dirpath,
-                    filename,
-                )
+                if filename.endswith(".log"):
+                    log_files.append(os.path.join(dirpath, filename))
+
+        for log_file_path in log_files:
+            _collect_engine_core_info(engine_core_info, log_file_path)
+
+        for log_file_path in log_files:
+            dirpath, filename = os.path.split(log_file_path)
+            _get_step_line(
+                pattern,
+                data_by_request,
+                request_role,
+                action_timestamps,
+                prefill_engine_step_lines,
+                encode_engine_step_lines,
+                decode_engine_step_lines,
+                engine_core_info,
+                dirpath,
+                filename,
+                disable_encode,
+            )
 
         # process time analysis
         if data_by_request:
-            df_final = _get_final_df(data_by_request, request_role)
+            df_final = _get_final_df(
+                data_by_request, request_role, disable_encode=disable_encode
+            )
 
             with pd.ExcelWriter(time_analysis_path, engine="openpyxl") as writer:
                 df_final.to_excel(writer, sheet_name="time_analysis", index=False)
@@ -62,22 +89,38 @@ def parse_trace_logs(root_dir):
             print("No valid action record found in any log files.")
 
         # Process engine_step_lines
-        engine_step_headers = _get_engine_step_headers()
+        prefill_engine_step_headers = _get_prefill_engine_step_headers()
+        encode_engine_step_headers = _get_encode_engine_step_headers()
+        decode_engine_step_headers = _get_decode_engine_step_headers()
         with pd.ExcelWriter(engine_step_path, engine="openpyxl") as writer:
-            # engine_step_sheet
+            if not disable_encode:
+                _encode_engine_step_sheet(
+                    encode_engine_step_lines,
+                    engine_step_path,
+                    writer,
+                    encode_engine_step_headers,
+                )
+
             _engine_step_sheet(
-                engine_step_lines, engine_step_path, writer, engine_step_headers
+                prefill_engine_step_lines,
+                engine_step_path,
+                writer,
+                prefill_engine_step_headers,
+                "prefill_engine_step",
             )
 
             _decode_engine_step_sheet(
-                decode_engine_step_lines, engine_step_path, writer, engine_step_headers
+                decode_engine_step_lines,
+                engine_step_path,
+                writer,
+                decode_engine_step_headers,
             )
     except Exception as e:
         print(f"Error occurred: {str(e)}")
         print(traceback.print_exc())
 
 
-def _get_engine_step_headers():
+def _get_prefill_engine_step_headers():
     return [
         "node",
         "engine_step start",
@@ -100,11 +143,74 @@ def _get_engine_step_headers():
     ]
 
 
-def _get_final_df(data_by_request, request_role):
-    action_map = _get_action_map()
-    fieldnames = ["RequestID", "P_NODE", "D_NODE"] + list(action_map.keys())
+def _get_encode_engine_step_headers():
+    return [
+        "node",
+        "engine_step start",
+        "engine_step end",
+        "execute time(ms)",
+        "running_reqs_num_after_step",
+        "total_tokens",
+        "waiting_reqs_num_after_step",
+        "reqs_ids",
+        "bs_tokens",
+        "execute_model_start_time",
+        "execute_model_end_time",
+        "execute_model_cost_time(ms)",
+        "engine_core_str",
+        "main_model_start_time",
+        "main_model_end_time",
+        "execute_main_model_cost_time",
+    ]
+
+
+def _get_decode_engine_step_headers():
+    return _get_prefill_engine_step_headers() + [
+        "main_model_start_time",
+        "main_model_end_time",
+        "execute_main_model_cost_time",
+        "mtp_model_start_time",
+        "mtp_model_end_time",
+        "execute_mtp_model_cost_time",
+        "prefix",
+    ]
+
+
+_ENCODE_ACTION_KEYS = frozenset(
+    {
+        "Encoder api server get request",
+        "Finish process request for encode engine",
+        "Start process request in encode engine",
+        "Encoder add waiting queue",
+        "Encoder try to schedule in waiting queue",
+        "Encoder start has_caches",
+        "Encoder done has_caches",
+        "Start append running sequece for encode",
+        "Encoder start execute_model",
+        "Encoder start _execute_mm_encoder",
+        "Encoder start save_caches",
+        "Encoder done save_caches",
+        "Encoder done _execute_mm_encoder",
+        "Encoder done execute_model",
+        "Finish encode pickle and start response",
+    }
+)
+
+
+def _get_final_df(data_by_request, request_role, disable_encode=False):
+    full_map = _get_action_map()
+    if disable_encode:
+        action_map = {
+            k: v for k, v in full_map.items() if k not in _ENCODE_ACTION_KEYS
+        }
+        node_cols = ["RequestID", "P_NODE", "D_NODE"]
+    else:
+        action_map = full_map
+        node_cols = ["RequestID", "E_NODE", "P_NODE", "D_NODE"]
+    fieldnames = node_cols + list(action_map.keys())
     data = []
     for request_id, actions in data_by_request.items():
+        encode = request_role[request_id].get("encode")
         decode = request_role[request_id].get("decode")
         prefill = request_role[request_id].get("prefill")
         if decode is None or prefill is None:
@@ -113,6 +219,8 @@ def _get_final_df(data_by_request, request_role):
             )
             continue
         row = {"RequestID": request_id, "P_NODE": prefill, "D_NODE": decode}
+        if not disable_encode:
+            row["E_NODE"] = encode
         # Add timestamps for each action, "-" for missing actions
         for action in action_map.keys():
             row[action] = actions.get(action, "-")
@@ -120,7 +228,7 @@ def _get_final_df(data_by_request, request_role):
 
     df = pd.DataFrame(data, columns=fieldnames)
     # chinese_row
-    chinese_row = {"RequestID": "", "P_NODE": "", "D_NODE": ""}
+    chinese_row = {col: "" for col in node_cols}
     chinese_row.update(action_map)
     df_cn = pd.DataFrame([chinese_row], columns=fieldnames)
     df_final = pd.concat([df.iloc[:0], df_cn, df.iloc[0:]], ignore_index=True)
@@ -132,11 +240,13 @@ def _get_step_line(
     data_by_request,
     request_role,
     action_timestamps,
-    engine_step_lines,
+    prefill_engine_step_lines,
+    encode_engine_step_lines,
     decode_engine_step_lines,
     engine_core_info,
     dirpath,
     filename,
+    disable_encode,
 ):
     if filename.endswith(".log"):
         log_file_path = os.path.join(dirpath, filename)
@@ -144,23 +254,20 @@ def _get_step_line(
         try:
             with open(log_file_path, "r", encoding="latin1") as file:
                 for line in file:
-                    # main model info
-                    if "profile_mainmodel:" in line:
-                        _get_main_model_info(engine_core_info, line)
-                        continue
-                    # mtp model info
-                    if "profile_mtpmodel:" in line:
-                        _get_mtp_model_info(engine_core_info, line)
-                        continue
                     # for engine step
                     if "profile: " in line:
                         st_idx = line.find("profile:") + len("profile: ")
                         line = line[st_idx:]
-                        # if "prefill" in line:
-                        if not "[]" in line:
-                            engine_step_lines.append(line)
-                        else:
-                            line = _set_decode_info(
+                        node = line.split("|", 1)[0].strip()
+                        if node.startswith("prefill_"):
+                            prefill_engine_step_lines.append(line)
+                        elif node.startswith("encode_"):
+                            if not disable_encode:
+                                _set_encode_info(
+                                    encode_engine_step_lines, engine_core_info, line
+                                )
+                        elif node.startswith("decode_"):
+                            _set_decode_info(
                                 decode_engine_step_lines, engine_core_info, line
                             )
                         continue
@@ -171,6 +278,7 @@ def _get_step_line(
                         match = re.match(pattern, line.strip())
                         if match:
                             action, timestamp, request_id, role = match.groups()
+                            request_id = _normalize_request_id(request_id)
                             role, ip = role.split("_")
                             action = action.strip()
                             timestamp = float(timestamp)
@@ -191,17 +299,29 @@ def _get_step_line(
             print(traceback.print_exc())
 
 
+def _collect_engine_core_info(engine_core_info, log_file_path):
+    try:
+        with open(log_file_path, "r", encoding="latin1") as file:
+            for line in file:
+                if "profile_mainmodel:" in line:
+                    _get_main_model_info(engine_core_info, line)
+                elif "profile_mtpmodel:" in line:
+                    _get_mtp_model_info(engine_core_info, line)
+    except Exception as e:
+        print(f"Error reading {log_file_path}: {str(e)}")
+        print(traceback.print_exc())
+
+
 def _decode_engine_step_sheet(
-    decode_engine_step_lines, engine_step_path, writer, engine_step_headers
+    decode_engine_step_lines, engine_step_path, writer, decode_engine_step_headers
 ):
     if len(decode_engine_step_lines) != 0:
-        mtp_model_main_model_headers = _get_mtp_model_main_model_headers()
         decode_data = []
-        decode_engine_step_headers = engine_step_headers + mtp_model_main_model_headers
+        decode_data_headers = decode_engine_step_headers[:-1]
         for line in decode_engine_step_lines:
             values = line.split("|")
             values[-1] = values[-1].split("=")[-1]
-            row = dict(zip(decode_engine_step_headers, values))
+            row = dict(zip(decode_data_headers, values))
             decode_data.append(row)
 
         df_decode = pd.DataFrame(decode_data, columns=decode_engine_step_headers)
@@ -235,8 +355,16 @@ def _get_mtp_model_main_model_headers():
     ]
 
 
+def _get_main_model_headers():
+    return [
+        "main_model_start_time",
+        "main_model_end_time",
+        "execute_main_model_cost_time",
+    ]
+
+
 def _engine_step_sheet(
-    engine_step_lines, engine_step_path, writer, engine_step_headers
+    engine_step_lines, engine_step_path, writer, engine_step_headers, sheet_name
 ):
     if len(engine_step_lines) != 0:
         engine_data = []
@@ -247,13 +375,60 @@ def _engine_step_sheet(
             engine_data.append(row)
 
         df_engine = pd.DataFrame(engine_data, columns=engine_step_headers)
-        df_engine.to_excel(writer, sheet_name="engine_step", index=False)
+        df_engine.to_excel(writer, sheet_name=sheet_name, index=False)
 
         print(
-            f"Successfully parsed engine step logs. Added 'engine_step' {engine_step_path}."
+            f"Successfully parsed {sheet_name} logs. Added '{sheet_name}' {engine_step_path}."
         )
     else:
-        print("No valid engine step record found in log files.")
+        print(f"No valid {sheet_name} record found in log files.")
+
+
+def _encode_engine_step_sheet(
+    encode_engine_step_lines, engine_step_path, writer, engine_step_headers
+):
+    if len(encode_engine_step_lines) != 0:
+        encode_data = []
+        for line in encode_engine_step_lines:
+            values = line.split("|")
+            values[-1] = values[-1].split("=")[-1]
+            row = dict(zip(engine_step_headers, values))
+            encode_data.append(row)
+
+        df_encode = pd.DataFrame(encode_data, columns=engine_step_headers)
+        df_encode.to_excel(writer, sheet_name="encode_engine_step", index=False)
+
+        print(
+            f"Successfully parsed encode engine step logs. "
+            f"Added 'encode_engine_step' sheet to {engine_step_path}."
+        )
+    else:
+        print("No valid encode engine step record found in log files.")
+
+
+def _set_encode_info(encode_engine_step_lines, engine_core_info, line):
+    parts = line.strip().split("|")
+    if len(parts) >= 18:
+        core_str = parts[17].strip()
+        info = engine_core_info.get(
+            core_str,
+            {
+                "main_model_start_time": "",
+                "main_model_end_time": "",
+                "execute_main_model_cost_time": "",
+            },
+        )
+        selected_parts = parts[:12] + [core_str]
+        selected_parts.extend(
+            [
+                str(info.get("main_model_start_time", "")),
+                str(info.get("main_model_end_time", "")),
+                str(info.get("execute_main_model_cost_time", "")),
+            ]
+        )
+        line = "|".join(selected_parts) + "\n"
+    encode_engine_step_lines.append(line)
+    return line
 
 
 def _decode_die_load_sheet(engine_step_path, writer, df_decode):
@@ -292,37 +467,63 @@ def _get_decode_die_load_columns():
 
 def _get_action_map() -> dict:
     return {
-        "PD api server get request": "prefill api server收到请求",
-        "Get prefill engine request and start pickle": "触发engine处理请求",
-        "Finish process request in prefill engine": "engine结束tokennizer",
-        "Start process request in prefill engine": "engine准备开始处理输入请求",
-        "Prefill add waiting queue": "prefill 请求添加到waiting队列",
-        "try to schedule in waiting queue": "首次尝试加入running队列",
-        "fail to add result of kv insufficient": "首次kv不足加入失败",
-        "Prefill get new_blocks": "P侧申请完成KV",
-        "success add to seq groups": "成功加入running队列",
-        "Prefill start execute_model": "P开始execute model",
-        "Prefill start execute main model": "P开始execute main model",
-        "Prefill done execute main model": "P完成execute main model",
-        "Prefill start execute mtp model": "P开始execute mtp model",
-        "Prefill done execute mtp model": "P完成execute mtp model",
-        "Prefill done execute_model": "P完成execute model",
-        "Start to send output in prefill stage": "engine异步发送输出",
-        "Client get prefill output": "client收到输出并入队",
-        "Pop output queues": "client出队",
-        "Finish prefill pickle and start response": "api server收到请求准备返回",
-        "Enter decode to generate": "decode api server收到请求准备处理",
-        "Start to dispatch decode request": "进入engine分发请求",
-        "Add need pulling sequence": "添加到need pulling队列",
-        "Start pull kv": "开始pull kv",
-        "Finish pull kv": "结束pull kv",
-        "Prefill free kv blocks": "P侧释放KV(和前后列时间戳可能存在时钟误差)",
-        "Start append running sequece for decode": "pull kv结束添加到running队列",
-        "Start to send output": "触发首个decode token执行",
-        "First decode output token": "decoder返回第一个token",
-        "Second decode output token": "decoder返回第二个token",
-        "Third decode output token": "decoder返回第三个token",
-        "Finish decode pickle and start response": "api server收到推理结果",
+        "Encoder api server get request": "E：api server收到请求",
+        "Finish process request for encode engine": "E：api server处理完请求并准备提交给engine",
+        "Start process request in encode engine": "E：engine开始处理请求",
+        "Encoder add waiting queue": "E：进入waiting队列",
+        "Encoder try to schedule in waiting queue": "E：首次尝试加入running队列",
+        "Encoder start has_caches": "E：has_caches开始",
+        "Encoder done has_caches": "E：has_caches完成",
+        "Start append running sequece for encode": "E：进入running队列",
+        "Encoder start execute_model": "E：execute_model开始",
+        "Encoder start _execute_mm_encoder": "E：_execute_mm_encoder开始",
+        "Encoder start save_caches": "E：save_caches开始",
+        "Encoder done save_caches": "E：save_caches结束",
+        "Encoder done _execute_mm_encoder": "E：_execute_mm_encoder结束",
+        "Encoder done execute_model": "E：execute_model结束",
+        "Finish encode pickle and start response": "E：开始返回响应",
+        "PD api server get request": "P：api server收到请求",
+        "Get prefill request and start pickle": "P：api server开始处理请求",
+        "Finish process request for prefill engine": "P：api server处理完请求并准备提交给engine",
+        "Start process request in prefill engine": "P：engine开始处理请求",
+        "Prefill add waiting queue": "P：进入waiting队列",
+        "Prefill try to schedule in waiting queue": "P：首次尝试加入running队列",
+        "Prefill start has_caches": "P：has_caches开始",
+        "Prefill done has_caches": "P：has_caches结束",
+        "Prefill fail to add result of kv insufficient": "P：首次kv不足加入失败",
+        "Prefill get new_blocks": "P：kv分配完成",
+        "Start append running sequence for prefill": "P：进入running队列",
+        "Prefill start execute_model": "P：execute_model开始",
+        "Prefill start execute main model": "P：main model开始",
+        "Prefill start start_load_caches": "P：start_load_caches开始",
+        "Prefill done start_load_caches": "P：start_load_caches结束",
+        "Prefill start _execute_mm_encoder": "P：_execute_mm_encoder开始",
+        "Prefill done _execute_mm_encoder": "P：_execute_mm_encoder结束",
+        "Prefill start _gather_mm_embeddings": "P：_gather_mm_embeddings开始",
+        "Prefill done _gather_mm_embeddings": "P：_gather_mm_embeddings结束",
+        "Prefill start model forward": "P：模型前向开始",
+        "Prefill done model forward": "P：模型前向结束",
+        "Prefill done execute main model": "P：main model结束",
+        "Prefill start execute mtp model": "P：mtp model开始",
+        "Prefill done execute mtp model": "P：mtp model结束",
+        "Prefill done execute_model": "P：execute_model结束",
+        "Start to send output in prefill stage": "P：开始发送engine输出",
+        "Client get prefill output": "P：client收到输出",
+        "Pop output queues": "P：client出队处理",
+        "Finish prefill pickle and start response": "P：api server收到请求并准备返回",
+        "Enter decode to generate": "D：api server收到请求",
+        "Finish process request for decode engine": "D：api server处理完请求并准备提交给engine",
+        "Start to dispatch decode request": "D：engine开始分发请求",
+        "Add need pulling sequence": "D：加入需要pulling队列",
+        "Start pull kv": "D：开始pull kv",
+        "Finish pull kv": "D：结束pull kv",
+        "Prefill free kv blocks": "P侧释放kv（和前后列时间戳可能存在时钟误差）",
+        "Start append running sequece for decode": "D：进入running队列",
+        "Start to send output": "D：触发首个decode token执行",
+        "First decode output token": "D：返回第一个token",
+        "Second decode output token": "D：返回第二个token",
+        "Third decode output token": "D：返回第三个token",
+        "Finish decode pickle and start response": "D：api server收到推理结果",
     }
 
 
@@ -386,8 +587,9 @@ def _get_main_model_info(engine_core_info, line):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Please input log directory. e.g.: python parse_logs.py path/to/all_pd_logs_direcotry")
-        exit()
-    root_dir = sys.argv[1]
-    parse_trace_logs(root_dir)
+    # Usage: python parse_logs.py <trace_log_dir> [--disable-encode]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("log_dir")
+    parser.add_argument("--disable-encode", action="store_true")
+    args = parser.parse_args()
+    parse_trace_logs(args.log_dir, disable_encode=args.disable_encode)

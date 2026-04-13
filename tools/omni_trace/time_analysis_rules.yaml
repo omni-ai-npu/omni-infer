@@ -1,0 +1,234 @@
+# Each formula computes: (right - left) * 1000.
+# Keep left and right in the same order as time_analysis.xlsx columns.
+formulas:
+  # Encode transitions
+  - left: Encoder api server get request
+    right: Finish process request for encode engine
+    output: E：api server收到请求→E：api server处理完请求并准备提交给engine（ms）
+  - left: Finish process request for encode engine
+    right: Start process request in encode engine
+    output: E：api server处理完请求并准备提交给engine→E：engine开始处理请求（ms）
+  - left: Start process request in encode engine
+    right: Encoder add waiting queue
+    output: E：engine开始处理请求→E：进入waiting队列（ms）
+  - left: Encoder add waiting queue
+    right: Encoder try to schedule in waiting queue
+    output: E：进入waiting队列→E：首次尝试加入running队列（ms）
+  - left: Encoder try to schedule in waiting queue
+    right: Encoder start has_caches
+    output: E：首次尝试加入running队列→E：has_caches开始（ms）
+  - left: Encoder start has_caches
+    right: Encoder done has_caches
+    output: E：has_caches开始→E：has_caches完成（ms）
+  - left: Encoder done has_caches
+    right: Start append running sequece for encode
+    output: E：has_caches完成→E：进入running队列（ms）
+  - left: Start append running sequece for encode
+    right: Encoder start execute_model
+    output: E：进入running队列→E：execute_model开始（ms）
+  - left: Encoder start execute_model
+    right: Encoder start _execute_mm_encoder
+    output: E：execute_model开始→E：_execute_mm_encoder开始（ms）
+  - left: Encoder start _execute_mm_encoder
+    right: Encoder start save_caches
+    output: E：_execute_mm_encoder开始→E：save_caches开始（ms）
+  - left: Encoder start save_caches
+    right: Encoder done save_caches
+    output: E：save_caches开始→E：save_caches结束（ms）
+  - left: Encoder done save_caches
+    right: Encoder done _execute_mm_encoder
+    output: E：save_caches结束→E：_execute_mm_encoder结束（ms）
+  - left: Encoder done _execute_mm_encoder
+    right: Encoder done execute_model
+    output: E：_execute_mm_encoder结束→E：execute_model结束（ms）
+  - left: Encoder done execute_model
+    right: Finish encode pickle and start response
+    output: E：execute_model结束→E：开始返回响应（ms）
+
+  # Prefill transitions
+  - left: PD api server get request
+    right: Get prefill request and start pickle
+    output: P：api server收到请求→P：api server开始处理请求（ms）
+  - left: Get prefill request and start pickle
+    right: Finish process request for prefill engine
+    output: P：api server开始处理请求→P：api server处理完请求并准备提交给engine（ms）
+  - left: Finish process request for prefill engine
+    right: Start process request in prefill engine
+    output: P：api server处理完请求并准备提交给engine→P：engine开始处理请求（ms）
+  - left: Start process request in prefill engine
+    right: Prefill add waiting queue
+    output: P：engine开始处理请求→P：进入waiting队列（ms）
+  - left: Prefill add waiting queue
+    right: Prefill try to schedule in waiting queue
+    output: P：进入waiting队列→P：首次尝试加入running队列（ms）
+  - left: Prefill try to schedule in waiting queue
+    right: Prefill start has_caches
+    output: P：首次尝试加入running队列→P：has_caches开始（ms）
+  - left: Prefill start has_caches
+    right: Prefill done has_caches
+    output: P：has_caches开始→P：has_caches结束（ms）
+  - left: Prefill done has_caches
+    right: Prefill fail to add result of kv insufficient
+    output: P：has_caches结束→P：首次kv不足加入失败（ms）
+  - left: Prefill fail to add result of kv insufficient
+    right: Prefill get new_blocks
+    output: P：首次kv不足加入失败→P：kv分配完成（ms）
+  - left: Prefill done has_caches
+    right: Prefill get new_blocks
+    output: P：has_caches结束→P：kv分配完成（ms）
+  - left: Prefill get new_blocks
+    right: Start append running sequence for prefill
+    output: P：kv分配完成→P：进入running队列（ms）
+  - left: Start append running sequence for prefill
+    right: Prefill start execute_model
+    output: P：进入running队列→P：execute_model开始（ms）
+  - left: Prefill start execute_model
+    right: Prefill start execute main model
+    output: P：execute_model开始→P：main model开始（ms）
+  - left: Prefill start execute main model
+    right: Prefill start start_load_caches
+    output: P：main model开始→P：start_load_caches开始（ms）
+  - left: Prefill start start_load_caches
+    right: Prefill done start_load_caches
+    output: P：start_load_caches开始→P：start_load_caches结束（ms）
+  - left: Prefill done start_load_caches
+    right: Prefill start _execute_mm_encoder
+    output: P：start_load_caches结束→P：_execute_mm_encoder开始（ms）
+  - left: Prefill start _execute_mm_encoder
+    right: Prefill done _execute_mm_encoder
+    output: P：_execute_mm_encoder开始→P：_execute_mm_encoder结束（ms）
+  - left: Prefill done _execute_mm_encoder
+    right: Prefill start _gather_mm_embeddings
+    output: P：_execute_mm_encoder结束→P：_gather_mm_embeddings开始（ms）
+  - left: Prefill start _gather_mm_embeddings
+    right: Prefill done _gather_mm_embeddings
+    output: P：_gather_mm_embeddings开始→P：_gather_mm_embeddings结束（ms）
+  - left: Prefill done _gather_mm_embeddings
+    right: Prefill start model forward
+    output: P：_gather_mm_embeddings结束→P：模型前向开始（ms）
+  - left: Prefill start model forward
+    right: Prefill done model forward
+    output: P：模型前向开始→P：模型前向结束（ms）
+  - left: Prefill done model forward
+    right: Prefill done execute main model
+    output: P：模型前向结束→P：main model结束（ms）
+  - left: Prefill done execute main model
+    right: Prefill start execute mtp model
+    output: P：main model结束→P：mtp model开始（ms）
+  - left: Prefill start execute mtp model
+    right: Prefill done execute mtp model
+    output: P：mtp model开始→P：mtp model结束（ms）
+  - left: Prefill done execute mtp model
+    right: Prefill done execute_model
+    output: P：mtp model结束→P：execute_model结束（ms）
+  - left: Prefill done execute_model
+    right: Start to send output in prefill stage
+    output: P：execute_model结束→P：开始发送engine输出（ms）
+  - left: Start to send output in prefill stage
+    right: Client get prefill output
+    output: P：开始发送engine输出→P：client收到输出（ms）
+  - left: Client get prefill output
+    right: Pop output queues
+    output: P：client收到输出→P：client出队处理（ms）
+  - left: Pop output queues
+    right: Finish prefill pickle and start response
+    output: P：client出队处理→P：api server收到请求并准备返回（ms）
+
+  # Decode transitions
+  - left: Enter decode to generate
+    right: Finish process request for decode engine
+    output: D：api server收到请求→D：api server处理完请求并准备提交给engine（ms）
+  - left: Finish process request for decode engine
+    right: Start to dispatch decode request
+    output: D：api server处理完请求并准备提交给engine→D：engine开始分发请求（ms）
+  - left: Start to dispatch decode request
+    right: Add need pulling sequence
+    output: D：engine开始分发请求→D：加入需要pulling队列（ms）
+  - left: Add need pulling sequence
+    right: Start pull kv
+    output: D：加入需要pulling队列→D：开始pull kv（ms）
+  - left: Start pull kv
+    right: Finish pull kv
+    output: D：开始pull kv→D：结束pull kv（ms）
+  - left: Finish pull kv
+    right: Start append running sequece for decode
+    output: D：结束pull kv→D：进入running队列（ms）
+  - left: Start append running sequece for decode
+    right: Start to send output
+    output: D：进入running队列→D：触发首个decode token执行（ms）
+  - left: Start to send output
+    right: First decode output token
+    output: D：触发首个decode token执行→D：返回第一个token（ms）
+  - left: First decode output token
+    right: Second decode output token
+    output: D：返回第一个token→D：返回第二个token（ms）
+  - left: Second decode output token
+    right: Third decode output token
+    output: D：返回第二个token→D：返回第三个token（ms）
+  - left: Third decode output token
+    right: Finish decode pickle and start response
+    output: D：返回第三个token→D：api server收到推理结果（ms）
+
+  # Stage durations
+  - left: Encoder start has_caches
+    right: Encoder done has_caches
+    output: E：has_caches耗时（ms）
+  - left: Encoder start execute_model
+    right: Encoder done execute_model
+    output: E：execute_model耗时（ms）
+  - left: Encoder start _execute_mm_encoder
+    right: Encoder done _execute_mm_encoder
+    output: E：_execute_mm_encoder耗时（ms）
+  - left: Encoder start save_caches
+    right: Encoder done save_caches
+    output: E：save_caches耗时（ms）
+  - left: Prefill start has_caches
+    right: Prefill done has_caches
+    output: P：has_caches耗时（ms）
+  - left: Prefill start execute_model
+    right: Prefill done execute_model
+    output: P：execute_model耗时（ms）
+  - left: Prefill start execute main model
+    right: Prefill done execute main model
+    output: P：execute main model耗时（ms）
+  - left: Prefill start start_load_caches
+    right: Prefill done start_load_caches
+    output: P：start_load_caches耗时（ms）
+  - left: Prefill start _execute_mm_encoder
+    right: Prefill done _execute_mm_encoder
+    output: P：_execute_mm_encoder耗时（ms）
+  - left: Prefill start _gather_mm_embeddings
+    right: Prefill done _gather_mm_embeddings
+    output: P：_gather_mm_embeddings耗时（ms）
+  - left: Prefill start model forward
+    right: Prefill done model forward
+    output: P：模型前向传播耗时（ms）
+  - left: Prefill start execute mtp model
+    right: Prefill done execute mtp model
+    output: P：execute mtp model耗时（ms）
+
+  # Stage totals and gaps
+  - left: Encoder api server get request
+    right: Finish encode pickle and start response
+    output: E总耗时（ms）
+  - left: Finish encode pickle and start response
+    right: PD api server get request
+    output: E到P的间隔（ms）
+  - left: PD api server get request
+    right: Finish prefill pickle and start response
+    output: P总耗时（ms）
+  - left: Finish prefill pickle and start response
+    right: Enter decode to generate
+    output: P到D的间隔（ms）
+  - left: Enter decode to generate
+    right: Finish decode pickle and start response
+    output: D总耗时（ms）
+  - left: Encoder api server get request
+    right: Finish prefill pickle and start response
+    output: E+P总耗时（ms）
+  - left: PD api server get request
+    right: Finish decode pickle and start response
+    output: P+D总耗时（ms）
+  - left: Encoder api server get request
+    right: Finish decode pickle and start response
+    output: E+P+D总耗时（ms）
