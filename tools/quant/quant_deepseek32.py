@@ -1,6 +1,6 @@
 import optiquant.dpsk32_int8 as qint8
 import optiquant.int4 as qint4
-import optiquant.w4_pergroup_to_perchannel as qint4_pergroup_to_perchannel
+import optiquant.w4group_to_w4channel as qint4_pergroup_to_perchannel
 import optiquant.faquant as faquant
 from argparse import ArgumentParser
 import json
@@ -14,8 +14,12 @@ if __name__ == "__main__":
     parser.add_argument("--file_count", type=int, default=0, help="File count when loading model")
     parser.add_argument("--model-name", type=str, default="deepseek-ai/DeepSeek-R1", help="Huggingface repo name")
 
+    parser.add_argument("--pangu-mode", default=False, action="store_true", help="pangu mode")
     parser.add_argument("--w4", default=False, action="store_true", help="int4 quantization flag")
+    parser.add_argument("--pergroup-to-perchannel", default=False, action="store_true", help="pergroup_to_perchannel quantization flag")
     parser.add_argument("--qtype", type=str, default="sszs50g0a0b4sym1", help="quantization config. only support sszs50g0a0b4sym1 now")
+    parser.add_argument("--c8-calib-path", type=str, default=None, help="mla c8 calibration data path")
+    parser.add_argument("--kvs-safetensor-name", type=str, default=None, help="mla c8 (faquant) safetensor name")
 
 
     args = parser.parse_args()
@@ -32,7 +36,7 @@ if __name__ == "__main__":
                     "self_attn.o_proj": 8, "mlp.down_proj": 8, "mlp.gate_up_proj": 8, "mlp.shared_experts": 8,
                     "mlp.experts": 4}
     else:
-        qint8.main(args, args.input_bf16_hf_path, args.output_path, args.model_name)
+        qint8.main(args, args.input_bf16_hf_path, args.output_path, args.pangu_mode, args.model_name)
         num_bits = {"self_attn.kv_a_proj_with_mqa": 16,
                     "self_attn.q_a_proj": 16,
                     "self_attn.indexer.wk": 16,
