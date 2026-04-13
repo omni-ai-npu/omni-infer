@@ -48,6 +48,10 @@ python quant_deepseek_kimi2.py --input-bf16-hf-path {bf16权重路径} --output-
 ### Modelslim支持的权重
 [Modelslim](https://gitcode.com/Ascend/msmodelslim)是一款开源昇腾模型压缩工具，Optiquant的部分功能已经合入该工具。以下模型可以一键生成与Omni-infer推理框架兼容的权重：
 
+**DeepSeek**:
+[DeepSeek-V3.1-W4A8C16](./modelslim/DeepSeek-V3.1-W4A8C16.md)
+[DeepSeek-V3.2-W4A8C16](./modelslim/DeepSeek-V3.2-W4A8C16.md)
+
 **Qwen3**：
 [Qwen3-VL-235B-W8A8C16](modelslim/Qwen3-VL-235B-W8A8C16.md); 
 [Qwen3-VL-235B-W8A8C16-Thinking](modelslim/Qwen3-VL-235B-W8A8C16.md);
@@ -58,6 +62,9 @@ python quant_deepseek_kimi2.py --input-bf16-hf-path {bf16权重路径} --output-
 **GLM5.0**：
 [GLM5.0-W8A8C16](./modelslim/GLM5.0-W8A8C16.md)
 [GLM5.0-W4A8C16](./modelslim/GLM5.0-W4A8C16.md)
+
+**kimi2.5**:
+[kimi2.5-W4A8C16](./modelslim/kimi2.5-W4A8C16.md)
 
 **MiniMax-2.5**：
 [MiniMax-2.5-W8A8C16](./modelslim/MiniMax-2.5-W8A8C16.md)
