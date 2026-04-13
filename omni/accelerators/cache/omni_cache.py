@@ -140,6 +140,144 @@ class BaseOmniCache(ABC):
     ):
         pass
 
+    def _log_and_validate_kv_blocks(
+        self,
+        kv_cache_config: KVCacheConfig,
+        device_cache_blocks: Optional[int] = None
+    ) -> None:
+        """
+        Log all KV block counts and validate that OmniCache allocated blocks
+        are sufficient for vLLM KV manager requirements.
+
+        Args:
+            kv_cache_config: The KV cache configuration from vLLM, containing
+                num_blocks which represents the number of GPU blocks vLLM needs.
+            device_cache_blocks: Optional device cache block count for PrefillOmniCache.
+                If provided, both host and device cache will be validated.
+
+        Raises:
+            ValueError: If host or device cache blocks are insufficient for vLLM
+                requirements, with detailed guidance on how to fix the issue.
+
+        Example:
+            Configuration example with typical parameters:
+            - SIZE_BYTES_PER_LAYER = 6 * 1024 * 1024 * 1024 (6GB per layer)
+            - SCALE_RATIO = 2 (device to host ratio)
+            - MAX_MODEL_LEN = 202752
+            - max_num_seqs = 16
+            - KV_DIM = 704, KV dtype = bf16 (2 bytes)
+            - block_size = 128, tp = 1, node_block_size = 128
+
+            Host KV blocks calculation:
+                SIZE_BYTES_PER_LAYER // (KV_DIM * 2 * node_block_size)
+                  = (6 * 1024 * 1024 * 1024) // (704 * 2 * 128) = 35756 blocks
+
+            Device KV blocks calculation:
+                (MAX_MODEL_LEN * max_num_seqs * 2) // block_size + 4
+                  = (202752 * 2 * 16) // 128 + 4 = 50692 blocks
+        """
+        # Validate that total memory requirement fits within MAP_SIZE_BYTES
+        self._validate_map_size()
+
+        vllm_num_blocks = kv_cache_config.num_blocks
+        host_cache_blocks = self.num_blocks
+
+        # Log configuration parameters for debugging
+        logger.debug(
+            f"KV cache validation input: vllm_num_blocks={vllm_num_blocks}, "
+            f"host_cache_blocks={host_cache_blocks}, "
+            f"device_cache_blocks={device_cache_blocks}"
+        )
+
+        # Unified Info logging for all KV block counts
+        block_info = [
+            f"vllm required num_gpu_blocks={vllm_num_blocks}",
+            f"host allocated kv_cache_blocks={host_cache_blocks}",
+        ]
+        if device_cache_blocks is not None:
+            block_info.append(f"device allocated kv_cache_blocks={device_cache_blocks}")
+        logger.info(f"OmniCache KV Blocks allocation: {', '.join(block_info)}")
+
+        # Validate host cache block count
+        host_deficit = vllm_num_blocks - host_cache_blocks
+        if host_cache_blocks < vllm_num_blocks:
+            error_msg = (
+                f"Insufficient host KV cache blocks: "
+                f"allocated {host_cache_blocks}, but vLLM requires {vllm_num_blocks} "
+                f"(deficit: {host_deficit} blocks).\n"
+                f"Suggested fixes:\n"
+                f"  1. Increase SIZE_BYTES_PER_LAYER environment variable\n"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        # Validate device cache block count (if applicable)
+        if device_cache_blocks is not None:
+            device_deficit = vllm_num_blocks - device_cache_blocks
+            if device_cache_blocks < vllm_num_blocks:
+                error_msg = (
+                    f"Insufficient device KV cache blocks: "
+                    f"allocated {device_cache_blocks}, but vLLM requires {vllm_num_blocks} "
+                    f"(deficit: {device_deficit} blocks).\n"
+                    f"Suggested fixes:\n"
+                    f"  1. Increase SCALE_RATIO environment variable for larger device cache\n"
+                    f"  2. Increase max_num_reqs to allocate more device blocks\n"
+                    f"  3. Reduce MAX_MODEL_LEN or max_num_seqs to decrease vLLM block requirement"
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
+        # Log success with margin information
+        host_margin = host_cache_blocks - vllm_num_blocks
+        margin_info = [f"host margin={host_margin} blocks ({host_margin / vllm_num_blocks * 100:.1f}%)"]
+        if device_cache_blocks is not None:
+            device_margin = device_cache_blocks - vllm_num_blocks
+            margin_info.append(f"device margin={device_margin} blocks ({device_margin / vllm_num_blocks * 100:.1f}%)")
+        logger.info(f"OmniCache KV Blocks validation passed: {', '.join(margin_info)}")
+
+    def _validate_kv_blocks(self, kv_cache_config: KVCacheConfig) -> None:
+        """
+        Validate that the number of kv_blocks allocated by OmniCache
+        is greater than or equal to the number managed by vLLM KV manager.
+
+        Args:
+            kv_cache_config: The KV cache configuration from vLLM
+
+        Raises:
+            ValueError: If the validation fails
+        """
+        # For base class, only validate host cache (device cache handled in subclass)
+        self._log_and_validate_kv_blocks(kv_cache_config, device_cache_blocks=None)
+
+    def _validate_map_size(self) -> None:
+        """
+        Validate that SIZE_BYTES_PER_LAYER * num_layers does not exceed MAP_SIZE_BYTES.
+
+        Raises:
+            ValueError: If the total memory requirement exceeds the mapped memory size.
+        """
+        map_size_bytes = int(os.environ.get("MAP_SIZE_BYTES", "214748364800"))   # Default 200GB (1<<39)
+        required_size = SIZE_BYTES_PER_LAYER * self.num_layers
+
+        if required_size > map_size_bytes:
+            error_msg = (
+                f"Insufficient MAP_SIZE_BYTES for KV cache: "
+                f"required {required_size} bytes ({required_size / 1024**3:.2f} GB), "
+                f"but MAP_SIZE_BYTES is {map_size_bytes} bytes ({map_size_bytes / 1024**3:.2f} GB). "
+                f"SIZE_BYTES_PER_LAYER={SIZE_BYTES_PER_LAYER} * num_layers={self.num_layers} = {required_size}.\n"
+                f"Suggested fixes:\n"
+                f"  1. Increase MAP_SIZE_BYTES environment variable\n"
+                f"  2. Decrease SIZE_BYTES_PER_LAYER environment variable"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        logger.info(
+            f"MAP_SIZE validation passed: required {required_size / 1024**3:.2f} GB, "
+            f"available {map_size_bytes / 1024**3:.2f} GB "
+            f"(margin: {(map_size_bytes - required_size) / 1024**3:.2f} GB)"
+        )
+
     def initialize_shared_memory(self) -> KVCacheMemoryPool:
         total_numel = math.prod(self.shape)
         itemsize = self.dtype.itemsize
@@ -295,6 +433,11 @@ class PrefillOmniCache(BaseOmniCache):
         # For DSV3.2, create a volatile KV cache and block_table on device
         max_num_blocks_per_req = cdiv(runner.max_model_len, self.block_size)
         num_blocks = runner.max_num_reqs * (SCALE_RATIO * max_num_blocks_per_req)
+        device_cache_blocks = num_blocks + 4
+
+        # Validate all KV block counts (host and device) with unified logging
+        self._log_and_validate_kv_blocks(kv_cache_config, device_cache_blocks=device_cache_blocks)
+
         volatile_table = torch.arange(
             1, 1 + num_blocks,
             dtype=torch.int32,
@@ -673,6 +816,9 @@ class DecodeOmniCache(BaseOmniCache):
         dp_rank = self.dp_local_rank
 
         blocks_per_rank = self.host_cache.num_blocks
+
+        # Validate kv_block count before allocating memory
+        self._validate_kv_blocks(kv_cache_config)
 
         self.block_table = torch.arange(blocks_per_rank, dtype=torch.long, device=self.device)
         self._copy_stream = getattr(self, "_copy_stream", torch.npu.Stream())
