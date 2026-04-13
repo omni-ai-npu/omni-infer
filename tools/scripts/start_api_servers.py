@@ -156,7 +156,7 @@ def start_single_node_api_servers(
         env["VLLM_DP_RANK_LOCAL"] = str(rank + server_offset // tp)
         env["VLLM_DP_MASTER_IP"] = master_ip
         env["VLLM_DP_MASTER_PORT"] = str(master_port)
-        env["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(map(str, range(rank*tp, (rank+1)*tp)))
+        env["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(map(str, range(rank*tp*pp, (rank+1)*tp*pp)))
 
         # Find an available port
         try:

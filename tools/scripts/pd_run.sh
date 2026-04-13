@@ -35,6 +35,7 @@ VLLM_USE_V1=1
 VLLM_WORKER_MULTIPROC_METHOD="fork"
 MODEL_PATH="/home/dsv3/models/DeepSeek-V3-w8a8-0423"
 TP=4
+PP=1
 SERVED_MODEL_NAME="deepseek"
 MAX_MODEL_LEN=4096
 LOG_DIR="apiserverlog"
@@ -88,6 +89,7 @@ print_help() {
     echo "  --model-path                     vLLM framework: Model path (default: $MODEL_PATH)"
     echo "  --max-model-len                  vLLM framework: Maximum model length (default: $MAX_MODEL_LEN)"
     echo "  --tp                             vLLM framework: Tensor parallel (default: $TP)"
+    echo "  --pp                             vLLM framework: Pipeline parallel (default: $PP)"
     echo "  --served-model-name              vLLM framework: Served model name (default: $SERVED_MODEL_NAME)"
     echo "  --log-dir                        vLLM framework: Log directory (default: $LOG_DIR)"
     echo "  --kv-connector                   vLLM framework: PD separation parameter, kv connector name (default: $KV_CONNECTOR)"
@@ -192,6 +194,9 @@ parse_long_option() {
             ;;
         --tp)
             TP="$2"
+            ;;
+        --pp)
+            PP="$2"
             ;;
         --served-model-name)
             SERVED_MODEL_NAME="$2"
@@ -367,6 +372,7 @@ echo "VLLM_WORKER_MULTIPROC_METHOD: $VLLM_WORKER_MULTIPROC_METHOD"
 echo "MODEL_PATH: $MODEL_PATH"
 echo "MAX_MODEL_LEN: $MAX_MODEL_LEN"
 echo "TP: $TP"
+echo "PP: $PP"
 echo "SERVED_MODEL_NAME: $SERVED_MODEL_NAME"
 echo "LOG_DIR: $LOG_DIR"
 echo "KV_TRANSFER_CONFIG: $KV_TRANSFER_CONFIG"
@@ -401,6 +407,7 @@ common_operations() {
     --master-port "$MASTER_PORT" \
     --base-api-port "$BASE_API_PORT" \
     --tp "$TP" \
+    --pp "$PP" \
     --served-model-name "$SERVED_MODEL_NAME" \
     --log-dir "$LOG_DIR" \
     --kv-transfer-config "$KV_TRANSFER_CONFIG" \
