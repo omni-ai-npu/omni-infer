@@ -464,7 +464,8 @@ def omni_cli_start(
     entry_py: str = "start_api_servers.py",
     skip_verify_config: bool = False,
     dev: bool = False,
-    proxy_only: bool = False
+    proxy_only: bool = False,
+    cloud_mode: bool = False
 ) -> None:
     """
     Read inventory YAML, generate a per-host bash script, and run it via:
@@ -490,8 +491,8 @@ def omni_cli_start(
     if not skip_verify_config:
         _verify_and_fix_env_vars(cluster_info, inv, inv_file)
 
-    if not dev:
-        omni_cli.proxy.omni_run_proxy(inventory_path)
+    if (not dev) or cloud_mode:
+        omni_cli.proxy.omni_run_proxy(inventory_path, cloud_mode=cloud_mode)
 
     all_hosts = _walk_hosts(inv.get("all", inv))
     if not role_filter:
@@ -543,17 +544,14 @@ echo "cd {_double_quotes(code_path)}/tools/scripts" >> {log_path}/omni_cli.log
 echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> {log_path}/omni_cli.log
 """
 
-        with tempfile.NamedTemporaryFile(
-            "w", delete=False,
-            dir="./",
-            prefix=f"omni_start_{host.replace('.', '_')}_",
-            suffix=".sh"
-        ) as tf:
+        file_name = f"omni_start_{host.replace('.', '_')}.sh"
+        with open(file_name, "w") as tf:
             script_path = Path(tf.name)
             tf.write("#!/usr/bin/env bash\n")
             tf.write("set -euo pipefail\n\n")
 
-            tf.write(f"docker exec -i {shlex.quote(container_name)} bash -s <<'EOF'\n")
+            if not cloud_mode:
+                tf.write(f"docker exec -i {shlex.quote(container_name)} bash -s <<'EOF'\n")
             tf.write("source ~/.bashrc\n\n")
 
             tf.write(f"if [ ! -d {shlex.quote(log_path)} ]; then\n")
@@ -576,9 +574,14 @@ echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> 
                     tf.write(start_server_cmd)
             else:
                 tf.write(start_server_cmd)
-            tf.write("EOF\n")
+            if not cloud_mode:
+                tf.write("EOF\n")
 
         os.chmod(script_path, 0o755)
+
+        if cloud_mode:
+            print(f"{INFO} Generated cloud script: {script_path}")
+            continue
 
         cmd = (
             f"ansible {shlex.quote(host)} "
@@ -1254,6 +1257,12 @@ def main():
         help="Start in normal mode (default) with config file"
     )
     start_group.add_argument("--run-dev", action="store_true", help="Start in developer mode: Start the service, without ranktable and proxy")
+    srop_parser.add_argument(
+        "--cloud-mode",
+        action="store_true",
+        dest='cloud_mode',
+        help="cloud mode: generate scripts only (for P/D/Proxy)"
+    )
 
     # STOP command configuration
     srop_parser=subparsers.add_parser("stop", help="Stop the omni service")
@@ -1431,11 +1440,13 @@ def main():
                            dev=False,
                            proxy_only=args.proxy_only)
         elif args.run_dev:
+            cloud_mode = getattr(args, "cloud_mode", False)
             print(f"{INFO} Starting omni service in Developer mode...")
             omni_cli_start(inventory_path=args.config_path,
                            skip_verify_config=args.skip_verify_config,
                            dev=True,
-                           proxy_only=args.proxy_only)
+                           proxy_only=args.proxy_only,
+                           cloud_mode=cloud_mode)
     elif args.command == "stop":
         print(f"{INFO} Stopping omni service...")
         omni_cli_stop(inventory_path=args.config_path)
