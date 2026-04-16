@@ -162,7 +162,7 @@ class AscendSamplerV1(SamplerV1):
         self,
         logits: torch.Tensor,
         min_p: torch.Tensor,
-        return_logits: bool = False,
+        return_logits: bool = True,
     ) -> torch.Tensor:
         """
         Filters logits using adaptive probability thresholding.
