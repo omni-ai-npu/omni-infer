@@ -20,7 +20,7 @@ all:
             ACCESS_LOG_FILE: /tmp/logs/nginx/nginx_access.log
             OMNI_PROXY_PD_POLICY: sequential
             OMNI_PROXY_MAX_BATCH_NUM_TOKEN: 200000
-            OMNI_PROXY_PREFILL_MAX_NUM_SEQS: 16
+            OMNI_PROXY_PREFILL_MAX_NUM_SEQS: 12
             OMNI_PROXY_DECODE_MAX_NUM_SEQS: 2
             PYTHONHASHSEED: 123
     D:
@@ -484,9 +484,9 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              num-gpu-blocks-override: 32000
+              num-gpu-blocks-override: 30000
               max-num-batched-tokens: 161280
-              max-num-seqs: 16
+              max-num-seqs: 12
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
@@ -590,9 +590,9 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              num-gpu-blocks-override: 32000
+              num-gpu-blocks-override: 30000
               max-num-batched-tokens: 161280
-              max-num-seqs: 16
+              max-num-seqs: 12
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
@@ -696,9 +696,9 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              num-gpu-blocks-override: 32000
+              num-gpu-blocks-override: 30000
               max-num-batched-tokens: 161280
-              max-num-seqs: 16
+              max-num-seqs: 12
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
@@ -802,9 +802,9 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              num-gpu-blocks-override: 32000
+              num-gpu-blocks-override: 30000
               max-num-batched-tokens: 161280
-              max-num-seqs: 16
+              max-num-seqs: 12
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
