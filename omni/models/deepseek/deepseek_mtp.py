@@ -108,6 +108,11 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
         self.prefix = prefix
         self.postfix = ".self_attn.attn"
 
+        self.rot = None
+        hf_quant_config = getattr(self.config, "quantization_config", {})
+        if hf_quant_config.get("apply_mtp_rot", False):
+            self.rot = torch.nn.Linear(self.config.hidden_size, self.config.hidden_size, bias=False)
+
     def forward(
             self,
             input_ids: torch.Tensor,
@@ -139,6 +144,9 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
             start_range = rank_in_group * (token_num // tp_size)
             end_range = (1 + rank_in_group) * (token_num // tp_size)
             previous_hidden_states = previous_hidden_states[start_range: end_range, :]
+
+        if self.rot is not None:
+            previous_hidden_states = self.rot(previous_hidden_states)
 
         previous = self.hnorm(previous_hidden_states)
         cat_hidden_states = torch.cat([tok_embeds, previous], dim=-1)

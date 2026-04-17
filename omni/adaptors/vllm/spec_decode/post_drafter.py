@@ -269,7 +269,14 @@ class PostDrafter(EagleProposer):
                         else: # prefill
                             input_ids[sample_indices] = draft_forward_tokens
                     if not model_extra_config.operator_opt_config.skip_mtp_hidden_states:
-                        previous_hidden_states = next_hidden_states
+                        if i < self.n_predictor - 1 or is_dummy:
+                            previous_hidden_states = next_hidden_states
+                        else:
+                            previous_hidden_states = previous_hidden_states.roll(-1, dims=0)
+                            if attn_state == AscendAttentionState.DecodeOnly:
+                                previous_hidden_states[last_accepted_index] = next_hidden_states[last_accepted_index]
+                            else: # prefill
+                                previous_hidden_states[sample_indices] = next_hidden_states[sample_indices]
             if is_dummy:
                 return None
             else:

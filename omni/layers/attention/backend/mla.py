@@ -253,7 +253,7 @@ class AscendMLAMetadata:
             metadata.slot_mapping,
             block_indices * block_size + block_offsets)
         metadata.decode.seq_lens[:] = (positions + 1).to(metadata.decode.seq_lens.dtype)
-        cos, sin = model_layer.self_attn.rotary_emb.get_cos_sin(metadata.decode.input_positions)
+        cos, sin = model_layer.self_attn.rotary_emb.get_cos_sin(positions)
         metadata.decode.cos = cos
         metadata.decode.sin = sin
 
