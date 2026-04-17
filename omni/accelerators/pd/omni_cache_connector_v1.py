@@ -16,6 +16,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Tuple, List, Dict
 from dataclasses import dataclass, field
+from ox_process_manager import OxProcessManager
 
 import torch
 import zmq
@@ -505,6 +506,7 @@ class PrefillConnectorWorker:
         self.tp_rank_local = self.rank % (self.vllm_config.parallel_config.tensor_parallel_size // CLUSTER_SIZE)
         data_type_size = DTypeUtils.size(data_type)
         if self.tp_rank_local == 0:
+            # TODO: 修改代码使得connector可以感知ox的异常
             cmd = [
                 str(OX_PATH),
                 "--addr", f"0.0.0.0:{BASE_PORT}",
@@ -516,23 +518,13 @@ class PrefillConnectorWorker:
             ]
             logger.warning(f"<<<Executing {cmd}")
 
-            proc = subprocess.Popen(cmd,
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT,
-                                    text=True,
-                                    bufsize=1)
-            q = queue.Queue()
-
-            t_read = threading.Thread(target=stdout_reader, args=(proc.stdout, q))
-            t_print = threading.Thread(target=stdout_printer, args=(q, ))
-            t_read.daemon = True
-            t_print.daemon = True
-            t_read.start()
-            t_print.start()
+            if not hasattr(self, '_ox_p_manager'):
+                self._ox_p_manager = OxProcessManager(log_prefix="ox-p-server")
+            proc = self._ox_p_manager.start(cmd)
 
             ok, not_ready = _wait_ports(host_ports=[("127.0.0.1", BASE_PORT)], timeout_sec=300)
             if not ok:
-                stop_logged_process(proc)
+                self._ox_p_manager.stop()
                 raise RuntimeError(f"[ERROR] P not ready: {sorted(list(not_ready))}")
             logger.info("[READY] P node is ready")
 
@@ -784,6 +776,7 @@ class DecodeConnectorWorker:
             self.block_len_dtype = block_len_dtype
             end_port = f"{ZMQ_BASE_PORT + omni_cache.dp_local_rank}"
             data_type_size = DTypeUtils.size(data_type)
+            # TODO: 增加代码使得connector可以感知ox的异常
             cmd = [
                 str(OX_PATH),
                 "--shard-list", str(P_NODE_PORT_LIST),
@@ -797,19 +790,10 @@ class DecodeConnectorWorker:
                 "--dims",  ",".join(map(str, omni_cache.head_sizes)),
             ]
 
-            proc = subprocess.Popen(cmd,
-                                        stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT,
-                                        text=True,
-                                        bufsize=1)
-            q = queue.Queue()
+            if not hasattr(self, '_ox_d_manager'):
+                self._ox_d_manager = OxProcessManager(log_prefix="ox-d-client")
+            proc = self._ox_d_manager.start(cmd, log_file_path=OX_LOG_PATH)
 
-            t_read = threading.Thread(target=stdout_reader, args=(proc.stdout, q))
-            t_print = threading.Thread(target=stdout_printer, args=(q, OX_LOG_PATH))
-            t_read.daemon = True
-            t_print.daemon = True
-            t_read.start()
-            t_print.start()
         self.zmq_client = None
         self.omni_cache = omni_cache
         self._ensure_process_started()

@@ -1,0 +1,29 @@
+# Makefile for mock ox test executables
+CXX      := g++
+CXXSTD   := -std=c++20
+CXXFLAGS := $(CXXSTD) -g -Wall -Wextra
+
+# All mock targets
+TARGETS := mock_ox_startup_fail mock_ox_runtime_crash mock_ox_signal_crash mock_ox_normal
+
+# Output directory - put binaries next to real ox
+OX_DIR   := ox
+
+all: $(TARGETS)
+
+mock_ox_startup_fail: mock_ox.cpp
+	$(CXX) $(CXXFLAGS) -DMOCK_STARTUP_FAIL $< -o $(OX_DIR)/$@
+
+mock_ox_runtime_crash: mock_ox.cpp
+	$(CXX) $(CXXFLAGS) -DMOCK_RUNTIME_CRASH $< -o $(OX_DIR)/$@
+
+mock_ox_signal_crash: mock_ox.cpp
+	$(CXX) $(CXXFLAGS) -DMOCK_SIGNAL_CRASH $< -o $(OX_DIR)/$@
+
+mock_ox_normal: mock_ox.cpp
+	$(CXX) $(CXXFLAGS) -DMOCK_NORMAL $< -o $(OX_DIR)/$@
+
+clean:
+	rm -f $(addprefix $(OX_DIR)/,$(TARGETS))
+
+.PHONY: all clean
