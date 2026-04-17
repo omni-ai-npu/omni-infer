@@ -1257,7 +1257,7 @@ def main():
         help="Start in normal mode (default) with config file"
     )
     start_group.add_argument("--run-dev", action="store_true", help="Start in developer mode: Start the service, without ranktable and proxy")
-    srop_parser.add_argument(
+    start_parser.add_argument(
         "--cloud-mode",
         action="store_true",
         dest='cloud_mode',
@@ -1265,14 +1265,14 @@ def main():
     )
 
     # STOP command configuration
-    srop_parser=subparsers.add_parser("stop", help="Stop the omni service")
+    stop_parser=subparsers.add_parser("stop", help="Stop the omni service")
     # 添加 --config_path 参数
-    srop_parser.add_argument(
+    stop_parser.add_argument(
         "--config_path",
         default=None,
         help="Path to the configuration file"
     )
-    srop_parser.add_argument(
+    stop_parser.add_argument(
         "--normal",
         nargs=1,
         metavar='config_path',
