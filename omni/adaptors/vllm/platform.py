@@ -161,6 +161,24 @@ def apply_kv_cache_patch():
     kv_cache_utils.hash_block_tokens = patched
     patched.is_patched = True
 
+
+def apply_async_llm_idle_stats_patch():
+    from vllm.v1.engine.async_llm import AsyncLLM
+    from vllm.v1.metrics.stats import SchedulerStats
+
+    if getattr(AsyncLLM.do_log_stats, "_omni_idle_stats_patched", False):
+        return
+    
+    origin_do_log_stats = AsyncLLM.do_log_stats
+    
+    async def patched_do_log_stats(self, scheduler_outputs=None, model_output=None) -> None:
+        if (self.logger_manager and not self.output_processor.has_unfinished_requests()):
+            self.logger_manager.record(scheduler_stats=SchedulerStats(), iteration_stats=None,)
+        await origin_do_log_stats(self, scheduler_outputs, model_output)
+    
+    patched_do_log_stats._omni_idle_stats_patched = True
+    AsyncLLM.do_log_stats = patched_do_log_stats
+
 def register() -> str:
     """Register the NPU platform for vLLM.
 
@@ -391,6 +409,7 @@ class NPUPlatform(Platform):
         cls._check_required_env_vars()
         ConfigUpdater.update_parser(parser)
         update_parallel_state()
+        apply_async_llm_idle_stats_patch()
         if os.getenv("ENABLE_APC_EVENT", "0") == "1":
             apply_kv_cache_patch()
             apply_constant_list_patch()
