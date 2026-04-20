@@ -201,6 +201,11 @@ class LLMDataDistConnector(KVConnectorBase_V1):
             raise RuntimeError("self._connector_metadata must be an instance of DatadistConnectorMetadata or DatadistConnectorMetadataPrefill")
         self.connector_worker.start_load_kv(self._connector_metadata)
 
+    def get_load_kv_failure_reqs(self):
+        if self.connector_worker is None:
+            raise RuntimeError("self.connector_worker cannot be None")
+        return self.connector_worker.get_load_kv_failure_reqs()
+
     def wait_for_layer_load(self, layer_name: str) -> None:
         """Connector does not do layerwise saving."""
         pass
@@ -377,6 +382,9 @@ class PrefillConnectorWorker:
             except Exception as e:
                 logger.error("get pulled kv req list failed: %s", e)
 
+    def get_load_kv_failure_reqs(self):
+        return
+
 
 class DecodeConnectorScheduler:
     """Implementation of Scheduler side methods"""
@@ -543,6 +551,8 @@ class DecodeConnectorWorker:
 
         self.ctx = zmq.Context()
         self.zmq_socket_map = {}
+        self.pull_kv_failed_reqs = []
+        self.failed_pull_kv_lock = threading.Lock()
 
         if self.async_pull_kv:
             # dp_rank = vllm_config.parallel_config.data_parallel_rank_local
@@ -816,7 +826,14 @@ class DecodeConnectorWorker:
         if hasattr(self.vllm_config.model_config.hf_config, 'param_sink_with_value'):
             local_block_ids.insert(0, 0)
             remote_block_ids.insert(0, 0)
-        self.datadist_manager.pull_kv(remote_block_ids, local_block_ids, dst_cluster_id)
+        try:
+            self.datadist_manager.pull_kv(remote_block_ids, local_block_ids, dst_cluster_id)
+        except RuntimeError as e:
+            logger.error(f"Request ({request_id}) pull blocks failed: {e}")
+            with self.failed_pull_kv_lock:
+                if request_id not in self.pull_kv_failed_reqs:
+                    self.pull_kv_failed_reqs.append(request_id)
+                return
 
         if self.vllm_config.parallel_config.tensor_parallel_size == 1:
             # tp=1, send to prefill tp rank0 directly.
@@ -882,6 +899,12 @@ class DecodeConnectorWorker:
                 "Get_finished: %s requests done recving", len(all_done_recving))
 
         return all_done_sending, all_done_recving
+
+    def get_load_kv_failure_reqs(self):
+        with self.failed_pull_kv_lock:
+            ids = self.pull_kv_failed_reqs
+            self.pull_kv_failed_reqs = []
+            return ids
 
     def _pop_done_transfers(self, transfers: list) -> set[str]:
         done_req_ids: set[str] = set()

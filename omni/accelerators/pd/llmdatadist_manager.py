@@ -42,9 +42,9 @@ TORCH_DTYPE_TO_NPU_DTYPE = {
 
 SCHEDULER_LINK_BATCH_SIZE = 32
 SCHEDULER_LINK_INTERVAL = 0.5
-KV_CACHE_RETRY_TIMES = 3
-KV_CACHE_RETRY_WAIT_SECOND = 2
-SYNC_KV_TIMEOUT = int(os.environ.get("SYNC_KV_TIMEOUT", 1800000))
+KV_CACHE_RETRY_TIMES = int(os.environ.get("KV_CACHE_RETRY_TIMES", 3))
+KV_CACHE_RETRY_WAIT_SECOND = int(os.environ.get("KV_CACHE_RETRY_WAIT_SECOND", 2))
+SYNC_KV_TIMEOUT = int(os.environ.get("SYNC_KV_TIMEOUT", 30000))
 
 RETRYABLE_CODES = [
     LLMStatusCode.LLM_REPEAT_REQUEST,
@@ -173,7 +173,6 @@ class LLMDataDistManager:
         llm_config.enable_switch_role = True
         llm_config.enable_cache_manager = True
 
-        # RoCE timeout is 1800s, prevent pull kv timeout
         llm_config.sync_kv_timeout = SYNC_KV_TIMEOUT
 
         llm_config.enable_remote_cache_accessible = True
@@ -246,7 +245,7 @@ class LLMDataDistManager:
 
 
     def _pull_blocks(self, src_cache_key, dst_cache, src_blocks, dst_blocks):
-        for i in range(KV_CACHE_RETRY_TIMES):
+        for _ in range(KV_CACHE_RETRY_TIMES):
             try:
                 self.data_dist_engine.cache_manager.pull_blocks(src_cache_key, dst_cache, src_blocks,
                                                                           dst_blocks)
@@ -256,11 +255,6 @@ class LLMDataDistManager:
                 code = e.status_code
                 if code in RETRYABLE_CODES:
                     logger.warning(f"kv cache pull blocks failed, need retry {e}")
-                    time.sleep(KV_CACHE_RETRY_WAIT_SECOND)
-                elif code in TOKEN_RETRY_CODES:
-                    if i >= KV_CACHE_RETRY_TIMES - 1:
-                        logger.warning(f"kv cache pull blocks failed, need retry {e}")
-                        raise e
                     time.sleep(KV_CACHE_RETRY_WAIT_SECOND)
                 else:
                     logger.info(f"kv cache pull blocks failed, {e}")
