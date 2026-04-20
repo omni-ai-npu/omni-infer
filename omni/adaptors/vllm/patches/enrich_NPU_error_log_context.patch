@@ -1,0 +1,36 @@
+From 7863e7d75b9e5417b1f61073e7f009c394f2cdb8 Mon Sep 17 00:00:00 2001
+From: HuBeiBei625 <18284969094@163.com>
+Date: Sat, 18 Apr 2026 14:52:14 +0800
+Subject: [PATCH] enrich_NPU_error_log_context
+
+---
+ vllm/entrypoints/openai/api_server.py | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
+index 4cc341cc1..4a8c7c247 100644
+--- a/vllm/entrypoints/openai/api_server.py
++++ b/vllm/entrypoints/openai/api_server.py
+@@ -486,7 +486,18 @@ def check_npu_status() -> int:
+                     logger.warning(f"[resources.status.errLevel] does not exist in npu_status.yaml")
+                     return NPUStatusInfo.UNKONWN
+                 if npu["errLevel"] not in health_level:
+-                    logger.error(f"npu fault occurs, errLevel: {npu['errLevel']}")
++                    err_codes_str = ",".join(map(str, npu.get("errCodes", [])))
++                    err_messages_str = ",".join(map(str, npu.get("errMessages", [])))
++                    err_time = npu.get("errTime", "")
++                    logger.error(
++                        f"npu fault occurs, errCodes: {err_codes_str} "
++                        f"errLevel: {npu['errLevel']} "
++                        f"errLevelName: {npu.get('errLevelName', '')} "
++                        f"errMessages: {err_messages_str} "
++                        f"errTime: {err_time} "
++                        f"health: {npu.get('health', '')} "
++                        f"name: {npu.get('name', '')}"
++                    )
+                     return NPUStatusInfo.NPU_ERROR
+             if "errLevelName" not in resources[1]:
+                 return NPUStatusInfo.UNKONWN
+-- 
+2.43.0
+
