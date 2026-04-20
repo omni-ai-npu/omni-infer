@@ -1,0 +1,32 @@
+From e9c22b48df7443d7e01d185ace8eb7213ffed3be Mon Sep 17 00:00:00 2001
+From: p00513699 <panyiwei@huawei.com>
+Date: Sat, 18 Apr 2026 18:12:41 +0800
+Subject: [PATCH] fix apc index out range error
+
+---
+ vllm/v1/core/single_type_kv_cache_manager.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
+index a7697bd..41ea604 100755
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -1,4 +1,5 @@
+ # SPDX-License-Identifier: Apache-2.0
++import itertools
+ from abc import ABC, abstractmethod
+ from collections import defaultdict
+ from typing import Callable
+@@ -244,8 +245,7 @@ class FullAttentionManager(SingleTypeKVCacheManager):
+                                max_length: int) -> list[KVCacheBlock]:
+         computed_blocks: list[KVCacheBlock] = []
+         max_num_blocks = max_length // self.block_size
+-        for i in range(max_num_blocks):
+-            block_hash = block_hashes[i]
++        for block_hash in itertools.islice(block_hashes, max_num_blocks):
+             # block_hashes is a chain of block hashes. If a block hash is not
+             # in the cached_block_hash_to_id, the following block hashes are
+             # not computed yet for sure.
+-- 
+2.33.0
+
