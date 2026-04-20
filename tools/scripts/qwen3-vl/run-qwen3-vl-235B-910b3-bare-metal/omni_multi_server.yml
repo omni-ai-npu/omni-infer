@@ -1,0 +1,738 @@
+# Copyright 2025 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ============================================================================
+
+- name: run omniai
+  hosts: all
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  gather_facts: yes
+  environment:
+
+    DOCKER_IMAGE_ID: "your-registry/your-image:tag"
+    DOCKER_NAME: "your-container-name"
+    MODEL_PATH: "/path/to/your/model"
+    CODE_PATH: "/path/to/your/code"
+    LOG_PATH: "/path/to/your/log"
+    MODEL_LEN_MAX: "168960"
+    SCRIPTS_PATH: "/path/to/your/scripts/scripts_path"
+    DECODE_TENSOR_PARALLEL_SIZE: "4"
+
+    VLLM_TORCH_PROFILER_DIR: "/path/to/your/prof"
+    PROFILER_TOKEN_THRESHOLD: "1280000000"
+    PROFILER_STOP_STEP: "5"
+    GPU_UTIL: "0.9"
+
+
+    # -e VLLM_TORCH_PROFILER_DIR=${LOG_PATH}/prof \
+    #     -e PROFILER_TOKEN_THRESHOLD=32 \
+    #     -e PROFILER_STOP_STEP=5 \
+    #     -e ASCEND_RT_VISIBLE_DEVICES=${LOCAL_DEVICES} \
+
+  vars:
+    docker_run_cmd: |
+      docker run \
+        -it \
+        --net=host \
+        --shm-size=500g \
+        --privileged=true \
+        --device=/dev/davinci_manager \
+        --device=/dev/hisi_hdc \
+        --device=/dev/devmm_svm \
+        -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
+        -v /usr/local/dcmi:/usr/local/dcmi \
+        -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+        -v /etc/ascend_install.info:/etc/ascend_install.info \
+        -v /usr/local/sbin:/usr/local/sbin \
+        -v /etc/hccn.conf:/etc/hccn.conf \
+        -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \
+        -v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime \
+        -v /bigdata:/bigdata \
+        -v /data:/data \
+        -v /mnt:/mnt \
+        -e DEVICE_TYPE=npu \
+        -e ASCEND_RT_VISIBLE_DEVICES=${LOCAL_DEVICES} \
+        -e HCCL_IF_IP=${LOCAL_IP} \
+        -e GLOO_SOCKET_IFNAME=enp67s0f5 \
+        -e TP_SOCKET_IFNAME=enp67s0f5 \
+        -e RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1 \
+        -e VLLM_PLUGINS="omni-npu,omni_custom_models,omni_npu_patches" \
+        -e OMNI_NPU_VLLM_PATCHES=ALL \
+        -e SEQ_SPLIT_LENGTH_BEFORE_ALL_GATHER=16384 \
+        -e VLLM_TORCH_PROFILER_DIR=${VLLM_TORCH_PROFILER_DIR} \
+        -e PROFILER_TOKEN_THRESHOLD=${PROFILER_TOKEN_THRESHOLD} \
+        -e PROFILER_STOP_STEP=${PROFILER_STOP_STEP} \
+        -e RANK=$RANK \
+        -e MODEL_LEN_MAX=$MODEL_LEN_MAX \
+        -e LOG_PATH=$LOG_PATH \
+        -e CODE_PATH=$CODE_PATH \
+        -e MODEL_PATH=$MODEL_PATH \
+        -e SCRIPTS_PATH=$SCRIPTS_PATH \
+        -e LOCAL_IP=$LOCAL_IP \
+        -e LOCAL_PORT=$LOCAL_PORT \
+        -e MASTER_IP=$MASTER_IP \
+        -e MASTER_PORT=$MASTER_PORT \
+        -e SERVER_IP_LIST=$SERVER_IP_LIST \
+        -e NUM_SERVERS=$NUM_SERVERS \
+        -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE \
+        -e HOST=$HOST \
+        -e API_PORT=$API_PORT \
+        -e DECODE_SERVER_LIST=$DECODE_SERVER_LIST \
+        -e DECODE_POD_NUM=$DECODE_POD_NUM \
+        -e GPU_UTIL=${GPU_UTIL} \
+        -w /data \
+        --entrypoint=bash \
+
+    docker_exec_cmd: |
+      docker exec \
+
+    start_ray: |
+      #!/bin/bash
+      log_file="${LOG_PATH}/start_ray.log"
+      rm -rf $log_file
+      exec 3>&1
+      exec 1>>"$log_file" 2>&1
+
+      pip install --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple ray
+
+      MIN_NODES=2
+      SLEEP_TIME=5
+      check_nodes() {
+        ray_status_output=$(ray status)
+        if echo "$ray_status_output" | grep -q "no failures"; then
+          echo "no fail"
+        else
+          echo "node failed"
+          ray status
+          sleep "$SLEEP_TIME"
+          return 1
+        fi
+
+        if echo "$ray_status_output" | grep -q "no pending nodes"; then
+          echo "no pending"
+        else
+          echo "node pending..."
+          sleep "$SLEEP_TIME"
+          return 1
+        fi 
+
+        num_nodes=$(echo "$ray_status_output"| grep node_ | wc -l)
+        echo "ray cluster has $num_nodes node(s)."
+        if [ "$num_nodes" -lt "$MIN_NODES" ]; then
+          echo "node num is not fit, $SLEEP_TIME seconds later, check again..."
+          sleep "$SLEEP_TIME"
+          return 1
+        else
+          echo "ray cluster is ready."
+          return 0
+        fi
+      }
+
+      echo "MASTER_IP: ${MASTER_IP}"
+      echo "LOCAL_IP: ${LOCAL_IP}"
+      echo "NUM_SERVERS: ${NUM_SERVERS}"
+
+      ray stop --force
+      pkill -9 ray
+      rm -rf /data/raytmp /tmp/ray
+      export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+      if [[ ${RANK} == "0" ]]; then
+          # Head node
+          ray start --head --num-gpus=0 --resources='{"NPU": 8}' --temp-dir=/data/raytmp
+      else
+          # Worker node
+          ray start --address=${MASTER_IP}:6379 --num-gpus=0 --resources='{"NPU": 8}' --node-ip-address=${LOCAL_IP}
+      fi
+
+      while true; do
+        if check_nodes; then
+          break
+        fi
+      done
+
+    pre_cmd: |
+      #!/bin/bash
+      log_file="${LOG_PATH}/pre_cmd.log"
+      rm -rf $log_file
+      exec 3>&1
+      exec 1>>"$log_file" 2>&1
+
+      #rm -rf /workspace/omniinfer/
+      #cd $CODE_PATH/omni-npu
+      #pip install --trusted-host mirrors.tools.huawei.com -i https://mirrors.tools.huawei.com/pypi/simple -e .
+    
+    run_nginx_cmd: |
+      #!/bin/bash
+      log_file="${LOG_PATH}/run_nginx.log"
+      rm -rf $log_file
+      exec 3>&1
+      exec 1>>"$log_file" 2>&1
+
+      mkdir -p /etc/nginx/conf.d/
+      sleep 1
+      pkill -9 nginx 2>/dev/null
+      sleep 1
+      cp -f /path/to/your/nginx.conf /usr/local/nginx/conf/
+      sleep 1
+      cp -f /path/to/your/vllm_proxy.conf /etc/nginx/conf.d/
+      sleep 1
+      nginx
+
+    run_vllm_server: |
+      #!/bin/bash
+
+      log_file="${LOG_PATH}/start_vllm.log"
+      rm -rf $log_file
+      exec 3>&1
+      exec 1>>"$log_file" 2>&1
+
+      export ASCEND_GLOBAL_LOG_LEVEL=3
+      export VLLM_LOGGING_LEVEL=DEBUG
+      export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
+      export HCCL_OP_EXPANSION_MODE="AIV"
+
+      # Set profiler environment variables (needed for run_vllm_only)
+      export VLLM_TORCH_PROFILER_DIR="${VLLM_TORCH_PROFILER_DIR:-/path/to/your/prof/}"
+      export PROFILER_TOKEN_THRESHOLD="${PROFILER_TOKEN_THRESHOLD:-128}"
+      export PROFILER_STOP_STEP="${PROFILER_STOP_STEP:-5}"
+
+      # Set GPU_UTIL from ansible config (overrides container env for run_vllm_only)
+      export GPU_UTIL="{{ ansible_env.GPU_UTIL }}"
+
+      # Set MODEL_PATH from ansible config (overrides container env for run_vllm_only)
+      export MODEL_PATH="{{ ansible_env.MODEL_PATH }}"
+
+      # Set MODEL_LEN_MAX from ansible config (overrides container env for run_vllm_only)
+      export MODEL_LEN_MAX="{{ ansible_env.MODEL_LEN_MAX }}"
+
+      # Set DECODE_TENSOR_PARALLEL_SIZE from ansible config (overrides container env for run_vllm_only)
+      export DECODE_TENSOR_PARALLEL_SIZE="{{ ansible_env.DECODE_TENSOR_PARALLEL_SIZE }}"
+
+      HCCL_BUFFSIZE=256
+      export TASK_QUEUE_ENABLE=1
+      export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+
+      declare -A config_dict=(
+      {% for key, value in server_offset_dict.items() %}
+          [{{ key }}]={{ value }}
+      {% endfor %}
+      )
+      export PYTHONPATH="/workspace/omniinfer/components/omni-npu/src:${PYTHONPATH}"
+
+      LIMIT_MM='{"image": 2048}'
+
+      EXTRA_ARGS_STR='--enable-expert-parallel --swap_space 64.0 --disable-log-requests --max-num-seq 512 --enable-prefix-caching --allowed-local-media-path /path/to/your/data --media-io-kwargs {"video":{"fps":2,"num_frames":-1}}  --max-num-batched-tokens 16384 --block-size 128 --distributed-executor-backend mp --enable-chunked-prefill --compilation-config {"level": 3, "cudagraph_mode": "FULL", "cudagraph_capture_sizes": [64], "backend": "eager", "compile_sizes": [64]}'
+
+      cd ${CODE_PATH}/scripts
+      bash mix_run.sh \
+        --served-model-name "qwen" \
+        --local-decode-server-ip-list "$SERVER_IP_LIST" \
+        --global-decode-server-ip-list "$SERVER_IP_LIST" \
+        --gloo-socket-ifname ${GLOO_SOCKET_IFNAME} \
+        --tp-socket-ifname ${TP_SOCKET_IFNAME} \
+        --num-servers ${NUM_SERVERS} \
+        --num-dp {{ dp }} \
+        --server-offset ${config_dict[$HOST]:-0} \
+        --model-path ${MODEL_PATH} \
+        --master-ip ${MASTER_IP} \
+        --max-model-len ${MODEL_LEN_MAX} \
+        --master-port ${MASTER_PORT} \
+        --base-api-port ${API_PORT} \
+        --tp ${DECODE_TENSOR_PARALLEL_SIZE} \
+        --gpu-util ${GPU_UTIL} \
+        --extra-args "${EXTRA_ARGS_STR}" \
+        --hccl-buffsize "${HCCL_BUFFSIZE}" \
+        --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
+        --num-speculative-tokens 0 \
+        --log-dir "${LOG_PATH}/{{ inventory_hostname }}"
+
+    start_docker_cmd: >
+      {{ docker_run_cmd }}
+      -d --name $DOCKER_NAME $DOCKER_IMAGE_ID
+
+    docker_start_ray_cmd: >
+      {{ docker_exec_cmd }}
+      -d $DOCKER_NAME
+      /bin/bash -l -c "$SCRIPTS_PATH/start_ray.sh"
+
+    docker_pre_cmd: >
+      {{ docker_exec_cmd }}
+      -d $DOCKER_NAME
+      /bin/bash -l -c "$SCRIPTS_PATH/pre_cmd.sh"
+
+    docker_start_nginx_cmd: >
+      {{ docker_exec_cmd }}
+      -d $DOCKER_NAME
+      /bin/bash -l -c "$SCRIPTS_PATH/nginx_run.sh"
+
+    docker_start_vllm_cmd: >
+      {{ docker_exec_cmd }}
+      -d $DOCKER_NAME
+      /bin/bash -l -c "$SCRIPTS_PATH/vllm_run.sh"
+
+    docker_start_proxy_build_cmd: >
+      {{ docker_exec_cmd }}
+      -d $DOCKER_NAME
+      /bin/bash -l -c "$SCRIPTS_PATH/proxy_build.sh"
+
+    docker_start_proxy_run_cmd: >
+      {{ docker_exec_cmd }}
+      -d $DOCKER_NAME
+      /bin/bash -l -c "$SCRIPTS_PATH/proxy_run.sh"
+
+    kill_python_processes_cmd: |
+      #!/bin/bash
+
+      ps aux | grep "VLLM" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+      ps aux | grep "vllm" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+      ps aux | grep "python" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+
+    kill_ray_processes_cmd: |
+      #!/bin/bash
+      pkill -9 -f ray
+      pkill -9 -f raylet
+      pkill -9 -f gcs_server
+      pkill -9 -f dashboard
+      rm -rf /tmp/ray/session_*
+      rm -rf /tmp/ray/*
+      rm -rf /data/raytmp/*
+
+      ps aux | grep "ray" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+
+  tasks:
+    - name: Register all values.
+      set_fact:
+        DECODE_API_SERVER_LIST: >-
+          {% set result=[] %}
+          {% for host in groups['M']|default([]) %}
+            {% set h=hostvars.get(host,{}) %}
+            {% set ip=h.ansible_host|default('') %}
+            {% set port=h.api_port|default('9100') %}
+            {% set num=h.ascend_rt_visible_devices.count(',')|default('0') %}
+            {% if ip %}
+              {% set entry=ip~':'~port~'@'~num %}
+              {% if entry not in result %}
+                {% set _=result.append(entry) %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          {{ result | join(',') }}
+        DECODE_POD_NUM: "{{ groups['M'] | length }}"
+        DECODE_SERVER_IP_LIST: >-
+          {% set host_list = [] %}
+          {% for host in groups['M'] %}
+            {% if hostvars[host].master_ip == hostvars[host].ansible_host %}
+              {% set _ = host_list.insert(0, hostvars[host].ansible_host) %}
+            {% else %}
+              {% set _ = host_list.append(hostvars[host].ansible_host) %}
+            {% endif %}
+          {% endfor %}
+          {{ host_list | join(',') }}
+        DECODE_SERVER_ALL: "{{ groups['M'] | map('extract', hostvars) | map(attribute='ascend_rt_visible_devices') | select('defined') | join(',') }}"
+        DECODE_SERVER_OFFSET: "{% set offsets = {} %}{% set ns = namespace(cnt=0) %}{% for host in groups['M']|default([]) %}{% set _ = offsets.update({host: ns.cnt}) %}{% set num=hostvars[host].ascend_rt_visible_devices.count(',')|default('0')|int %}{% set ns.cnt = ns.cnt + num + 1 %}{% endfor %}{{ offsets }}"
+      run_once: yes
+      delegate_to: localhost
+      tags:
+        - run_docker
+        - run_server
+
+    - name: calu npu_num
+      set_fact:
+        npu_num: "{{ (DECODE_SERVER_ALL | regex_replace('[^,]', '') | length) + 1 }}"
+      when: "'M' in group_names or 'C' in group_names"
+      tags:
+        - run_server
+
+    - name: calu dp
+      set_fact:
+        dp: "{{ npu_num | int // ansible_env.DECODE_TENSOR_PARALLEL_SIZE | int }}"
+      when: "'M' in group_names or 'C' in group_names"
+      tags:
+        - run_server
+    
+    - name: Create a directory to store the code.
+      file:
+        path: "{{ ansible_env.CODE_PATH }}"
+        state: directory
+      when: "'M' in group_names or 'C' in group_names"
+      tags: run_server
+
+    - name: Create a directory to store the script.
+      file:
+        path: "{{ ansible_env.SCRIPTS_PATH }}"
+        state: directory
+      when: "'M' in group_names or 'C' in group_names"
+      tags: run_server
+
+
+    - name: The executor synchronizes scripts to all instances.
+      synchronize:
+        src: "{{ ansible_env.CODE_PATH }}/scripts"
+        dest: "{{ ansible_env.CODE_PATH }}/"
+      when: "'M' in group_names"
+      tags: run_server
+
+    - name: generate container name.
+      set_fact:
+        ACTUAL_DOCKER_NAME: "{{ ansible_env.DOCKER_NAME }}_{{ inventory_hostname }}"
+      when: "'M' in group_names or 'C' in group_names"
+      tags:
+        - run_docker
+        - run_server
+        - run_proxy
+
+    - name: Check and delete Docker containers.
+      block:
+        - name: Check whether the container exists.
+          shell: |
+            docker inspect --format='{{"{{.Name}}"}}' \
+            $DOCKER_NAME \
+            2>/dev/null | grep -v '^$'
+          register: existing_containers
+          environment:
+            DOCKER_NAME: "{{ ACTUAL_DOCKER_NAME }}"
+          failed_when: false
+          changed_when: false
+
+        - name: Show generated container name.
+          debug:
+            msg: "Generated container name: {{ ACTUAL_DOCKER_NAME }}"
+
+        - name: Stop containers.
+          command: |
+            /bin/bash -c "docker stop {{ existing_containers.stdout_lines | join(' ') }}"
+          when: existing_containers.stdout != ""
+
+        - name: Delete containers.
+          command: |
+            /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
+          when: existing_containers.stdout != ""
+      when: "'M' in group_names or 'C' in group_names"
+      tags:
+        - run_docker
+        - clean_up
+
+    - name: Run container instances.
+      command: bash -c "{{ start_docker_cmd }}"
+      environment:
+        DOCKER_NAME: "{{ ACTUAL_DOCKER_NAME }}"
+        LOCAL_IP: "{{ ansible_host }}"
+        LOCAL_PORT: "{{ node_port }}"
+        MASTER_IP: "{{ master_ip }}"
+        MASTER_PORT: "{{ master_port }}"
+        GLOBAL_DEVICES: "{{ ascend_rt_global_devices }}"
+        LOCAL_DEVICES: "{{ ascend_rt_visible_devices }}"
+        RANK: "{{ node_rank }}"
+        SERVER_IP_LIST: "{{ DECODE_SERVER_IP_LIST | replace(' ', '') | trim }}"
+        NUM_SERVERS: "{{ (ascend_rt_visible_devices.split(',') | length ) | int // ansible_env.DECODE_TENSOR_PARALLEL_SIZE | int }}"
+        HOST: "{{ inventory_hostname }}"
+        API_PORT: "{{ api_port }}"
+        DECODE_SERVER_LIST: "{{ ascend_rt_visible_devices }}"
+        DECODE_POD_NUM: "{{ DECODE_POD_NUM }}"
+      when: "'M' in group_names or 'C' in group_names"
+      tags:
+        - run_docker
+
+    - name: Create a directory to store the log.
+      file:
+        path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
+        state: directory
+      when: "'M' in group_names or 'C' in group_names"
+      tags:
+        - run_server
+
+    - name: Generate a script to kill all Python processes in the container.
+      copy:
+        content: "{{ kill_python_processes_cmd }}"
+        dest: "{{ ansible_env.SCRIPTS_PATH }}/kill_python_processes.sh"
+        mode: '0750'
+      when: "'M' in group_names"
+      tags: stop_server
+
+    - name: Generate a script to kill all Ray processes in the container. 
+      copy:
+        content: "{{ kill_ray_processes_cmd }}"
+        dest: "{{ ansible_env.SCRIPTS_PATH }}/kill_ray_processes.sh"
+        mode: '0750'
+      when: "'M' in group_names"
+      tags: stop_server
+
+    - name: Kill all Python processes in the container.
+      command: /bin/bash -c "{{ docker_exec_cmd }} $ACTUAL_DOCKER_NAME /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
+      environment:
+        ACTUAL_DOCKER_NAME: "{{ ACTUAL_DOCKER_NAME }}"
+        LOG_PATH: "{{ ansible_env.LOG_PATH }}"
+        SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+      failed_when: false
+      no_log: true
+      when: "'M' in group_names"
+      tags: stop_server
+
+    - name: Kill all Ray processes in the container of prefill.
+      command: /bin/bash -c "{{ docker_exec_cmd }} $ACTUAL_DOCKER_NAME /bin/bash -c $SCRIPTS_PATH/kill_ray_processes.sh"
+      environment:
+        ACTUAL_DOCKER_NAME: "{{ ACTUAL_DOCKER_NAME }}"
+        LOG_PATH: "{{ ansible_env.LOG_PATH }}"
+        SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+      failed_when: false
+      no_log: true
+      when: "'M' in group_names"
+      tags: stop_server
+
+    - name: Generate a script to do pre things.
+      copy:
+        content: "{{ pre_cmd }}"
+        dest: "{{ ansible_env.SCRIPTS_PATH }}/pre_cmd.sh"
+        mode: '0750'
+      when: "'M' in group_names"
+      tags:
+        - run_server
+
+    - name: run pre cmd.
+      command: bash -c "{{ docker_pre_cmd }}"
+      environment:
+        DOCKER_NAME: "{{ ACTUAL_DOCKER_NAME }}"
+        LOG_PATH: "{{ ansible_env.LOG_PATH }}"
+        SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+      register: pre_result
+      when: "'M' in group_names"
+      tags:
+        - run_server
+    
+    - name: Wait for 20 seconds for install omni
+      wait_for:
+        timeout: 20
+      when: "'M' in group_names"
+      tags:
+        - run_server
+
+    - name: Generate a script to run the ray.
+      copy:
+        content: "{{ start_ray }}"
+        dest: "{{ ansible_env.SCRIPTS_PATH }}/start_ray.sh"
+        mode: '0750'
+      when: "'M' in group_names"
+      tags:
+        - run_server
+
+    - name: Start the ray cluster.
+      command: bash -c "{{ docker_start_ray_cmd }}"
+      environment:
+        DOCKER_NAME: "{{ ACTUAL_DOCKER_NAME }}"
+        LOG_PATH: "{{ ansible_env.LOG_PATH }}"
+        SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+      register: ray_start_result
+      when: false
+      tags:
+        - run_server
+
+    - name: Wait for 10 seconds for log recreate
+      wait_for:
+        timeout: 1
+      when: false
+      tags:
+        - run_server
+
+    - name: Wait for 10 seconds for log recreate
+      wait_for:
+        timeout: 10
+      when: "'M' in group_names"
+      tags:
+        - run_server
+
+    - name: Wait for Ray log file to contain ready message
+      wait_for:
+        path: "{{ ansible_env.LOG_PATH }}/start_ray.log"
+        search_regex: "ray cluster is ready"
+        timeout: 120  # 总等待时间，单位秒
+      when: false
+      tags:
+        - run_server
+
+    - name: Generate a script to start nginx.
+      copy:
+        content: "{{ run_nginx_cmd }}"
+        dest: "{{ ansible_env.SCRIPTS_PATH }}/nginx_run.sh"
+        mode: '0750'
+      when: "'C' in group_names"
+      tags:
+        - run_proxy
+
+    - name: Run the nginx service.
+      command: bash -c "{{ docker_start_nginx_cmd }}"
+      environment:
+        DOCKER_NAME: "{{ ACTUAL_DOCKER_NAME }}"
+        SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+      register: docker_start_result
+      when: "'C' in group_names"
+      tags:
+        - run_proxy
+
+    - name: Generate proxy build script.
+      copy:
+        content: |
+          #!/bin/bash
+          log_file="${LOG_PATH}/proxy_build.log"
+          rm -rf $log_file
+          exec 3>&1
+          exec 1>>"$log_file" 2>&1
+
+          cd /workspace/omniinfer/components/omni-proxy/omni_proxy/
+          bash build.sh --skip-extras
+          export PYTHONHASHSEED=123
+        dest: "{{ ansible_env.SCRIPTS_PATH }}/proxy_build.sh"
+        mode: '0750'
+      when: "'C' in group_names"
+      tags:
+        - run_proxy
+
+    - name: Run proxy build script.
+      command: bash -c "{{ docker_start_proxy_build_cmd }}"
+      environment:
+        DOCKER_NAME: "{{ ACTUAL_DOCKER_NAME }}"
+        SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+        LOG_PATH: "{{ ansible_env.LOG_PATH }}"
+        CODE_PATH: "{{ ansible_env.CODE_PATH }}"
+      register: proxy_build_result
+      failed_when: false
+      when: "'C' in group_names"
+      tags:
+        - run_proxy
+
+    - name: Wait for 10 seconds after build.
+      wait_for:
+        timeout: 10
+      when: "'C' in group_names"
+      tags:
+        - run_proxy
+
+    # 设置 omni_proxy_model_path 变量
+    - name: Set omni_proxy_model_path
+      set_fact:
+        omni_proxy_model_path: "{{ ansible_env.MODEL_PATH }}"
+      when: "'C' in group_names"
+      tags:
+        - run_proxy
+
+    # 在 M 节点上注册 DECODE_TENSOR_PARALLEL_SIZE 值（复用 environment 中的定义）
+    - name: Register DECODE_TENSOR_PARALLEL_SIZE from M nodes
+      set_fact:
+        tp_size_from_env: "{{ ansible_env.DECODE_TENSOR_PARALLEL_SIZE }}"
+      when: "'M' in group_names"
+      tags:
+        - run_server
+        - run_proxy
+
+    # 计算 decode endpoints 和 total servers (dp)
+    - name: calculate decode endpoints 和 total servers
+      set_fact:
+        # 计算所有 decode 服务的端点列表（每个 server 独立端口）
+        decode_endpoints_calculated: |-
+          {%- set endpoints = [] -%}
+          {%- set tp_size = hostvars[groups['M'][0]].tp_size_from_env | default(4) | int -%}
+          {%- for host in groups['M'] -%}
+            {%- set ip = hostvars[host].ansible_host -%}
+            {%- set base_port = hostvars[host].api_port | default('9000') | int -%}
+            {%- set devices = hostvars[host].ascend_rt_visible_devices -%}
+            {%- set device_count = devices.split(',') | length -%}
+            {%- set num_servers = device_count // tp_size -%}
+            {%- for i in range(num_servers) -%}
+              {%- set _ = endpoints.append(ip ~ ':' ~ (base_port + i)) -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{- endpoints | join(',') -}}
+        # 计算总的 server 数量（即 dp 值）- 使用 pipe 语法避免循环累加问题
+        total_servers: |-
+          {%- set tp_size = hostvars[groups['M'][0]].tp_size_from_env | default(4) | int -%}
+          {%- set device_counts = groups['M'] | map('extract', hostvars) | map(attribute='ascend_rt_visible_devices') | map('split', ',') | map('length') | list -%}
+          {%- set total_devices = device_counts | sum -%}
+          {{- (total_devices // tp_size) -}}
+      run_once: yes
+      delegate_to: localhost
+      tags:
+        - run_proxy
+
+    # 生成 proxy run script（使用动态计算的 endpoints 和 core-num）
+    - name: generate proxy run script
+      copy:
+        content: |
+          #!/bin/bash
+          log_file="${LOG_PATH}/proxy_run.log"
+          rm -rf $log_file
+          exec 3>&1
+          exec 1>>"$log_file" 2>&1
+
+          cd /workspace/omniinfer/components/omni-proxy/omni_proxy/
+          export PYTHONHASHSEED=123
+          bash omni_proxy.sh \
+            --nginx-conf-file /usr/local/nginx/conf/nginx.conf \
+            --start-core-index 0 \
+            --core-num {{ total_servers }} \
+            --omni-proxy-decode-max-num-seqs 512 \
+            --listen-port {{ proxy_port }} \
+            --decode-endpoints {{ decode_endpoints_calculated }} \
+            --omni-proxy-pd-policy aggregation \
+            --omni-proxy-model-path {{ omni_proxy_model_path }}
+        dest: "{{ ansible_env.SCRIPTS_PATH }}/proxy_run.sh"
+        mode: '0750'
+      when: "'C' in group_names"
+      tags:
+        - run_proxy
+
+    - name: Run proxy service.
+      command: bash -c "{{ docker_start_proxy_run_cmd }}"
+      environment:
+        DOCKER_NAME: "{{ ACTUAL_DOCKER_NAME }}"
+        SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+      register: proxy_run_result
+      when: "'C' in group_names"
+      tags:
+        - run_proxy
+
+    - name: Generate a script to run the vllm server.
+      copy:
+        content: "{{ run_vllm_server }}"
+        dest: "$SCRIPTS_PATH/vllm_run.sh"
+        mode: '0750'
+      vars:
+        server_offset_dict: "{{ DECODE_SERVER_OFFSET }}"
+      when: "'M' in group_names"
+      tags:
+        - run_server
+
+    - name: Run the Omniai service.
+      command: bash -c "{{ docker_start_vllm_cmd }}"
+      environment:
+        DOCKER_NAME: "{{ ACTUAL_DOCKER_NAME }}"
+        SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+      register: docker_start_result
+      when: "'M' in group_names"
+      tags:
+        - run_server
+
+    - name: Wait for 30 seconds for log recreate
+      wait_for:
+        timeout: 3
+      tags:
+        - run_server
+
+    - name: Wait for vLLM service to be ready
+      wait_for:
+        path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}/server_0.log"
+        search_regex: "Application startup complete"
+        timeout: 1200  # 总等待时间，单位秒
+      when:
+        - "'M' in group_names"
+      tags:
+        - run_server
