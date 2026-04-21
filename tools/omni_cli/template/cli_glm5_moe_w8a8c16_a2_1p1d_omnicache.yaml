@@ -41,11 +41,11 @@ all:
             extra-args:
               disable-log-requests: ''
               enable-expert-parallel: ''
-              max-num-seqs: 6
+              max-num-seqs: 4
               # no-enable-prefix-caching: ''
               preemption-mode: swap
               swap_space: 32
-              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
+              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
               reasoning-parser: GlmMoe
               chat-template: ${MODEL_PATH}/chat_template.jinja
               enable-auto-tool-choice: ''
@@ -152,11 +152,11 @@ all:
             extra-args:
               disable-log-requests: ''
               enable-expert-parallel: ''
-              max-num-seqs: 6
+              max-num-seqs: 4
               # no-enable-prefix-caching: ''
               preemption-mode: swap
               swap_space: 32
-              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
+              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
               reasoning-parser: GlmMoe
               chat-template: ${MODEL_PATH}/chat_template.jinja
               enable-auto-tool-choice: ''
@@ -263,11 +263,11 @@ all:
             extra-args:
               disable-log-requests: ''
               enable-expert-parallel: ''
-              max-num-seqs: 6
+              max-num-seqs: 4
               # no-enable-prefix-caching: ''
               preemption-mode: swap
               swap_space: 32
-              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
+              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
               reasoning-parser: GlmMoe
               chat-template: ${MODEL_PATH}/chat_template.jinja
               enable-auto-tool-choice: ''
@@ -374,11 +374,11 @@ all:
             extra-args:
               disable-log-requests: ''
               enable-expert-parallel: ''
-              max-num-seqs: 6
+              max-num-seqs: 4
               # no-enable-prefix-caching: ''
               preemption-mode: swap
               swap_space: 32
-              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
+              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
               reasoning-parser: GlmMoe
               chat-template: ${MODEL_PATH}/chat_template.jinja
               enable-auto-tool-choice: ''
@@ -489,7 +489,7 @@ all:
               max-num-seqs: 12
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
-              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
+              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
               reasoning-parser: GlmMoe
               chat-template: ${MODEL_PATH}/chat_template.jinja
               enable-auto-tool-choice: ''
@@ -595,7 +595,7 @@ all:
               max-num-seqs: 12
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
-              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
+              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
               reasoning-parser: GlmMoe
               chat-template: ${MODEL_PATH}/chat_template.jinja
               enable-auto-tool-choice: ''
@@ -701,7 +701,7 @@ all:
               max-num-seqs: 12
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
-              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
+              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
               reasoning-parser: GlmMoe
               chat-template: ${MODEL_PATH}/chat_template.jinja
               enable-auto-tool-choice: ''
@@ -807,7 +807,7 @@ all:
               max-num-seqs: 12
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
-              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":2}'
+              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
               reasoning-parser: GlmMoe
               chat-template: ${MODEL_PATH}/chat_template.jinja
               enable-auto-tool-choice: ''
