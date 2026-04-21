@@ -67,3 +67,4 @@ git apply --whitespace=nowarn $PATCH_ROOT/validate_assistant_with_sufficient_too
 git apply --whitespace=nowarn $PATCH_ROOT/fix_reasoning_max_token_ignore_eos_bug.patch
 git apply --whitespace=nowarn $PATCH_ROOT/enrich_NPU_error_log_context.patch
 git apply --whitespace=nowarn $PATCH_ROOT/fix_apc_index_bug.patch
+git apply --whitespace=nowarn $PATCH_ROOT/fix_api_server_npu_status.patch
