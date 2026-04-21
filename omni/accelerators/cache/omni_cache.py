@@ -972,29 +972,30 @@ class DecodeOmniCache(BaseOmniCache):
             batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes = self.build_h2d_ops_omni_attn(local_block_ids)
         else:
             layer_indices = self.device_cache.keys()
+            block_ids = local_block_ids[0]
             npu_blocks = []
-            for block_id in local_block_ids[0]:
+            for block_id in block_ids:
                 layers = []
                 for layer_name in layer_indices:
                     if model_extra_config.operator_opt_config.enable_dsa:
                         layers.append(
                             (
-                                # only keep k_indexer cache on device
-                                self.device_cache[layer_name][0][block_id],
-                                self.device_cache[layer_name][1][block_id],
-                                self.device_cache[layer_name][2][block_id]
+                                self.device_cache[layer_name][0][block_id].data_ptr(),
+                                self.device_cache[layer_name][1][block_id].data_ptr(),
+                                self.device_cache[layer_name][2][block_id].data_ptr(),
                             )
                         )
                     else:
                         layers.append(
                             (
-                                self.device_cache[layer_name][0][block_id],
-                                self.device_cache[layer_name][1][block_id]
+                                self.device_cache[layer_name][0][block_id].data_ptr(),
+                                self.device_cache[layer_name][1][block_id].data_ptr(),
                             )
                         )
                 npu_blocks.append(layers)
-            batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes = self.host_cache.batch_layer_copy_to_npu(local_block_ids[0], npu_blocks)
-        
+            batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes = \
+                self.host_cache.batch_layer_copy_to_npu(block_ids, npu_blocks)
+
         return batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes
 
     def synchronize_h2d(self, batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes):

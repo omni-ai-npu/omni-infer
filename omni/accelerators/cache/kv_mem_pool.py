@@ -237,42 +237,51 @@ class KVCacheMemoryPool:
 
     def batch_layer_copy_to_npu(self, block_ids: list, npu_blocks, layer_indices: Optional[List[int]] = None):
         """Batch copy specific layers of multiple blocks from CPU shared memory to NPU, merging consecutive blocks with continuous addresses (for batch copy)."""
-
         cpu_blocks = [self.get_block(block_id) for block_id in block_ids]
-        layers = len(npu_blocks[0]) # npu_blocks layout: [block][layer][kvi_tensor]
+        num_blocks = len(block_ids)
+        num_layers = len(npu_blocks[0])
+        num_kvi = len(cpu_blocks[0])
+
+        tensor_sizes = [cpu_blocks[0][kvi][0].nbytes for kvi in range(num_kvi)]
 
         batch_device_mem = []
         batch_device_max = []
         batch_host_mem = []
         batch_host_sizes = []
 
-        for kvi_idx in range(len(cpu_blocks[0])): # cpu_blocks layout: [block][kvi_tensor][layer]
-            tensor_size = cpu_blocks[0][kvi_idx][0].nbytes
-            for layer_idx in range(layers):
+        for kvi_idx in range(num_kvi):
+            size = tensor_sizes[kvi_idx]
+            for layer_idx in range(num_layers):
                 cpu_layer_idx = layer_idx if layer_indices is None else layer_indices[layer_idx]
-                cpu_addrs = [cpu_blocks[i][kvi_idx][cpu_layer_idx].unsqueeze(-2).data_ptr() for i in range(len(block_ids))]
-                npu_addrs = [npu_blocks[i][layer_idx][kvi_idx].data_ptr() for i in range(len(block_ids))]
+
+                cpu_addrs = [
+                    cpu_blocks[i][kvi_idx][cpu_layer_idx].data_ptr()
+                    for i in range(num_blocks)
+                ]
+                npu_addrs = [npu_blocks[i][layer_idx][kvi_idx] if isinstance(npu_blocks[i][layer_idx][kvi_idx], int) else npu_blocks[i][layer_idx][kvi_idx].data_ptr() for i in range(num_blocks)]
+
                 batch_start = 0
-                while batch_start < len(block_ids):
+                while batch_start < num_blocks:
                     batch_end = batch_start + 1
-                    prev_cpu_addr = cpu_addrs[batch_start]
-                    prev_npu_addr = npu_addrs[batch_start]
-                    while batch_end < len(block_ids):
-                        curr_cpu_addr = cpu_addrs[batch_end]
-                        curr_npu_addr = npu_addrs[batch_end]
-                        if (curr_cpu_addr == prev_cpu_addr + tensor_size and
-                            curr_npu_addr == prev_npu_addr + tensor_size):
-                            prev_cpu_addr = curr_cpu_addr
-                            prev_npu_addr = curr_npu_addr
+                    prev_cpu = cpu_addrs[batch_start]
+                    prev_npu = npu_addrs[batch_start]
+                    while batch_end < num_blocks:
+                        curr_cpu = cpu_addrs[batch_end]
+                        curr_npu = npu_addrs[batch_end]
+                        if (curr_cpu == prev_cpu + size and
+                            curr_npu == prev_npu + size):
+                            prev_cpu = curr_cpu
+                            prev_npu = curr_npu
                             batch_end += 1
                         else:
                             break
-                    count_blocks = batch_end - batch_start
+                    count = batch_end - batch_start
                     batch_device_mem.append(npu_addrs[batch_start])
-                    batch_device_max.append(tensor_size * count_blocks)
+                    batch_device_max.append(size * count)
                     batch_host_mem.append(cpu_addrs[batch_start])
-                    batch_host_sizes.append(tensor_size * count_blocks)
+                    batch_host_sizes.append(size * count)
                     batch_start = batch_end
+
         return batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes
 
     def memcpy_async(self, batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes):

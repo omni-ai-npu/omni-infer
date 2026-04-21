@@ -16,7 +16,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Tuple, List, Dict
 from dataclasses import dataclass, field
-from ox_process_manager import OxProcessManager
+from omni.accelerators.pd.ox_process_manager import OxProcessManager
 
 import torch
 import zmq
@@ -792,7 +792,7 @@ class DecodeConnectorWorker:
 
             if not hasattr(self, '_ox_d_manager'):
                 self._ox_d_manager = OxProcessManager(log_prefix="ox-d-client")
-            proc = self._ox_d_manager.start(cmd, log_file_path=OX_LOG_PATH)
+            proc = self._ox_d_manager.start(cmd, log_file_path=os.path.join(OX_LOG_PATH, "ox_log_d_client.log"))
 
         self.zmq_client = None
         self.omni_cache = omni_cache
