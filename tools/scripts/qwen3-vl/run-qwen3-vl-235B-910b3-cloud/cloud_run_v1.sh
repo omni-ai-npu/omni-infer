@@ -162,7 +162,7 @@ export_env() {
 
 # 5. run server
 run_v1(){
-    EXTRA_ARGS='--enable-expert-parallel --enable-prefix-caching --enable-chunked-prefill --max-num-batched-tokens 16384 --max-num-seqs 512 --distributed-executor-backend mp --swap_space 64.0 --disable-log-requests --compilation-config {"level": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[64], "backend":"eager", "compile_sizes":[64]} --media-io-kwargs {"video":{"fps":2,"num_frames":-1}} --allowed-local-media-path '"${LOCAL_PATH}"
+    EXTRA_ARGS='--enable-expert-parallel --enable-prefix-caching --enable-chunked-prefill --max-num-batched-tokens 16384 --max-num-seqs 512 --distributed-executor-backend mp --swap_space 64.0 --disable-log-requests --compilation-config {"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64,156,256,512], "backend":"eager", "compile_sizes":[64,156,256,512]} --media-io-kwargs {"video":{"fps":2,"num_frames":-1}} --allowed-local-media-path '"${LOCAL_PATH}"
 
     local mtp_args=""
     if [ "$NUM_SPECULATIVE_TOKENS" -ne 0 ]; then
