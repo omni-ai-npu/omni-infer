@@ -133,9 +133,9 @@ all:
               disable-log-requests: ''
               no-enable-prefix-caching: ''
               enforce-eager: ''
-              max-num-batched-tokens: 32768
+              max-num-batched-tokens: 100001
               max-num-seqs: 8
-            gpu-util: '0.95'
+            gpu-util: '0.90'
             kv-transfer-config:
               engine_id: "0"
               kv_buffer_device: npu
@@ -226,9 +226,9 @@ all:
               disable-log-requests: ''
               no-enable-prefix-caching: ''
               enforce-eager: ''
-              max-num-batched-tokens: 32768
+              max-num-batched-tokens: 100001
               max-num-seqs: 8
-            gpu-util: '0.95'
+            gpu-util: '0.90'
             kv-transfer-config:
               engine_id: "1"
               kv_buffer_device: npu
