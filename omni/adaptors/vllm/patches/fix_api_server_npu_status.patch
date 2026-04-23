@@ -1,5 +1,5 @@
 diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
-index 4a8c7c247..e052628d9 100644
+index 4a8c7c247..57633748a 100644
 --- a/vllm/entrypoints/openai/api_server.py
 +++ b/vllm/entrypoints/openai/api_server.py
 @@ -454,7 +454,7 @@ async def health(raw_request: Request) -> Response:
@@ -11,7 +11,7 @@ index 4a8c7c247..e052628d9 100644
      NPU_ERROR = 2    # NPU 错误
      SWITCH_ERROR = 3 # 交换机错误
  
-@@ -465,50 +465,71 @@ def check_npu_status() -> int:
+@@ -465,50 +465,72 @@ def check_npu_status() -> int:
      file_path = get_npu_status_path()
      if not os.path.exists(file_path):
          return NPUStatusInfo.HEALTH
@@ -72,7 +72,8 @@ index 4a8c7c247..e052628d9 100644
 +                    return NPUStatusInfo.UNKNOWN
 +                npu_errLevel = npu["errLevel"].lower()
 +                if npu_errLevel not in npu_health_level_allow_list:
-+                    err_codes_set = {code.lower().strip() for code in npu.get("errCodes", []) if code and code.strip()}
++                    errCodes = list(map(str, npu.get("errCodes", [])))
++                    err_codes_set = {code.lower().strip() for code in errCodes if code and code.strip()}
 +                    if not (err_codes_set <= error_code_allow_list):
 +                        return npu_error(npu)
              if "errLevelName" not in resources[1]:
