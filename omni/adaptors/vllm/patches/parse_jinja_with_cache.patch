@@ -1,0 +1,13 @@
+diff --git a/vllm/entrypoints/chat_utils.py b/vllm/entrypoints/chat_utils.py
+index 01423ac..2451e93 100644
+--- a/vllm/entrypoints/chat_utils.py
++++ b/vllm/entrypoints/chat_utils.py
+@@ -294,7 +294,7 @@ def _try_extract_ast(chat_template: str) -> Optional[jinja2.nodes.Template]:
+         logger.exception("Error when compiling Jinja template")
+         return None
+ 
+-
++@lru_cache(maxsize=32)
+ def _detect_content_format(
+     chat_template: str,
+     *,
