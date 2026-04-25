@@ -1,34 +1,73 @@
 diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
-index 4a8c7c247..57633748a 100644
+index 4a8c7c247..ff8b815f2 100644
 --- a/vllm/entrypoints/openai/api_server.py
 +++ b/vllm/entrypoints/openai/api_server.py
-@@ -454,7 +454,7 @@ async def health(raw_request: Request) -> Response:
+@@ -19,7 +19,7 @@ from enum import Enum
+ from functools import partial
+ from http import HTTPStatus
+ from json import JSONDecodeError
+-from typing import Annotated, Optional, Union
++from typing import Annotated, Optional, Union, Any, Literal
+
+ import prometheus_client
+ import regex as re
+@@ -451,63 +451,91 @@ async def health(raw_request: Request) -> Response:
+             status_code=500
+         )
+
++
  class NPUStatusInfo(Enum):
      """ NPU 状态信息枚举"""
-     HEALTH = 0       # 健康状态
+-    HEALTH = 0       # 健康状态
 -    UNKONWN = 1      # 未知状态
-+    UNKNOWN = 1      # 未知状态
-     NPU_ERROR = 2    # NPU 错误
-     SWITCH_ERROR = 3 # 交换机错误
- 
-@@ -465,50 +465,72 @@ def check_npu_status() -> int:
+-    NPU_ERROR = 2    # NPU 错误
+-    SWITCH_ERROR = 3 # 交换机错误
++    HEALTH = 0  # 健康状态
++    UNKNOWN = 1  # 未知状态
++    NPU_ERROR = 2  # NPU 错误
++    SWITCH_ERROR = 3  # 交换机错误
++
+
+ def get_npu_status_path() -> str:
+     return os.getenv("NPU_STATUS_FILE_PATH", "/opt/cloud/node/npu_status.yaml")
+
+-def check_npu_status() -> int:
++
++def npu_error(npu):
++    err_codes_str = ",".join(map(str, npu.get("errCodes", [])))
++    err_messages_str = ",".join(map(str, npu.get("errMessages", [])))
++    err_time = npu.get("errTime", "")
++    logger.error(
++        f"npu fault occurs, errCodes: {err_codes_str} "
++        f"errLevel: {npu['errLevel']} "
++        f"errLevelName: {npu.get('errLevelName', '')} "
++        f"errMessages: {err_messages_str} "
++        f"errTime: {err_time} "
++        f"health: {npu.get('health', '')} "
++        f"name: {npu.get('name', '')}"
++    )
++    return NPUStatusInfo.NPU_ERROR
++
++
++def check_npu_status() -> Literal[NPUStatusInfo.UNKNOWN, NPUStatusInfo.HEALTH, NPUStatusInfo.SWITCH_ERROR] | Any:
      file_path = get_npu_status_path()
      if not os.path.exists(file_path):
          return NPUStatusInfo.HEALTH
 -    health_level = ['L0', 'L1']
 +
 +    npu_health_level_allow_list = set()
-+    npu_health_level_allow_str : str = os.getenv("VLLM_HEALTH_NPU_ERRLEVEL_WHITELIST", "L0,L1").lower()
-+    if npu_health_level_allow_str !='-1':
++    npu_health_level_allow_str: str = os.getenv("VLLM_HEALTH_NPU_ERRLEVEL_WHITELIST", "L0,L1").lower()
++    if npu_health_level_allow_str != '-1':
 +        npu_health_level_allow_list = set(npu_health_level_allow_str.split(","))
-+        npu_health_level_allow_list = {npu_health_level.strip() for npu_health_level in npu_health_level_allow_list if npu_health_level and npu_health_level.strip()}
-+
++        npu_health_level_allow_list = {npu_health_level.strip() for npu_health_level in npu_health_level_allow_list if
++                                       npu_health_level and npu_health_level.strip()}
 +
 +    error_code_allow_list = set()
-+    error_code_allow_str : str = os.getenv("VLLM_HEALTH_NPU_ERRCODE_WHITELIST", "81a3880c").lower()
++    error_code_allow_str: str = os.getenv("VLLM_HEALTH_NPU_ERRCODE_WHITELIST", "").lower()
 +    if error_code_allow_str != '-1':
 +        error_code_allow_list = set(error_code_allow_str.split(","))
-+        error_code_allow_list = {error_code.strip() for error_code in error_code_allow_list if error_code and error_code.strip()}
++        error_code_allow_list = {error_code.strip() for error_code in error_code_allow_list if
++                                 error_code and error_code.strip()}
 +
      try:
          with open(file_path, 'r', encoding='utf-8') as file:
@@ -78,31 +117,16 @@ index 4a8c7c247..57633748a 100644
 +                        return npu_error(npu)
              if "errLevelName" not in resources[1]:
 -                return NPUStatusInfo.UNKONWN
+-            if  resources[1]["errLevelName"] != "NotHandle":
 +                return NPUStatusInfo.UNKNOWN
-             if  resources[1]["errLevelName"] != "NotHandle":
++            if resources[1]["errLevelName"] != "NotHandle":
                  logger.error(f"L1-1520 fault occurs, errLevelName: {resources[1]['errLevelName']}")
                  return NPUStatusInfo.SWITCH_ERROR
              return NPUStatusInfo.HEALTH
      except Exception as e:
          logger.warning(f"check npu_status.yaml failed: {e}")
 -        return NPUStatusInfo.UNKONWN
--
 +        return NPUStatusInfo.UNKNOWN
-+
-+def npu_error(npu):
-+    err_codes_str = ",".join(map(str, npu.get("errCodes", [])))
-+    err_messages_str = ",".join(map(str, npu.get("errMessages", [])))
-+    err_time = npu.get("errTime", "")
-+    logger.error(
-+        f"npu fault occurs, errCodes: {err_codes_str} "
-+        f"errLevel: {npu['errLevel']} "
-+        f"errLevelName: {npu.get('errLevelName', '')} "
-+        f"errMessages: {err_messages_str} "
-+        f"errTime: {err_time} "
-+        f"health: {npu.get('health', '')} "
-+        f"name: {npu.get('name', '')}"
-+    )
-+    return NPUStatusInfo.NPU_ERROR
- 
+
+
  @router.get("/load")
- async def get_server_load_metrics(request: Request):
