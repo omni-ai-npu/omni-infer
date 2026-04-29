@@ -36,7 +36,7 @@ if __name__ == "__main__":
                     "self_attn.o_proj": 8, "mlp.down_proj": 8, "mlp.gate_up_proj": 8, "mlp.shared_experts": 8,
                     "mlp.experts": 4}
     else:
-        qint8.main(args, args.input_bf16_hf_path, args.output_path, args.pangu_mode, args.model_name)
+        qint8.main(args, args.input_bf16_hf_path, args.output_path, args.pangu_mode)
         num_bits = {"self_attn.kv_a_proj_with_mqa": 16,
                     "self_attn.q_a_proj": 16,
                     "self_attn.indexer.wk": 16,

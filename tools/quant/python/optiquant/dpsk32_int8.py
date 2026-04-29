@@ -24,7 +24,7 @@ def weight_quant(tensor: torch.Tensor):
     return quantized.to(torch.int8), scale.to(torch.float32)
 
 
-def main(args, bf16_path, output_path, next, pangu_mode, model_name="deepseek-ai/DeepSeek-R1"):
+def main(args, bf16_path, output_path, pangu_mode):
     quant_prefix = "quant_model_weight_w8a8_dynamic"
     disable_names = []
     for i in range(62):
@@ -42,16 +42,12 @@ def main(args, bf16_path, output_path, next, pangu_mode, model_name="deepseek-ai
     torch.set_default_dtype(torch.bfloat16)
     os.makedirs(output_path, exist_ok=True)
     model_index_file = os.path.join(output_path, "model.safetensors.index.json")
-    config_file = os.path.join(output_path, "config.json")
-
-    if not os.path.exists(model_index_file) or not os.path.exists(config_file):
-        snapshot_download(
-            repo_id=model_name,
-            ignore_patterns=["*.safetensors"],
-            local_dir=output_path,
-            local_dir_use_symlinks=False
+    
+    if not os.path.exists(model_index_file):
+        raise FileNotFoundError(
+            f"Required file not found: {model_index_file}. "
+            f"必须要用原始的fp8权重的model.safetensors.index.json文件."
         )
-        print(f"model index file and config file download to {output_path}")
 
     with open(model_index_file, "r") as f:
         model_index = json.load(f)
@@ -73,7 +69,7 @@ def main(args, bf16_path, output_path, next, pangu_mode, model_name="deepseek-ai
         state_dict = load_file(safetensor_file, device=args.device)
         new_state_dict = {}
         for weight_name, weight in state_dict.items():
-            if weight_name in disable_names or "norm" in weight_name or "indexer" in weight_name:
+            if weight_name in disable_names or "norm" in weight_name:
                 print(weight_name, "bf16")
                 new_state_dict[weight_name] = weight
                 new_weight_map[weight_name] = file_name

@@ -7,115 +7,65 @@
 4. 将量化[配置文件](./quant_config/glm5_w4a8c16.yaml)拷贝到自己的目录下
 5. 执行量化命令
 `msmodelslim quant --model_path {bf16权重路径} --save_path {量化权重路径} --device npu --model_type GLM-5 --config_path {配置文件路径}`
-6. 运行下面的ascendv1_to_omni_format.py，以转换为omniinfer所需格式
-```bash
-# ascendv1_to_omni_format.py
-
-import os
-import json
-from argparse import ArgumentParser
-from glob import glob
-from tqdm import tqdm
-import torch
-try:
-    import torch_npu
-except:
-    pass
-from safetensors.torch import load_file, save_file
-
-
-def main(args, bf16_path, int8_path, model_name="deepseek-ai/DeepSeek-R1"):
-
-    torch.set_default_dtype(torch.bfloat16)
-    os.makedirs(int8_path, exist_ok=True)
-    model_index_file = os.path.join(bf16_path, "quant_model_weights.safetensors.index.json")
-    new_model_index_file = os.path.join(int8_path, "quant_model_weights.safetensors.index.json")
-
-    
-    with open(model_index_file, "r") as f:
-        model_index = json.load(f)
-    weight_map = model_index["weight_map"]
-   
-    safetensor_files = list(glob(os.path.join(bf16_path, "*.safetensors")))
-    safetensor_files.sort()
-    if args.file_count:
-        safetensor_files = safetensor_files[:args.file_count]
-
-    new_weight_map = {}
-
-    for safetensor_file in tqdm(safetensor_files):
-        file_name = os.path.basename(safetensor_file)
-
-        state_dict = load_file(safetensor_file, device=args.device)
-        new_state_dict = {}
-        for weight_name, weight in state_dict.items():
-            if "weight_offset" in weight_name:
-                print(weight_name, "drop!")
-                continue
-            elif "scale_bias" in weight_name:
-                new_weight_name = weight_name.replace("scale_bias", "weight_bias")
-                print(new_weight_name, weight.dtype)
-                weight = weight.sum(dim=1, keepdim=True)
-                weight = weight.view(weight.numel())
-                new_state_dict[new_weight_name] = weight
-                new_weight_map[new_weight_name] = file_name
-            elif "weight_scale" in weight_name:
-                if weight_name.replace("weight_scale", "scale_bias") in weight_map:
-                    bestScale = weight.to(torch.float32).view(torch.int32)
-                    bestScaleInt64 = torch.zeros(bestScale.shape, dtype=torch.int64).view(torch.int32).reshape(-1, 2)
-                    bestScaleInt64[:, 0] = bestScale.reshape(-1)
-                    bestScaleInt64 = bestScaleInt64.view(torch.int64).reshape(bestScale.shape)
-                    bestScaleInt64 = bestScaleInt64.view(1, -1)
-                    new_weight_name = weight_name.replace("weight_scale", "weight_int4_scale")
-                    print(new_weight_name, bestScaleInt64.dtype)
-                    new_state_dict[new_weight_name] = bestScaleInt64
-                    new_weight_map[new_weight_name] = file_name
-                else:
-                    print(weight_name, weight.dtype)
-                    new_state_dict[weight_name] = weight
-                    new_weight_map[weight_name] = file_name
-            elif ".offset" in weight_name:
-                print(weight_name, "drop!")
-                continue
-            else:
-                print(weight_name, weight.dtype)
-                new_state_dict[weight_name] = weight
-                new_weight_map[weight_name] = file_name
-                continue
-
-        new_safetensor_file = os.path.join(int8_path, file_name)
-        save_file(new_state_dict, new_safetensor_file)
-
-    # modify model.safetensors.index.json
-    with open(model_index_file, "r") as f:
-        model_index = json.load(f)
-    model_index["weight_map"] = new_weight_map
-    with open(new_model_index_file, "w", encoding="utf-8") as f:
-        json.dump(model_index, f, indent=2, ensure_ascii=False, sort_keys=True)
-    print(f"model.safetensors.index.json modified and saved to {model_index_file}")
-
-
-if __name__ == "__main__":
-    parser = ArgumentParser()
-    parser.add_argument("--input_path", type=str, required=True)
-    parser.add_argument("--output_path", type=str, required=True)
-    parser.add_argument("--device", type=str, required=True)
-    parser.add_argument('--file_count', type=int, default=0, help="Layer count when loading model")
-
-    args = parser.parse_args()
-    main(args, args.input_path, args.output_path)
-    print("done")
-```
-执行
+6. 运行[ascendv1_to_omni_format.py](./quant_config/ascendv1_to_omni_format.py)，以转换为omniinfer所需格式
 ```bash
 python ascendv1_to_omni_format.py \
 --input_path {w4a8量化权重路径} \
 --output_path {转换完格式后的量化权重路径} \
 --device npu
 ```
-7. 修改config.json与组网一致，/path/to/save/quantized/model/config.json中增加"quantization_config"字段
-```bash
-"quantization_config": {
+
+注意：转换完成后，需要将新生成的转换完格式后的量化权重文件覆盖拷贝到w4a8量化权重路径下
+
+7. 将[rename_rot](./quant_config/rename_rot.py)脚本拷贝到量化权重目录下，执行`python rename_rot.py`，以修改quant_model_weights.safetensors.index.json文件。
+8. 将config.json改为：
+```json
+{
+  "architectures": [
+    "DeepseekV32ForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "torch_dtype": "bfloat16",
+  "eos_token_id": [
+    154820,
+    154827,
+    154829
+  ],
+  "ep_size": 1,
+  "first_k_dense_replace": 3,
+  "hidden_act": "silu",
+  "head_dim": 64,
+  "hidden_size": 6144,
+  "index_head_dim": 128,
+  "index_n_heads": 32,
+  "index_topk": 2048,
+  "indexer_rope_interleave": true,
+  "initializer_range": 0.02,
+  "intermediate_size": 12288,
+  "kv_lora_rank": 512,
+  "max_position_embeddings": 202752,
+  "moe_intermediate_size": 2048,
+  "moe_layer_freq": 1,
+  "model_type": "deepseek_v32",
+  "n_group": 1,
+  "n_routed_experts": 256,
+  "n_shared_experts": 1,
+  "norm_topk_prob": true,
+  "num_attention_heads": 64,
+  "num_experts_per_tok": 8,
+  "num_hidden_layers": 78,
+  "num_key_value_heads": 64,
+  "num_nextn_predict_layers": 1,
+  "pad_token_id": 154820,
+  "pretraining_tp": 1,
+  "q_lora_rank": 2048,
+  "qk_head_dim": 256,
+  "qk_nope_head_dim": 192,
+  "qk_rope_head_dim": 64,
+  "rms_norm_eps": 1e-05,
+  "rope_interleave": true,
+  "quantization_config": {
         "config_groups": {
             "group_0": {
                 "input_activations": {
@@ -246,5 +196,37 @@ python ascendv1_to_omni_format.py \
         "kv_cache_scheme": null,
         "quant_method": "compressed-tensors",
         "quantization_status": "compressed"
-    }
+    },
+  "rope_parameters": {
+    "rope_theta": 1000000,
+    "rope_type": "default"
+  },
+  "routed_scaling_factor": 2.5,
+  "scoring_func": "sigmoid",
+  "tie_word_embeddings": false,
+  "topk_group": 1,
+  "topk_method": "noaux_tc",
+  "transformers_version": "5.0.2.dev0",
+  "use_cache": true,
+  "v_head_dim": 256,
+  "vocab_size": 154880,
+  "apply_mtp_rot": true
+}
 ```
+
+9. 将tokenizer_config.json改为：
+```json
+{
+  "tokenizer_class": "PreTrainedTokenizerFast",
+  "clean_up_tokenization_spaces": false,
+  "do_lower_case": false,
+  "eos_token": "<|endoftext|>",
+  "pad_token": "<|endoftext|>",
+  "padding_side": "left",
+  "model_max_length": 202752,
+  "model_specific_special_tokens": {},
+  "is_local": true,
+  "remove_space": false
+}
+```
+10. 需要chat_template.jinja文件，否则chat/completions接口报错。可从官网下载。

@@ -18,7 +18,7 @@ for safetensor_file in tqdm(safetensor_files):
     state_dict = load_file(safetensor_file, device="cpu")
     new_state_dict = {}
     for weight_name, weight in state_dict.items():
-        if "weight_offset" in weight_name or "rot" in weight_name:
+        if "weight_offset" in weight_name:
             continue
         new_state_dict[weight_name] = weight
         new_weight_map[weight_name] = file_name

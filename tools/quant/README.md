@@ -3,12 +3,17 @@
 
 ## Optiquant
 ### 编译步骤  
-进入python目录下执行： python setup.py bdist_wheel  
+进入python目录下执行： python setup.py bdist_wheel 
+进入dist目录下执行: pip install *.whl --force-reinstall
 
 ### 操作步骤  
-1、拷贝元数据到output路径（注：model.safetensors.index.json需使用fp8权重的对应配置，开启pangu-mode拷贝bf16权重即可） 
+**注意：假如权重为FP8，需要先转为BF16**：  
+1、cd ./omniinfer/tools/quant/  
+python fp8_cast_bf16.py --input-fp8-hf-path {fp8权重路径} --output-bf16-hf-path {bf16权重路径}  
+2、将原始FP8权重目录下***除.safetonsors外的所有文件***覆盖拷贝到BF16权重路径下  
+3、新建{量化权重路径}，将原始FP8权重目录下***除.safetonsors外的所有文件***拷贝到{量化权重路径}下（尤其是保证model.safetensors.index.json文件一定要用***FP8权重目录下的***）
 
-2、执行量化命令  
+4、执行量化命令  
 
 ***deepseek/kimi k2/pangu 718B:***
 
