@@ -17,8 +17,8 @@ PROXY_BACKEND_HOST="${PROXY_BACKEND_HOST:-127.0.0.1}"
 MODEL_NAME="${MODEL_NAME:-qwen3-vl}"
 STARTUP_TIMEOUT_SECONDS="${STARTUP_TIMEOUT_SECONDS:-1800}"  # wait for vLLM to start in 30 minutes
 
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-512}"
-COMPILATION_CONFIG='{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64,128,256,512], "backend":"eager", "compile_sizes":[64,128,256,512]}'
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-64}"
+COMPILATION_CONFIG='{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[4,8,16,32,48,64], "backend":"eager", "compile_sizes":[4,8,16,32,48,64]}'
 
 source ~/.bashrc
 source /usr/local/Ascend/ascend-toolkit/set_env.sh

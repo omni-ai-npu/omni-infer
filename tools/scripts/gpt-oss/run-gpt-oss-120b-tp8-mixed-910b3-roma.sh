@@ -9,6 +9,10 @@ TIKTOKEN_ENCODINGS_PATH="${TIKTOKEN_ENCODINGS_PATH:-${MOUNT_PATH}/${BUCKET_PATH}
 
 PORT="${PORT:-7000}"
 
+if [ -n "$SERVICE_NAME" ]; then 
+  BASE_LOG_PATH="${BASE_LOG_PATH}/${MODEL_NAME}/${SERVICE_NAME}"
+fi
+
 ## ENV
 source ~/.bashrc
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
@@ -28,6 +32,10 @@ export TIKTOKEN_ENCODINGS_BASE=${TIKTOKEN_ENCODINGS_PATH}
 export VLLM_LOGGING_LEVEL=INFO
 export OMP_NUM_THREADS=1
 export OMNI_NPU_PATCHES_DIR="gpt_oss"
+
+# 使用单一时间戳，确保整个脚本中使用同一个时间
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+BASE_LOG_PATH="${BASE_LOG_PATH}/${TIMESTAMP}"
 
 mkdir -p "$BASE_LOG_PATH"
 LOG_NAME_PREFIX="${POD_IP:-$(hostname)}"
@@ -53,7 +61,7 @@ VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models" vllm serve "$MODEL_P
   --port "$PORT" \
   --dtype bfloat16 \
   --max-model-len 128000 \
-  --max-num-seqs 192 \
+  --max-num-seqs 256 \
   --max-num-batched-tokens 16384 \
   --enable-chunked-prefill \
   --no-enable-prefix-caching \
@@ -65,5 +73,5 @@ VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models" vllm serve "$MODEL_P
   --enable-auto-tool-choice \
   --tool-call-parser openai \
   --reasoning-parser openai_gptoss \
-  --compilation-config '{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[192], "backend":"eager", "compile_sizes":[192]}' \
+  --compilation-config '{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[256], "backend":"eager", "compile_sizes":[256]}' \
   --trust-remote-code 2>&1 | tee -a "$LOG_FILE"

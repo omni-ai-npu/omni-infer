@@ -17,8 +17,8 @@ PROXY_BACKEND_HOST="${PROXY_BACKEND_HOST:-127.0.0.1}"
 MODEL_NAME="${MODEL_NAME:-qwen3-omni}"
 STARTUP_TIMEOUT_SECONDS="${STARTUP_TIMEOUT_SECONDS:-1800}"  # wait for vLLM to start in 30 minutes
 
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-512}"
-COMPILATION_CONFIG='{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[36,72,128,256,512], "backend":"eager", "compile_sizes":[36,72,128,256,512]}'
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-72}"
+COMPILATION_CONFIG='{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[4,16,24,36,48,72], "backend":"eager", "compile_sizes":[4,16,24,36,48,72]}'
 
 source ~/.bashrc
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
@@ -29,6 +29,7 @@ export HCCL_INTRA_ROCE_ENABLE=1
 export HCCL_INTRA_PCIE_ENABLE=0
 export HCCL_BUFFSIZE=500
 export HCCL_OP_EXPANSION_MODE="AIV"
+export VLLM_MROPE_CACHE_LAYERS=64
 export VLLM_DISABLE_COMPILE_CACHE=1
 export OMNI_NPU_VLLM_PATCHES="ALL"
 export ASCEND_GLOBAL_LOG_LEVEL=3
@@ -92,8 +93,9 @@ for i in "${!DEVICE_GROUPS[@]}"; do
         --enable-prefix-caching \
         --async-scheduling \
         --distributed-executor-backend mp \
-        --gpu-memory-utilization 0.9 \
+        --gpu-memory-utilization 0.75 \
         --trust-remote-code \
+        --enable-expert-parallel \
         --tensor-parallel-size 4 \
         --data-parallel-size 1 \
         --allowed-local-media-path "${MOUNT_PATH}/${BUCKET_PATH}/" \

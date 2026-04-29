@@ -54,7 +54,7 @@ VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models" vllm serve "$MODEL_P
   --enable-prefix-caching \
   --async-scheduling \
   --distributed-executor-backend mp \
-  --gpu-memory-utilization 0.9 \
+  --gpu-memory-utilization 0.75 \
   --trust-remote-code \
   --tensor-parallel-size 4 \
   --data-parallel-size 1 \
