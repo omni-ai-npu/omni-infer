@@ -56,6 +56,7 @@ spec:
           exclude:
             - "*gate"
             - "*mlp.experts.*"
+            - "*vision_tower*"
         - type: "linear_quant"
           qconfig: *default_w4a8_dynamic
           include:
