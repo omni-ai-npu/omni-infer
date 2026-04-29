@@ -750,12 +750,17 @@ static void ngx_http_gen_decode_request_body(ngx_http_request_t *r, ngx_http_pre
         cur_pos += ngx_buf_size(cl->buf);
     }
 
-    ngx_log_debug2(NGX_LOG_DEBUG_HTTP,
-        r->connection->log,
-        0,
-        "gen decode request: body for subrequest: %d %s",
-        total_len,
-        json_str);
+    if (total_len > 1000) {
+        // print tail 500
+        char *tail = json_str + total_len - 500;
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                    "gen decode request: body (total %d bytes, showing last 500): ...%s",
+                    total_len, tail);
+    } else {
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                    "gen decode request: body (full %d bytes): %s",
+                    total_len, json_str);
+    }
 #endif
 
     // Set content length in header
@@ -831,6 +836,10 @@ static ngx_int_t ngx_http_prefill_subrequest_done(ngx_http_request_t *r, void *d
     }
     *p = '\0';
     ctx->prefill_response_body_size = total;
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+        "PREFILL_RESPONSE body_len=%ui body=%s",
+        (ngx_uint_t)ctx->prefill_response_body_size,
+        ctx->prefill_response_body);
 
     if (ctx->status >= NGX_HTTP_OK && ctx->status < NGX_HTTP_SPECIAL_RESPONSE) {
         ngx_http_core_run_phases(r->main);  // status < 300: resume processing the main request
@@ -871,8 +880,29 @@ typedef struct {
     size_t end;    // End position in JSON for tail (for stream_options it's the value end)
 } region_info_t;
 
+// check whether in top level
+static int is_token_at_top_level(jsmntok_t *tokens, int token_idx, int root_start, int root_end)
+{
+    // 0 if not root
+    if (tokens[token_idx].start < root_start || tokens[token_idx].end > root_end) {
+        return 0;
+    }
+    
+    // any included
+    for (int i = 1; i < token_idx; i++) {
+        if (tokens[i].type == JSMN_OBJECT &&
+            tokens[i].start < tokens[token_idx].start &&
+            tokens[i].end > tokens[token_idx].end) {
+            return 0;  // not top
+        }
+    }
+    
+    return 1;  // top
+}
+
 void gen_prefill_json_str_jsmn(
-    ngx_http_request_t *r, ngx_http_prefill_ctx_t *ctx, const char *json, size_t len, char **out, size_t *out_len)
+    ngx_http_request_t *r, ngx_http_prefill_ctx_t *ctx, 
+    const char *json, size_t len, char **out, size_t *out_len)
 {
     jsmn_parser parser;
     int tokens_size = 256;
@@ -885,6 +915,8 @@ void gen_prefill_json_str_jsmn(
     int stream_val_idx = -1;
     int stream_options_key_idx = -1, stream_options_val_idx = -1;
     char keybuf[64];
+    int has_top_level_max_token = 0;
+    int i;
 
     tokens = ngx_palloc(r->pool, tokens_size * sizeof(jsmntok_t));
     if (!tokens) {
@@ -917,44 +949,53 @@ void gen_prefill_json_str_jsmn(
     ctx->origin_body_tokens_size = ret;
 
     for (int i = 1; i < ret; ++i) {
-        if (tokens[i].type == JSMN_STRING) {
-            json_token_tostr(json, &tokens[i], keybuf, sizeof(keybuf));
-            if (max_tokens_val_idx == -1 && strcmp(keybuf, "max_tokens") == 0) {
-                max_tokens_val_idx = i + 1;
-                region_infos[region_infos_count++] = (region_info_t){
-                    R_MAX_TOKENS, max_tokens_val_idx, 
-                    tokens[max_tokens_val_idx].start, tokens[max_tokens_val_idx].end};
-            }
-            if (max_completion_tokens_val_idx == -1 && strcmp(keybuf, "max_completion_tokens") == 0) {
-                max_completion_tokens_val_idx = i + 1;
-                region_infos[region_infos_count++] = (region_info_t){
-                    R_MAX_COMPLETION_TOKENS, max_completion_tokens_val_idx, tokens[max_completion_tokens_val_idx].start, tokens[max_completion_tokens_val_idx].end};
-            }
-            if (stream_val_idx == -1 && strcmp(keybuf, "stream") == 0) {
-                stream_val_idx = i + 1;
-                region_infos[region_infos_count++] = (region_info_t){
-                    R_STREAM, stream_val_idx, 
-                    tokens[stream_val_idx].start, tokens[stream_val_idx].end};
-            }
-            if (stream_options_key_idx == -1 && strcmp(keybuf, "stream_options") == 0) {
-                stream_options_key_idx = i;
-                stream_options_val_idx = i + 1;
-                // Locate key start and value end for removal, including preceding comma if any
-                size_t so_key_start = tokens[stream_options_key_idx].start;
-                size_t so_val_end = tokens[stream_options_val_idx].end;
-                size_t j = so_key_start;
-                while (j > 0 && json[j - 1] != ',')
-                    j--;
-                if (j > 0 && json[j - 1] == ',')
-                    so_key_start = j - 1;
-                region_infos[region_infos_count++] =
-                    (region_info_t){R_STREAM_OPTIONS, stream_options_key_idx, so_key_start, so_val_end};
-            }
+        // update once
+        if (!is_token_at_top_level(tokens, i, tokens[0].start, tokens[0].end)) {
+            continue;
         }
+        
+        json_token_tostr(json, &tokens[i], keybuf, sizeof(keybuf));
+
+        // only top
+        if (strcmp(keybuf, "max_tokens") == 0) {
+            max_tokens_val_idx = i + 1;
+            has_top_level_max_token = 1;
+            region_infos[region_infos_count++] = (region_info_t){
+                R_MAX_TOKENS, max_tokens_val_idx, 
+                tokens[max_tokens_val_idx].start, tokens[max_tokens_val_idx].end};
+        }
+        else if (strcmp(keybuf, "max_completion_tokens") == 0) {
+            max_completion_tokens_val_idx = i + 1;
+            has_top_level_max_token = 1;
+            region_infos[region_infos_count++] = (region_info_t){
+                R_MAX_COMPLETION_TOKENS, max_completion_tokens_val_idx,
+                tokens[max_completion_tokens_val_idx].start, tokens[max_completion_tokens_val_idx].end};
+        }
+        else if (strcmp(keybuf, "stream") == 0) {
+            stream_val_idx = i + 1;
+            region_infos[region_infos_count++] = (region_info_t){
+                R_STREAM, stream_val_idx, 
+                tokens[stream_val_idx].start, tokens[stream_val_idx].end};
+        }
+        else if (strcmp(keybuf, "stream_options") == 0) {
+            stream_options_key_idx = i;
+            stream_options_val_idx = i + 1;
+            // Locate key start and value end for removal, including preceding comma if any
+            size_t so_key_start = tokens[stream_options_key_idx].start;
+            size_t so_val_end = tokens[stream_options_val_idx].end;
+            size_t j = so_key_start;
+            while (j > 0 && json[j - 1] != ',')
+                j--;
+            if (j > 0 && json[j - 1] == ',')
+                so_key_start = j - 1;
+            region_infos[region_infos_count++] =
+                (region_info_t){R_STREAM_OPTIONS, stream_options_key_idx, so_key_start, so_val_end};
+        }
+
     }
 
     // Sort region_infos by start position (should be in order already due to scan, but robust)
-    for (int i = 0; i < region_infos_count - 1; ++i) {
+    for (i = 0; i < region_infos_count - 1; ++i) {
         for (int j = i + 1; j < region_infos_count; ++j) {
             if (region_infos[j].start < region_infos[i].start) {
                 region_info_t tmp = region_infos[i];
@@ -964,17 +1005,17 @@ void gen_prefill_json_str_jsmn(
         }
     }
 
-    size_t cap = len + 64;  // ensure enough room, since we're only reducing/removing
+    size_t cap = len + 128;  // ensure enough room, since we're only reducing/removing
     char *newjson = ngx_palloc(r->pool, cap);
     if (!newjson) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "gen prefill json: palooc %d", cap);
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "gen prefill json: palloc %d", cap);
         return;
     }
 
     size_t pos = 0;
     size_t src = 0;  // source position in json to copy from
 
-    for (int i = 0; i < region_infos_count; ++i) {
+    for (i = 0; i < region_infos_count; ++i) {
         region_info_t *ri = &region_infos[i];
         // Copy up to region
         if (ri->start > src) {
@@ -1008,8 +1049,7 @@ void gen_prefill_json_str_jsmn(
         pos += len - 1 - src;
     }
 
-    // If neither "max_tokens" nor "max_completion_tokens" was found, insert "max_completion_tokens" before '}'
-    if (max_tokens_val_idx == -1 && max_completion_tokens_val_idx == -1) {
+    if (!has_top_level_max_token) {
         if (pos > 0 && newjson[pos - 1] != '{') {
             newjson[pos++] = ',';
         }
@@ -1024,7 +1064,6 @@ void gen_prefill_json_str_jsmn(
     *out = newjson;
     *out_len = pos;
 
-    return;
 }
 
 static ngx_int_t ngx_http_gen_prefill_request_body(
@@ -1107,12 +1146,23 @@ static ngx_int_t ngx_http_gen_prefill_request_body(
         return NGX_ERROR;
     }
 
+#if (NGX_DEBUG)
+    // print head and tail
+    int tail_len = 500;
+    int start_pos = (str_len > tail_len) ? (str_len - tail_len) : 0;
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP,
         r->connection->log,
         0,
-        "prefill: modified body for subrequest: %d, %s",
+        "prefill: modified body for subrequest: total_len=%d, head=%s",
         str_len,
         modified_json_str);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP,
+        r->connection->log,
+        0,
+        "prefill: modified body for subrequest: total_len=%d, tail=%s",
+        str_len,
+        modified_json_str + start_pos);
+#endif
 
     b = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
     if (b == NULL) {

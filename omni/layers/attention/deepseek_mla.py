@@ -1713,99 +1713,66 @@ class DeepseekMLA(nn.Module):
                 k_pe = k_pe.squeeze(2)
 
             prefill_metadata = attn_metadata.prefill
-            if len(prefill_metadata.seq_qlen_group) == 1:
-                # normally execute
-                actual_seq_qlen = prefill_metadata.seq_qlen_group[0] if prefill_metadata is not None else [q.shape[0]]
-                actual_seq_kvlen = prefill_metadata.seq_kvlen_group[0] if prefill_metadata is not None else [q.shape[0]]
+            attn_output = torch.empty(q.shape[0],
+                                    self.num_local_heads,
+                                    self.v_head_dim,
+                                    device=q_nope.device,
+                                    dtype=q_nope.dtype)
+            computed_tokens = 0
+            for iter, (actual_seq_qlen, actual_seq_kvlen) in enumerate(zip(
+                    prefill_metadata.seq_qlen_group,
+                    prefill_metadata.seq_kvlen_group)
+            ):
+                prefill_q = q[computed_tokens:computed_tokens + actual_seq_qlen[-1]]
+                if prefill_metadata.kv_index_list and kv_cache is not None and isinstance(kv_cache, Tuple) and \
+                        kv_cache[0].numel() > 0 and not self.fa_quant:
 
-                kv = self.kv_b_proj.forward(kv_a)[0]
+                    block_num, block_size, head_size, _ = kv_cache[0].shape
+                    kv_cache_a = (kv_cache[0]
+                                .view(block_num, 1, self.kv_lora_rank // KVCACHE_NZ_DIM, block_size, KVCACHE_NZ_DIM))
+                    kv_cache_pe = (kv_cache[1]
+                                .view(block_num, 1, self.qk_rope_head_dim // KVCACHE_NZ_DIM, block_size,
+                                        KVCACHE_NZ_DIM))
+                    kv_cache_a = kv_cache_a.transpose(1, 3)
+                    kv_cache_pe = kv_cache_pe.transpose(1, 3)
+
+                    kv_a = kv_cache_a.reshape(-1, kv_cache[0].shape[-1]) \
+                        .index_select(0, prefill_metadata.kv_index_list[iter]).contiguous()
+                    k_pe = kv_cache_pe.reshape(-1, kv_cache[1].shape[-1]) \
+                        .index_select(0, prefill_metadata.kv_index_list[iter]).contiguous()
+                prefill_kv_a = kv_a[:actual_seq_kvlen[-1]]
+                prefill_k_pe = k_pe[:actual_seq_kvlen[-1]]
+
+                kv = self.kv_b_proj.forward(prefill_kv_a)[0]
                 kv = kv.view(-1, self.num_local_heads, self.qk_nope_head_dim + self.v_head_dim)
                 k_nope, v = torch.split(kv, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
-                k = torch.cat([k_nope, k_pe.view(-1, 1, self.qk_rope_head_dim).repeat(1, self.num_local_heads, 1)], dim=-1)
+                prefill_k = torch.cat(
+                    [k_nope, prefill_k_pe.view(-1, 1, self.qk_rope_head_dim).repeat(1, self.num_local_heads, 1)],
+                    dim=-1)
 
                 if prefill_metadata.max_query_len > 1:
                     attn_mask = self.attn_mask
                 else:
                     attn_mask = None
 
-                if q.shape[0] != actual_seq_qlen[-1]:
-                    actual_seq_qlen.append(q.shape[0])
-                if k.shape[0] != actual_seq_kvlen[-1]:
-                    actual_seq_kvlen.append(k.shape[0])
+                prefill_v = v
+                attn_output[computed_tokens:computed_tokens + actual_seq_qlen[-1]] = \
+                    torch_npu.npu_fused_infer_attention_score(
+                        prefill_q,
+                        prefill_k,
+                        prefill_v,
+                        num_heads=self.num_local_heads,
+                        input_layout="TND",
+                        scale=self.scale,
+                        sparse_mode=3,
+                        atten_mask=attn_mask,
+                        actual_seq_lengths=actual_seq_qlen,
+                        actual_seq_lengths_kv=actual_seq_kvlen)[0].view(-1, self.num_local_heads, self.v_head_dim)
 
-                attn_output = torch_npu.npu_fused_infer_attention_score(
-                    q, k, v,
-                    num_heads=self.num_local_heads,
-                    input_layout="TND",
-                    scale=self.scale,
-                    sparse_mode=3,
-                    atten_mask=attn_mask,
-                    actual_seq_lengths=actual_seq_qlen,
-                    actual_seq_lengths_kv=actual_seq_kvlen)[0].view(-1, self.num_local_heads, self.v_head_dim)
-
-                q, k, v = None, None, None
-                kv, k_nope = None, None
-            else:
-                attn_output = torch.empty(q.shape[0],
-                                        self.num_local_heads,
-                                        self.v_head_dim,
-                                        device=q_nope.device,
-                                        dtype=q_nope.dtype)
-                computed_tokens = 0
-                for iter, (actual_seq_qlen, actual_seq_kvlen) in enumerate(zip(
-                        prefill_metadata.seq_qlen_group,
-                        prefill_metadata.seq_kvlen_group)
-                ):
-                    prefill_q = q[computed_tokens:computed_tokens + actual_seq_qlen[-1]]
-                    if prefill_metadata.kv_index_list and kv_cache is not None and isinstance(kv_cache, Tuple) and \
-                            kv_cache[0].numel() > 0 and not self.fa_quant:
-
-                        block_num, block_size, head_size, _ = kv_cache[0].shape
-                        kv_cache_a = (kv_cache[0]
-                                    .view(block_num, 1, self.kv_lora_rank // KVCACHE_NZ_DIM, block_size, KVCACHE_NZ_DIM))
-                        kv_cache_pe = (kv_cache[1]
-                                    .view(block_num, 1, self.qk_rope_head_dim // KVCACHE_NZ_DIM, block_size,
-                                            KVCACHE_NZ_DIM))
-                        kv_cache_a = kv_cache_a.transpose(1, 3)
-                        kv_cache_pe = kv_cache_pe.transpose(1, 3)
-
-                        kv_a = kv_cache_a.reshape(-1, kv_cache[0].shape[-1]) \
-                            .index_select(0, prefill_metadata.kv_index_list[iter]).contiguous()
-                        k_pe = kv_cache_pe.reshape(-1, kv_cache[1].shape[-1]) \
-                            .index_select(0, prefill_metadata.kv_index_list[iter]).contiguous()
-                    prefill_kv_a = kv_a[:actual_seq_kvlen[-1]]
-                    prefill_k_pe = k_pe[:actual_seq_kvlen[-1]]
-
-                    kv = self.kv_b_proj.forward(prefill_kv_a)[0]
-                    kv = kv.view(-1, self.num_local_heads, self.qk_nope_head_dim + self.v_head_dim)
-                    k_nope, v = torch.split(kv, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
-                    prefill_k = torch.cat(
-                        [k_nope, prefill_k_pe.view(-1, 1, self.qk_rope_head_dim).repeat(1, self.num_local_heads, 1)],
-                        dim=-1)
-
-                    if prefill_metadata.max_query_len > 1:
-                        attn_mask = self.attn_mask
-                    else:
-                        attn_mask = None
-
-                    prefill_v = v
-                    attn_output[computed_tokens:computed_tokens + actual_seq_qlen[-1]] = \
-                        torch_npu.npu_fused_infer_attention_score(
-                            prefill_q,
-                            prefill_k,
-                            prefill_v,
-                            num_heads=self.num_local_heads,
-                            input_layout="TND",
-                            scale=self.scale,
-                            sparse_mode=3,
-                            atten_mask=attn_mask,
-                            actual_seq_lengths=actual_seq_qlen,
-                            actual_seq_lengths_kv=actual_seq_kvlen)[0].view(-1, self.num_local_heads, self.v_head_dim)
-
-                    computed_tokens += actual_seq_qlen[-1]
-                    prefill_q, prefill_k, prefill_v = None, None, None
-                    kv, k_nope = None, None,
-                    q_nope, q_pe = None, None
+                computed_tokens += actual_seq_qlen[-1]
+                prefill_q, prefill_k, prefill_v = None, None, None
+                kv, k_nope = None, None,
+                q_nope, q_pe = None, None
 
             if model_extra_config.operator_opt_config.prefill_enable_mla_alltoall_local:
                 attn_output = attn_output.reshape(attn_output.shape[0], -1)
