@@ -37,6 +37,7 @@ all:
               max-num-seqs: 2
               no-enable-prefix-caching: ''
               distributed-executor-backend: mp
+              reasoning-parser: kimi_k2
               compilation-config:
                 level: 3
                 cudagraph_mode: FULL_DECODE_ONLY
@@ -109,6 +110,7 @@ all:
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp67s0f5
+            HCCL_ALGO: "level0:NA;level1:pipeline"
             HCCL_BUFFSIZE: 500
             HCCL_BASIC_BUFFSIZE: 500
             HCCL_CONNECT_TIMEOUT: 180
@@ -169,6 +171,7 @@ all:
               max-num-seqs: 2
               no-enable-prefix-caching: ''
               distributed-executor-backend: mp
+              reasoning-parser: kimi_k2
               compilation-config:
                 level: 3
                 cudagraph_mode: FULL_DECODE_ONLY
@@ -241,6 +244,7 @@ all:
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp67s0f5
+            HCCL_ALGO: "level0:NA;level1:pipeline"
             HCCL_BUFFSIZE: 500
             HCCL_BASIC_BUFFSIZE: 500
             HCCL_CONNECT_TIMEOUT: 180
@@ -367,6 +371,7 @@ all:
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp67s0f5
+            HCCL_ALGO: "level0:NA;level1:pipeline"
             HCCL_BUFFSIZE: 150
             HCCL_BASIC_BUFFSIZE: 500
             HCCL_CONNECT_TIMEOUT: 180
@@ -493,6 +498,7 @@ all:
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp67s0f5
+            HCCL_ALGO: "level0:NA;level1:pipeline"
             HCCL_BUFFSIZE: 150
             HCCL_BASIC_BUFFSIZE: 500
             HCCL_CONNECT_TIMEOUT: 180
