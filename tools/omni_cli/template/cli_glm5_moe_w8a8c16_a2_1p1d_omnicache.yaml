@@ -57,7 +57,7 @@ all:
                 publisher: zmq
                 topic: kv-events
                 endpoint: tcp://*:${ENDPOINT_PORT}
-            gpu-util: '0.92'
+            gpu-util: '0.93'
             kv-transfer-config:
               engine_id: 2
               kv_buffer_device: npu
@@ -168,7 +168,7 @@ all:
                 publisher: zmq
                 topic: kv-events
                 endpoint: tcp://*:${ENDPOINT_PORT}
-            gpu-util: '0.92'
+            gpu-util: '0.93'
             kv-transfer-config:
               engine_id: 2
               kv_buffer_device: npu
@@ -279,7 +279,7 @@ all:
                 publisher: zmq
                 topic: kv-events
                 endpoint: tcp://*:${ENDPOINT_PORT}
-            gpu-util: '0.92'
+            gpu-util: '0.93'
             kv-transfer-config:
               engine_id: 2
               kv_buffer_device: npu
@@ -390,7 +390,7 @@ all:
                 publisher: zmq
                 topic: kv-events
                 endpoint: tcp://*:${ENDPOINT_PORT}
-            gpu-util: '0.92'
+            gpu-util: '0.93'
             kv-transfer-config:
               engine_id: 2
               kv_buffer_device: npu
@@ -496,7 +496,7 @@ all:
               tool-call-parser: GlmMoe
               tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
               # prefix-caching-hash-algo: 'sha256'
-            gpu-util: '0.92'
+            gpu-util: '0.93'
             kv-transfer-config:
               engine_id: 0
               kv_buffer_device: npu
@@ -602,7 +602,7 @@ all:
               tool-call-parser: GlmMoe
               tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
               # prefix-caching-hash-algo: 'sha256'
-            gpu-util: '0.92'
+            gpu-util: '0.93'
             kv-transfer-config:
               engine_id: 0
               kv_buffer_device: npu
@@ -708,7 +708,7 @@ all:
               tool-call-parser: GlmMoe
               tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
               # prefix-caching-hash-algo: 'sha256'
-            gpu-util: '0.92'
+            gpu-util: '0.93'
             kv-transfer-config:
               engine_id: 0
               kv_buffer_device: npu
@@ -814,7 +814,7 @@ all:
               tool-call-parser: GlmMoe
               tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
               # prefix-caching-hash-algo: 'sha256'
-            gpu-util: '0.92'
+            gpu-util: '0.93'
             kv-transfer-config:
               engine_id: 0
               kv_buffer_device: npu
