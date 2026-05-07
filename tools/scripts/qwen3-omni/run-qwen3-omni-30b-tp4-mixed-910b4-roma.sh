@@ -18,6 +18,7 @@ export HCCL_INTRA_ROCE_ENABLE=1
 export HCCL_INTRA_PCIE_ENABLE=0
 export HCCL_BUFFSIZE=500
 export HCCL_OP_EXPANSION_MODE="AIV"
+export VLLM_MROPE_CACHE_LAYERS=64
 export VLLM_DISABLE_COMPILE_CACHE=1
 export OMNI_NPU_VLLM_PATCHES="ALL"
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
@@ -49,15 +50,16 @@ VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models" vllm serve "$MODEL_P
   --dtype bfloat16 \
   --max-model-len 65536 \
   --max-num-batched-tokens 8192 \
-  --max-num-seqs 512 \
+  --max-num-seqs 72 \
   --enable-chunked-prefill \
   --enable-prefix-caching \
   --async-scheduling \
   --distributed-executor-backend mp \
   --gpu-memory-utilization 0.75 \
   --trust-remote-code \
+  --enable-expert-parallel \
   --tensor-parallel-size 4 \
   --data-parallel-size 1 \
   --allowed-local-media-path "$MOUNT_PATH/$BUCKET_PATH/" \
   --media-io-kwargs '{"video":{"fps":2,"num_frames":-1}}' \
-  --compilation-config '{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[36,72,128,256,512], "backend":"eager", "compile_sizes":[36,72,128,256,512]}' 2>&1 | tee -a "$LOG_FILE"
+  --compilation-config '{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[4,16,24,36,48,72], "backend":"eager", "compile_sizes":[4,16,24,36,48,72]}' 2>&1 | tee -a "$LOG_FILE"
