@@ -13,6 +13,7 @@
 #include <string.h>
 #include <arpa/inet.h>
 #include <omni_health.h>
+#include <inttypes.h>
 
 ngx_module_t ngx_http_omni_proxy_module;
 #define PREFILL_ENDPOINTS "prefill_endpoints"
@@ -2123,7 +2124,7 @@ static ngx_int_t omni_proxy_global_state_init(ngx_shm_zone_t *zone, void *data)
             ngx_log_error(NGX_LOG_EMERG, cycle->log, 0, "Init global upstream failed when reload");
             return NGX_ERROR;
         }
-        g_state->master_worker_selected = false;
+        g_state->master_worker_pid = 0;
         return NGX_OK;
     }
 

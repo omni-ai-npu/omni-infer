@@ -6,6 +6,7 @@
 
 #include <omni_shared_state.h>
 #include <omni_proxy.h>
+#include <signal.h>
 
 #define TIMEVAL_TO_MSEC(tv) ((tv).tv_sec * 1000 + (tv).tv_usec / 1000)
 
@@ -121,8 +122,10 @@ static inline void omni_phase_change_to(
 static inline void omni_register_worker(omni_global_state_t *gs, omni_worker_local_state_t *local)
 {
     ngx_shmtx_lock(&gs->shmtx);
-    if (!gs->master_worker_selected) {
-        gs->master_worker_selected = true;
+    // If no master worker selected, or the master worker is no longer alive
+    if (gs->master_worker_pid == 0 ||
+        (gs->master_worker_pid != ngx_pid && kill(gs->master_worker_pid, 0) != 0)) {
+        gs->master_worker_pid = ngx_pid;
         local->is_master_worker = true;
     }
     ngx_shmtx_unlock(&gs->shmtx);

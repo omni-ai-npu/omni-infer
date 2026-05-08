@@ -233,7 +233,7 @@ typedef struct omni_global_state_s
     uint16_t last_selected_decode;
     uint32_t last_summary;
     uint32_t upstream_initialized;
-    bool master_worker_selected;
+    ngx_pid_t master_worker_pid;  /* 0 means no master worker selected yet */
     omni_upstream_prefill_t prefill_states[MAX_PREFILL_UPSTREAMS];
     omni_upstream_decode_t decode_states[MAX_DECODE_UPSTREAMS];
 
