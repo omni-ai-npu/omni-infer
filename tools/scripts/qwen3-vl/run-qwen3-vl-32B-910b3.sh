@@ -25,6 +25,10 @@ export ASCEND_GLOBAL_LOG_LEVEL=3
 export VLLM_LOGGING_LEVEL=INFO
 export PATH="$HOME/.local/bin:$PATH"
 
+export XGRAMMAR_DISABLE_TORCH_COMPILE=1
+export TORCH_COMPILE_DISABLE=1
+export VLLM_USE_TRITON_FLASH_ATTN=0
+
 mkdir -p "${BASE_LOG_PATH}/qwen-32b/logs"
 LOG_NAME_PREFIX="${POD_IP:-$(hostname)}"
 LOG_FILE="${BASE_LOG_PATH}/qwen-32b/logs/${LOG_NAME_PREFIX}_$(date +%Y%m%d_%H%M%S).log"
@@ -49,15 +53,17 @@ VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models" vllm serve "$MODEL_P
   --dtype bfloat16 \
   --max-model-len 163840 \
   --max-num-batched-tokens 16384 \
-  --max-num-seqs 512 \
+  --max-num-seqs 256 \
   --enable-chunked-prefill \
   --enable-prefix-caching \
   --distributed-executor-backend mp \
-  --gpu-memory-utilization 0.9 \
+  --gpu-memory-utilization 0.88 \
   --trust-remote-code \
   --tensor-parallel-size 4 \
   --data-parallel-size 1 \
   --swap-space 64 \
   --allowed-local-media-path "$MOUNT_PATH/$BUCKET_PATH/" \
   --media-io-kwargs '{"video":{"fps":2,"num_frames":-1}}' \
-  --compilation-config '{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64,156,256,512], "backend":"eager", "compile_sizes":[64,156,256,512]}' 2>&1 | tee -a "$LOG_FILE"
+  --limit-mm-per-prompt '{"image":2048}' \
+  --enable-prompt-tokens-details \
+  --compilation-config '{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[4,16,32,64,156,256], "backend":"eager", "compile_sizes":[4,16,32,64,156,256]}' 2>&1 | tee -a "$LOG_FILE"

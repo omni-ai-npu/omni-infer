@@ -158,11 +158,16 @@ export_env() {
     export LOG_PATH=$LOG_PATH
     export SCRIPTS_PATH=$SCRIPTS_PATH
     export PYTHONHASHSEED=123
+
+    export XGRAMMAR_DISABLE_TORCH_COMPILE=1
+    export TORCH_COMPILE_DISABLE=1
+    export VLLM_USE_TRITON_FLASH_ATTN=0
 }
 
 # 5. run server
 run_v1(){
-    EXTRA_ARGS='--enable-expert-parallel --enable-prefix-caching --enable-chunked-prefill --max-num-batched-tokens 16384 --max-num-seqs 512 --distributed-executor-backend mp --swap_space 64.0 --disable-log-requests --compilation-config {"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64,156,256,512], "backend":"eager", "compile_sizes":[64,156,256,512]} --media-io-kwargs {"video":{"fps":2,"num_frames":-1}} --allowed-local-media-path '"${LOCAL_PATH}"
+
+    EXTRA_ARGS='--enable-expert-parallel --enable-prefix-caching --enable-chunked-prefill --max-num-batched-tokens 16384 --max-num-seqs 512 --distributed-executor-backend mp --swap_space 64.0 --disable-log-requests --enable-prompt-tokens-details --compilation-config {"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[4,32,64,128,256,512], "backend":"eager", "compile_sizes":[4,32,64,128,256,512]} --limit-mm-per-prompt {"image":2048} --media-io-kwargs {"video":{"fps":2,"num_frames":-1}} --allowed-local-media-path '"${LOCAL_PATH}"
 
     local mtp_args=""
     if [ "$NUM_SPECULATIVE_TOKENS" -ne 0 ]; then
