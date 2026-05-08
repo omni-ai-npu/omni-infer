@@ -21,6 +21,12 @@ all:
             LOG_PATH: /tmp/log_path
             ROLE: proxy
             MODEL_PATH: /sfs-asset-inference-ci/model/Kimi-K25-w4a8c16
+            ACCESS_LOG_FILE: ${LOG_PATH}/nginx/nginx_access.log
+            OMNI_PROXY_PD_POLICY: sequential
+            OMNI_PROXY_MAX_BATCH_NUM_TOKEN: 256000
+            OMNI_PROXY_PREFILL_MAX_NUM_SEQS: 4
+            OMNI_PROXY_DECODE_MAX_NUM_SEQS: 5
+            PYTHONHASHSEED: 123
     D:
       hosts:
         d0:
