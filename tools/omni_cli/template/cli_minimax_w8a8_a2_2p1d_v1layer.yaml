@@ -34,14 +34,14 @@ all:
               enable-expert-parallel: ''
               disable-log-requests: ''
               no-enable-prefix-caching: ''
-              max-num-seqs: 8
+              max-num-seqs: 10
               distributed-executor-backend: mp
               compilation-config:
                 level: 3
                 cudagraph_mode: FULL_DECODE_ONLY
-                cudagraph_capture_sizes: [8]
+                cudagraph_capture_sizes: [10]
                 backend: eager
-                compile_sizes: [8]
+                compile_sizes: [10]
             gpu-util: '0.95'
             kv-transfer-config:
               engine_id: "2"
@@ -63,6 +63,8 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7
           container_name: minimax_2p1d_d0
           env:
+            OMNI_REUSE_PREFILLED_TOKENS: 1
+            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
             VLLM_DISABLE_COMPILE_CACHE: 1
             OMNI_NPU_VLLM_PATCHES_ALL: 1
@@ -95,7 +97,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_DECODE: 110000
+            MODEL_LEN_MAX_DECODE: 196608
             MODEL_PATH: /data/models/minimax
             PREFILL_POD_NUM: 2
             PYTORCH_NPU_ALLOC_CONF: max_split_size_mb:256
@@ -133,9 +135,9 @@ all:
               disable-log-requests: ''
               no-enable-prefix-caching: ''
               enforce-eager: ''
-              max-num-batched-tokens: 100001
+              max-num-batched-tokens: 102400
               max-num-seqs: 8
-            gpu-util: '0.90'
+            gpu-util: '0.84'
             kv-transfer-config:
               engine_id: "0"
               kv_buffer_device: npu
@@ -156,6 +158,8 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7
           container_name: minimax_2p1d_p0
           env:
+            OMNI_REUSE_PREFILLED_TOKENS: 1
+            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
             VLLM_DISABLE_COMPILE_CACHE: 1
             OMNI_NPU_VLLM_PATCHES_ALL: 1
@@ -176,7 +180,7 @@ all:
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp67s0f5
-            HCCL_BUFFSIZE: 200
+            HCCL_BUFFSIZE: 300
             HCCL_CONNECT_TIMEOUT: 1800
             HCCL_EXEC_TIMEOUT: 1800
             HCCL_INTRA_PCIE_ENABLE: 0
@@ -188,7 +192,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 100001
+            MODEL_LEN_MAX_PREFILL: 196608
             MODEL_PATH: /data/models/minimax
             PREFILL_POD_NUM: 2
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7
@@ -226,9 +230,9 @@ all:
               disable-log-requests: ''
               no-enable-prefix-caching: ''
               enforce-eager: ''
-              max-num-batched-tokens: 100001
+              max-num-batched-tokens: 102400
               max-num-seqs: 8
-            gpu-util: '0.90'
+            gpu-util: '0.84'
             kv-transfer-config:
               engine_id: "1"
               kv_buffer_device: npu
@@ -249,6 +253,8 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7
           container_name: minimax_2p1d_p1
           env:
+            OMNI_REUSE_PREFILLED_TOKENS: 1
+            OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
             VLLM_DISABLE_COMPILE_CACHE: 1
             OMNI_NPU_VLLM_PATCHES_ALL: 1
@@ -269,7 +275,7 @@ all:
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp67s0f5
-            HCCL_BUFFSIZE: 200
+            HCCL_BUFFSIZE: 300
             HCCL_CONNECT_TIMEOUT: 1800
             HCCL_EXEC_TIMEOUT: 1800
             HCCL_INTRA_PCIE_ENABLE: 0
@@ -281,7 +287,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 100001
+            MODEL_LEN_MAX_PREFILL: 196608
             MODEL_PATH: /data/models/minimax
             PREFILL_POD_NUM: 2
             PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7
