@@ -36,6 +36,10 @@ export ASCEND_GLOBAL_LOG_LEVEL=3
 export VLLM_LOGGING_LEVEL=INFO
 export PATH="$HOME/.local/bin:$PATH"
 
+export XGRAMMAR_DISABLE_TORCH_COMPILE=1
+export TORCH_COMPILE_DISABLE=1
+export VLLM_USE_TRITON_FLASH_ATTN=0
+
 mkdir -p "${BASE_LOG_PATH}"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="${BASE_LOG_PATH}/${POD_IP:-$(hostname)}_${RUN_ID}"
@@ -100,6 +104,8 @@ for i in "${!DEVICE_GROUPS[@]}"; do
         --data-parallel-size 1 \
         --allowed-local-media-path "${MOUNT_PATH}/${BUCKET_PATH}/" \
         --media-io-kwargs '{"video":{"fps":2,"num_frames":-1}}' \
+        --limit-mm-per-prompt '{"image":2048}' \
+        --enable-prompt-tokens-details \
         --compilation-config "${COMPILATION_CONFIG}"
   ) >> "${LOG_DIR}/vllm_${i}.log" 2>&1 &
 

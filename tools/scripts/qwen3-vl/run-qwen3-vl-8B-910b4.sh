@@ -25,6 +25,10 @@ export ASCEND_GLOBAL_LOG_LEVEL=3
 export VLLM_LOGGING_LEVEL=INFO
 export PATH="$HOME/.local/bin:$PATH"
 
+export XGRAMMAR_DISABLE_TORCH_COMPILE=1
+export TORCH_COMPILE_DISABLE=1
+export VLLM_USE_TRITON_FLASH_ATTN=0
+
 mkdir -p "${BASE_LOG_PATH}/qwen-8b/logs"
 LOG_NAME_PREFIX="${POD_IP:-$(hostname)}"
 LOG_FILE="${BASE_LOG_PATH}/qwen-8b/logs/${LOG_NAME_PREFIX}_$(date +%Y%m%d_%H%M%S).log"
@@ -54,10 +58,12 @@ VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models" vllm serve "$MODEL_P
   --enable-prefix-caching \
   --async-scheduling \
   --distributed-executor-backend mp \
-  --gpu-memory-utilization 0.88 \
+  --gpu-memory-utilization 0.86 \
   --trust-remote-code \
   --tensor-parallel-size 2 \
   --data-parallel-size 1 \
   --allowed-local-media-path "$MOUNT_PATH/$BUCKET_PATH/" \
+  --limit-mm-per-prompt '{"image":2048}' \
   --media-io-kwargs '{"video":{"fps":2,"num_frames":-1}}' \
+  --enable-prompt-tokens-details \
   --compilation-config '{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64,128,256,512], "backend":"eager", "compile_sizes":[64,128,256,512]}' 2>&1 | tee -a "$LOG_FILE"

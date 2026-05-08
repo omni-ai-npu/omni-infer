@@ -17,8 +17,8 @@ PROXY_BACKEND_HOST="${PROXY_BACKEND_HOST:-127.0.0.1}"
 MODEL_NAME="${MODEL_NAME:-qwen3-vl}"
 STARTUP_TIMEOUT_SECONDS="${STARTUP_TIMEOUT_SECONDS:-1800}"  # wait for vLLM to start in 30 minutes
 
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-512}"
-COMPILATION_CONFIG='{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[64,156,256,512], "backend":"eager", "compile_sizes":[64,156,256,512]}'
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-256}"
+COMPILATION_CONFIG='{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[4,16,32,64,128,256], "backend":"eager", "compile_sizes":[4,16,32,64,128,256]}'
 
 source ~/.bashrc
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
@@ -34,6 +34,10 @@ export OMNI_NPU_VLLM_PATCHES="ALL"
 export ASCEND_GLOBAL_LOG_LEVEL=3
 export VLLM_LOGGING_LEVEL=INFO
 export PATH="$HOME/.local/bin:$PATH"
+
+export XGRAMMAR_DISABLE_TORCH_COMPILE=1
+export TORCH_COMPILE_DISABLE=1
+export VLLM_USE_TRITON_FLASH_ATTN=0
 
 mkdir -p "${BASE_LOG_PATH}"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
@@ -91,13 +95,15 @@ for i in "${!DEVICE_GROUPS[@]}"; do
         --enable-chunked-prefill \
         --enable-prefix-caching \
         --distributed-executor-backend mp \
-        --gpu-memory-utilization 0.9 \
+        --gpu-memory-utilization 0.88 \
         --trust-remote-code \
         --tensor-parallel-size 4 \
         --data-parallel-size 1 \
         --swap-space 64 \
         --allowed-local-media-path "${MOUNT_PATH}/${BUCKET_PATH}/" \
         --media-io-kwargs '{"video":{"fps":2,"num_frames":-1}}' \
+        --limit-mm-per-prompt '{"image":2048}' \
+        --enable-prompt-tokens-details \
         --compilation-config "${COMPILATION_CONFIG}"
   ) >> "${LOG_DIR}/vllm_${i}.log" 2>&1 &
 
