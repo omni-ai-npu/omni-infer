@@ -85,6 +85,10 @@ class ModelOperatorOptConfig:
     unquant_bmm_nz: bool = False
     decode_moe_dispatch_combine: bool = True
     decode_flash_comm_1: bool = True # decode节点开启FlashComm1优化
+    chunked_prefill_decode_only_graph: bool = True
+    chunked_prefill_mixed_batch_eager: bool = False
+    chunked_prefill_mixed_sp_output_compact: bool = False
+    chunked_prefill_disable_hybrid_graph: bool = False
     use_super_kernel: bool = False
     enable_prefill_micro_batch: bool = False
     use_mlaprolog: bool = False
@@ -410,7 +414,6 @@ def update_task_config(**kwargs):
         logger.warning(f"Failed to JSON-serialize model_extra_config: {e}")
     logger.info(f"ModelExtraConfig: {model_info}")
     
-
 
 
 

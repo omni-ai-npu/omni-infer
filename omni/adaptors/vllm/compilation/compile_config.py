@@ -105,6 +105,8 @@ class NPUCompilationConfig:
         if vllm_config.kv_transfer_config is not None and vllm_config.kv_transfer_config.kv_role == "kv_consumer" or vllm_config.additional_config.get("enable_hybrid_graph_mode", False):
             max_gear_size = max_num_reqs if not use_spec_decode else max_num_reqs * (1 + vllm_config.speculative_config.num_speculative_tokens)
     
+        user_provided_decode_gear_list = self.decode_gear_list is not None
+
         if self.decode_gear_list is not None and len(self.decode_gear_list) > MAX_GEAR_NUM:
             raise ValueError(f"Max gear num supported is {MAX_GEAR_NUM} now.")
 
@@ -117,7 +119,9 @@ class NPUCompilationConfig:
         if not self.decode_gear_list:
             self.decode_gear_list = [max_gear_size]
 
-        if (not enable_adaptive and len(self.decode_gear_list) < MAX_GEAR_NUM and max(self.decode_gear_list) < max_gear_size):
+        if (not user_provided_decode_gear_list and not enable_adaptive
+                and len(self.decode_gear_list) < MAX_GEAR_NUM
+                and max(self.decode_gear_list) < max_gear_size):
             self.decode_gear_list.append(max_gear_size)
 
     def init_backend(self, vllm_config: VllmConfig) -> Union[str, Callable]:

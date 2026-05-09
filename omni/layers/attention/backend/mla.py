@@ -150,13 +150,13 @@ class AscendMLABackend(AttentionBackend):
             dst_kv_cache: List[torch.Tensor],
             src_to_dst: torch.Tensor,
     ) -> None:
-        src_key_cache, src_value_cache = src_kv_cache[0], src_kv_cache[1]
-        dst_key_cache, dst_value_cache = dst_kv_cache[0], dst_kv_cache[1]
         src_indices = src_to_dst[:, 0]
         dst_indices = src_to_dst[:, 1]
 
-        dst_key_cache[dst_indices] = src_key_cache[src_indices].to(dst_key_cache.device)
-        dst_value_cache[dst_indices] = src_value_cache[src_indices].to(dst_key_cache.device)
+        for src_cache, dst_cache in zip(src_kv_cache, dst_kv_cache):
+            if src_cache is None or dst_cache is None:
+                continue
+            dst_cache[dst_indices] = src_cache[src_indices].to(dst_cache.device)
 
 @dataclass
 class AscendMLAPrefillMetadata:
@@ -167,6 +167,8 @@ class AscendMLAPrefillMetadata:
     input_positions: torch.Tensor
     block_table: torch.Tensor
     max_query_len: int
+    slot_mapping: Optional[torch.Tensor] = None
+    num_prefill_tokens: int = 0
 
     # adaptor for chunk-prefill & prefix-caching use
     seq_qlen_group: Optional[list] = None
@@ -182,6 +184,9 @@ class AscendMLAPrefillMetadata:
     sp_zigzag_index: Optional[list[int]] = None
     sp_reverse_index: Optional[list[int]] = None
     sp_reverse_split_list: Optional[list[int]] = None
+    sp_input_indices: Optional[torch.Tensor] = None
+    sp_reverse_indices: Optional[torch.Tensor] = None
+    sp_input_actual_tokens: int = 0
     actual_query_lens: Optional[torch.Tensor] = None
     computed_seq_lens: Optional[torch.Tensor] = None
 
@@ -195,6 +200,9 @@ class AscendMLADecodeMetadata:
     input_positions: torch.Tensor
     block_table: torch.Tensor
     seq_lens: torch.Tensor
+    slot_mapping: Optional[torch.Tensor] = None
+    num_decode_tokens: int = 0
+    num_padded_tokens: int = 0
     mc2_mask: Optional[torch.Tensor] = None
     cos: Optional[torch.Tensor] = None
     sin: Optional[torch.Tensor] = None
@@ -283,6 +291,10 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         if self.decode_gear_list:
             self.mc2_mask = torch.zeros(self.decode_gear_list[-1], dtype=torch.bool, device=current_platform.device_type)
         self.already_mark_static = False
+        self._sp_split_indices_cache = {}
+        self._sp_input_indices_cache = {}
+        self._sp_reverse_indices_cache = {}
+        self._sp_split_indices_cache_limit = 256
 
         self.decode_num_tokens = torch.zeros(
             runner.max_num_reqs, dtype=torch.int32, device=runner.device
@@ -329,20 +341,23 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         decode_num_tokens = []
         num_decode_tokens = 0
         num_prefill_tokens = 0
-        cached_req_ids = {
-            req.req_id for req in scheduler_output.scheduled_cached_reqs
-            if (not req.resumed_from_preemption) or req.num_computed_tokens > 0
-        }
-
         for i, req_id in enumerate(input_batch.req_ids):
             num_tokens = scheduler_output.num_scheduled_tokens[req_id]
+            spec_decode_tokens = scheduler_output.scheduled_spec_decode_tokens.get(req_id)
+            num_spec_decode_tokens = len(spec_decode_tokens) if spec_decode_tokens is not None else 0
+            # Spec decode requests are decode-like only when the scheduler
+            # provides exactly one target token plus the speculative tokens.
+            # Resumed/chunked prefill may still carry stale spec tokens, but
+            # must remain in the prefill side until the chunk is complete.
+            is_decode_req = (num_tokens == 1 or
+                             (num_spec_decode_tokens > 0
+                              and num_tokens == num_spec_decode_tokens + 1))
             # for now treat 1 scheduled token as "decode" even if its not,
             # we should update this to something like < 8 in the future but
             # currently the TritonMLA._forward_decode only supports
             # num_tokens = 1
             # Only in decode the spec tokens are scheduled
-            if (not self.is_hybrid and (req_id in scheduler_output.scheduled_spec_decode_tokens or num_tokens == 1)) or \
-                (self.is_hybrid and (req_id in scheduler_output.scheduled_spec_decode_tokens or req_id in cached_req_ids)):
+            if is_decode_req:
                 decodes.append(i)
                 decode_num_tokens.append(num_tokens)
                 num_decode_tokens += num_tokens
@@ -407,9 +422,18 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
 
         max_batch_size, max_blocks = self.runner.graph_block_tables.shape
         if max_batch_size < num_decode_tokens:
-            raise RuntimeError("max_batch_size must be greater than or equal to num_decode_tokens")
-
-        if isinstance(self.runner.graph_block_tables, np.ndarray):
+            is_mixed_batch = self._num_decodes > 0 and self._num_prefills > 0
+            runs_compiled_model = (
+                hasattr(self.runner, "_should_run_compiled_model")
+                and self.runner._should_run_compiled_model(self.runner.attn_state))
+            if (self.runner.attn_state == AscendAttentionState.DecodeOnly
+                    or runs_compiled_model
+                    or not is_mixed_batch):
+                raise RuntimeError("max_batch_size must be greater than or equal to num_decode_tokens")
+            graph_block_tables = torch.zeros((total_tokens, max_blocks),
+                                             dtype=block_tables.dtype,
+                                             device=block_tables.device)
+        elif isinstance(self.runner.graph_block_tables, np.ndarray):
             graph_block_tables = torch.zeros((total_tokens, max_blocks),
                                              dtype=block_tables.dtype,
                                              device=block_tables.device)
@@ -429,16 +453,50 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
 
         return graph_block_tables
 
+    def _get_decode_padded_tokens(self, num_decode_tokens: int, graph_pad_size: int) -> int:
+        if self.runner.attn_state == AscendAttentionState.DecodeOnly:
+            return num_decode_tokens + graph_pad_size
+
+        padded_tokens = num_decode_tokens
+        sp_size = model_extra_config.parall_config.attn_sp_size
+        if self.decode_gear_list:
+            padded_tokens = next((
+                gear for gear in self.decode_gear_list
+                if gear >= num_decode_tokens and (sp_size <= 1 or gear % sp_size == 0)
+            ), padded_tokens)
+
+        if sp_size > 1 and padded_tokens % sp_size != 0:
+            padded_tokens = ((padded_tokens + sp_size - 1) // sp_size) * sp_size
+
+        return padded_tokens
+
     def get_kv_index(self, seq_lens, block_tables):
         kv_index = []
         for seq_len, block_table in zip(seq_lens, block_tables):
-            index = self.base_index + np.expand_dims(block_table.cpu().numpy(), axis=-1) * self.base_block.repeat(block_table.shape[0], axis=0)
+            if torch.is_tensor(block_table):
+                if block_table.device.type != "cpu":
+                    raise RuntimeError(
+                        "get_kv_index expects CPU/numpy block tables to avoid NPU->CPU sync.")
+                block_table = block_table.numpy()
+            else:
+                block_table = np.asarray(block_table)
+            index = self.base_index + np.expand_dims(block_table, axis=-1) * self.base_block.repeat(block_table.shape[0], axis=0)
             kv_index.append(index.reshape(-1)[:seq_len])
         return torch.tensor(np.concatenate(kv_index, axis=0), dtype=torch.long, device="cpu").npu()
 
-    def prepare_sp_split_indices(self, query_lens):
+    def prepare_sp_split_indices(self, query_lens_list):
         sp_size = get_tensor_model_parallel_world_size()
         sp_rank = get_tensor_model_parallel_rank()
+        cache_key = (
+            tuple(int(query_len) for query_len in query_lens_list),
+            model_extra_config.parall_config.attn_sp_size,
+            sp_rank,
+        )
+        cached_indices = self._sp_split_indices_cache.get(cache_key)
+        if cached_indices is not None:
+            return cached_indices
+
+        query_lens = torch.tensor(query_lens_list)
         bsz = query_lens.shape[-1]
 
         # get zigzag index
@@ -459,7 +517,11 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             )
         reverse_split_list = seq_per_batch.repeat_interleave(2).repeat(sp_size).view(-1).int().tolist()
         reverse_split_list = reverse_split_list[::2] + reverse_split_list[1::2]
-        return split_list, zigzag_index, cp_reverse_index, reverse_split_list
+        indices = (split_list, zigzag_index, cp_reverse_index, reverse_split_list)
+        if len(self._sp_split_indices_cache) >= self._sp_split_indices_cache_limit:
+            self._sp_split_indices_cache.clear()
+        self._sp_split_indices_cache[cache_key] = indices
+        return indices
 
     def pad_inputs(self, input, query_lens, sp_size, pad_value):
         count = 0
@@ -472,6 +534,73 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             count += len
         return torch.cat(res, dim=0)
 
+    def build_sp_input_indices(self, query_lens_list, sp_split_list, sp_zigzag_index, device):
+        cache_key = (
+            tuple(int(query_len) for query_len in query_lens_list),
+            model_extra_config.parall_config.attn_sp_size,
+            get_tensor_model_parallel_rank(),
+        )
+        indices = self._sp_input_indices_cache.get(cache_key)
+        if indices is None:
+            pad_idx = sum(query_lens_list)
+            padded_indices = []
+            offset = 0
+            split_size = model_extra_config.parall_config.attn_sp_size * 2
+            for query_len in query_lens_list:
+                pad_size = (split_size - query_len % split_size) % split_size
+                padded_indices.extend(range(offset, offset + query_len))
+                padded_indices.extend([pad_idx] * pad_size)
+                offset += query_len
+
+            split_indices = []
+            offset = 0
+            for split_len in sp_split_list:
+                split_indices.append(padded_indices[offset:offset + split_len])
+                offset += split_len
+
+            sp_input_indices = []
+            for split_idx in sp_zigzag_index:
+                sp_input_indices.extend(split_indices[split_idx])
+            indices = (padded_indices, sp_input_indices)
+            if len(self._sp_input_indices_cache) >= self._sp_split_indices_cache_limit:
+                self._sp_input_indices_cache.clear()
+            self._sp_input_indices_cache[cache_key] = indices
+        padded_indices, sp_input_indices = indices
+        return (
+            torch.tensor(padded_indices, dtype=torch.long, device=device),
+            torch.tensor(sp_input_indices, dtype=torch.long, device=device),
+        )
+
+    def build_sp_reverse_indices(self, query_lens_list, sp_reverse_split_list, sp_reverse_index, device):
+        cache_key = (
+            tuple(int(query_len) for query_len in query_lens_list),
+            model_extra_config.parall_config.attn_sp_size,
+            get_tensor_model_parallel_rank(),
+        )
+        sp_reverse_indices = self._sp_reverse_indices_cache.get(cache_key)
+        if sp_reverse_indices is None:
+            split_offsets = []
+            offset = 0
+            for split_len in sp_reverse_split_list:
+                split_offsets.append(offset)
+                offset += split_len
+            sp_reverse_indices = []
+            for split_idx in sp_reverse_index:
+                start = split_offsets[split_idx]
+                split_len = sp_reverse_split_list[split_idx]
+                sp_reverse_indices.extend(range(start, start + split_len))
+            if len(self._sp_reverse_indices_cache) >= self._sp_split_indices_cache_limit:
+                self._sp_reverse_indices_cache.clear()
+            self._sp_reverse_indices_cache[cache_key] = sp_reverse_indices
+        return torch.tensor(sp_reverse_indices, dtype=torch.long, device=device)
+
+    def pad_inputs_by_index(self, input, indices, pad_value, actual_tokens=None):
+        if actual_tokens is not None:
+            input = input[:actual_tokens]
+        pad_shape = (1, ) + tuple(input.shape[1:])
+        padding = input.new_full(pad_shape, pad_value)
+        return torch.cat([input, padding], dim=0).index_select(0, indices)
+
     def prepare_sp_inputs(self,
                           positions,
                           query_lens_list,
@@ -480,23 +609,28 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                           query_lens):
         computed_seq_lens_list = [seq_len - query_len for seq_len, query_len in zip(seq_lens_list, query_lens_list)]
         sp_seq_lens_list = [computed_seq_len + math.ceil(query_len / model_extra_config.parall_config.attn_sp_size / 2) for computed_seq_len, query_len in zip(computed_seq_lens_list, query_lens_list)]
-        sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list = self.prepare_sp_split_indices(torch.tensor(query_lens_list))
+        sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list = self.prepare_sp_split_indices(query_lens_list)
 
         # prepare sp positions
         sp_size = model_extra_config.parall_config.attn_sp_size
-        positions = self.pad_inputs(positions, query_lens_list, sp_size * 2, 0)
-        cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(positions)
-        # split input for sp attention
-        position_id_list = torch.split(positions, sp_split_list, dim=0)
-        positions = torch.cat([position_id_list[i] for i in sp_zigzag_index], dim=0)
+        sp_padded_input_indices, sp_input_indices = self.build_sp_input_indices(
+            query_lens_list, sp_split_list, sp_zigzag_index, positions.device)
+        sp_reverse_indices = self.build_sp_reverse_indices(
+            query_lens_list, sp_reverse_split_list, sp_reverse_index, positions.device)
+        actual_tokens = sum(query_lens_list)
+        padded_positions = self.pad_inputs_by_index(
+            positions, sp_padded_input_indices, 0, actual_tokens)
+        cos, sin = self.runner.model.model.layers[0].self_attn.rotary_emb.get_cos_sin(padded_positions)
+        positions = self.pad_inputs_by_index(positions, sp_input_indices, 0, actual_tokens)
 
         sp_seq_lens = torch.tensor(sp_seq_lens_list, dtype=torch.int64).npu()
         computed_seq_lens = torch.tensor(computed_seq_lens_list, dtype=torch.int64).npu()
         query_lens = torch.cumsum(torch.ceil(query_lens / sp_size / 2).to(torch.int64), dim=0)
         # prepare sp slotmapping
-        slot_mapping = self.pad_inputs(slot_mapping, query_lens_list, sp_size * 2, PAD_SLOT_ID)
+        slot_mapping = self.pad_inputs_by_index(
+            slot_mapping, sp_padded_input_indices, PAD_SLOT_ID, actual_tokens)
 
-        return sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list, positions, sp_seq_lens, computed_seq_lens, cos, sin, slot_mapping, query_lens
+        return sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list, sp_input_indices, sp_reverse_indices, positions, sp_seq_lens, computed_seq_lens, cos, sin, slot_mapping, query_lens
 
     def build(self,
               num_reqs: int,
@@ -520,6 +654,9 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
             device, non_blocking=True)
         input_positions = self.runner.positions_cpu[:num_actual_tokens].to(
             device, non_blocking=True)
+        actual_slot_mapping = slot_mapping
+        actual_input_positions = input_positions
+        is_mixed_batch = self._num_decodes > 0 and self._num_prefills > 0
 
         if self.runner.omni_cache is not None:
             assert isinstance(self.runner.omni_cache, BaseOmniCache), \
@@ -545,13 +682,24 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
 
             reqs_start = self._num_decodes  # prefill_start
             tokens_start = self._num_decode_tokens
+            prefill_seq_lens_list = seq_lens_list[reqs_start:]
+            prefill_query_lens_list = query_lens_list[reqs_start:]
+            prefill_block_table = block_table[reqs_start:, ...]
+            if is_mixed_batch:
+                prefill_slot_mapping = actual_slot_mapping[tokens_start:num_actual_tokens]
+                tmp_input_position = actual_input_positions[tokens_start:num_actual_tokens]
+            else:
+                prefill_slot_mapping = slot_mapping[tokens_start:]
+                tmp_input_position = input_positions[tokens_start:]
+            prefix_meta = None
 
             if not model_extra_config.operator_opt_config.use_omni_cache:
+                prefill_block_table_np = self.block_table.get_numpy_array()[reqs_start:num_reqs]
                 # Group request for Chunk-Prefill
                 seq_kvlen_group, seq_qlen_group, block_groups = group_request_list(
-                    seq_lens_list,
-                    query_lens_list,
-                    block_table,
+                    prefill_seq_lens_list,
+                    prefill_query_lens_list,
+                    prefill_block_table_np,
                     self.runner.max_num_tokens)
 
                 # Prepare kv index for prefill get kv_latent from kv_cache
@@ -566,17 +714,16 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
 
                 seq_qlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_qlen_group]
                 seq_kvlen_group = [list(itertools.accumulate(sub_list)) for sub_list in seq_kvlen_group]
-                tmp_input_position = input_positions[tokens_start:]
             else:
-                seq_qlen_group = [list(itertools.accumulate(query_lens_list))]
-                seq_kvlen_group = [list(itertools.accumulate(seq_lens_list))]
+                seq_qlen_group = [list(itertools.accumulate(prefill_query_lens_list))]
+                seq_kvlen_group = [list(itertools.accumulate(prefill_seq_lens_list))]
                 kv_index_list = None
 
                 prefix_meta = omni_cache.get_prefill_prefix_copy_meta(
                     block_size=self.block_size,
-                    kv_lens=self.runner.input_batch.num_computed_tokens_cpu[:num_reqs],
-                    query_lens_list=query_lens_list,
-                    block_tables=self.block_table.get_numpy_array()[:num_reqs],
+                    kv_lens=self.runner.input_batch.num_computed_tokens_cpu[reqs_start:num_reqs],
+                    query_lens_list=prefill_query_lens_list,
+                    block_tables=self.block_table.get_numpy_array()[reqs_start:num_reqs],
                     attn_state=self.runner.attn_state,
                 )
 
@@ -586,33 +733,31 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 )
 
                 volatile_block_table, volatile_slot_mapping = omni_cache.get_volatile_metadata(
-                    query_lens_list,
-                    seq_lens_list,
+                    prefill_query_lens_list,
+                    prefill_seq_lens_list,
                     graph_pad_size,
                     PAD_SLOT_ID,
-                    slot_mapping,
+                    prefill_slot_mapping,
                 )
                 if volatile_block_table is not None:
-                    block_table = volatile_block_table[:num_reqs]
-                    slot_mapping = volatile_slot_mapping
-
-                tmp_input_position = input_positions[tokens_start:]
+                    prefill_block_table = volatile_block_table[:self._num_prefills]
+                    prefill_slot_mapping = volatile_slot_mapping
 
             first_layer_ind = self.runner.model.model.start_layer
             if not model_extra_config.operator_opt_config.enable_dsa:
-                query_lens = query_lens_list[reqs_start:]
-                seq_lens = seq_lens_list
+                query_lens = prefill_query_lens_list
+                seq_lens = prefill_seq_lens_list
             else:
-                actual_query_lens = torch.tensor(query_lens_list[reqs_start:], dtype=torch.int64).npu()
+                actual_query_lens = torch.tensor(prefill_query_lens_list, dtype=torch.int64).npu()
                 if model_extra_config.parall_config.attn_sp_size == 1:
                     query_lens = torch.cumsum(actual_query_lens, dim=0)
-                seq_lens = torch.tensor(seq_lens_list, dtype=torch.int64).npu()
+                seq_lens = torch.tensor(prefill_seq_lens_list, dtype=torch.int64).npu()
             if model_extra_config.parall_config.attn_sp_size > 1:
-                sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list, tmp_input_position, seq_lens, computed_seq_lens, cos, sin, slot_mapping, query_lens  = \
-                    self.prepare_sp_inputs(positions=input_positions[tokens_start:],
-                                        query_lens_list=query_lens_list[reqs_start:],
-                                        seq_lens_list=seq_lens_list,
-                                        slot_mapping=slot_mapping,
+                sp_split_list, sp_zigzag_index, sp_reverse_index, sp_reverse_split_list, sp_input_indices, sp_reverse_indices, tmp_input_position, seq_lens, computed_seq_lens, cos, sin, prefill_slot_mapping, query_lens  = \
+                    self.prepare_sp_inputs(positions=tmp_input_position,
+                                        query_lens_list=prefill_query_lens_list,
+                                        seq_lens_list=prefill_seq_lens_list,
+                                        slot_mapping=prefill_slot_mapping,
                                         query_lens=actual_query_lens,
                                         )
                 # 在sp场景下，只有切分后长度的位置信息
@@ -628,8 +773,10 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 query_lens=query_lens,
                 seq_lens=seq_lens,
                 input_positions=tmp_input_position,
-                block_table=block_table[reqs_start:, ...],
+                block_table=prefill_block_table,
                 max_query_len=max_query_len,
+                slot_mapping=prefill_slot_mapping,
+                num_prefill_tokens=prefill_slot_mapping.shape[0],
                 seq_qlen_group=seq_qlen_group,
                 seq_kvlen_group=seq_kvlen_group,
                 kv_index_list=kv_index_list,
@@ -641,6 +788,9 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                 sp_zigzag_index=sp_zigzag_index if model_extra_config.parall_config.attn_sp_size > 1 else None,
                 sp_reverse_index=sp_reverse_index if model_extra_config.parall_config.attn_sp_size > 1 else None,
                 sp_reverse_split_list=sp_reverse_split_list if model_extra_config.parall_config.attn_sp_size > 1 else None,
+                sp_input_indices=sp_input_indices if model_extra_config.parall_config.attn_sp_size > 1 else None,
+                sp_reverse_indices=sp_reverse_indices if model_extra_config.parall_config.attn_sp_size > 1 else None,
+                sp_input_actual_tokens=sum(prefill_query_lens_list) if model_extra_config.parall_config.attn_sp_size > 1 else 0,
                 actual_query_lens=actual_query_lens if model_extra_config.parall_config.attn_sp_size > 1 else None,
                 computed_seq_lens=computed_seq_lens if model_extra_config.parall_config.attn_sp_size > 1 else None,
                 prefix_meta=prefix_meta if model_extra_config.operator_opt_config.use_omni_cache else None,
@@ -649,10 +799,10 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         decode_metadata = None
 
         if self._num_decodes > 0:
-            if self.runner.attn_state == AscendAttentionState.DecodeOnly:
-                if self._num_decode_tokens % self._num_decodes != 0:
-                    raise RuntimeError("self._num_decode_tokens must be divisible by self._num_decodes")
-                num_tokens_per_req = self._num_decode_tokens // self._num_decodes
+            if self.runner.attn_state == AscendAttentionState.DecodeOnly or is_mixed_batch:
+                uniform_decode_tokens = bool(torch.all(
+                    self.decode_num_tokens_cpu[:self._num_decodes] == self.decode_num_tokens_cpu[0]))
+                num_tokens_per_req = int(self.decode_num_tokens_cpu[0].item()) if uniform_decode_tokens else None
 
                 if model_extra_config.operator_opt_config.enable_dsa and model_extra_config.operator_opt_config.use_omni_cache:
                     time0 = time.perf_counter()
@@ -662,7 +812,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                     if req_ids_record is None:
                         req_ids_record = req_ids_update.copy()
 
-                    if req_ids_record != req_ids_update:
+                    if req_ids_record != req_ids_update and num_tokens_per_req is not None:
                         # update selection_kv_block_status
                         original_shape = omni_cache.selection_kv_block_status.shape
                         num_layers = omni_cache.selection_kv_block_status.shape[0]
@@ -692,46 +842,85 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                     else:
                         logger.warning(f"++++++++ Time cost for one-step block_status update is {(time1-time0)*1000}ms ++++++++")
 
-                seq_lens = (input_positions + 1).to(self.runner.seq_lens.dtype)
-                block_table = block_table[:self._num_decodes, ...]
+                decode_padded_tokens = self._get_decode_padded_tokens(
+                    self._num_decode_tokens, graph_pad_size)
+                decode_pad_size = decode_padded_tokens - self._num_decode_tokens
+                decode_input_positions = actual_input_positions[:self._num_decode_tokens]
+                decode_slot_mapping = actual_slot_mapping[:self._num_decode_tokens]
+                if decode_pad_size > 0:
+                    decode_input_positions = torch.cat([
+                        decode_input_positions,
+                        torch.zeros(decode_pad_size,
+                                    dtype=decode_input_positions.dtype,
+                                    device=decode_input_positions.device)
+                    ])
+                    decode_slot_mapping = torch.cat([
+                        decode_slot_mapping,
+                        torch.full((decode_pad_size, ),
+                                   PAD_SLOT_ID,
+                                   dtype=decode_slot_mapping.dtype,
+                                   device=decode_slot_mapping.device)
+                    ])
+
+                seq_lens = (decode_input_positions + 1).to(self.runner.seq_lens.dtype)
+                decode_block_table = block_table[:self._num_decodes, ...]
                 # has speculative tokens
                 if self._num_decode_tokens > self._num_decodes:
-                    block_table = block_table.repeat_interleave(
+                    decode_block_table = decode_block_table.repeat_interleave(
                         self.decode_num_tokens[:self._num_decodes], dim=0, output_size=self._num_decode_tokens
                     )
-                block_table = torch.cat([block_table,
-                                         torch.zeros(
-                                            (graph_pad_size, ) + block_table.shape[1:],
-                                            dtype=block_table.dtype,
-                                            device=block_table.device)],
-                                        dim=0)
-                block_table = self._get_graph_runner_block_tables(
-                    self._num_decode_tokens, block_table, num_actual_tokens + graph_pad_size)
+                if decode_pad_size > 0:
+                    decode_block_table = torch.cat([
+                        decode_block_table,
+                        torch.zeros((decode_pad_size, ) + decode_block_table.shape[1:],
+                                    dtype=decode_block_table.dtype,
+                                    device=decode_block_table.device)
+                    ], dim=0)
+                decode_block_table = self._get_graph_runner_block_tables(
+                    self._num_decode_tokens, decode_block_table, decode_padded_tokens)
 
-                self.generate_activate_mask(num_actual_tokens, num_actual_tokens + graph_pad_size)
+                self.generate_activate_mask(self._num_decode_tokens, decode_padded_tokens)
                 first_layer_ind = self.runner.model.model.start_layer
                 if isinstance(self.runner.model.model.layers[first_layer_ind].self_attn, torch.nn.ModuleList):
-                    cos, sin = self.runner.model.model.layers[first_layer_ind].self_attn[0].rotary_emb.get_cos_sin(input_positions)
+                    cos, sin = self.runner.model.model.layers[first_layer_ind].self_attn[0].rotary_emb.get_cos_sin(decode_input_positions)
                 else:
-                    cos, sin = self.runner.model.model.layers[first_layer_ind].self_attn.rotary_emb.get_cos_sin(input_positions)
+                    cos, sin = self.runner.model.model.layers[first_layer_ind].self_attn.rotary_emb.get_cos_sin(decode_input_positions)
                 best_topk = None
                 if model_extra_config.operator_opt_config.best_ep:
-                    best_topk = self.cal_best_topk(num_actual_tokens + graph_pad_size)
+                    best_topk = self.cal_best_topk(decode_padded_tokens)
             else:
-                raise NotImplementedError("Chunked prefill mode is not supported currently.")
+                # Supported decode metadata paths are pure DecodeOnly and
+                # mixed ChunkedPrefill with both decode and prefill requests.
+                # A non-mixed ChunkedPrefill state that still contains decode
+                # tokens does not have a verified MLA decode metadata contract.
+                raise NotImplementedError(
+                    "Non-mixed ChunkedPrefill with decode tokens is not supported currently.")
 
             decode_metadata = AscendMLADecodeMetadata(
-                input_positions=input_positions,
-                block_table=block_table,
+                input_positions=decode_input_positions,
+                block_table=decode_block_table,
                 seq_lens=seq_lens,
+                slot_mapping=decode_slot_mapping,
+                num_decode_tokens=self._num_decode_tokens,
+                num_padded_tokens=decode_padded_tokens,
                 mc2_mask=self.mc2_mask,
                 cos=cos,
                 sin=sin,
                 best_topk=best_topk)
 
+        metadata_slot_mapping = slot_mapping
+        if is_mixed_batch:
+            metadata_slot_mapping = torch.cat(
+                [decode_metadata.slot_mapping, prefill_metadata.slot_mapping],
+                dim=0)
+        elif decode_metadata is not None:
+            metadata_slot_mapping = decode_metadata.slot_mapping
+        elif prefill_metadata is not None:
+            metadata_slot_mapping = prefill_metadata.slot_mapping
+
         return self.metadata_cls(  # type: ignore
             num_actual_tokens=num_actual_tokens,
-            slot_mapping=slot_mapping,
+            slot_mapping=metadata_slot_mapping,
             num_decodes=self._num_decodes,
             num_decode_tokens=self._num_decode_tokens,
             num_prefills=self._num_prefills,
@@ -986,4 +1175,3 @@ class AscendMLAImpl(MLAAttentionImpl):
     ) -> torch.Tensor:
         # This method should be implemented in the subclass
         raise NotImplementedError("AscendMLAImpl.forward is not implemented.")
-

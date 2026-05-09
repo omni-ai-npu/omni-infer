@@ -9,6 +9,19 @@ from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 from omni.layers.sampler import random_choice
 from omni.models.config_loader.loader import model_extra_config
 
+
+def _get_key_tokens(runner, input_ids: torch.Tensor,
+                    metadata: SpecDecodeMetadata) -> torch.Tensor:
+    input_token_indices = getattr(runner, "spec_input_token_indices", None)
+    if input_token_indices is not None:
+        if input_token_indices.numel() != metadata.logits_indices.numel():
+            raise RuntimeError(
+                "spec_input_token_indices must have the same length as "
+                "spec logits_indices")
+        return input_ids[input_token_indices]
+    return input_ids[metadata.logits_indices]
+
+
 class SimpleValidator(RejectionSamplerV1):
 
     def __init__(self, runner, *args, **kwargs) -> None:
@@ -44,7 +57,7 @@ class SimpleValidator(RejectionSamplerV1):
 
         batch_size = len(metadata.num_draft_tokens)
 
-        key_tokens = input_ids[metadata.logits_indices]
+        key_tokens = _get_key_tokens(self.runner, input_ids, metadata)
 
         all_sampled_tokens = self.main_sampler.apply_sampling_params(
             logits, sampling_metadata, metadata, key_tokens, do_sample=True,
@@ -96,12 +109,13 @@ class SparseRejectionSamplerValidator(RejectionSamplerV1):
 
     #TODO(fanyuda): support the feature combo of sparse rejection sampler and mixture of spec decoding
 
-    def __init__(self, main_sampler, topk, max_num_tokens, *args, **kwargs) -> None:
+    def __init__(self, main_sampler, topk, max_num_tokens, runner=None, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.previous_frequency_penalties = []
         self.previous_repetition_penalties = []
         self.previous_presence_penalties = []
         self.main_sampler = main_sampler
+        self.runner = runner
         self.minus_one = None
         self.topk = topk
         self.max_num_tokens = max_num_tokens
@@ -129,7 +143,7 @@ class SparseRejectionSamplerValidator(RejectionSamplerV1):
             device=input_ids.device,
         ) * self.minus_one[0]
 
-        key_tokens = input_ids[metadata.logits_indices]
+        key_tokens = _get_key_tokens(self.runner, input_ids, metadata)
 
 
         num_sampling_tokens_per_req = (metadata.logits_indices.numel() // batch_size)

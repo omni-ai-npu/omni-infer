@@ -86,6 +86,17 @@ class PostDrafter(EagleProposer):
 
         self.is_hybrid = self.vllm_config.kv_transfer_config is None
 
+    def _get_compact_sample_indices(
+            self,
+            sample_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        compact_indices = getattr(self.runner, "spec_input_token_indices", None)
+        if compact_indices is None:
+            return sample_indices
+        if compact_indices.numel() != sample_indices.numel():
+            return sample_indices
+        return compact_indices
+
 
     def load_model(self, target_model: nn.Module) -> None:
         draft_model_config = \
@@ -100,7 +111,7 @@ class PostDrafter(EagleProposer):
             get_layers_from_vllm_config(self.vllm_config, Attention).keys() -
             target_attn_layer_names)
 
-        self.attn_layer_names = list(draft_attn_layer_names)
+        self.attn_layer_names = sorted(draft_attn_layer_names)
 
     def verify_and_prepare_inputs(self,
                                   input_ids,
@@ -121,7 +132,9 @@ class PostDrafter(EagleProposer):
         )
 
         self.input_ids[:input_ids.numel() - 1] = input_ids[1:]
-        self.input_ids[spec_decode_metadata.logits_indices[last_accepted_index]] = forward_tokens
+        compact_logits_indices = self._get_compact_sample_indices(
+            spec_decode_metadata.logits_indices)
+        self.input_ids[compact_logits_indices[last_accepted_index]] = forward_tokens
 
         if chunk_next_indices is not None:
             self.input_ids[chunk_next_indices] = chunk_next_tokens
@@ -167,6 +180,33 @@ class PostDrafter(EagleProposer):
         from omni.layers.attention.backend.mla import AscendMLAMetadata
 
         return isinstance(metadata, AscendMLAMetadata)
+
+    def _is_mixed_mla_metadata(self, metadata) -> bool:
+        return (self._is_mla_metadata(metadata)
+                and getattr(metadata, "decode", None) is not None
+                and getattr(metadata, "prefill", None) is not None
+                and getattr(metadata, "num_decodes", 0) > 0
+                and getattr(metadata, "num_prefills", 0) > 0)
+
+    def _build_decode_metadata_from_mixed_metadata(self, attn_metadata):
+        if isinstance(attn_metadata, Dict):
+            converted_metadata = {}
+            memo = {}
+            for layer_name, attn_metadata_i in attn_metadata.items():
+                metadata_key = id(attn_metadata_i)
+                if metadata_key not in memo:
+                    memo[metadata_key] = self._build_decode_metadata_from_mixed_metadata(attn_metadata_i)
+                converted_metadata[layer_name] = memo[metadata_key]
+            return converted_metadata
+
+        decode_attn_metadata = copy.copy(attn_metadata)
+        decode_attn_metadata.prefill = None
+        decode_attn_metadata.slot_mapping = attn_metadata.decode.slot_mapping
+        decode_attn_metadata.num_prefills = 0
+        decode_attn_metadata.num_actual_tokens = attn_metadata.decode.num_padded_tokens
+        decode_attn_metadata.num_input_tokens = attn_metadata.decode.num_padded_tokens
+        decode_attn_metadata.attn_state = AscendAttentionState.DecodeOnly
+        return decode_attn_metadata
     
     def _get_num_prefills_and_decodes(self, first_attn_metadata):
         num_prefills = getattr(first_attn_metadata, "num_prefills", None)
@@ -253,15 +293,19 @@ class PostDrafter(EagleProposer):
         """
 
         if isinstance(attn_metadata, Dict):
-            return {
-                layer_name: self._build_decode_metadata_from_prefill_metadata(
-                    attn_metadata_i,
-                    continuation_positions, 
-                    prefill_req_indices,
-                    sample_indices
-                )
-                for layer_name, attn_metadata_i in attn_metadata.items()
-            }
+            converted_metadata = {}
+            memo = {}
+            for layer_name, attn_metadata_i in attn_metadata.items():
+                metadata_key = id(attn_metadata_i)
+                if metadata_key not in memo:
+                    memo[metadata_key] = self._build_decode_metadata_from_prefill_metadata(
+                        attn_metadata_i,
+                        continuation_positions,
+                        prefill_req_indices,
+                        sample_indices
+                    )
+                converted_metadata[layer_name] = memo[metadata_key]
+            return converted_metadata
         
         num_prefills = prefill_req_indices.numel()
         graph_batch_size = self._get_hybrid_decode_graph_batch_size(num_prefills)
@@ -321,12 +365,9 @@ class PostDrafter(EagleProposer):
 
             mc2_mask = None
             if getattr(self.runner, "enable_torchair_graph_mode", False):
-                mc2_mask = torch.zeros(
-                    graph_batch_size,
-                    dtype=torch.bool,
-                    device=continuation_positions.device,
-                )
-                mc2_mask[:num_prefills] = True
+                builder = self.runner.attn_metadata_builders[0]
+                builder.generate_activate_mask(num_prefills, graph_batch_size)
+                mc2_mask = builder.mc2_mask
             
             best_topk = None
             if model_extra_config.operator_opt_config.best_ep:
@@ -480,15 +521,18 @@ class PostDrafter(EagleProposer):
         graph_batch_size = self._get_hybrid_decode_graph_batch_size(prefill_batch_size)
         
         prefill_sample_indices = sample_indices[prefill_req_indices].contiguous()
+        compact_sample_indices = self._get_compact_sample_indices(sample_indices)
+        compact_prefill_sample_indices = compact_sample_indices[
+            prefill_req_indices].contiguous()
 
-        continuation_input_ids = input_ids[prefill_sample_indices].contiguous()
+        continuation_input_ids = self.input_ids[:graph_batch_size]
+        continuation_input_ids[:prefill_batch_size].copy_(
+            input_ids[compact_prefill_sample_indices])
+        if graph_batch_size > prefill_batch_size:
+            continuation_input_ids[prefill_batch_size:graph_batch_size].fill_(0)
 
         # Get continuation positions for the prefill requests
         continuation_positions = positions[prefill_sample_indices].contiguous()
-
-        continuation_input_ids = self._pad_first_dim(
-            continuation_input_ids, graph_batch_size, pad_value=0
-        )
 
         continuation_positions = self._pad_first_dim(
             continuation_positions, graph_batch_size, pad_value=0
@@ -506,11 +550,16 @@ class PostDrafter(EagleProposer):
         def compact_hidden_states(hidden_states_i):
             if hidden_states_i is None or not torch.is_tensor(hidden_states_i) or hidden_states_i.dim() == 0:
                 return hidden_states_i
-        
-            if hidden_states_i.shape[0] == input_ids.shape[0]:
-                hidden_states_i = hidden_states_i[prefill_sample_indices].contiguous()
+
+            hidden_tokens = hidden_states_i.shape[0]
+            if hidden_tokens == input_ids.shape[0]:
+                hidden_states_i = hidden_states_i[
+                    compact_prefill_sample_indices].contiguous()
             elif hidden_states_i.shape[0] == sample_indices.numel():
                 hidden_states_i = hidden_states_i[prefill_req_indices].contiguous()
+            elif (prefill_sample_indices.numel() > 0
+                  and hidden_tokens > int(prefill_sample_indices.max().item())):
+                hidden_states_i = hidden_states_i[prefill_sample_indices].contiguous()
             else:
                 logger.warning(
                     "Unexpected hidden state shape %s when converting hybrid prefill to decode; keep it unchanged.",
@@ -586,6 +635,7 @@ class PostDrafter(EagleProposer):
         if kv_cache_flag is None:
             with set_forward_context(None, self.vllm_config):
                 for i in range(self.speculative_config.num_speculative_tokens):
+                    input_ids = self.input_ids[:num_tokens]
                     self.model(
                         input_ids=input_ids,
                         positions=positions,
@@ -600,10 +650,47 @@ class PostDrafter(EagleProposer):
             if isinstance(attn_metadata, dict):
                  first_attn_metadate = attn_metadata[self.attn_layer_names[0]]
             attn_state = first_attn_metadate.attn_state
+            mixed_original_num_reqs = None
+
+            if self._is_mixed_mla_metadata(first_attn_metadate):
+                mixed_original_num_reqs = first_attn_metadate.num_decodes + first_attn_metadate.num_prefills
+                num_decodes = first_attn_metadate.num_decodes
+                num_decode_tokens = first_attn_metadate.decode.num_decode_tokens
+                decode_padded_tokens = first_attn_metadate.decode.num_padded_tokens
+                compact_input_ids = self.input_ids[:decode_padded_tokens]
+                compact_input_ids[:num_decode_tokens].copy_(input_ids[:num_decode_tokens])
+                if decode_padded_tokens > num_decode_tokens:
+                    compact_input_ids[num_decode_tokens:decode_padded_tokens].fill_(0)
+                input_ids = compact_input_ids
+                positions = self._pad_first_dim(positions[:num_decode_tokens], decode_padded_tokens, pad_value=0)
+
+                def compact_decode_hidden_states(hidden_states_i):
+                    if hidden_states_i is None or not torch.is_tensor(hidden_states_i) or hidden_states_i.dim() == 0:
+                        return hidden_states_i
+                    return self._pad_first_dim(hidden_states_i[:num_decode_tokens], decode_padded_tokens, pad_value=0)
+
+                if isinstance(previous_hidden_states, tuple):
+                    previous_hidden_states = tuple(compact_decode_hidden_states(x) for x in previous_hidden_states)
+                elif isinstance(previous_hidden_states, list):
+                    previous_hidden_states = [compact_decode_hidden_states(x) for x in previous_hidden_states]
+                else:
+                    previous_hidden_states = compact_decode_hidden_states(previous_hidden_states)
+
+                attn_metadata = self._build_decode_metadata_from_mixed_metadata(attn_metadata)
+                if last_accepted_index is not None:
+                    last_accepted_index = last_accepted_index[:num_decodes].contiguous()
+                if sample_indices is not None:
+                    sample_indices = sample_indices[:num_decodes].contiguous()
+                num_tokens = input_ids.numel()
+                first_attn_metadate = attn_metadata
+                if isinstance(attn_metadata, dict):
+                    first_attn_metadate = attn_metadata[self.attn_layer_names[0]]
+                attn_state = first_attn_metadate.attn_state
+
             draft_forward_tokens_list = []
 
             if self.runner.enable_torchair_graph_mode and attn_state == AscendAttentionState.DecodeOnly \
-                and (not self.mark_static):
+                and (not self.mark_static) and not getattr(first_attn_metadate, "force_eager", False):
                 from omni.adaptors.vllm.worker.npu_model_runner import GraphCompileConfiguration
                 if isinstance(self.model, GraphCompileConfiguration):
                     self.model.mark_static_for_graph()
@@ -636,6 +723,7 @@ class PostDrafter(EagleProposer):
                             self._simple_advance_step(positions, attn_metadata, self.vllm_config.cache_config.block_size, next(self.model.model.layers.children()))
                         else:
                             break
+                    input_ids = self.input_ids[:num_tokens]
                     drafter_logits, next_hidden_states = self.model(
                         input_ids=input_ids,
                         positions=positions,
@@ -695,7 +783,9 @@ class PostDrafter(EagleProposer):
                         if attn_state == AscendAttentionState.DecodeOnly:
                             input_ids[last_accepted_index] = draft_forward_tokens
                         else: # prefill
-                            input_ids[sample_indices] = draft_forward_tokens
+                            compact_sample_indices = self._get_compact_sample_indices(
+                                sample_indices)
+                            input_ids[compact_sample_indices] = draft_forward_tokens
                     if not model_extra_config.operator_opt_config.skip_mtp_hidden_states:
                         previous_hidden_states = next_hidden_states
 
@@ -721,6 +811,19 @@ class PostDrafter(EagleProposer):
                 return None
             else:
                 draft_forward_tokens_list = torch.stack(draft_forward_tokens_list, dim=0)
+                def pad_mixed_draft_tokens(draft_tokens):
+                    if mixed_original_num_reqs is None:
+                        return draft_tokens
+                    pad_reqs = mixed_original_num_reqs - draft_tokens.shape[0]
+                    if pad_reqs <= 0:
+                        return draft_tokens
+                    pad_tokens = torch.full(
+                        (pad_reqs, draft_tokens.shape[1]),
+                        self.runner.input_batch.vocab_size,
+                        dtype=draft_tokens.dtype,
+                        device=draft_tokens.device)
+                    return torch.cat([draft_tokens, pad_tokens], dim=0)
+
                 if use_decode_adaptive:
                     drafter_logits_range_flat = drafter_logits_range[min_acc:].view(-1)
                     _, probs_idx = torch.sort(drafter_logits_range_flat, descending=True)
@@ -728,6 +831,6 @@ class PostDrafter(EagleProposer):
                     masked_draft_forward_tokens_list = torch.full_like(draft_forward_tokens_list, -1, device=self.device)
                     masked_draft_forward_tokens_list[:min_acc] = draft_forward_tokens_list[:min_acc]
                     masked_draft_forward_tokens_list[min_acc:].view(-1)[probs_idx] = draft_forward_tokens_list[min_acc:].view(-1)[probs_idx]
-                    return masked_draft_forward_tokens_list.t()
+                    return pad_mixed_draft_tokens(masked_draft_forward_tokens_list.t())
                 else:
-                    return draft_forward_tokens_list.t()
+                    return pad_mixed_draft_tokens(draft_forward_tokens_list.t())

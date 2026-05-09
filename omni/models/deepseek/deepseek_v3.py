@@ -84,6 +84,55 @@ from omni.layers.attention.deepseek_mla import DeepseekMLA
 from omni.layers.moe.fused_moe.fused_moe import set_num_speculative_tokens
 from omni.models.config_loader.loader import model_extra_config
 from omni.layers.attention.backend.mla import group_request_list
+from omni.layers.attention.backend.attention import AscendAttentionState
+
+
+def is_mixed_batch_metadata(attn_metadata) -> bool:
+    return (attn_metadata is not None
+            and getattr(attn_metadata, "prefill", None) is not None
+            and getattr(attn_metadata, "decode", None) is not None
+            and getattr(attn_metadata, "num_prefills", 0) > 0
+            and getattr(attn_metadata, "num_decodes", 0) > 0)
+
+
+def make_mixed_attn_metadata_view(attn_metadata, is_decode: bool):
+    metadata = copy.copy(attn_metadata)
+    if is_decode:
+        metadata.prefill = None
+        metadata.slot_mapping = attn_metadata.decode.slot_mapping
+        metadata.num_prefills = 0
+        metadata.num_actual_tokens = attn_metadata.decode.num_padded_tokens
+        metadata.num_input_tokens = attn_metadata.decode.num_padded_tokens
+        metadata.attn_state = AscendAttentionState.DecodeOnly
+        metadata.force_eager = True
+    else:
+        metadata.decode = None
+        metadata.slot_mapping = attn_metadata.prefill.slot_mapping
+        metadata.num_decodes = 0
+        metadata.num_decode_tokens = 0
+        metadata.num_actual_tokens = attn_metadata.prefill.num_prefill_tokens
+        metadata.num_input_tokens = attn_metadata.prefill.num_prefill_tokens
+        metadata.attn_state = AscendAttentionState.ChunkedPrefill
+    return metadata
+
+
+def build_mixed_attn_metadata(attn_metadata, is_decode: bool):
+    if attn_metadata is None:
+        return None
+    if isinstance(attn_metadata, dict):
+        memo = {}
+
+        def get_view(layer_metadata):
+            key = id(layer_metadata)
+            if key not in memo:
+                memo[key] = make_mixed_attn_metadata_view(layer_metadata, is_decode)
+            return memo[key]
+
+        return {
+            layer_name: get_view(layer_metadata)
+            for layer_name, layer_metadata in attn_metadata.items()
+        }
+    return make_mixed_attn_metadata_view(attn_metadata, is_decode)
 
 
 """MLP module activation split length, split by 64G VRAM, need to confirm the optimal split length based on sequence length and performance"""
@@ -105,9 +154,27 @@ def pad_inputs(input, query_lens, sp_size):
 
     return torch.cat(segments, dim=0)
 
+def _generate_sp_inputs_by_index(hidden_states, prefill_metadata):
+    sp_input_indices = getattr(prefill_metadata, "sp_input_indices", None)
+    sp_input_actual_tokens = getattr(prefill_metadata, "sp_input_actual_tokens", 0)
+    if sp_input_indices is None or sp_input_actual_tokens <= 0:
+        return None
+    if hidden_states.shape[0] != sp_input_actual_tokens:
+        return None
+    if sp_input_indices.device != hidden_states.device:
+        return None
+
+    pad_shape = (1, ) + tuple(hidden_states.shape[1:])
+    pad_hidden_states = hidden_states.new_zeros(pad_shape)
+    hidden_states = torch.cat([hidden_states, pad_hidden_states], dim=0)
+    return hidden_states.index_select(0, sp_input_indices)
+
 def generate_sp_inputs(hidden_states, attn_metadata):
     sp_size = model_extra_config.parall_config.attn_sp_size
     if attn_metadata is not None:
+        indexed_hidden_states = _generate_sp_inputs_by_index(hidden_states, attn_metadata.prefill)
+        if indexed_hidden_states is not None:
+            return indexed_hidden_states
         hidden_states = pad_inputs(hidden_states, attn_metadata.prefill.actual_query_lens, sp_size * 2)
         # split input for sp attention
         hidden_states_list = torch.split(hidden_states, attn_metadata.prefill.sp_split_list, dim=0)
@@ -115,6 +182,32 @@ def generate_sp_inputs(hidden_states, attn_metadata):
     else:
         hidden_states = torch.split(hidden_states, hidden_states.size(0) // sp_size, dim=0)[get_tensor_model_parallel_rank()]
     return hidden_states
+
+def reverse_sp_outputs(hidden_states, prefill_metadata):
+    sp_reverse_indices = getattr(prefill_metadata, "sp_reverse_indices", None)
+    if sp_reverse_indices is not None:
+        if (sp_reverse_indices.device == hidden_states.device
+                and hidden_states.shape[0] == sp_reverse_indices.numel()):
+            return hidden_states.index_select(0, sp_reverse_indices)
+
+    outputs_list = torch.split(hidden_states, prefill_metadata.sp_reverse_split_list, dim=0)
+    return torch.cat([outputs_list[i] for i in prefill_metadata.sp_reverse_index], dim=0)
+
+
+def _pad_1d_tensor(tensor: torch.Tensor, target_len: int, pad_value: int = 0) -> torch.Tensor:
+    pad_size = target_len - tensor.shape[0]
+    if pad_size <= 0:
+        return tensor
+    padding = torch.full((pad_size, ), pad_value, dtype=tensor.dtype, device=tensor.device)
+    return torch.cat([tensor, padding], dim=0)
+
+
+def _pad_2d_tensor(tensor: torch.Tensor, target_len: int) -> torch.Tensor:
+    pad_size = target_len - tensor.shape[0]
+    if pad_size <= 0:
+        return tensor
+    padding = torch.zeros((pad_size, tensor.shape[1]), dtype=tensor.dtype, device=tensor.device)
+    return torch.cat([tensor, padding], dim=0)
 
 
 class DeepseekDecoderLayer(nn.Module):
@@ -452,6 +545,9 @@ class DeepseekV3Model(nn.Module):
     ) -> Union[torch.Tensor, IntermediateTensors]:
         attn_metadata_first = self.get_layer_attn_metadata(attn_metadata, self.start_layer_key)
 
+        if is_mixed_batch_metadata(attn_metadata_first):
+            return self.forward_mixed_batch(input_ids, positions, kv_caches, attn_metadata, intermediate_tensors, lm_head)
+
         if model_extra_config.operator_opt_config.enable_prefill_micro_batch and \
             attn_metadata is not None and attn_metadata_first is not None \
             and attn_metadata_first.prefill is not None and \
@@ -548,8 +644,129 @@ class DeepseekV3Model(nn.Module):
         if model_extra_config.parall_config.attn_sp_size > 1 and attn_metadata_first is not None and is_prefill:
             # reverse sp split
             prefill_meta = attn_metadata_first.prefill
-            outputs_list = torch.split(hidden_states, prefill_meta.sp_reverse_split_list, dim=0)
-            hidden_states = torch.cat([outputs_list[i] for i in prefill_meta.sp_reverse_index], dim=0)
+            hidden_states = reverse_sp_outputs(hidden_states, prefill_meta)
+
+        return hidden_states
+
+    def forward_mixed_batch(
+            self,
+            input_ids: torch.Tensor,
+            positions: torch.Tensor,
+            kv_caches: List[torch.Tensor],
+            attn_metadata: AttentionMetadata,
+            intermediate_tensors: Optional[IntermediateTensors],
+            lm_head=None
+    ) -> Union[torch.Tensor, IntermediateTensors]:
+        attn_metadata_first = self.get_layer_attn_metadata(attn_metadata, self.start_layer_key)
+        decode_tokens = attn_metadata_first.decode.num_decode_tokens
+        decode_padded_tokens = attn_metadata_first.decode.num_padded_tokens
+        actual_tokens = attn_metadata_first.num_actual_tokens
+
+        decode_positions = _pad_1d_tensor(positions[:decode_tokens], decode_padded_tokens)
+        prefill_positions = positions[decode_tokens:actual_tokens]
+        decode_attn_metadata = build_mixed_attn_metadata(attn_metadata, is_decode=True)
+        prefill_attn_metadata = build_mixed_attn_metadata(attn_metadata, is_decode=False)
+
+        DeepseekDecoderLayer.is_split_hidden_states = False
+        if get_pp_group().is_first_rank:
+            decode_input_ids = _pad_1d_tensor(input_ids[:decode_tokens], decode_padded_tokens)
+            prefill_input_ids = input_ids[decode_tokens:actual_tokens]
+
+            decode_hidden_states = self.get_input_embeddings(decode_input_ids)
+            prefill_hidden_states = self.get_input_embeddings(prefill_input_ids)
+            if model_extra_config.parall_config.attn_sp_size > 1:
+                prefill_hidden_states = generate_sp_inputs(prefill_hidden_states, attn_metadata_first)
+            hidden_states = torch.cat([decode_hidden_states, prefill_hidden_states], dim=0)
+            residual = None
+        else:
+            assert intermediate_tensors is not None
+            hidden_states = intermediate_tensors["hidden_states"]
+            residual = intermediate_tensors["residual"]
+
+        if self.is_ffn_die:
+            residual = None
+            hidden_states = torch.zeros(
+                size=(hidden_states.shape[0], self.hidden_size),
+                dtype=torch.bfloat16,
+                device=hidden_states.device)
+
+        for i in range(self.start_layer, self.end_layer):
+            layer = self.layers[i]
+            layer_id = i - 3
+
+            if not self.is_ffn_die:
+                if i >= self.first_k_dense_replace and i < self.end_layer - 1:
+                    next_attention_weights = {
+                        'q_a_proj_weight': self.layers[i + 1].self_attn.q_a_proj.weight,
+                        'kv_a_proj_with_mqa_weight': self.layers[i + 1].self_attn.kv_a_proj_with_mqa.weight,
+                        'q_b_proj_weight': self.layers[i + 1].self_attn.q_b_proj.weight,
+                        'W_UK': self.layers[i + 1].self_attn.W_UK
+                    }
+                else:
+                    next_attention_weights = {
+                        'q_a_proj_weight': None,
+                        'kv_a_proj_with_mqa_weight': None,
+                        'q_b_proj_weight': None,
+                        'W_UK': None
+                    }
+            else:
+                next_attention_weights = None
+
+            decode_hidden_states = hidden_states[:decode_padded_tokens]
+            prefill_hidden_states = hidden_states[decode_padded_tokens:]
+            if residual is None:
+                decode_residual = None
+                prefill_residual = None
+            else:
+                decode_residual = residual[:decode_padded_tokens]
+                prefill_residual = residual[decode_padded_tokens:]
+
+            decode_hidden_states, decode_residual = layer(
+                decode_positions,
+                decode_hidden_states,
+                kv_caches[i - self.start_layer] if kv_caches is not None else None,
+                decode_attn_metadata,
+                decode_residual,
+                layer_id,
+                next_attention_weights)
+            prefill_hidden_states, prefill_residual = layer(
+                prefill_positions,
+                prefill_hidden_states,
+                kv_caches[i - self.start_layer] if kv_caches is not None else None,
+                prefill_attn_metadata,
+                prefill_residual,
+                layer_id,
+                next_attention_weights)
+
+            hidden_states = torch.cat([decode_hidden_states, prefill_hidden_states], dim=0)
+            if decode_residual is not None and prefill_residual is not None:
+                residual = torch.cat([decode_residual, prefill_residual], dim=0)
+            else:
+                residual = None
+
+        if not get_pp_group().is_last_rank:
+            return IntermediateTensors({
+                "hidden_states": hidden_states,
+                "residual": residual
+            })
+
+        if residual is not None:
+            hidden_states, _ = self.norm(hidden_states, residual)
+        else:
+            hidden_states = self.norm(hidden_states)
+
+        decode_hidden_states = hidden_states[:decode_padded_tokens][:decode_tokens]
+        prefill_hidden_states = hidden_states[decode_padded_tokens:]
+        prefill_hidden_states = tensor_model_parallel_all_gather(prefill_hidden_states, dim=0)
+
+        if model_extra_config.parall_config.attn_sp_size > 1:
+            prefill_meta = attn_metadata_first.prefill
+            prefill_hidden_states = reverse_sp_outputs(prefill_hidden_states, prefill_meta)
+
+        hidden_states = torch.cat([decode_hidden_states, prefill_hidden_states], dim=0)
+
+        if model_extra_config.operator_opt_config.use_prefetch and lm_head is not None:
+            torch_npu.npu_prefetch(lm_head.weight, hidden_states, model_extra_config.operator_opt_config.lm_head_prefetch * 1024 * 1024)
 
         return hidden_states
 

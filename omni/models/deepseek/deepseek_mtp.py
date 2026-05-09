@@ -31,12 +31,20 @@ from vllm.distributed import get_ep_group
 from omni.adaptors.vllm.distributed import get_eh_proj_tp_group
 from omni.layers.moe.fused_moe.fused_moe import set_num_speculative_tokens
 from omni.models.config_loader.loader import model_extra_config
+from .deepseek_v3 import (
+    build_mixed_attn_metadata,
+    generate_sp_inputs,
+    is_mixed_batch_metadata,
+    reverse_sp_outputs,
+    _pad_1d_tensor,
+    _pad_2d_tensor,
+)
 
 should_use_a2_layer = not model_extra_config.operator_opt_config.prefill_moe_all_to_all and not model_extra_config.operator_opt_config.enable_dsa
 if os.getenv("ASCEND_PLATFORM", "A3")=="A2" and should_use_a2_layer:
     from .deepseek_v3_a2 import DeepseekDecoderLayer
 else:
-    from .deepseek_v3 import DeepseekDecoderLayer, generate_sp_inputs
+    from .deepseek_v3 import DeepseekDecoderLayer
 
 from omni.layers.layernorm import RMSNorm #zxp: not use
 from omni.layers.linear import ColumnParallelFlashCommLinear
@@ -121,6 +129,17 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
             selected_indices: Optional[torch.Tensor] = None,
             **kwargs,
     ) -> torch.Tensor:
+        attn_metadata_first = self.get_layer_attn_metadata(attn_metadata)
+        if is_mixed_batch_metadata(attn_metadata_first):
+            return self.forward_mixed_batch(
+                input_ids=input_ids,
+                positions=positions,
+                kv_caches=kv_caches,
+                attn_metadata=attn_metadata,
+                previous_hidden_states=previous_hidden_states,
+                selected_indices=selected_indices,
+            )
+
         tok_embeds = self.enorm(self.get_input_embeddings(input_ids))
         if len(tok_embeds.shape) > 2:
             tok_embeds = tok_embeds.view(-1, self.config.hidden_size)
@@ -173,14 +192,116 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
             # reverse sp split
             if attn_metadata is not None:
                 prefill_meta = self.get_layer_attn_metadata(attn_metadata).prefill
-                outputs_list = torch.split(hidden_states, prefill_meta.sp_reverse_split_list, dim=0)
-                hidden_states = torch.cat([outputs_list[i] for i in prefill_meta.sp_reverse_index], dim=0)
+                hidden_states = reverse_sp_outputs(hidden_states, prefill_meta)
 
         if attn_metadata is None:
             logits = self.compute_lmhead(hidden_states[-1:, ...], None)
         else:
             logits = self.compute_lmhead(hidden_states, selected_indices)
 
+        return logits, hidden_states
+
+    def forward_mixed_batch(
+            self,
+            input_ids: torch.Tensor,
+            positions: torch.Tensor,
+            kv_caches: List[torch.Tensor],
+            attn_metadata: AttentionMetadata,
+            previous_hidden_states: torch.Tensor,
+            selected_indices: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        attn_metadata_first = self.get_layer_attn_metadata(attn_metadata)
+        decode_tokens = attn_metadata_first.decode.num_decode_tokens
+        decode_padded_tokens = attn_metadata_first.decode.num_padded_tokens
+        actual_tokens = attn_metadata_first.num_actual_tokens
+
+        decode_input_ids = _pad_1d_tensor(input_ids[:decode_tokens], decode_padded_tokens)
+        prefill_input_ids = input_ids[decode_tokens:actual_tokens]
+        decode_positions = _pad_1d_tensor(positions[:decode_tokens], decode_padded_tokens)
+        prefill_positions = positions[decode_tokens:actual_tokens]
+
+        decode_previous_hidden_states = _pad_2d_tensor(previous_hidden_states[:decode_tokens], decode_padded_tokens)
+        prefill_previous_hidden_states = previous_hidden_states[decode_tokens:]
+
+        decode_tok_embeds = self.enorm(self.get_input_embeddings(decode_input_ids))
+        prefill_tok_embeds = self.enorm(self.get_input_embeddings(prefill_input_ids))
+        if len(decode_tok_embeds.shape) > 2:
+            decode_tok_embeds = decode_tok_embeds.view(-1, self.config.hidden_size)
+        if len(prefill_tok_embeds.shape) > 2:
+            prefill_tok_embeds = prefill_tok_embeds.view(-1, self.config.hidden_size)
+
+        if model_extra_config.parall_config.attn_sp_size > 1:
+            if not model_extra_config.operator_opt_config.use_mlaprolog:
+                prefill_tok_embeds = tensor_model_parallel_all_gather(prefill_tok_embeds, dim=0)
+            prefill_tok_embeds = generate_sp_inputs(prefill_tok_embeds, attn_metadata_first)
+            prefill_previous_hidden_states = generate_sp_inputs(prefill_previous_hidden_states, attn_metadata_first)
+
+        tp_size = get_tensor_model_parallel_world_size()
+        rank_in_group = get_tensor_model_parallel_rank()
+        if tp_size > 1 and model_extra_config.parall_config.attn_sp_size == 1:
+            decode_token_num = decode_previous_hidden_states.shape[0]
+            decode_start = rank_in_group * (decode_token_num // tp_size)
+            decode_end = (1 + rank_in_group) * (decode_token_num // tp_size)
+            prefill_token_num = prefill_previous_hidden_states.shape[0]
+            prefill_start = rank_in_group * (prefill_token_num // tp_size)
+            prefill_end = (1 + rank_in_group) * (prefill_token_num // tp_size)
+            decode_previous_hidden_states = decode_previous_hidden_states[decode_start:decode_end, :]
+            prefill_previous_hidden_states = prefill_previous_hidden_states[prefill_start:prefill_end, :]
+
+        previous_hidden_states = torch.cat(
+            [decode_previous_hidden_states, prefill_previous_hidden_states],
+            dim=0)
+        tok_embeds = torch.cat([decode_tok_embeds, prefill_tok_embeds], dim=0)
+        previous = self.hnorm(previous_hidden_states)
+        cat_hidden_states = torch.cat([tok_embeds, previous], dim=-1)
+        if self.eh_tp_size > 1:
+            cat_hidden_states = get_eh_proj_tp_group().all_gather(cat_hidden_states, dim=0)
+
+        hidden_states, _ = self.eh_proj.forward(cat_hidden_states)
+
+        if self.eh_tp_size > 1:
+            hidden_states = get_eh_proj_tp_group().all_to_all(hidden_states)
+
+        decode_attn_metadata = build_mixed_attn_metadata(attn_metadata, is_decode=True)
+        prefill_attn_metadata = build_mixed_attn_metadata(attn_metadata, is_decode=False)
+        decode_hidden_states = hidden_states[:decode_padded_tokens]
+        prefill_hidden_states = hidden_states[decode_padded_tokens:]
+
+        decode_hidden_states, decode_residual = DeepseekDecoderLayer.forward(
+            self,
+            positions=decode_positions,
+            kv_cache=kv_caches[self.kv_ind] if kv_caches is not None else None,
+            hidden_states=decode_hidden_states,
+            attn_metadata=decode_attn_metadata,
+            residual=None,
+        )
+        prefill_hidden_states, prefill_residual = DeepseekDecoderLayer.forward(
+            self,
+            positions=prefill_positions,
+            kv_cache=kv_caches[self.kv_ind] if kv_caches is not None else None,
+            hidden_states=prefill_hidden_states,
+            attn_metadata=prefill_attn_metadata,
+            residual=None,
+        )
+
+        if decode_residual is not None:
+            decode_hidden_states, _ = self.shared_head.norm(decode_hidden_states, decode_residual)
+        else:
+            decode_hidden_states = self.shared_head.norm(decode_hidden_states)
+        if prefill_residual is not None:
+            prefill_hidden_states, _ = self.shared_head.norm(prefill_hidden_states, prefill_residual)
+        else:
+            prefill_hidden_states = self.shared_head.norm(prefill_hidden_states)
+
+        decode_hidden_states = decode_hidden_states[:decode_tokens]
+        prefill_hidden_states = tensor_model_parallel_all_gather(prefill_hidden_states, dim=0)
+
+        if model_extra_config.parall_config.attn_sp_size > 1:
+            prefill_meta = attn_metadata_first.prefill
+            prefill_hidden_states = reverse_sp_outputs(prefill_hidden_states, prefill_meta)
+
+        hidden_states = torch.cat([decode_hidden_states, prefill_hidden_states], dim=0)
+        logits = self.compute_lmhead(hidden_states, selected_indices)
         return logits, hidden_states
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:

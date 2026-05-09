@@ -60,6 +60,16 @@ from vllm.logger import logger
 
 KVCACHE_NZ_DIM = 16
 
+def reverse_sp_tensor(hidden_states: torch.Tensor, prefill_metadata) -> torch.Tensor:
+    sp_reverse_indices = getattr(prefill_metadata, "sp_reverse_indices", None)
+    if sp_reverse_indices is not None:
+        if (sp_reverse_indices.device == hidden_states.device
+                and hidden_states.shape[0] == sp_reverse_indices.numel()):
+            return hidden_states.index_select(0, sp_reverse_indices)
+
+    hidden_states_list = torch.split(hidden_states, prefill_metadata.sp_reverse_split_list, dim=0)
+    return torch.cat([hidden_states_list[i] for i in prefill_metadata.sp_reverse_index], dim=0)
+
 def stream_context(stream_tag):
     if model_extra_config.operator_opt_config.moe_multi_stream_tune:
         return tng.scope.npu_stream_switch(stream_tag)
@@ -228,8 +238,7 @@ class Indexer(nn.Module):
         if is_prefill:
            k_mini = mla_tensor_model_parallel_all_gather(k_mini, dim=0)
         if model_extra_config.parall_config.attn_sp_size > 1 and is_prefill:
-            k_list = torch.split(k_mini, attn_metadata.prefill.sp_reverse_split_list, dim=0)
-            k_mini = torch.cat([k_list[i] for i in attn_metadata.prefill.sp_reverse_index], dim=0)
+            k_mini = reverse_sp_tensor(k_mini, attn_metadata.prefill)
         k_mini_rope, k_mini_nope = torch.split(k_mini, [self.rope_head_dim, self.head_dim - self.rope_head_dim], dim=-1)  # [b,s,64+64]
 
         k_mini_rope = k_mini_rope.unsqueeze(2)
@@ -726,8 +735,7 @@ class DeepseekMLA(nn.Module):
             latent_cache = mla_tensor_model_parallel_all_gather(latent_cache, dim=0, comm_group=comm_group)
             if model_extra_config.parall_config.attn_sp_size > 1: # sp切分的是q，kv不做sp
                 if attn_metadata is not None:
-                    latent_cache_list = torch.split(latent_cache, attn_metadata.prefill.sp_reverse_split_list, dim=0)
-                    latent_cache = torch.cat([latent_cache_list[i] for i in attn_metadata.prefill.sp_reverse_index], dim=0)
+                    latent_cache = reverse_sp_tensor(latent_cache, attn_metadata.prefill)
             q_lora = self.q_a_layernorm(q_lora)
             if self.quant_symbol and not model_extra_config.operator_opt_config.enable_dsa:
                 q_quant, q_scale = torch_npu.npu_dynamic_quant(q_lora)
@@ -1253,7 +1261,8 @@ class DeepseekMLA(nn.Module):
 
         bsz, _, q_dim = q_nope.size()
         input_layout = "TND_NTD"
-        op_scope = tng.ops if self.enable_graph_mode else torch.ops.npu
+        force_eager = getattr(attn_metadata, "force_eager", False)
+        op_scope = tng.ops if self.enable_graph_mode and not force_eager else torch.ops.npu
 
         if model_extra_config.operator_opt_config.mtp_remove_redundant_kv:
             attn_mask = self.decode_attn_mask if self.fa_quant else self.attn_mask

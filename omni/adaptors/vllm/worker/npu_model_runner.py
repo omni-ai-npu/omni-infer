@@ -23,6 +23,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Dict, Optional, Union, Any, List
 from contextlib import nullcontext
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -77,6 +78,14 @@ logger = init_logger("vllm.npu_model_runner")
 _GLOBAL_STEP = 0
 MAX_GEAR_NUM = 6
 NPU_GENERATOR_OFFSET_STEP = 12 # ascend npu, move 12 every one generation, which is 4 on cuda.
+
+
+@dataclass(frozen=True)
+class ChunkedPrefillPolicy:
+    decode_only_graph: bool = True
+    mixed_batch_eager: bool = False
+    mixed_sp_output_compact: bool = False
+    disable_hybrid_chunked_prefill_graph: bool = False
 
 PRE_NUM_REQS = 0
 PRE_NUM_INPUT_TOKENS = 0
@@ -169,7 +178,7 @@ class NPUModelRunner(GPUModelRunner):
                 from omni.adaptors.vllm.sample.validator import SimpleValidator, SparseRejectionSamplerValidator
                 
                 self.sampler = NewAscendSamplerV1(self)
-                self.rejection_sampler = SimpleValidator(self) if not self.use_rejection_sampler else SparseRejectionSamplerValidator(self.sampler, self.topk, self.decode_max_num_tokens)
+                self.rejection_sampler = SimpleValidator(self) if not self.use_rejection_sampler else SparseRejectionSamplerValidator(self.sampler, self.topk, self.decode_max_num_tokens, runner=self)
                 self.drafter = PostDrafter(vllm_config, device, self)
             else:
                 from omni.adaptors.vllm.sample.sampler import AscendSamplerV1 as NewAscendSamplerV1
@@ -214,6 +223,7 @@ class NPUModelRunner(GPUModelRunner):
         self.logits_indices = torch.zeros(
             self.decode_max_num_tokens, dtype=torch.int32, device=self.device,
         )
+        self.spec_input_token_indices = None
         self.target_logits_indices = torch.zeros(
             self.decode_max_num_tokens, dtype=torch.int32, device=self.device,
         )
@@ -291,6 +301,30 @@ class NPUModelRunner(GPUModelRunner):
             else:
                 self.neg_inf_tail = torch.full((invalid_token_num,), float('-inf'), dtype=torch.int64, device=self.device)
 
+    def _build_chunked_prefill_policy(self) -> ChunkedPrefillPolicy:
+        operator_config = model_extra_config.operator_opt_config
+        return ChunkedPrefillPolicy(
+            decode_only_graph=operator_config.chunked_prefill_decode_only_graph,
+            mixed_batch_eager=operator_config.chunked_prefill_mixed_batch_eager,
+            mixed_sp_output_compact=operator_config.chunked_prefill_mixed_sp_output_compact,
+            disable_hybrid_chunked_prefill_graph=operator_config.chunked_prefill_disable_hybrid_graph,
+        )
+
+    def _should_use_hybrid_chunked_prefill_graph(self) -> bool:
+        return (self.is_hybrid_chunked_prefill_graph_mode
+                and not self.chunked_prefill_policy.disable_hybrid_chunked_prefill_graph)
+
+    def _should_run_compiled_model(self, attn_state: AscendAttentionState) -> bool:
+        if not self.enable_torchair_graph_mode:
+            return False
+        if attn_state == AscendAttentionState.DecodeOnly:
+            return self.chunked_prefill_policy.decode_only_graph
+        if (self.chunked_prefill_policy.mixed_batch_eager
+                and attn_state == AscendAttentionState.ChunkedPrefill):
+            return False
+        return (self._should_use_hybrid_chunked_prefill_graph()
+                and attn_state == AscendAttentionState.ChunkedPrefill)
+
     def _init_graph_options(self):
         from vllm.utils import supports_dynamo
 
@@ -309,6 +343,7 @@ class NPUModelRunner(GPUModelRunner):
         self.is_pd_seperate_d = self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer"
         self.is_hybrid_chunked_prefill_graph_mode = self.enable_torchair_graph_mode and not self.is_pd_seperate_d and \
             not self.vllm_config.additional_config.get("enable_hybrid_graph_mode", False) and self.vllm_config.scheduler_config.enable_chunked_prefill
+        self.chunked_prefill_policy = self._build_chunked_prefill_policy()
         if self.is_hybrid_chunked_prefill_graph_mode:    
             self.max_batch_size = self.max_num_tokens
 
@@ -330,12 +365,19 @@ class NPUModelRunner(GPUModelRunner):
         self,
         num_draft_tokens,
         cu_num_scheduled_tokens,
+        input_token_indices: Optional[torch.Tensor] = None,
     ) -> SpecDecodeMetadata:
         if num_draft_tokens[0] == 0:
             logits_indices = cu_num_scheduled_tokens - 1
             self.logits_indices_cpu[:logits_indices.size] = torch.from_numpy(logits_indices)
             self.logits_indices.copy_(self.logits_indices_cpu, non_blocking=True)
             logits_indices = self.logits_indices[:logits_indices.size]
+            if input_token_indices is not None:
+                if input_token_indices.numel() != logits_indices.numel():
+                    raise RuntimeError(
+                        "spec_input_token_indices must have the same length as "
+                        "spec logits_indices")
+                self.spec_input_token_indices = input_token_indices
             metadata = SpecDecodeMetadata(
                 draft_token_ids=torch.zeros((0,), dtype=self.input_ids.dtype, device=self.input_ids.device),
                 num_draft_tokens=num_draft_tokens.tolist(),
@@ -348,7 +390,15 @@ class NPUModelRunner(GPUModelRunner):
             # Decode Only
             num_tokens = cu_num_scheduled_tokens[-1]
             batch_size = cu_num_scheduled_tokens.size
-            input_ids = self.input_ids[:num_tokens]
+            if input_token_indices is not None:
+                if input_token_indices.numel() != num_tokens:
+                    raise RuntimeError(
+                        "spec_input_token_indices must have the same length as "
+                        "spec logits_indices")
+                self.spec_input_token_indices = input_token_indices
+                input_ids = self.input_ids[input_token_indices]
+            else:
+                input_ids = self.input_ids[:num_tokens]
             target_range = self.arange_npu_int32[:num_draft_tokens[0]]
             token_start_indices = self.arange_npu_int32[:batch_size] * (num_draft_tokens[0] + 1)
             metadata = SpecDecodeMetadata(
@@ -366,10 +416,11 @@ class NPUModelRunner(GPUModelRunner):
         self,
         num_draft_tokens: np.ndarray,
         cu_num_scheduled_tokens: np.ndarray,
+        input_token_indices: Optional[torch.Tensor] = None,
     ) -> SpecDecodeMetadata:
         if (num_draft_tokens[0] == num_draft_tokens).all():
             return self._calc_spec_decode_metadata_same_num(
-                num_draft_tokens, cu_num_scheduled_tokens,
+                num_draft_tokens, cu_num_scheduled_tokens, input_token_indices,
             )
         # Inputs:
         # cu_num_scheduled_tokens:  [  4, 104, 107, 207, 209]
@@ -434,7 +485,16 @@ class NPUModelRunner(GPUModelRunner):
 
         # Compute the draft token ids.
         # draft_token_indices:      [  1,   2,   3, 105, 106, 208]
-        draft_token_ids = self.input_ids[logits_indices]
+        if input_token_indices is not None:
+            if input_token_indices.numel() != logits_indices.numel():
+                raise RuntimeError(
+                    "spec_input_token_indices must have the same length as "
+                    "spec logits_indices")
+            self.spec_input_token_indices = input_token_indices
+            draft_source_indices = input_token_indices
+        else:
+            draft_source_indices = logits_indices
+        draft_token_ids = self.input_ids[draft_source_indices]
         draft_token_ids = draft_token_ids[target_logits_indices + 1]
 
         metadata = SpecDecodeMetadata(
@@ -459,6 +519,7 @@ class NPUModelRunner(GPUModelRunner):
         if num_reqs <= 0:
             raise RuntimeError("num_reqs must be greater than 0")
         num_input_tokens = total_num_scheduled_tokens
+        self.spec_input_token_indices = None
         tp_rank = get_tensor_model_parallel_rank()
         if tp_rank == 0:
             if COST_THRESHOLD == 0:
@@ -487,6 +548,7 @@ class NPUModelRunner(GPUModelRunner):
         # Prepare positions
         req_indices = np.repeat(self.arange_np[:num_reqs], num_scheduled_tokens)
         cu_num_tokens = np.cumsum(num_scheduled_tokens)
+        compact_cu_num_tokens = cu_num_tokens.copy()
         cumsums_offsets = np.repeat(cu_num_tokens - num_scheduled_tokens, num_scheduled_tokens)
         arange = self.arange_np[:total_num_scheduled_tokens] - cumsums_offsets
         positions_np = self.positions_np[:total_num_scheduled_tokens]
@@ -535,7 +597,7 @@ class NPUModelRunner(GPUModelRunner):
         else:
             attn_state = AscendAttentionState.ChunkedPrefill
 
-        if self.is_hybrid_chunked_prefill_graph_mode and attn_state == AscendAttentionState.DecodeOnly:
+        if self._should_use_hybrid_chunked_prefill_graph() and attn_state == AscendAttentionState.DecodeOnly:
             attn_state = AscendAttentionState.ChunkedPrefill
 
         self.attn_state = attn_state
@@ -545,14 +607,14 @@ class NPUModelRunner(GPUModelRunner):
         if self.enable_torchair_graph_mode and len(self.decode_gear_list) > 1:
             if attn_state == AscendAttentionState.DecodeOnly:
                 self.max_batch_size = self._get_max_token_num(self.vllm_config.parallel_config.data_parallel_size > 1, total_num_scheduled_tokens)
-            elif self.is_hybrid_chunked_prefill_graph_mode and attn_state ==  AscendAttentionState.ChunkedPrefill:
+            elif self._should_use_hybrid_chunked_prefill_graph() and attn_state ==  AscendAttentionState.ChunkedPrefill:
                 self.max_batch_size = self._get_closest_gear(num_input_tokens)
 
         if attn_state == AscendAttentionState.DecodeOnly:
             if total_num_scheduled_tokens > self.max_batch_size:
                 raise RuntimeError("num_reqs is bigger than max_batch_size")
             graph_pad_size = self.max_batch_size - total_num_scheduled_tokens
-        elif self.is_hybrid_chunked_prefill_graph_mode and attn_state == AscendAttentionState.ChunkedPrefill:
+        elif self._should_use_hybrid_chunked_prefill_graph() and attn_state == AscendAttentionState.ChunkedPrefill:
             graph_pad_size = self.max_batch_size - total_num_scheduled_tokens
         else:
             # The reduce_scatter in the TP communication domain after embedding, P goes through this
@@ -601,10 +663,21 @@ class NPUModelRunner(GPUModelRunner):
                 new_seq_lens = torch.index_select(attn_metadata_i.decode.seq_lens, dim=0, index=mtp_idx)
                 attn_metadata_i.decode.block_table = new_block_table
                 attn_metadata_i.decode.seq_lens = new_seq_lens
-            if self.enable_torchair_graph_mode and attn_state == AscendAttentionState.DecodeOnly:
+            if self._should_run_compiled_model(attn_state):
                 self.attn_metadata_builders[kv_cache_group_id].mark_static_for_attn_metadata(attn_metadata_i)
             for layer_name in kv_cache_group_spec.layer_names:
                 attn_metadata[layer_name] = attn_metadata_i
+
+        builder = self.attn_metadata_builders[0]
+        if tp_rank == 0 and builder._num_decodes > 0 and builder._num_prefills > 0:
+            logger.info(
+                "mixed batch detected: num_decode=%d, num_decode_tokens=%d, "
+                "num_prefill=%d, num_prefill_tokens=%d",
+                builder._num_decodes,
+                builder._num_decode_tokens,
+                builder._num_prefills,
+                builder._num_prefill_tokens,
+            )
 
         # Prepare input_ids
         token_indices = (positions_np + req_indices * self.input_batch.token_ids_cpu.shape[1])
@@ -617,13 +690,21 @@ class NPUModelRunner(GPUModelRunner):
         self.input_ids[:total_num_scheduled_tokens].copy_(
             self.input_ids_cpu[:total_num_scheduled_tokens], non_blocking=True)
 
+        use_mixed_sp_compact_output = False
         if model_extra_config.parall_config.attn_sp_size > 1 and attn_state != AscendAttentionState.DecodeOnly:
             sp_size = model_extra_config.parall_config.attn_sp_size * 2
-            cu_num_tokens = np.empty_like(num_scheduled_tokens)
-            cu_num_tokens[0] = num_scheduled_tokens[0]
-            for i in range(1, num_scheduled_tokens.size):
-                prev_aligned = ((cu_num_tokens[i - 1] + sp_size - 1) // sp_size) * sp_size
-                cu_num_tokens[i] = prev_aligned + num_scheduled_tokens[i]
+            use_mixed_sp_compact_output = (
+                self.chunked_prefill_policy.mixed_sp_output_compact
+                and attn_state == AscendAttentionState.ChunkedPrefill
+                and self.attn_metadata_builders[0]._num_decodes > 0
+                and self.attn_metadata_builders[0]._num_prefills > 0)
+            if not use_mixed_sp_compact_output:
+                cu_num_tokens = np.empty_like(num_scheduled_tokens)
+                cu_num_tokens[0] = num_scheduled_tokens[0]
+                for i in range(1, num_scheduled_tokens.size):
+                    prev_aligned = ((cu_num_tokens[i - 1] + sp_size - 1) // sp_size) * sp_size
+                    cu_num_tokens[i] = prev_aligned + num_scheduled_tokens[i]
+        output_cu_num_tokens = compact_cu_num_tokens if use_mixed_sp_compact_output else cu_num_tokens
 
         if self.use_spec_decode:
             # Get the number of draft tokens for each request.
@@ -635,10 +716,12 @@ class NPUModelRunner(GPUModelRunner):
                 req_idx = self.input_batch.req_id_to_index[req_id]
                 num_draft_tokens[req_idx] = len(draft_token_ids)
             spec_decode_metadata = self._calc_spec_decode_metadata(
-                num_draft_tokens, cu_num_tokens)
+                num_draft_tokens, output_cu_num_tokens)
+            if use_mixed_sp_compact_output:
+                self.spec_input_token_indices = spec_decode_metadata.logits_indices
             sample_indices = spec_decode_metadata.logits_indices
         else:
-            sample_indices = cu_num_tokens - 1
+            sample_indices = output_cu_num_tokens - 1
             sample_indices = torch.from_numpy(sample_indices).to(self.device, non_blocking=True)
             spec_decode_metadata = None
 
@@ -870,7 +953,7 @@ class NPUModelRunner(GPUModelRunner):
             if kv_cache_group_id == 0:
                 self.full_attn_metadata = attn_metadata_i
 
-            if (self.enable_torchair_graph_mode and self.attn_state == AscendAttentionState.DecodeOnly) or self.is_hybrid_chunked_prefill_graph_mode:
+            if self._should_run_compiled_model(self.attn_state):
                 self.attn_metadata_builders[kv_cache_group_id].mark_static_for_attn_metadata(attn_metadata_i)
             for layer_name in kv_cache_group_spec.layer_names:
                 attn_metadata[layer_name] = attn_metadata_i
@@ -927,7 +1010,7 @@ class NPUModelRunner(GPUModelRunner):
             input_ids = None
         else:
             if graph_pad_size >= 0:
-                if attn_state == AscendAttentionState.DecodeOnly or (self.is_hybrid_chunked_prefill_graph_mode and attn_state == AscendAttentionState.ChunkedPrefill):
+                if attn_state == AscendAttentionState.DecodeOnly or (self._should_use_hybrid_chunked_prefill_graph() and attn_state == AscendAttentionState.ChunkedPrefill):
                     padding = torch.zeros(graph_pad_size, dtype=input_ids.dtype, device=input_ids.device)
                 else:
                     vocab_size = self.model_config.get_vocab_size()
@@ -955,8 +1038,7 @@ class NPUModelRunner(GPUModelRunner):
                 _GLOBAL_STEP = _GLOBAL_STEP + 1 if not is_prompt else 0
 
             decode_h2d_trigger()
-            if self.enable_torchair_graph_mode and attn_state == AscendAttentionState.DecodeOnly or \
-                (self.is_hybrid_chunked_prefill_graph_mode and attn_state == AscendAttentionState.ChunkedPrefill):
+            if self._should_run_compiled_model(attn_state):
                 start_debug = time.time()
                 logger.debug("Start running compiled model.")
                 if not self.model_mark_static:
@@ -1186,6 +1268,22 @@ class NPUModelRunner(GPUModelRunner):
                     # if xn < n, then indices=[0,1,...,n-1], no need to slice.
                     logits = self.model.compute_logits(hidden_states, None)
                 else:
+                    if (self.chunked_prefill_policy.mixed_sp_output_compact
+                            and self.attn_state == AscendAttentionState.ChunkedPrefill
+                            and model_extra_config.parall_config.attn_sp_size > 1
+                            and sample_indices.numel() > 0):
+                        max_sample_idx = int(sample_indices.max().item())
+                        if max_sample_idx >= hidden_states.shape[0]:
+                            num_decodes = self.attn_metadata_builders[0]._num_decodes
+                            num_prefills = self.attn_metadata_builders[0]._num_prefills
+                            raise RuntimeError(
+                                "sample_indices out of range for mixed SP hidden_states: "
+                                f"num_reqs={self.input_batch.num_reqs}, "
+                                f"num_input_tokens={scheduler_output.total_num_scheduled_tokens}, "
+                                f"hidden_len={hidden_states.shape[0]}, "
+                                f"max_sample_idx={max_sample_idx}, "
+                                f"num_decodes={num_decodes}, "
+                                f"num_prefills={num_prefills}")
                     logits = self.model.compute_logits(hidden_states[sample_indices], None)
             start_3 = time.time()
             # Apply structured output bitmasks if present
@@ -1198,6 +1296,10 @@ class NPUModelRunner(GPUModelRunner):
             discard_sampled_tokens_req_indices = []
             chunk_next_tokens = [] if self.use_spec_decode else None
             chunk_next_indices = [] if self.use_spec_decode else None
+            sample_input_indices = (
+                self.spec_input_token_indices
+                if self.spec_input_token_indices is not None else sample_indices)
+            current_num_reqs = self.input_batch.num_reqs
 
             num_decodes = self.attn_metadata_builders[0]._num_decodes
             num_prefills = self.attn_metadata_builders[0]._num_prefills
@@ -1216,7 +1318,13 @@ class NPUModelRunner(GPUModelRunner):
                     discard_sampled_tokens_req_indices.append(i)
                     if self.use_spec_decode:
                         chunk_next_tokens.append(req_state.get_token_id(seq_len))
-                        chunk_next_indices.append(sample_indices[-num_prefills + i])
+                        if (spec_decode_metadata is not None
+                                and sample_input_indices.numel() != current_num_reqs):
+                            chunk_next_indices.append(
+                                sample_input_indices[
+                                    spec_decode_metadata.bonus_logits_indices[i]])
+                        else:
+                            chunk_next_indices.append(sample_input_indices[i])
             if self.use_spec_decode and len(chunk_next_tokens) > 0:
                 chunk_next_tokens = torch.tensor(chunk_next_tokens) # CPU
                 chunk_next_tokens_buffer = self.chunk_next_tokens[:chunk_next_tokens.numel()]
@@ -1473,7 +1581,7 @@ class NPUModelRunner(GPUModelRunner):
             input_ids, positions = fake_input, fake_positions
         self.attn_state = AscendAttentionState.DecodeOnly
 
-        if self.is_hybrid_chunked_prefill_graph_mode:
+        if self._should_use_hybrid_chunked_prefill_graph():
             self.attn_state = AscendAttentionState.ChunkedPrefill
 
         # Build dummy attn_metadata
