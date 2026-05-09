@@ -21,6 +21,7 @@
 import torch
 import torch_npu
 import torch.nn as nn
+import copy
 from typing import Optional, List, Dict
 
 from vllm.attention.layer import Attention
@@ -83,6 +84,9 @@ class PostDrafter(EagleProposer):
         self.minus_one = -torch.ones(1, device=device)
         self.device = device
 
+        self.is_hybrid = self.vllm_config.kv_transfer_config is None
+
+
     def load_model(self, target_model: nn.Module) -> None:
         draft_model_config = \
             self.vllm_config.speculative_config.draft_model_config
@@ -118,6 +122,7 @@ class PostDrafter(EagleProposer):
 
         self.input_ids[:input_ids.numel() - 1] = input_ids[1:]
         self.input_ids[spec_decode_metadata.logits_indices[last_accepted_index]] = forward_tokens
+
         if chunk_next_indices is not None:
             self.input_ids[chunk_next_indices] = chunk_next_tokens
 
@@ -142,6 +147,418 @@ class PostDrafter(EagleProposer):
 
         attn_metadata.advance_step(attn_metadata, positions, block_size, pad_mask, model_layer)
 
+    def _should_convert_hybrid_prefill_to_decode(self, attn_state, is_dummy) -> bool:
+        if is_dummy:
+            return False
+        if not self.is_hybrid:
+            return False
+        if self.speculative_config.num_speculative_tokens <= 1:
+            return False
+
+        if attn_state == AscendAttentionState.PrefillNoCache or attn_state == AscendAttentionState.ChunkedPrefill:
+            return True
+        
+        return False
+    
+    def _is_mla_metadata(self, metadata) -> bool:
+        if metadata is None:
+            return False
+        # avoid circular import by importing AscendMLAMetadata here
+        from omni.layers.attention.backend.mla import AscendMLAMetadata
+
+        return isinstance(metadata, AscendMLAMetadata)
+    
+    def _get_num_prefills_and_decodes(self, first_attn_metadata):
+        num_prefills = getattr(first_attn_metadata, "num_prefills", None)
+        num_decodes = getattr(first_attn_metadata, "num_decodes", None)
+
+        # Non mla metadata may not have num_prefills/num_decodes attributes
+        if num_prefills is None or num_decodes is None:
+            if getattr(self.runner, "attn_metadata_builders", None):
+                builder = self.runner.attn_metadata_builders[0]
+                num_prefills = getattr(builder, "_num_prefills")
+                num_decodes = getattr(builder, "_num_decodes")
+
+        if num_prefills is None:
+            logger.warning("Cannot get num_prefills from metadata or builder, default to 0.")
+            num_prefills = 0
+
+        if num_decodes is None:
+            logger.warning("Cannot get num_decodes from metadata or builder, default to 0.")
+            num_decodes = 0
+
+        return num_prefills, num_decodes
+
+    def _get_prefill_req_indices_from_metadata(
+            self,
+            attn_metadata,
+            sample_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        first_attn_metadata = attn_metadata
+        if isinstance(attn_metadata, Dict):
+            first_attn_metadata = attn_metadata[self.attn_layer_names[0]]
+
+        num_prefills, num_decodes = self._get_num_prefills_and_decodes(first_attn_metadata)
+
+        # if counts are unavailable, assume all sampled requests are prefill
+        if num_prefills <= 0:
+            return torch.arange(
+                sample_indices.numel(),
+                dtype=torch.long,
+                device=sample_indices.device,
+            )
+        
+        num_total_reqs = num_prefills + num_decodes
+        req_start = num_total_reqs - num_prefills
+
+        return torch.arange(
+            req_start,
+            num_total_reqs,
+            dtype=torch.long,
+            device=sample_indices.device,
+        )
+    
+    def _get_hybrid_decode_graph_batch_size(self, actual_batch_size: int) -> int:
+        if not getattr(self.runner, "enable_torchair_graph_mode", False):
+            return self.runner.max_batch_size
+        
+        return self.runner._get_max_token_num(
+            self.vllm_config.parallel_config.data_parallel_size > 1,
+            actual_batch_size,
+        )
+    
+    def _pad_first_dim(self, tensor: torch.Tensor, target_size: int, pad_value=0) -> torch.Tensor:
+        padding_size = target_size - tensor.shape[0]
+        if padding_size <= 0:
+            return tensor
+
+        padding = torch.full(
+            (padding_size,) + tensor.shape[1:],
+            pad_value,
+            dtype=tensor.dtype,
+            device=tensor.device
+        )
+        return torch.cat([tensor, padding], dim=0)
+
+    def _build_decode_metadata_from_prefill_metadata(
+            self,
+            attn_metadata,
+            continuation_positions: torch.Tensor,
+            prefill_req_indices: torch.Tensor,
+            sample_indices: torch.Tensor,
+    ):
+        """
+        Build a decode-style attention metadata object for the prefill requests
+        that should continue speculative decoding in hybrid mode.
+        """
+
+        if isinstance(attn_metadata, Dict):
+            return {
+                layer_name: self._build_decode_metadata_from_prefill_metadata(
+                    attn_metadata_i,
+                    continuation_positions, 
+                    prefill_req_indices,
+                    sample_indices
+                )
+                for layer_name, attn_metadata_i in attn_metadata.items()
+            }
+        
+        num_prefills = prefill_req_indices.numel()
+        graph_batch_size = self._get_hybrid_decode_graph_batch_size(num_prefills)
+        prefill_sample_indices = sample_indices[prefill_req_indices].contiguous()
+
+        # shallow copy
+        decode_attn_metadata = copy.copy(attn_metadata)
+        decode_attn_metadata.attn_state = AscendAttentionState.DecodeOnly
+        decode_attn_metadata.num_actual_tokens = num_prefills
+        
+        first_layer = next(self.model.model.layers.children())
+        first_self_attn = (
+            first_layer.self_attn[0]
+            if isinstance(first_layer.self_attn, torch.nn.ModuleList)
+            else first_layer.self_attn
+        )
+        rotary_emb = first_self_attn.rotary_emb
+
+        # MLA metadata carries separate prefill/decode sub-structures.
+        # For the hybrid continuation path, we must explicitly build a decode
+        if self._is_mla_metadata(decode_attn_metadata):
+            prefill_metadata = decode_attn_metadata.prefill
+            if prefill_metadata is None:
+                raise RuntimeError(
+                    "MLA hybrid prefill-to-decode conversion requires prefill metadata but got None."
+                )
+            
+            from omni.layers.attention.backend.mla import AscendMLADecodeMetadata
+
+            prefill_block_table = prefill_metadata.block_table
+            if prefill_block_table is None:
+                decode_block_table = None
+            elif prefill_block_table.shape[0] == num_prefills:
+                decode_block_table = prefill_block_table.clone()
+            else:
+                decode_block_table = prefill_block_table[
+                    prefill_req_indices
+                ].contiguous()
+
+            if decode_block_table is not None:
+                if getattr(self.runner, "enable_torchair_graph_mode", False):
+                    decode_block_table = (
+                        self.runner.attn_metadata_builders[0]
+                        ._get_graph_runner_block_tables(
+                            num_prefills,
+                            decode_block_table,
+                            graph_batch_size,
+                        )
+                    )
+                else:
+                    # Match normal DecodeOnly padding in single-op mode.
+                    decode_block_table = self._pad_first_dim(
+                        decode_block_table,
+                        graph_batch_size,
+                        pad_value=0,
+                    ) 
+
+            mc2_mask = None
+            if getattr(self.runner, "enable_torchair_graph_mode", False):
+                mc2_mask = torch.zeros(
+                    graph_batch_size,
+                    dtype=torch.bool,
+                    device=continuation_positions.device,
+                )
+                mc2_mask[:num_prefills] = True
+            
+            best_topk = None
+            if model_extra_config.operator_opt_config.best_ep:
+                best_topk = self.runner.attn_metadata_builders[0].cal_best_topk(
+                    graph_batch_size
+                )
+
+            decode_metadata = AscendMLADecodeMetadata(
+                input_positions=continuation_positions,
+                block_table=decode_block_table,
+                seq_lens=(continuation_positions + 1),
+                mc2_mask=mc2_mask,
+                cos=None,
+                sin=None,
+                best_topk=best_topk,
+            )
+
+            # Rotary embeddings must be recomputed for the new decode positions.
+            cos, sin = rotary_emb.get_cos_sin(decode_metadata.input_positions)
+            decode_metadata.cos = cos
+            decode_metadata.sin = sin
+
+            decode_attn_metadata.decode = decode_metadata
+            decode_attn_metadata.prefill = None
+            decode_attn_metadata.num_input_tokens = graph_batch_size
+            decode_attn_metadata.num_decodes = num_prefills
+            decode_attn_metadata.num_decode_tokens = num_prefills
+            decode_attn_metadata.num_prefills = 0
+
+            if decode_attn_metadata.slot_mapping is not None:
+                decode_attn_metadata.slot_mapping = decode_attn_metadata.slot_mapping[
+                    prefill_sample_indices
+                ].contiguous()
+                decode_attn_metadata.slot_mapping = self._pad_first_dim(
+                    decode_attn_metadata.slot_mapping,
+                    graph_batch_size,
+                    pad_value=-1,
+                )
+
+            return decode_attn_metadata
+        
+        # Non-MLA metadata
+        decode_attn_metadata.num_actual_tokens = num_prefills
+
+        decode_attn_metadata.block_tables = decode_attn_metadata.block_tables[
+            prefill_req_indices
+        ].contiguous()
+        decode_attn_metadata.block_tables = self._pad_first_dim(
+            decode_attn_metadata.block_tables,
+            graph_batch_size,
+            pad_value=-1,
+        )
+
+        if getattr(self.runner, "enable_torchair_graph_mode", False):
+            decode_attn_metadata.block_tables = (
+                self.runner.attn_metadata_builders[0]
+                ._get_graph_runner_block_tables(
+                    num_prefills,
+                    decode_attn_metadata.block_tables,
+                )
+            )
+        
+        decode_attn_metadata.query_lens = torch.ones(
+            graph_batch_size, 
+            dtype=decode_attn_metadata.query_lens.dtype, 
+            device=decode_attn_metadata.query_lens.device,
+        )
+
+        decode_attn_metadata.query_lens_list = [1] * graph_batch_size
+
+        decode_attn_metadata.seq_lens = (continuation_positions + 1).to(
+            decode_attn_metadata.seq_lens.dtype
+        )
+
+        decode_attn_metadata.seq_lens_list = (
+            continuation_positions + 1
+        ).tolist()
+
+        decode_attn_metadata.max_query_len = 1
+     
+        if decode_attn_metadata.slot_mapping is not None:
+            decode_attn_metadata.slot_mapping = decode_attn_metadata.slot_mapping[
+                prefill_sample_indices
+            ].contiguous()
+            decode_attn_metadata.slot_mapping = self._pad_first_dim(
+                decode_attn_metadata.slot_mapping,
+                graph_batch_size,
+                pad_value=0,
+            )
+
+        if decode_attn_metadata.slot_indices is not None:
+            block_size = self.vllm_config.cache_config.block_size
+            decode_attn_metadata.slot_indices = torch.stack(
+                [
+                    decode_attn_metadata.slot_mapping // block_size,
+                    decode_attn_metadata.slot_mapping % block_size,
+                ],
+                dim=1,
+            )
+
+        decode_attn_metadata.is_only_prefill = False
+
+        decode_attn_metadata.attn_state = AscendAttentionState.DecodeOnly
+            
+        cos, sin = rotary_emb.get_cos_sin(continuation_positions)
+        decode_attn_metadata.cos = cos
+        decode_attn_metadata.sin = sin
+
+        decode_attn_metadata.kv_index = None
+
+        if getattr(self.runner, "enable_torchair_graph_mode", False):
+            decode_attn_metadata.mc2_mask = torch.zeros(
+                graph_batch_size,
+                dtype=torch.bool,
+                device=continuation_positions.device,
+            )
+            decode_attn_metadata.mc2_mask[:num_prefills] = True
+        else:
+            decode_attn_metadata.mc2_mask = None
+
+        return decode_attn_metadata
+
+    def _convert_prefill_step_to_decode_step(
+            self,
+            input_ids: torch.Tensor,
+            positions: torch.Tensor,
+            attn_metadata,
+            previous_hidden_states,
+            last_accepted_index: torch.Tensor,
+            sample_indices: torch.Tensor,
+    ):
+        """
+        Convert the current hybrid prefill drafting state into a compact
+        decode-style continuation state after the first prefill spec token
+        has been sampled.
+        """
+        prefill_req_indices = self._get_prefill_req_indices_from_metadata(attn_metadata, sample_indices)
+        prefill_batch_size = prefill_req_indices.numel()
+
+        if prefill_batch_size == 0:
+            logger.warning("No prefill requests found for hybrid continuation.")
+            return (
+                input_ids,
+                positions,
+                attn_metadata,
+                previous_hidden_states,
+                last_accepted_index,
+                sample_indices,
+            )
+        
+        graph_batch_size = self._get_hybrid_decode_graph_batch_size(prefill_batch_size)
+        
+        prefill_sample_indices = sample_indices[prefill_req_indices].contiguous()
+
+        continuation_input_ids = input_ids[prefill_sample_indices].contiguous()
+
+        # Get continuation positions for the prefill requests
+        continuation_positions = positions[prefill_sample_indices].contiguous()
+
+        continuation_input_ids = self._pad_first_dim(
+            continuation_input_ids, graph_batch_size, pad_value=0
+        )
+
+        continuation_positions = self._pad_first_dim(
+            continuation_positions, graph_batch_size, pad_value=0
+        )
+
+        # Get modified attention metadata for the continuation step
+        continuation_attn_metadata = self._build_decode_metadata_from_prefill_metadata(
+            attn_metadata=attn_metadata,
+            continuation_positions=continuation_positions,
+            prefill_req_indices=prefill_req_indices,
+            sample_indices=sample_indices,
+        )
+
+        # Get hidden states for the continuation step 
+        def compact_hidden_states(hidden_states_i):
+            if hidden_states_i is None or not torch.is_tensor(hidden_states_i) or hidden_states_i.dim() == 0:
+                return hidden_states_i
+        
+            if hidden_states_i.shape[0] == input_ids.shape[0]:
+                hidden_states_i = hidden_states_i[prefill_sample_indices].contiguous()
+            elif hidden_states_i.shape[0] == sample_indices.numel():
+                hidden_states_i = hidden_states_i[prefill_req_indices].contiguous()
+            else:
+                logger.warning(
+                    "Unexpected hidden state shape %s when converting hybrid prefill to decode; keep it unchanged.",
+                    tuple(hidden_states_i.shape),
+                )
+                return hidden_states_i
+
+            return self._pad_first_dim(
+                hidden_states_i, graph_batch_size, pad_value=0
+            )
+        
+        if isinstance(previous_hidden_states, tuple):
+            continuation_hidden_states = tuple(
+                compact_hidden_states(x)
+                for x in previous_hidden_states
+            )
+        elif isinstance(previous_hidden_states, list):
+            continuation_hidden_states = [
+                compact_hidden_states(x)
+                for x in previous_hidden_states
+            ]
+        else:
+            continuation_hidden_states = compact_hidden_states(previous_hidden_states)
+
+        continuation_last_accepted_index = torch.arange(
+            prefill_batch_size,
+            dtype=last_accepted_index.dtype,
+            device=last_accepted_index.device,
+        )
+
+        continuation_sample_indices = torch.arange(
+            prefill_batch_size,
+            dtype=sample_indices.dtype,
+            device=sample_indices.device,
+        )
+
+        from vllm import forward_context as vllm_forward_context
+        if getattr(vllm_forward_context, "_forward_context", None) is not None:
+            vllm_forward_context._forward_context.attn_metadata = continuation_attn_metadata
+
+        return (
+            continuation_input_ids,
+            continuation_positions,
+            continuation_attn_metadata,
+            continuation_hidden_states,
+            continuation_last_accepted_index,
+            continuation_sample_indices,
+        )
 
     @torch.inference_mode()
     def propose(self,
@@ -195,9 +612,20 @@ class PostDrafter(EagleProposer):
 
             with set_forward_context(attn_metadata, self.vllm_config):
                 is_dummy = (last_accepted_index is None) or (sample_indices is None)
+                
+                should_convert_prefill_to_decode = self._should_convert_hybrid_prefill_to_decode(
+                    attn_state,
+                    is_dummy
+                )
+
+                # avoid prefill entering the adaptive
+                use_decode_adaptive = self.enable_adaptive and (
+                    attn_state == AscendAttentionState.DecodeOnly
+                )
+
                 if not is_dummy:
                     batch_size = last_accepted_index.numel()
-                    if self.enable_adaptive and attn_state == AscendAttentionState.DecodeOnly:
+                    if use_decode_adaptive:
                         drafter_logits_range = torch.empty((
                             self.speculative_config.num_speculative_tokens, batch_size), device=self.device)
                         min_acc = self.speculative_config.min_num_speculative_tokens
@@ -251,7 +679,7 @@ class PostDrafter(EagleProposer):
                             draft_forward_tokens_list.append(draft_forward_tokens)
 
                         # apply adaptive speculative decoding
-                        if self.enable_adaptive and attn_state == AscendAttentionState.DecodeOnly:
+                        if use_decode_adaptive:
                             drafter_logits_range_i = (torch.max(drafter_logits[last_accepted_index], dim=-1).values -
                                 torch.min(drafter_logits[last_accepted_index], dim=-1).values)
                             if i < min_acc:
@@ -270,11 +698,30 @@ class PostDrafter(EagleProposer):
                             input_ids[sample_indices] = draft_forward_tokens
                     if not model_extra_config.operator_opt_config.skip_mtp_hidden_states:
                         previous_hidden_states = next_hidden_states
+
+                    if(
+                        should_convert_prefill_to_decode
+                        and i == self.n_predictor - 1
+                    ):
+                        input_ids, positions, attn_metadata, previous_hidden_states, last_accepted_index, sample_indices = \
+                            self._convert_prefill_step_to_decode_step(
+                                input_ids=input_ids,
+                                positions=positions,
+                                attn_metadata=attn_metadata,
+                                previous_hidden_states=previous_hidden_states,
+                                last_accepted_index=last_accepted_index,
+                                sample_indices=sample_indices,
+                            )
+                        
+                        attn_state = AscendAttentionState.DecodeOnly
+                        batch_size = last_accepted_index.numel()
+                        num_tokens = input_ids.numel()
+
             if is_dummy:
                 return None
             else:
                 draft_forward_tokens_list = torch.stack(draft_forward_tokens_list, dim=0)
-                if self.enable_adaptive and attn_state == AscendAttentionState.DecodeOnly:
+                if use_decode_adaptive:
                     drafter_logits_range_flat = drafter_logits_range[min_acc:].view(-1)
                     _, probs_idx = torch.sort(drafter_logits_range_flat, descending=True)
                     probs_idx = probs_idx[:spec_budget]
