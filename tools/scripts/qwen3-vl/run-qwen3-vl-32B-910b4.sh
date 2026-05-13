@@ -54,11 +54,11 @@ VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models" vllm serve "$MODEL_P
   --dtype bfloat16 \
   --max-model-len 163840 \
   --max-num-batched-tokens 16384 \
-  --max-num-seqs 256 \
+  --max-num-seqs 128 \
   --enable-chunked-prefill \
   --enable-prefix-caching \
   --distributed-executor-backend mp \
-  --gpu-memory-utilization 0.85 \
+  --gpu-memory-utilization 0.84 \
   --trust-remote-code \
   --tensor-parallel-size 8 \
   --data-parallel-size 1 \
@@ -67,4 +67,4 @@ VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models" vllm serve "$MODEL_P
   --media-io-kwargs '{"video":{"fps":2,"num_frames":-1}}' \
   --limit-mm-per-prompt '{"image":2048}' \
   --enable-prompt-tokens-details \
-  --compilation-config '{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[4,8,16,32,64,128,256], "backend":"eager", "compile_sizes":[4,8,16,32,64,128,256]}' 2>&1 | tee -a "$LOG_FILE"
+  --compilation-config '{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[32,64,128], "backend":"eager", "compile_sizes":[32,64,128]}' 2>&1 | tee -a "$LOG_FILE"

@@ -18,7 +18,7 @@ MODEL_NAME="${MODEL_NAME:-qwen3-vl}"
 STARTUP_TIMEOUT_SECONDS="${STARTUP_TIMEOUT_SECONDS:-1800}"  # wait for vLLM to start in 30 minutes
 
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-256}"
-COMPILATION_CONFIG='{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[4,16,32,64,128,256], "backend":"eager", "compile_sizes":[4,16,32,64,128,256]}'
+COMPILATION_CONFIG='{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[8,32,64,128,256], "backend":"eager", "compile_sizes":[8,32,64,128,256]}'
 
 source ~/.bashrc
 source /usr/local/Ascend/ascend-toolkit/set_env.sh

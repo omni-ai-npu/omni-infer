@@ -234,7 +234,7 @@
       export TORCH_COMPILE_DISABLE=1
       export VLLM_USE_TRITON_FLASH_ATTN=0
 
-      EXTRA_ARGS_STR='--enable-expert-parallel --swap_space 64.0 --disable-log-requests --max-num-seq 512 --enable-prefix-caching --allowed-local-media-path /path/to/your/data --media-io-kwargs {"video":{"fps":2,"num_frames":-1}}  --limit-mm-per-prompt {"image":2048} --max-num-batched-tokens 16384 --block-size 128 --distributed-executor-backend mp --enable-chunked-prefill --enable-prompt-tokens-details --compilation-config {"level": 3, "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes": [4,32,64,128,256,512], "backend": "eager", "compile_sizes": [4,32,64,128,256,512]}'
+      EXTRA_ARGS_STR='--enable-expert-parallel --swap_space 64.0 --disable-log-requests --max-num-seq 512 --enable-prefix-caching --allowed-local-media-path /path/to/your/data --media-io-kwargs {"video":{"fps":2,"num_frames":-1}}  --limit-mm-per-prompt {"image":2048} --max-num-batched-tokens 16384 --block-size 128 --distributed-executor-backend mp --enable-chunked-prefill --enable-prompt-tokens-details --compilation-config {"level": 3, "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes": [4,8,16,32,48,72,96,128,256,384,448,512], "backend": "eager", "compile_sizes": [4,8,16,32,48,72,96,128,256,384,448,512]}'
 
       cd ${CODE_PATH}/scripts
       bash mix_run.sh \
