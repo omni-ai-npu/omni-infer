@@ -32,7 +32,7 @@
     VLLM_TORCH_PROFILER_DIR: "/path/to/your/prof"
     PROFILER_TOKEN_THRESHOLD: "1280000000"
     PROFILER_STOP_STEP: "5"
-    GPU_UTIL: "0.9"
+    GPU_UTIL: "0.7"
 
 
     # -e VLLM_TORCH_PROFILER_DIR=${LOG_PATH}/prof \
