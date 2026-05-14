@@ -51,7 +51,7 @@ def register_values(inventory):
         'DECODE_API_SERVER_LIST': decode_api_server_list_result
     }
 
-def process_results(results, inventory, inv_file):
+def process_results(results, inventory, inv_file, cloud_mode=False):
     prefill_result = results['PREFILL_API_SERVER_LIST']
     decode_api_servers = results['DECODE_API_SERVER_LIST']
 
@@ -112,15 +112,13 @@ def process_results(results, inventory, inv_file):
         args: Dict[str, Any] = vars.get("args", {}) or {}
         decode_max_num_seqs = args.get('extra-args', {}).get('max-num-seqs', decode_max_num_seqs)
 
+    file_name = f"./omni_start_c.sh"
     if use_omni_proxy:
-        with tempfile.NamedTemporaryFile(
-                "w", delete=False,
-                dir="./",
-                prefix=f"omni_proxy_",
-                suffix=".sh") as tf:
+        with open(file_name, "w") as tf:
             script_path = Path(tf.name)
             tf.write("#!/usr/bin/env bash\n")
-            tf.write(f"docker exec -i {shlex.quote(container_name)} bash -s <<'EOF'\n")
+            if not cloud_mode:
+                tf.write(f"docker exec -i {shlex.quote(container_name)} bash -s <<'EOF'\n")
             tf.write("source ~/.bashrc\n\n")
             tf.write("# Export environment variables\n")
             tf.write(export_block + "\n\n")
@@ -142,16 +140,14 @@ def process_results(results, inventory, inv_file):
               --omni-proxy-max-batch-num-token {omni_proxy_max_batch_num_token} \\\n\
               --omni-proxy-prefill-max-num-seqs {omni_proxy_prefill_max_num_seqs} \\\n\
               --omni-proxy-decode-max-num-seqs {omni_proxy_decode_max_num_seqs}\n\n")
-            tf.write("EOF\n")
+            if not cloud_mode:
+                tf.write("EOF\n")
     else:
-        with tempfile.NamedTemporaryFile(
-                "w", delete=False,
-                dir="./",
-                prefix=f"omni_proxy_",
-                suffix=".sh") as tf:
+        with open(file_name, "w") as tf:
             script_path = Path(tf.name)
             tf.write("#!/usr/bin/env bash\n")
-            tf.write(f"docker exec -i {shlex.quote(container_name)} bash -s <<'EOF'\n")
+            if not cloud_mode:
+                tf.write(f"docker exec -i {shlex.quote(container_name)} bash -s <<'EOF'\n")
             tf.write(f"ps aux | grep 'nginx' | grep -v 'grep' | awk '{{print $2}}' | xargs kill -9; cd /workspace/omniinfer/components/omni-proxy/omni_proxy/; bash global_proxy.sh \\\n\
               --listen-port {api_port_val} \\\n\
               --prefill-servers-list {prefill_result} \\\n\
@@ -164,9 +160,14 @@ def process_results(results, inventory, inv_file):
               --decode-max-num-seqs {decode_max_num_seqs} \\\n\
               --prefill-lb-sdk {prefill_lb_sdk} \\\n\
               --decode-lb-sdk {decode_lb_sdk}\n\n")
-            tf.write("EOF\n")
+            if not cloud_mode:
+                tf.write("EOF\n")
 
     os.chmod(script_path, 0o755)
+
+    if cloud_mode:
+        print(f"[INFO] Generated cloud proxy script: {script_path}")
+        return
 
     cmd = (
         f"ansible {shlex.quote(host)} "
@@ -204,11 +205,11 @@ def _double_quotes(s: str) -> str:
     return f'"{s}"'
 
 
-def omni_run_proxy(inventory):
+def omni_run_proxy(inventory, cloud_mode=False):
     inv_file = Path(inventory).expanduser().resolve()
     inv = None
     with open(inv_file, "r", encoding="utf-8") as f:
         inv = yaml.safe_load(f)
     
     result = register_values(inv)
-    process_results(result, inv, inv_file)
+    process_results(result, inv, inv_file, cloud_mode=cloud_mode)
