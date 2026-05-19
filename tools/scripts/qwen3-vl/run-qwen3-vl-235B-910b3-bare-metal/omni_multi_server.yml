@@ -32,7 +32,7 @@
     VLLM_TORCH_PROFILER_DIR: "/path/to/your/prof"
     PROFILER_TOKEN_THRESHOLD: "1280000000"
     PROFILER_STOP_STEP: "5"
-    GPU_UTIL: "0.7"
+    GPU_UTIL: "0.8"
 
 
     # -e VLLM_TORCH_PROFILER_DIR=${LOG_PATH}/prof \
@@ -238,7 +238,7 @@
 
       cd ${CODE_PATH}/scripts
       bash mix_run.sh \
-        --served-model-name "qwen" \
+        --served-model-name "qwen3-vl-235b-instruct" \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
         --global-decode-server-ip-list "$SERVER_IP_LIST" \
         --gloo-socket-ifname ${GLOO_SOCKET_IFNAME} \

@@ -14,7 +14,7 @@ BASE_API_PORT="${BASE_API_PORT:-8100}"
 PORT_OFFSET="${PORT_OFFSET:-1}"
 PROXY_PATH="${PROXY_PATH:-/workspace/omniinfer/components/omni-proxy/omni_proxy}"
 PROXY_BACKEND_HOST="${PROXY_BACKEND_HOST:-127.0.0.1}"
-MODEL_NAME="${MODEL_NAME:-qwen3-vl}"
+MODEL_NAME="${MODEL_NAME:-qwen3-vl-32b-instruct}"
 STARTUP_TIMEOUT_SECONDS="${STARTUP_TIMEOUT_SECONDS:-1800}"  # wait for vLLM to start in 30 minutes
 
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-256}"

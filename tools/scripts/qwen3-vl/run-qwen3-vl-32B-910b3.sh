@@ -47,7 +47,7 @@ LOG_FILE="${BASE_LOG_PATH}/qwen-32b/logs/${LOG_NAME_PREFIX}_$(date +%Y%m%d_%H%M%
 } | tee "$LOG_FILE"
 
 VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models" vllm serve "$MODEL_PATH" \
-  --served-model-name qwen3-vl \
+  --served-model-name qwen3-vl-32b-instruct \
   --host 0.0.0.0 \
   --port "$PORT" \
   --dtype bfloat16 \

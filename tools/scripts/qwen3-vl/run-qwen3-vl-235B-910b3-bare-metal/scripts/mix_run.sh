@@ -41,7 +41,7 @@ VLLM_USE_V1=1
 VLLM_WORKER_MULTIPROC_METHOD="fork"
 MODEL_PATH="/home/dsv3/models/DeepSeek-V3-w8a8-0423"
 TP=4
-SERVED_MODEL_NAME="deepseek"
+SERVED_MODEL_NAME="qwen3-vl-235b-instruct"
 MAX_MODEL_LEN=4096
 LOG_DIR="apiserverlog"
 # PD separation parameters
