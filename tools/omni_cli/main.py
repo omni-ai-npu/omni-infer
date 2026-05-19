@@ -548,7 +548,7 @@ echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> 
         with open(file_name, "w") as tf:
             script_path = Path(tf.name)
             tf.write("#!/usr/bin/env bash\n")
-            tf.write("set -euo pipefail\n\n")
+            tf.write("set -eo pipefail\n\n")
 
             if not cloud_mode:
                 tf.write(f"docker exec -i {shlex.quote(container_name)} bash -s <<'EOF'\n")
