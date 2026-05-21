@@ -63,6 +63,8 @@ class ProcessManager:
 def process_space_split(arg_temp, out_list):
     if "--compilation-config" in arg_temp:
         out_list.extend(["--compilation-config", arg_temp[len("--compilation-config "):]])
+    elif "--reasoning-config" in arg_temp:
+        out_list.extend(["--reasoning-config", arg_temp[len("--reasoning-config "):]])
     else:
         out_list.extend(arg_temp.split(" "))
     return out_list
