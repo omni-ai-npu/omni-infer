@@ -106,6 +106,51 @@ int find_jsmn_key(ngx_http_request_t *r, const char *json, jsmntok_t *tokens, in
     return -1;
 }
 
+static int omni_json_skip(jsmntok_t *tokens, int tokens_size, int idx)
+{
+    if (idx < 0 || idx >= tokens_size) {
+        return tokens_size;
+    }
+    int end = tokens[idx].end;
+    int j = idx + 1;
+    while (j < tokens_size && tokens[j].start < end) {
+        j++;
+    }
+    return j;
+}
+
+static int find_top_level_jsmn_key(
+    ngx_http_request_t *r, const char *json, jsmntok_t *tokens, int tokens_size, const char *key)
+{
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "top-level json key lookup: token size %d", tokens_size);
+
+    if (tokens == NULL || tokens_size <= 0 || tokens[0].type != JSMN_OBJECT) {
+        return -1;
+    }
+
+    int key_len = (int)strlen(key);
+    int i = 1;
+    for (int pair = 0; pair < tokens[0].size && i < tokens_size; pair++) {
+        int key_idx = i;
+        int val_idx = key_idx + 1;
+        if (val_idx >= tokens_size) {
+            break;
+        }
+
+        if (tokens[key_idx].type == JSMN_STRING &&
+            key_len == tokens[key_idx].end - tokens[key_idx].start &&
+            strncmp(json + tokens[key_idx].start, key, key_len) == 0)
+        {
+            return key_idx;
+        }
+
+        i = omni_json_skip(tokens, tokens_size, val_idx);
+    }
+
+    return -1;
+}
+
 // Helper to copy a substring from JSON based on token
 void json_token_tostr(const char *json, const jsmntok_t *t, char *buf, size_t buflen)
 {
@@ -594,7 +639,7 @@ void gen_prefill_json_str_jsmn(
     int max_completion_tokens_val_idx = -1;
     int stream_val_idx = -1;
     int stream_options_key_idx = -1, stream_options_val_idx = -1;
-    char keybuf[64];
+    int has_top_level_max_token = 0;
 
     // Early return for invalid/empty input
     if (json == NULL || len == 0) {
@@ -636,45 +681,46 @@ void gen_prefill_json_str_jsmn(
     ctx->origin_body_tokens = tokens;
     ctx->origin_body_tokens_size = ret;
 
-    for (int i = 1; i < ret; ++i)
+    int max_tokens_key_idx = find_top_level_jsmn_key(r, json, tokens, ret, "max_tokens");
+    if (max_tokens_key_idx != -1)
     {
-        if (tokens[i].type == JSMN_STRING)
-        {
-            json_token_tostr(json, &tokens[i], keybuf, sizeof(keybuf));
-            if (max_tokens_val_idx == -1 && strcmp(keybuf, "max_tokens") == 0)
-            {
-                max_tokens_val_idx = i + 1;
-                region_infos[region_infos_count++] = (region_info_t){
-                    R_MAX_TOKENS, max_tokens_val_idx, tokens[max_tokens_val_idx].start, tokens[max_tokens_val_idx].end};
-            }
-            if (max_completion_tokens_val_idx == -1 && strcmp(keybuf, "max_completion_tokens") == 0)
-            {
-                max_completion_tokens_val_idx = i + 1;
-                region_infos[region_infos_count++] = (region_info_t){
-                    R_MAX_COMPLETION_TOKENS, max_completion_tokens_val_idx, tokens[max_completion_tokens_val_idx].start, tokens[max_completion_tokens_val_idx].end};
-            }
-            if (stream_val_idx == -1 && strcmp(keybuf, "stream") == 0)
-            {
-                stream_val_idx = i + 1;
-                region_infos[region_infos_count++] =
-                    (region_info_t){R_STREAM, stream_val_idx, tokens[stream_val_idx].start, tokens[stream_val_idx].end};
-            }
-            if (stream_options_key_idx == -1 && strcmp(keybuf, "stream_options") == 0)
-            {
-                stream_options_key_idx = i;
-                stream_options_val_idx = i + 1;
-                // Locate key start and value end for removal, including preceding comma if any
-                size_t so_key_start = tokens[stream_options_key_idx].start;
-                size_t so_val_end = tokens[stream_options_val_idx].end;
-                size_t j = so_key_start;
-                while (j > 0 && json[j - 1] != ',')
-                    j--;
-                if (j > 0 && json[j - 1] == ',')
-                    so_key_start = j - 1;
-                region_infos[region_infos_count++] =
-                    (region_info_t){R_STREAM_OPTIONS, stream_options_key_idx, so_key_start, so_val_end};
-            }
-        }
+        max_tokens_val_idx = max_tokens_key_idx + 1;
+        has_top_level_max_token = 1;
+        region_infos[region_infos_count++] = (region_info_t){
+            R_MAX_TOKENS, max_tokens_val_idx, tokens[max_tokens_val_idx].start, tokens[max_tokens_val_idx].end};
+    }
+
+    int max_completion_tokens_key_idx = find_top_level_jsmn_key(r, json, tokens, ret, "max_completion_tokens");
+    if (max_completion_tokens_key_idx != -1)
+    {
+        max_completion_tokens_val_idx = max_completion_tokens_key_idx + 1;
+        has_top_level_max_token = 1;
+        region_infos[region_infos_count++] = (region_info_t){
+            R_MAX_COMPLETION_TOKENS, max_completion_tokens_val_idx, tokens[max_completion_tokens_val_idx].start, tokens[max_completion_tokens_val_idx].end};
+    }
+
+    int stream_key_idx = find_top_level_jsmn_key(r, json, tokens, ret, "stream");
+    if (stream_key_idx != -1)
+    {
+        stream_val_idx = stream_key_idx + 1;
+        region_infos[region_infos_count++] = (region_info_t){
+            R_STREAM, stream_val_idx, tokens[stream_val_idx].start, tokens[stream_val_idx].end};
+    }
+
+    stream_options_key_idx = find_top_level_jsmn_key(r, json, tokens, ret, "stream_options");
+    if (stream_options_key_idx != -1)
+    {
+        stream_options_val_idx = stream_options_key_idx + 1;
+        // Locate key start and value end for removal, including preceding comma if any
+        size_t so_key_start = tokens[stream_options_key_idx].start;
+        size_t so_val_end = tokens[stream_options_val_idx].end;
+        size_t j = so_key_start;
+        while (j > 0 && json[j - 1] != ',')
+            j--;
+        if (j > 0 && json[j - 1] == ',')
+            so_key_start = j - 1;
+        region_infos[region_infos_count++] =
+            (region_info_t){R_STREAM_OPTIONS, stream_options_key_idx, so_key_start, so_val_end};
     }
 
     // Sort region_infos by start position (should be in order already due to scan, but robust)
@@ -741,8 +787,7 @@ void gen_prefill_json_str_jsmn(
         pos += len - 1 - src;
     }
 
-    // If both "max_tokens" and "max_completion_tokens" were missing, insert "max_tokens":1 before '}'
-    if (max_tokens_val_idx == -1 && max_completion_tokens_val_idx == -1)
+    if (!has_top_level_max_token)
     {
         if (pos > 0 && newjson[pos - 1] != '{')
         {
@@ -880,11 +925,6 @@ ngx_int_t omni_proxy_prepare_prefill_subrequest(
     size_t len = ctx->origin_body_data_size;
     u_char *body_data = ctx->origin_body_data;
     ngx_buf_t *b;
-
-    // Parse original body to extract max_tokens if present
-    jsmn_parser parser;
-    jsmntok_t   tokens[256];
-    int         ntok;
     omni_req_t *req;
 
     req = ctx->req;
@@ -894,53 +934,39 @@ ngx_int_t omni_proxy_prepare_prefill_subrequest(
         return NGX_ERROR;
     }
 
-    jsmn_init(&parser);
-    ntok = jsmn_parse(&parser,
-                      (char *)body_data,
-                      len,
-                      tokens,
-                      sizeof(tokens)/sizeof(tokens[0]));
-    if (ntok < 0) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "prefill: jsmn_parse fail, error=%d", ntok);
-    } else {
-        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                      "prefill: jsmn_parse return %d tokens", ntok);
-
-        int key_idx = find_jsmn_key(r, (char *)body_data, tokens, ntok, "max_tokens");
-        int completion_key_idx = find_jsmn_key(r, (char *)body_data, tokens, ntok, "max_completion_tokens");
-        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                      "prefill: find_jsmn_key returned %d for max_tokens, %d for max_completion_tokens", key_idx, completion_key_idx);
-
-        // Prefer max_tokens, fall back to max_completion_tokens
-        int effective_key_idx = (key_idx != -1) ? key_idx : completion_key_idx;
-
-        if (effective_key_idx != -1 && effective_key_idx + 1 < ntok) {
-            jsmntok_t *val_t = &tokens[effective_key_idx + 1];
-            char buf[32];
-            json_token_tostr((char *)body_data, val_t, buf, sizeof(buf));
-            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                          "prefill: max_tokens token string = '%s'", buf);
-
-            req->metrics.max_tokens = (uint32_t)strtoul(buf, NULL, 10);
-            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                          "prefill: req->metrics.max_tokens = %ui",
-                          (ngx_uint_t)req->metrics.max_tokens);
-        }
-        else {
-            req->metrics.max_tokens = 1;
-            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                          "prefill: can not find max_tokens or max_completion_tokens, set a default value %ui",
-                          (ngx_uint_t)req->metrics.max_tokens);
-        }
-    }
-
-    // Parse JSON from the temporary copy
+    
     size_t str_len = 0;
     gen_prefill_json_str_jsmn(sr, ctx, (char *)body_data, len, &modified_json_str, &str_len);
     if (modified_json_str == NULL || str_len == 0)
     {
         return NGX_ERROR;
+    }
+
+    {
+        jsmntok_t *tokens = ctx->origin_body_tokens;
+        int ntok = ctx->origin_body_tokens_size;
+
+        int max_tokens_key_idx = find_top_level_jsmn_key(
+            r, (char *)body_data, tokens, ntok, "max_tokens");
+        int max_completion_tokens_key_idx = find_top_level_jsmn_key(
+            r, (char *)body_data, tokens, ntok, "max_completion_tokens");
+
+        int eff_key_idx = (max_tokens_key_idx != -1)
+                              ? max_tokens_key_idx
+                              : max_completion_tokens_key_idx;
+        if (eff_key_idx != -1 && eff_key_idx + 1 < ntok) {
+            char buf[32];
+            json_token_tostr((char *)body_data, &tokens[eff_key_idx + 1], buf, sizeof(buf));
+            req->metrics.max_tokens = (uint32_t)strtoul(buf, NULL, 10);
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                          "prefill: req->metrics.max_tokens = %ui",
+                          (ngx_uint_t)req->metrics.max_tokens);
+        } else {
+            req->metrics.max_tokens = 1;
+            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                          "prefill: no top-level max_tokens/max_completion_tokens, set default %ui",
+                          (ngx_uint_t)req->metrics.max_tokens);
+        }
     }
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP,
