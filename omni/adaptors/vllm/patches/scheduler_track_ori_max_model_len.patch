@@ -1,0 +1,12 @@
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index f8561cefe..ce1f50b15 100755
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -94,6 +94,7 @@ class Scheduler(SchedulerInterface):
+         self.max_num_scheduled_tokens = \
+             self.scheduler_config.max_num_batched_tokens
+         self.max_model_len = self.scheduler_config.max_model_len
++        self.ori_max_model_len = getattr(self.vllm_config.model_config, "ori_max_model_len", self.max_model_len)
+         self.enable_kv_cache_events = (
+             self.kv_events_config is not None
+             and self.kv_events_config.enable_kv_cache_events)

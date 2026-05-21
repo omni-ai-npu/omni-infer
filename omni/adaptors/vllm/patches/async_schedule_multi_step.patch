@@ -138,7 +138,7 @@ index 4c6b3eea0..5d297ff1a 100644
 -                    del new_token_ids[num_new:]  # Trim new tokens if needed.
 -                    break
 +
-+            stopped, num_new = add_token_and_check_stop(new_token_ids, request, self.max_model_len - (1 + self.num_spec_tokens) * num_steps - max(0, self.num_spec_tokens - 1) + 1 if (self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer") else self.max_model_len)
++            stopped, num_new = add_token_and_check_stop(new_token_ids, request, self.ori_max_model_len - (1 + self.num_spec_tokens) * num_steps - max(0, self.num_spec_tokens - 1) + 1 if (self.vllm_config.kv_transfer_config is not None and self.vllm_config.kv_transfer_config.kv_role == "kv_consumer") else self.ori_max_model_len)
 +            if stopped:
 +                kv_transfer_params = self._free_request(request)
 +                del new_token_ids[num_new:]  # Trim new tokens if needed.

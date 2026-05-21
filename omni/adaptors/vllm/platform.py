@@ -233,6 +233,8 @@ class ConfigUpdater:
         Args:
             vllm_config: The vLLM configuration to update.
         """
+        cls._update_max_model_len(vllm_config)
+
         from omni.adaptors.vllm.compilation.compile_config import NPUCompilationConfig
         additional_config = vllm_config.additional_config
         vllm_config.npu_compilation_config = NPUCompilationConfig()
@@ -267,6 +269,20 @@ class ConfigUpdater:
                 os.getenv("REPLAY_MODE", default='0')):
             logger.warning("Graph mode not supported for MOCK mode. Disabling.")
             vllm_config.npu_compilation_config.level = CompilationLevel.NO_COMPILATION
+
+    @staticmethod
+    def _update_max_model_len(vllm_config: 'VllmConfig') -> None:
+        """Update max_model_len"""
+        speculative_config = vllm_config.speculative_config
+        kv_transfer_config = vllm_config.kv_transfer_config
+        scheduler_config = vllm_config.scheduler_config
+        model_config = vllm_config.model_config
+
+        if model_config and speculative_config and kv_transfer_config and kv_transfer_config.is_kv_consumer:
+            model_config.ori_max_model_len = model_config.max_model_len
+            model_config.max_model_len += speculative_config.num_speculative_tokens
+            if scheduler_config:
+                scheduler_config.max_model_len = model_config.max_model_len
 
     @staticmethod
     def _update_parallel_config(vllm_config: 'VllmConfig') -> None:
