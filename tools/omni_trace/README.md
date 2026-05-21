@@ -16,14 +16,12 @@ export PROFILING_NAMELIST="${OMNIINFER_ROOT}/tools/omni_trace/omnilogger_namelis
 # 4. 指定trace日志输出目录
 export TRACE_OUTPUT_DIRECTORY=/data/user/trace/
 
-# 5. 指定运行节点类型（prefill/decode二选一）
+# 5. 指定运行节点类型（encode/prefill/decode三选一）
+export ROLE="encode"
 export ROLE="prefill"
 export ROLE="decode"
 
 # 6. 需要配置patch环境变量
 unset OMNI_NPU_VLLM_PATCHES
-export OMNI_NPU_VLLM_PATCHES="ProfilerDynamicPatch,RequestStatusPatch,OpenAIServingChatTokenLoggerPatch"
-# 或
-unset OMNI_NPU_VLLM_PATCHES_ALL
-export OMNI_NPU_VLLM_PATCHES_ALL=1
+export OMNI_NPU_VLLM_PATCHES="ALL"
 # ==============================================================

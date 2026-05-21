@@ -12,15 +12,23 @@ import openpyxl
 import traceback
 
 
-_INTERNAL_REQUEST_ID_RE = re.compile(
-    r"^(?P<base>(?:chatcmpl|cmpl|generate-tokens|pool|score|rerank|tokn)-.+)-(?P<suffix>[0-9a-f]{8})$"
+_CHAT_REQUEST_ID_RE = re.compile(
+    r"^(?P<base>chatcmpl-.+)-(?P<suffix>[0-9a-f]{8})$"
+)
+_COMPLETION_REQUEST_ID_RE = re.compile(
+    r"^(?P<base>cmpl-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:-\d+)?(?:-[0-9a-f]{8})?$"
 )
 
 
 def _normalize_request_id(request_id):
-    match = _INTERNAL_REQUEST_ID_RE.match(request_id)
+    match = _COMPLETION_REQUEST_ID_RE.match(request_id)
     if match:
         return match.group("base")
+
+    match = _CHAT_REQUEST_ID_RE.match(request_id)
+    if match:
+        return match.group("base")
+
     return request_id
 
 
@@ -185,7 +193,7 @@ _ENCODE_ACTION_KEYS = frozenset(
         "Encoder try to schedule in waiting queue",
         "Encoder start has_caches",
         "Encoder done has_caches",
-        "Start append running sequece for encode",
+        "Start append running sequence for encode",
         "Encoder start execute_model",
         "Encoder start _execute_mm_encoder",
         "Encoder start save_caches",
@@ -474,7 +482,7 @@ def _get_action_map() -> dict:
         "Encoder try to schedule in waiting queue": "E：首次尝试加入running队列",
         "Encoder start has_caches": "E：has_caches开始",
         "Encoder done has_caches": "E：has_caches完成",
-        "Start append running sequece for encode": "E：进入running队列",
+        "Start append running sequence for encode": "E：进入running队列",
         "Encoder start execute_model": "E：execute_model开始",
         "Encoder start _execute_mm_encoder": "E：_execute_mm_encoder开始",
         "Encoder start save_caches": "E：save_caches开始",
@@ -518,7 +526,7 @@ def _get_action_map() -> dict:
         "Start pull kv": "D：开始pull kv",
         "Finish pull kv": "D：结束pull kv",
         "Prefill free kv blocks": "P侧释放kv（和前后列时间戳可能存在时钟误差）",
-        "Start append running sequece for decode": "D：进入running队列",
+        "Start append running sequence for decode": "D：进入running队列",
         "Start to send output": "D：触发首个decode token执行",
         "First decode output token": "D：返回第一个token",
         "Second decode output token": "D：返回第二个token",

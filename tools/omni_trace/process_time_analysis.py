@@ -28,7 +28,7 @@ _ENCODE_TRACE_KEYS = frozenset(
         "Encoder try to schedule in waiting queue",
         "Encoder start has_caches",
         "Encoder done has_caches",
-        "Start append running sequece for encode",
+        "Start append running sequence for encode",
         "Encoder start execute_model",
         "Encoder start _execute_mm_encoder",
         "Encoder start save_caches",

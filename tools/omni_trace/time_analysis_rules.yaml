@@ -21,9 +21,9 @@ formulas:
     right: Encoder done has_caches
     output: E：has_caches开始→E：has_caches完成（ms）
   - left: Encoder done has_caches
-    right: Start append running sequece for encode
+    right: Start append running sequence for encode
     output: E：has_caches完成→E：进入running队列（ms）
-  - left: Start append running sequece for encode
+  - left: Start append running sequence for encode
     right: Encoder start execute_model
     output: E：进入running队列→E：execute_model开始（ms）
   - left: Encoder start execute_model
@@ -151,9 +151,9 @@ formulas:
     right: Finish pull kv
     output: D：开始pull kv→D：结束pull kv（ms）
   - left: Finish pull kv
-    right: Start append running sequece for decode
+    right: Start append running sequence for decode
     output: D：结束pull kv→D：进入running队列（ms）
-  - left: Start append running sequece for decode
+  - left: Start append running sequence for decode
     right: Start to send output
     output: D：进入running队列→D：触发首个decode token执行（ms）
   - left: Start to send output
