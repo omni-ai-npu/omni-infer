@@ -125,6 +125,15 @@ static omni_req_t *omni_req_init(ngx_http_request_t *r)
 {
     ngx_shmtx_lock(&g_state->shmtx);
     omni_req_t *req = omni_allocate_request(&g_state->request_pool, r);
+    if (req == NULL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "omni_proxy: allocate request slot failed, num_requests:%uD, head:%uD, max:%d",
+                      g_state->request_pool.num_requests,
+                      g_state->request_pool.head,
+                      MAX_REQUEST_SLOTS);
+        ngx_shmtx_unlock(&g_state->shmtx);
+        return NULL;
+    }
     ngx_shmtx_unlock(&g_state->shmtx);
 
     omni_req_context_t *ctx = ngx_pcalloc(r->pool, sizeof(omni_req_context_t));
@@ -172,7 +181,9 @@ static void omni_req_free(omni_req_t *req)
     ngx_http_request_t *r = omni_get_http_request(req);
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "Free Req:%d, at:%x",
                   req->slot_index, req->phase_state);
+    ngx_shmtx_lock(&g_state->shmtx);
     omni_free_request(&g_state->request_pool, req);
+    ngx_shmtx_unlock(&g_state->shmtx);
 }
 
 void omni_phase_transition_all(omni_req_t *req, omni_proxy_request_phase_t from, omni_proxy_request_phase_t to)
