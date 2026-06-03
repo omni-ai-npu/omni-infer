@@ -172,7 +172,8 @@ def apply_async_llm_idle_stats_patch():
     origin_do_log_stats = AsyncLLM.do_log_stats
     
     async def patched_do_log_stats(self, scheduler_outputs=None, model_output=None) -> None:
-        if (self.logger_manager and not self.output_processor.has_unfinished_requests()):
+        kv_transfer_config = getattr(self.vllm_config, "kv_transfer_config", None)
+        if (self.logger_manager and not self.output_processor.has_unfinished_requests() and kv_transfer_config is None):
             self.logger_manager.record(scheduler_stats=SchedulerStats(), iteration_stats=None,)
         await origin_do_log_stats(self, scheduler_outputs, model_output)
     
