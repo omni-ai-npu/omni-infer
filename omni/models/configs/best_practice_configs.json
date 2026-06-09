@@ -294,6 +294,16 @@
       "decode_config_file": "glm5_w4a8c16_a3_1p1d_d.json"
    },
    {
+      "model": "glm5",
+      "hardware": "A3",
+      "precision": "w8a8",
+      "prefill_node_num": 1,
+      "decode_node_num": 1,
+      "pd_disaggregation": true,
+      "prefill_config_file": "glm5_w8a8c16_a3_1p1d_p.json",
+      "decode_config_file": "glm5_w8a8c16_a3_1p1d_d.json"
+   },
+   {
       "model": "deepseek_v32",
       "hardware": "A3",
       "precision": "w8a8",

@@ -143,7 +143,9 @@ class BaseOmniCache(ABC):
     def _log_and_validate_kv_blocks(
         self,
         kv_cache_config: KVCacheConfig,
-        device_cache_blocks: Optional[int] = None
+        device_cache_blocks: Optional[int] = None,
+        packed_hbm: bool = False,
+        packed_hbm_required: Optional[int] = None,
     ) -> None:
         """
         Log all KV block counts and validate that OmniCache allocated blocks
@@ -154,6 +156,11 @@ class BaseOmniCache(ABC):
                 num_blocks which represents the number of GPU blocks vLLM needs.
             device_cache_blocks: Optional device cache block count for PrefillOmniCache.
                 If provided, both host and device cache will be validated.
+            packed_hbm: When True, OMNI_CACHE_PACKED_HBM is active. The device
+                buffer is intentionally smaller than kv_cache_config.num_blocks;
+                device validation checks against packed_hbm_required instead.
+            packed_hbm_required: The minimum device blocks needed in PACKED_HBM
+                mode (= max_num_reqs * max_num_blocks_per_req + 1).
 
         Raises:
             ValueError: If host or device cache blocks are insufficient for vLLM
@@ -186,7 +193,8 @@ class BaseOmniCache(ABC):
         logger.debug(
             f"KV cache validation input: vllm_num_blocks={vllm_num_blocks}, "
             f"host_cache_blocks={host_cache_blocks}, "
-            f"device_cache_blocks={device_cache_blocks}"
+            f"device_cache_blocks={device_cache_blocks}, "
+            f"packed_hbm={packed_hbm}"
         )
 
         # Unified Info logging for all KV block counts
@@ -196,9 +204,12 @@ class BaseOmniCache(ABC):
         ]
         if device_cache_blocks is not None:
             block_info.append(f"device allocated kv_cache_blocks={device_cache_blocks}")
+        if packed_hbm:
+            block_info.append(f"PACKED_HBM=1 (device working-set required={packed_hbm_required})")
         logger.info(f"OmniCache KV Blocks allocation: {', '.join(block_info)}")
 
         # Validate host cache block count
+        # Host must always cover the full scheduler pool, regardless of PACKED_HBM.
         host_deficit = vllm_num_blocks - host_cache_blocks
         if host_cache_blocks < vllm_num_blocks:
             error_msg = (
@@ -213,26 +224,48 @@ class BaseOmniCache(ABC):
 
         # Validate device cache block count (if applicable)
         if device_cache_blocks is not None:
-            device_deficit = vllm_num_blocks - device_cache_blocks
-            if device_cache_blocks < vllm_num_blocks:
-                error_msg = (
-                    f"Insufficient device KV cache blocks: "
-                    f"allocated {device_cache_blocks}, but vLLM requires {vllm_num_blocks} "
-                    f"(deficit: {device_deficit} blocks).\n"
-                    f"Suggested fixes:\n"
-                    f"  1. Increase SCALE_RATIO environment variable for larger device cache\n"
-                    f"  2. Increase max_num_reqs to allocate more device blocks\n"
-                    f"  3. Reduce MAX_MODEL_LEN or max_num_seqs to decrease vLLM block requirement"
-                )
-                logger.error(error_msg)
-                raise ValueError(error_msg)
+            if packed_hbm:
+                # PACKED_HBM: device is intentionally smaller than vllm_num_blocks.
+                # Validate that the device can hold the packed working set.
+                required = packed_hbm_required if packed_hbm_required is not None else device_cache_blocks
+                if device_cache_blocks < required:
+                    error_msg = (
+                        f"[PACKED-HBM] Insufficient device KV cache blocks for working set: "
+                        f"allocated {device_cache_blocks}, but packed working set requires {required}.\n"
+                        f"Suggested fixes:\n"
+                        f"  1. Increase max_num_reqs\n"
+                        f"  2. Reduce MAX_MODEL_LEN to decrease blocks per request"
+                    )
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+            else:
+                device_deficit = vllm_num_blocks - device_cache_blocks
+                if device_cache_blocks < vllm_num_blocks:
+                    error_msg = (
+                        f"Insufficient device KV cache blocks: "
+                        f"allocated {device_cache_blocks}, but vLLM requires {vllm_num_blocks} "
+                        f"(deficit: {device_deficit} blocks).\n"
+                        f"Suggested fixes:\n"
+                        f"  1. Increase SCALE_RATIO environment variable for larger device cache\n"
+                        f"  2. Increase max_num_reqs to allocate more device blocks\n"
+                        f"  3. Reduce MAX_MODEL_LEN or max_num_seqs to decrease vLLM block requirement"
+                    )
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
 
         # Log success with margin information
         host_margin = host_cache_blocks - vllm_num_blocks
         margin_info = [f"host margin={host_margin} blocks ({host_margin / vllm_num_blocks * 100:.1f}%)"]
         if device_cache_blocks is not None:
-            device_margin = device_cache_blocks - vllm_num_blocks
-            margin_info.append(f"device margin={device_margin} blocks ({device_margin / vllm_num_blocks * 100:.1f}%)")
+            if packed_hbm:
+                margin_info.append(
+                    f"device packed blocks={device_cache_blocks} "
+                    f"(scheduler pool={vllm_num_blocks}, "
+                    f"device covers working set only)"
+                )
+            else:
+                device_margin = device_cache_blocks - vllm_num_blocks
+                margin_info.append(f"device margin={device_margin} blocks ({device_margin / vllm_num_blocks * 100:.1f}%)")
         logger.info(f"OmniCache KV Blocks validation passed: {', '.join(margin_info)}")
 
     def _validate_kv_blocks(self, kv_cache_config: KVCacheConfig) -> None:
@@ -350,6 +383,10 @@ class PrefillOmniCache(BaseOmniCache):
 
         self._nz_size = NZ_DIM
 
+        self._real_to_fake_map = {}
+        self._fake_to_real_map = {}
+        self._packed_slot_mapping = None
+
     # def calc_cache_shape(self) -> Tuple[Tuple[int, ...], int]:
     #     self.tp_node_id = self.tp_rank // NUM_DIE_PER_MACH
     #     self.tp_nnodes = divide_or_raise(self.tp_world_size, NUM_DIE_PER_MACH)
@@ -432,20 +469,40 @@ class PrefillOmniCache(BaseOmniCache):
 
         # For DSV3.2, create a volatile KV cache and block_table on device
         max_num_blocks_per_req = cdiv(runner.max_model_len, self.block_size)
-        num_blocks = runner.max_num_reqs * (SCALE_RATIO * max_num_blocks_per_req)
-        device_cache_blocks = num_blocks + 4
+        packed_hbm = int(os.getenv("OMNI_CACHE_PACKED_HBM", "0"))
 
-        # Validate all KV block counts (host and device) with unified logging
-        self._log_and_validate_kv_blocks(kv_cache_config, device_cache_blocks=device_cache_blocks)
+        if packed_hbm:
+            # Working set: blocks needed for the volatile table (no sentinel)
+            num_blocks = runner.max_num_reqs * max_num_blocks_per_req
+            # Device cache: +1 for the sentinel slot (fake ID 0 = unallocated)
+            device_cache_blocks = num_blocks + 1
+            logger.warning(
+                "[PACKED-HBM] PACKED mode: num_blocks=%d = %d * %d, "
+                "device_cache_blocks=%d (with sentinel)",
+                num_blocks, runner.max_num_reqs, max_num_blocks_per_req,
+                device_cache_blocks,
+            )
+            self._log_and_validate_kv_blocks(
+                kv_cache_config,
+                device_cache_blocks=device_cache_blocks,
+                packed_hbm=True,
+                packed_hbm_required=device_cache_blocks,
+            )
+        else:
+            num_blocks = runner.max_num_reqs * (SCALE_RATIO * max_num_blocks_per_req)
+            device_cache_blocks = num_blocks + 4
+            self._log_and_validate_kv_blocks(kv_cache_config, device_cache_blocks=device_cache_blocks)
 
+        volatile_table_cols = max_num_blocks_per_req if packed_hbm else SCALE_RATIO * max_num_blocks_per_req
         volatile_table = torch.arange(
             1, 1 + num_blocks,
             dtype=torch.int32,
-            device=runner.device).view(runner.max_num_reqs, SCALE_RATIO * max_num_blocks_per_req)
+            device=runner.device).view(runner.max_num_reqs, volatile_table_cols)
 
         kv_cache_spec: AttentionSpec = kv_cache_config.kv_cache_groups[0].kv_cache_spec
+        kv_cache_num_blocks = device_cache_blocks if packed_hbm else num_blocks + 4
         kv_cache_shape = runner.attn_backends[0].get_kv_cache_shape(
-            num_blocks + 4,  # avoid overflowing
+            kv_cache_num_blocks,
             kv_cache_spec.block_size,
             kv_cache_spec.num_kv_heads,
             kv_cache_spec.head_size
@@ -535,8 +592,42 @@ class PrefillOmniCache(BaseOmniCache):
         graph_pad_size: int,
         pad_slot_id: int,
         orig_slot_mapping: torch.Tensor,
+        block_tables_np=None,
     ):
         orig_shape = orig_slot_mapping.shape
+
+        packed_hbm = int(os.getenv("OMNI_CACHE_PACKED_HBM", "0"))
+        if packed_hbm and model_extra_config.operator_opt_config.enable_dsa and block_tables_np is not None:
+            real_to_fake = {}
+            fake_counter = 1
+            n_reqs = block_tables_np.shape[0]
+            for row in range(n_reqs):
+                for col in range(block_tables_np.shape[1]):
+                    rid = int(block_tables_np[row, col])
+                    if rid != 0 and rid not in real_to_fake:
+                        real_to_fake[rid] = fake_counter
+                        fake_counter += 1
+            self._real_to_fake_map = real_to_fake
+            self._fake_to_real_map = {v: k for k, v in real_to_fake.items()}
+
+            valid_mask = orig_slot_mapping > 0
+            blocks = orig_slot_mapping // self.block_size
+            offsets = orig_slot_mapping % self.block_size
+            fake_blocks = blocks.clone()
+            for real_id, fake_id in real_to_fake.items():
+                fake_blocks[blocks == real_id] = fake_id
+            orig_slot_mapping = torch.where(valid_mask, fake_blocks * self.block_size + offsets, orig_slot_mapping)
+            self._packed_slot_mapping = orig_slot_mapping
+
+            logger.warning(
+                "[PACKED-HBM] volatile swap: %d real blocks -> %d fake blocks",
+                len(real_to_fake), fake_counter - 1,
+            )
+        else:
+            self._real_to_fake_map = {}
+            self._fake_to_real_map = {}
+            self._packed_slot_mapping = None
+
         # NOTE: kill all items about updating slot mapping, as we do not use the volatile things
         # if model_extra_config.parall_config.attn_sp_size > 1:
         #     orig_slot_mapping = pad_inputs(
@@ -650,8 +741,12 @@ class PrefillOmniCache(BaseOmniCache):
             block_ids = []
             for start_block_id, end_block_id in block_ranges:
                 block_ids.extend(range(start_block_id, end_block_id))
+            if self._real_to_fake_map:
+                device_block_ids = [self._real_to_fake_map.get(bid, bid) for bid in block_ids]
+            else:
+                device_block_ids = block_ids
             for i in range(len(self.host_cache.kvi_tensors)):
-                self.device_cache[i][block_ids] = global_device_data[i][src_start: src_start + num_blocks]
+                self.device_cache[i][device_block_ids] = global_device_data[i][src_start: src_start + num_blocks]
             src_start += num_blocks
 
     def synchronize_h2d(
@@ -717,14 +812,22 @@ class PrefillOmniCache(BaseOmniCache):
             self.copy_future.result()
         d2h_event = torch.npu.Event(blocking=False, enable_timing=False)
 
-        # Check that block_ids are within the bounds of kv_cache  
+        # Check that block_ids are within the bounds of kv_cache
         block_ids = torch.unique(slot_mapping[slot_mapping != -1] // self.block_size)
         max_valid_block = kv_cache[0].shape[0]
-        if len(block_ids) > 0 and block_ids.max().item() >= max_valid_block:
-            raise IndexError(
-                f"block_ids {block_ids.tolist()} contain values >= kv_cache size {max_valid_block}. "
-                f"This indicates a mismatch between slot_mapping and kv_cache dimensions."
-                )
+        if not self._fake_to_real_map:
+            if len(block_ids) > 0 and block_ids.max().item() >= max_valid_block:
+                raise IndexError(
+                    f"block_ids {block_ids.tolist()} contain values >= kv_cache size {max_valid_block}. "
+                    f"This indicates a mismatch between slot_mapping and kv_cache dimensions."
+                    )
+
+        # When PACKED_HBM is active, block_ids are fake IDs. Map to real IDs
+        # for the host pool scatter (decode side indexes by real IDs).
+        host_block_ids = block_ids
+        if self._fake_to_real_map:
+            real_list = [self._fake_to_real_map.get(int(fid), int(fid)) for fid in block_ids.tolist()]
+            host_block_ids = torch.tensor(real_list, dtype=block_ids.dtype, device=block_ids.device)
 
         with torch.npu.stream(self.d2h_stream):
             self.d2h_stream.wait_event(kv_event)
@@ -751,7 +854,7 @@ class PrefillOmniCache(BaseOmniCache):
         
         self.copy_future = self.d2h_thrp.submit(
             self._update_host_cache_thread,
-            block_ids, layer_idx, d2h_event
+            host_block_ids, layer_idx, d2h_event
         )
     
     def _padding_kv_cache(self, tensor):
