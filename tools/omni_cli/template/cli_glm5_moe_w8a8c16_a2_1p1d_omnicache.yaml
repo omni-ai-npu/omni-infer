@@ -484,7 +484,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              num-gpu-blocks-override: 30000
+              num-gpu-blocks-override: 140000
               max-num-batched-tokens: 161280
               max-num-seqs: 12
               long-prefill-token-threshold: 32768
@@ -575,6 +575,9 @@ all:
             P_NODE_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             TP_NNODES: 4
             DEVICE_CACHE_SCALE_RATIO: 2
+            MAP_SIZE_BYTES: 536870912000
+            SIZE_BYTES_PER_LAYER: 6442450944
+            OMNI_CACHE_PACKED_HBM: 1
           host_ip: 127.0.0.1
           master_node: p0
         p1:
@@ -590,7 +593,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              num-gpu-blocks-override: 30000
+              num-gpu-blocks-override: 140000
               max-num-batched-tokens: 161280
               max-num-seqs: 12
               long-prefill-token-threshold: 32768
@@ -681,6 +684,9 @@ all:
             P_NODE_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             TP_NNODES: 4
             DEVICE_CACHE_SCALE_RATIO: 2
+            MAP_SIZE_BYTES: 536870912000
+            SIZE_BYTES_PER_LAYER: 6442450944
+            OMNI_CACHE_PACKED_HBM: 1
           host_ip: 127.0.0.1
           master_node: p0
         p2:
@@ -696,7 +702,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              num-gpu-blocks-override: 30000
+              num-gpu-blocks-override: 140000
               max-num-batched-tokens: 161280
               max-num-seqs: 12
               long-prefill-token-threshold: 32768
@@ -787,6 +793,9 @@ all:
             P_NODE_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             TP_NNODES: 4
             DEVICE_CACHE_SCALE_RATIO: 2
+            MAP_SIZE_BYTES: 536870912000
+            SIZE_BYTES_PER_LAYER: 6442450944
+            OMNI_CACHE_PACKED_HBM: 1
           host_ip: 127.0.0.1
           master_node: p0
         p3:
@@ -802,7 +811,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              num-gpu-blocks-override: 30000
+              num-gpu-blocks-override: 140000
               max-num-batched-tokens: 161280
               max-num-seqs: 12
               long-prefill-token-threshold: 32768
@@ -893,5 +902,8 @@ all:
             P_NODE_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             TP_NNODES: 4
             DEVICE_CACHE_SCALE_RATIO: 2
+            MAP_SIZE_BYTES: 536870912000
+            SIZE_BYTES_PER_LAYER: 6442450944
+            OMNI_CACHE_PACKED_HBM: 1
           host_ip: 127.0.0.1
           master_node: p0
