@@ -762,8 +762,8 @@ index 18f0103d6..7eb0fdaf2 100755
              #   outlines is not being used
              if (not self.enable_auto_tools or not self.tool_parser) and \
 @@ -1431,6 +1593,36 @@ class OpenAIServingChat(OpenAIServing):
- 
-         return enable_thinking
+         )
+         return not is_ds
  
 +    def _make_request_with_harmony(
 +        self,
