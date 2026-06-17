@@ -3,8 +3,7 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 # Run MiniMax M2 in single-instance mixed deployment mode on 8 NPUs.
-# Override the defaults below with environment variables when needed, for example:
-#   HOST=7.242.110.71 MODEL_PATH=/data/models/MiniMax-M2.5-W8A8 bash run_model_minimax_m2.sh
+# Override the defaults below with environment variables when needed.
 
 set -eo pipefail
 
@@ -12,7 +11,7 @@ if [ -f /usr/local/Ascend/cann-9.0.0/set_env.sh ]; then
     source /usr/local/Ascend/cann-9.0.0/set_env.sh
 fi
 
-MODEL_PATH=${MODEL_PATH:-/sfs-asset-inference-ci/model/MiniMax-M2.5-W8A8}
+MODEL_PATH=${MODEL_PATH:-<YOUR_MODEL_PATH>}
 SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-minimax}
 HOST=${HOST:-0.0.0.0}
 PORT=${PORT:-8000}
