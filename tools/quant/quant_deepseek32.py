@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 import optiquant.dpsk32_int8 as qint8
 import optiquant.int4 as qint4
 import optiquant.w4group_to_w4channel as qint4_pergroup_to_perchannel

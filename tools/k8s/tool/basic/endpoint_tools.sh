@@ -1,4 +1,5 @@
 #!/bin/bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 function cross_join_ips_and_ports() {
     local ips="$1"

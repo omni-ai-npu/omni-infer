@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 import optiquant.gpt_oss_int8 as qint8
 import optiquant.faquant as faquant
 from argparse import ArgumentParser

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 import yaml
 
 def print_node_config(inventory_file, node_id):

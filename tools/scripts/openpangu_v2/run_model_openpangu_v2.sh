@@ -1,4 +1,5 @@
 #!/bin/bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 export HCCL_OP_EXPANSION_MODE="AIV"
 export HCCL_BUFFSIZE=500

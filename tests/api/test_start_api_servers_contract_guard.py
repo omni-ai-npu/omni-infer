@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # test_start_api_servers_contract_guard.py
 #
 # start_api_servers.py 接口契约看护测试 （包括RL新增接口）

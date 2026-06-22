@@ -1,4 +1,5 @@
 #!/bin/bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 VPC_PREFIX=$(echo "$IP" | cut -d'.' -f1-2)
 POD_INET_IP=$(hostname -I | tr ' ' '\n' | grep -o "^$VPC_PREFIX\.[0-9]\+\.[0-9]\+" | head -n 1)
 export SOCKET_IFNAME=$(ifconfig | grep -B 1 "$POD_INET_IP" | head -n 1 | awk '{print $1}' | sed 's/://')

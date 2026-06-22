@@ -1,4 +1,5 @@
 #!/bin/bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 current_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 infer_engines_path="$current_dir/../../infer_engines"

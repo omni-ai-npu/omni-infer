@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 from safetensors import safe_open
 from safetensors.torch import save_file
 import os

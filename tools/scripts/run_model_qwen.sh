@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Runs QwQ-32B model in default combined deployment mode 
 # Uses standard execution (no graph optimization) with full NPU utilization
 python run_model_qwen.py \

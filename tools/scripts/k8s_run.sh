@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Script Name: k8s_run.sh
 # User Manual:
 # - run time
