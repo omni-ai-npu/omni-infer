@@ -1,0 +1,18 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "tokenizers_chunk_ext"
+version = "0.1.0"
+description = "Rust-side chunk tokenization for HF tokenizers: one-time normalize+pretokenize, chunk by tokens, BPE-only per chunk"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+classifiers = [
+  "Programming Language :: Python",
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]

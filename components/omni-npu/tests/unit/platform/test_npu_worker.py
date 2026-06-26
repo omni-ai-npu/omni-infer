@@ -1,0 +1,1173 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import torch
+import pytest
+from omni_npu.worker.npu_worker import NPUWorker
+from vllm.sequence import IntermediateTensors
+from vllm.v1.outputs import ModelRunnerOutput
+from tests.unit.platform.utils import create_vllm_config, DeviceConfig
+
+
+class TestNpuWorker:
+
+    def setup_method(self):
+        self.vllm_cfg = create_vllm_config()
+        self.vllm_cfg.device_config = DeviceConfig("npu")
+        self.worker = None
+
+    def _create_worker(self, monkeypatch):
+        """Create an NPUWorker instance with necessary dependencies mocked.
+        
+        This helper method sets up all required mocks to create an NPUWorker
+        instance without requiring actual NPU hardware or full vLLM dependencies.
+        """
+        # Mock current_platform
+        mock_platform = SimpleNamespace(
+            device_type="npu",
+            pre_register_and_update=lambda: None,
+            set_device=lambda device: None,
+            dist_backend="hccl",
+            is_sleep_mode_available=lambda: True,
+        )
+        monkeypatch.setattr("omni_npu.worker.npu_worker.current_platform",
+                            mock_platform)
+
+        # Mock torch.npu related operations
+        monkeypatch.setattr("torch.npu.empty_cache", lambda: None)
+        monkeypatch.setattr("torch.npu.mem_get_info", lambda: (1000, 2000))
+        monkeypatch.setattr("torch.npu.reset_peak_memory_stats", lambda: None)
+        monkeypatch.setattr("torch.npu.max_memory_allocated", lambda: 500)
+
+        # Mock distributed initialization
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.init_worker_distributed_environment",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr("omni_npu.worker.npu_worker.set_random_seed",
+                            lambda seed: None)
+
+        # Mock NPUModelRunner
+        mock_model_runner = MagicMock()
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.NPUModelRunner",
+            lambda *args, **kwargs: mock_model_runner,
+        )
+
+        # Mock report_usage_stats to avoid importing vllm code
+        monkeypatch.setattr(
+            "vllm.v1.utils.report_usage_stats",
+            lambda vllm_config: None,
+        )
+
+        worker = NPUWorker(
+            vllm_config=self.vllm_cfg,
+            local_rank=0,
+            rank=0,
+            distributed_init_method="tcp://localhost:12345",
+            is_driver_worker=True,
+        )
+        worker.model_runner = mock_model_runner
+        return worker
+
+    def test_get_kv_connector_handshake_metadata(self, monkeypatch):
+        """Test get_kv_connector_handshake_metadata method.
+        
+        Verifies the method handles different scenarios:
+        - When kv_transfer_group is not available
+        - When kv_transfer_group exists but has no metadata
+        - When metadata is available and properly formatted
+        """
+        worker = self._create_worker(monkeypatch)
+
+        # Test case: no kv_transfer_group available
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.has_kv_transfer_group",
+            lambda: False,
+        )
+        assert worker.get_kv_connector_handshake_metadata() is None
+
+        # Test case: kv_transfer_group exists but has no metadata
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.has_kv_transfer_group",
+            lambda: True,
+        )
+        mock_connector = MagicMock()
+        mock_connector.get_handshake_metadata.return_value = None
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.get_kv_transfer_group",
+            lambda: mock_connector,
+        )
+        assert worker.get_kv_connector_handshake_metadata() is None
+
+        # Test case: metadata is available
+        mock_metadata = {"key": "value"}
+        mock_connector.get_handshake_metadata.return_value = mock_metadata
+        mock_tp_group = SimpleNamespace(rank_in_group=0)
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.get_tp_group",
+            lambda: mock_tp_group,
+        )
+        result = worker.get_kv_connector_handshake_metadata()
+        assert result == {0: mock_metadata}
+
+    @pytest.mark.skip(reason="Skipping test_init_device due to mock conflicts @sunhaochen")
+    def test_init_device(self, monkeypatch):
+        """Test init_device method.
+        
+        Verifies that device initialization sets up the worker correctly,
+        including device assignment, memory snapshots, and model runner creation.
+        """
+        worker = self._create_worker(monkeypatch)
+
+        # Mock device_config
+        worker.local_rank = 0
+        # Create mock model_config with required attributes
+        mock_hf_config = SimpleNamespace(
+            model_type="test_model",
+            quantization_config=None,
+        )
+        mock_registry = MagicMock()
+
+        worker.model_config = SimpleNamespace(
+            seed=42,
+            hf_config=mock_hf_config,
+            registry=mock_registry,
+        )
+        worker.cache_config = SimpleNamespace(gpu_memory_utilization=0.9)
+        worker.rank = 0
+        worker.scheduler_config = SimpleNamespace(enable_chunked_prefill=True)
+
+        # Mock _init_profiler
+        mock_profiler = MagicMock()
+        worker._init_profiler = MagicMock(return_value=mock_profiler)
+
+        # Mock load_model_extra_config to avoid dependencies
+        mock_load_config = MagicMock()
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.load_model_extra_config",
+            mock_load_config,
+        )
+
+        # Mock torch_npu.npu.get_device_name to avoid device dependency
+        monkeypatch.setattr(
+            "torch_npu.npu.get_device_name",
+            lambda device: "Ascend910B",
+        )
+
+        # Mock NPUModelRunner initialization
+        mock_model_runner = MagicMock()
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.NPUModelRunner",
+            MagicMock(return_value=mock_model_runner),
+        )
+
+        worker.init_device()
+
+        assert worker.device == torch.device("npu:0")
+        assert hasattr(worker, "init_snapshot")
+        assert hasattr(worker, "requested_memory")
+        assert worker.model_runner is mock_model_runner
+        assert worker.profiler is mock_profiler
+        mock_load_config.assert_called_once_with(worker.model_config,
+                                                 worker.vllm_config,
+                                                 worker.scheduler_config)
+
+    @pytest.mark.skip(reason="Skipping test_init_device_with_custom_model_enable due to mock conflicts @sunhaochen")
+    def test_init_device_with_custom_model_enable(self, monkeypatch):
+        """Test init_device with VLLM_CUSTOM_MODEL_ENABLE environment variable (covers lines 91-95).
+        
+        Verifies that when VLLM_CUSTOM_MODEL_ENABLE is set, layer parallel
+        initialization is triggered with the correct backend.
+        """
+        worker = self._create_worker(monkeypatch)
+
+        worker.local_rank = 0
+        # Create mock hf_config with required attributes
+        mock_hf_config = SimpleNamespace(
+            model_type="test_model",
+            quantization_config=None,
+        )
+        worker.model_config = SimpleNamespace(seed=42,
+                                              hf_config=mock_hf_config)
+        worker.cache_config = SimpleNamespace(gpu_memory_utilization=0.9)
+        worker.rank = 0
+        worker.scheduler_config = SimpleNamespace(enable_chunked_prefill=True)
+
+        # Mock _init_profiler
+        mock_profiler = MagicMock()
+        worker._init_profiler = MagicMock(return_value=mock_profiler)
+
+        # Set environment variable
+        monkeypatch.setenv("VLLM_PLUGINS", "omni_custom_models")
+
+        # Mock ensure_layer_parallel_initialized
+        ensure_called = {"called": False}
+
+        def mock_ensure_layer_parallel_initialized(backend):
+            ensure_called["called"] = True
+            ensure_called["backend"] = backend
+
+        monkeypatch.setattr(
+            "omni_npu.v1.distributed.parallel_state_ext.ensure_layer_parallel_initialized",
+            mock_ensure_layer_parallel_initialized,
+        )
+
+        # Mock load_model_extra_config to avoid file system dependencies
+        mock_load_config = MagicMock()
+        # Mock both potential import paths
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.load_model_extra_config",
+            mock_load_config,
+        )
+        monkeypatch.setattr(
+            "omni_npu.model_config.config_loader.loader.load_model_extra_config",
+            mock_load_config,
+        )
+
+        # Mock torch_npu.npu.get_device_name to avoid device dependency
+        monkeypatch.setattr(
+            "torch_npu.npu.get_device_name",
+            lambda device: "Ascend910B",
+        )
+
+        # Mock NPUModelRunner initialization
+        mock_model_runner = MagicMock()
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.NPUModelRunner",
+            MagicMock(return_value=mock_model_runner),
+        )
+
+        worker.init_device()
+
+        assert ensure_called["called"] is True
+        assert ensure_called["backend"] == "hccl"
+        # Verify load_model_extra_config was called exactly once
+        mock_load_config.assert_called_once()
+
+    def test_init_device_unsupported_device_type(self, monkeypatch):
+        """Test init_device with unsupported device type (covers line 103).
+        
+        Verifies that a RuntimeError is raised when an unsupported device type
+        is provided.
+        """
+        worker = self._create_worker(monkeypatch)
+
+        worker.local_rank = 0
+        worker.model_config = SimpleNamespace(seed=42)
+        worker.cache_config = SimpleNamespace(gpu_memory_utilization=0.9)
+        worker.rank = 0
+        worker._init_profiler = lambda: None
+
+        # Mock device to an unsupported device type
+        mock_device = SimpleNamespace(type="cpu")
+        worker.device_config.device = mock_device
+
+        with pytest.raises(RuntimeError, match="Not support device type"):
+            worker.init_device()
+
+    def test_determine_available_memory_reset_peak_exception(
+            self, monkeypatch):
+        """Test determine_available_memory with reset_peak_memory_stats exception handling (covers lines 132-133).
+        
+        Verifies that exceptions from reset_peak_memory_stats are properly
+        handled and the method continues execution.
+        """
+        worker = self._create_worker(monkeypatch)
+
+        worker.cache_config = SimpleNamespace(
+            kv_cache_memory_bytes=None,
+            gpu_memory_utilization=0.9,
+        )
+        worker.init_snapshot = SimpleNamespace(free_memory=1000)
+        worker.model_runner.profile_run = MagicMock()
+
+        # Mock reset_peak_memory_stats to raise an exception
+        def raise_exception():
+            raise Exception("Reset failed")
+
+        monkeypatch.setattr("torch.npu.reset_peak_memory_stats",
+                            raise_exception)
+        monkeypatch.setattr("torch.npu.mem_get_info", lambda: (500, 2000))
+        monkeypatch.setattr("torch.npu.max_memory_allocated", lambda: 300)
+
+        # Should handle exception gracefully and continue execution
+        result = worker.determine_available_memory()
+        assert result == 1500
+
+    @pytest.mark.skip(
+        reason=
+        "Skipping test_npu_runner_init_with_rejection_sampler due to mock conflicts @sunhaochen"
+    )
+    def test_init_profiler_full(self, monkeypatch):
+        """Test _init_profiler full implementation (covers lines 236-267).
+        
+        Verifies that profiler initialization works correctly when all
+        required environment variables are set, including token threshold
+        and stop step configuration.
+        """
+        worker = self._create_worker(monkeypatch)
+
+        # Mock environment variables
+        monkeypatch.setenv("PROFILER_TOKEN_THRESHOLD", "10")
+        monkeypatch.setenv("PROFILER_STOP_STEP", "5")
+        monkeypatch.setenv("VLLM_TORCH_PROFILER_DIR", "/tmp/profiler")
+
+        # Mock torch_npu.profiler
+        mock_profiler = MagicMock()
+        mock_experimental_config = MagicMock()
+        mock_tensorboard_handler = MagicMock()
+
+        monkeypatch.setattr(
+            "torch_npu.profiler._ExperimentalConfig",
+            lambda **kwargs: mock_experimental_config,
+        )
+        monkeypatch.setattr(
+            "torch_npu.profiler.tensorboard_trace_handler",
+            lambda path: mock_tensorboard_handler,
+        )
+        monkeypatch.setattr(
+            "torch_npu.profiler.profile",
+            lambda **kwargs: mock_profiler,
+        )
+        monkeypatch.setattr("vllm.envs.VLLM_TORCH_PROFILER_DIR",
+                            "/tmp/profiler")
+        monkeypatch.setattr("vllm.envs.VLLM_TORCH_PROFILER_RECORD_SHAPES",
+                            True)
+        monkeypatch.setattr(
+            "vllm.envs.VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY", True)
+        monkeypatch.setattr("vllm.envs.VLLM_TORCH_PROFILER_WITH_STACK", True)
+        monkeypatch.setattr("vllm.envs.VLLM_TORCH_PROFILER_WITH_FLOPS", True)
+
+        result = worker._init_profiler()
+
+        assert result is mock_profiler
+        assert worker.profiler_token_threshold == 10
+        assert worker.profiler_stop_step == 5
+        assert worker._use_token_for_profile is True
+        assert worker.profile_already_start is False
+        assert worker.profile_finished is False
+
+    def test_init_profiler_no_env_var(self, monkeypatch):
+        """Test _init_profiler when environment variables are not set.
+        
+        Verifies that profiler initialization returns None and sets
+        _use_token_for_profile to False when VLLM_TORCH_PROFILER_DIR is not set.
+        """
+        worker = self._create_worker(monkeypatch)
+
+        # Do not set VLLM_TORCH_PROFILER_DIR
+        monkeypatch.delenv("VLLM_TORCH_PROFILER_DIR", raising=False)
+        monkeypatch.setattr("vllm.envs.VLLM_TORCH_PROFILER_DIR", None)
+
+        result = worker._init_profiler()
+
+        assert result is None
+        assert worker._use_token_for_profile is False
+
+    def test_determine_available_memory(self, monkeypatch):
+        """Test determine_available_memory method.
+        
+        Verifies memory calculation in different scenarios:
+        - When kv_cache_memory_bytes is explicitly specified
+        - When memory needs to be calculated from available memory
+        - When max_memory_allocated fails and fallback calculation is used
+        """
+        worker = self._create_worker(monkeypatch)
+
+        # Test case: kv_cache_memory_bytes is explicitly specified
+        worker.cache_config = SimpleNamespace(
+            kv_cache_memory_bytes=1000,
+            gpu_memory_utilization=0.9,
+        )
+        worker.model_runner.profile_run = MagicMock()
+
+        result = worker.determine_available_memory()
+        assert result == 1000
+        worker.model_runner.profile_run.assert_called_once()
+
+        # Test case: memory needs to be calculated
+        worker.cache_config.kv_cache_memory_bytes = None
+        worker.init_snapshot = SimpleNamespace(free_memory=1000)
+        monkeypatch.setattr("torch.npu.mem_get_info", lambda: (500, 2000))
+        monkeypatch.setattr("torch.npu.max_memory_allocated", lambda: 300)
+
+        result = worker.determine_available_memory()
+        # available = total * util - peak = 2000 * 0.9 - 300 = 1500
+        assert result == 1500
+
+        # Test case: max_memory_allocated fails (use fallback calculation)
+        def raise_exception():
+            raise Exception("Not available")
+
+        monkeypatch.setattr("torch.npu.max_memory_allocated", raise_exception)
+        result = worker.determine_available_memory()
+        # available = total * util - (init_free - free_after) = 2000 * 0.9 - (1000 - 500) = 1300
+        assert result == 1300
+
+    def test_model_runner_proxy_methods(self, monkeypatch):
+        """Test all methods that directly proxy to model_runner (consolidated test).
+        
+        Verifies that all proxy methods correctly delegate to the model_runner
+        and return the expected values.
+        """
+        worker = self._create_worker(monkeypatch)
+
+        # Prepare mock return values
+        mock_kv_spec = {"layer_0": MagicMock()}
+        mock_model = MagicMock()
+        mock_tasks = (MagicMock(), )
+        mock_draft_tokens = MagicMock()
+        mock_sample_result = MagicMock()
+        mock_lora_result = True
+        mock_lora_set = {1, 2, 3}
+
+        # Set model_runner return values
+        worker.model_runner.get_kv_cache_spec.return_value = mock_kv_spec
+        worker.model_runner.get_model.return_value = mock_model
+        worker.model_runner.get_supported_tasks.return_value = mock_tasks
+        worker.model_runner.take_draft_token_ids.return_value = mock_draft_tokens
+        worker.model_runner.sample_tokens.return_value = mock_sample_result
+        worker.model_runner.add_lora.return_value = mock_lora_result
+        worker.model_runner.remove_lora.return_value = mock_lora_result
+        worker.model_runner.list_loras.return_value = mock_lora_set
+        worker.model_runner.pin_lora.return_value = mock_lora_result
+
+        # Test get_kv_cache_spec
+        assert worker.get_kv_cache_spec() is mock_kv_spec
+        worker.model_runner.get_kv_cache_spec.assert_called_once()
+
+        # Test get_model
+        assert worker.get_model() is mock_model
+        worker.model_runner.get_model.assert_called_once()
+
+        # Test get_supported_tasks
+        assert worker.get_supported_tasks() is mock_tasks
+        worker.model_runner.get_supported_tasks.assert_called_once()
+
+        # Test take_draft_token_ids
+        assert worker.take_draft_token_ids() is mock_draft_tokens
+        worker.model_runner.take_draft_token_ids.assert_called_once()
+
+        # Test sample_tokens
+        mock_grammar_output = MagicMock()
+        assert worker.sample_tokens(mock_grammar_output) is mock_sample_result
+        worker.model_runner.sample_tokens.assert_called_once_with(
+            mock_grammar_output)
+
+        # Test add_lora
+        mock_lora_request = MagicMock()
+        assert worker.add_lora(mock_lora_request) is mock_lora_result
+        worker.model_runner.add_lora.assert_called_once_with(mock_lora_request)
+
+        # Test remove_lora
+        assert worker.remove_lora(1) is mock_lora_result
+        worker.model_runner.remove_lora.assert_called_once_with(1)
+
+        # Test list_loras
+        assert worker.list_loras() is mock_lora_set
+        worker.model_runner.list_loras.assert_called_once()
+
+        # Test pin_lora
+        assert worker.pin_lora(1) is mock_lora_result
+        worker.model_runner.pin_lora.assert_called_once_with(1)
+
+    def test_initialize_from_config(self, monkeypatch):
+        """Test initialize_from_config method.
+        
+        Verifies that KV transfer initialization and cache initialization
+        are properly called with the correct arguments.
+        """
+        worker = self._create_worker(monkeypatch)
+        worker.model_config = SimpleNamespace(enable_sleep_mode=False)
+        mock_kv_cache_config = MagicMock()
+
+        # Mock ensure_kv_transfer_initialized
+        ensure_kv_initialized_called = {"called": False}
+
+        def mock_ensure_kv_initialized(vllm_config, kv_cache_config):
+            ensure_kv_initialized_called["called"] = True
+            ensure_kv_initialized_called["args"] = (vllm_config,
+                                                    kv_cache_config)
+
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.ensure_kv_transfer_initialized",
+            mock_ensure_kv_initialized,
+        )
+
+        # Mock NpuMemAllocator
+        mock_allocator = MagicMock()
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.NpuMemAllocator.get_instance",
+            lambda: mock_allocator)
+
+        # Test case: ENABLE_OMNI_CACHE=0 (原 use_omni_cache=False)
+        monkeypatch.setenv("ENABLE_OMNI_CACHE", "0")
+        worker.initialize_from_config(mock_kv_cache_config)
+        worker.model_runner.initialize_kv_cache.assert_called_once_with(
+            mock_kv_cache_config)
+
+        # Test case: sleep mode is enabled
+        worker.model_config.enable_sleep_mode = True
+        worker.initialize_from_config(mock_kv_cache_config)
+        mock_allocator.use_memory_pool.assert_called_once_with(tag="kv_cache")
+        worker.model_runner.initialize_kv_cache.assert_called()
+
+    def test_initialize_cache(self, monkeypatch):
+        """Test initialize_cache method (should return None).
+        
+        Verifies that initialize_cache returns None as expected.
+        """
+        worker = self._create_worker(monkeypatch)
+
+        result = worker.initialize_cache(num_gpu_blocks=10, num_cpu_blocks=5)
+        assert result is None
+
+    def test_profile(self, monkeypatch):
+        """Test profile method.
+        
+        Verifies profiler behavior in different scenarios:
+        - When profiler is None (should raise RuntimeError)
+        - Normal profiler start/stop operations
+        - When token threshold is enabled
+        """
+        worker = self._create_worker(monkeypatch)
+
+        # Test case: profiler is None
+        worker.profiler = None
+        with pytest.raises(RuntimeError, match="Profiler is not enabled"):
+            worker.profile()
+
+        # Test case: normal profiler operation
+        mock_profiler = MagicMock()
+        worker.profiler = mock_profiler
+        worker._use_token_for_profile = False
+
+        worker.profile(is_start=True)
+        mock_profiler.start.assert_called_once()
+
+        worker.profile(is_start=False)
+        mock_profiler.stop.assert_called_once()
+
+        # Test case: _use_token_for_profile is True
+        worker._use_token_for_profile = True
+        mock_profiler.reset_mock()
+        worker.profile(is_start=True)
+        mock_profiler.start.assert_not_called()
+
+    def test_compile_or_warm_up_model(self, monkeypatch):
+        """Test compile_or_warm_up_model method.
+        
+        Verifies that model capture is called and random seed is set.
+        """
+        worker = self._create_worker(monkeypatch)
+        worker.model_config = SimpleNamespace(enforce_eager=False, seed=42)
+
+        worker.compile_or_warm_up_model()
+
+        worker.model_runner.capture_model.assert_called_once()
+        # Verify set_random_seed is called (verified through monkeypatch)
+
+    def test_load_model(self, monkeypatch):
+        """Test load_model method.
+        
+        Verifies that model loading delegates to model_runner.load_model
+        and handles memory pool context correctly.
+        """
+        worker = self._create_worker(monkeypatch)
+        worker.model_config = SimpleNamespace(enable_sleep_mode=False)
+        # Mock NpuMemAllocator
+        mock_allocator = MagicMock()
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.NpuMemAllocator.get_instance",
+            lambda: mock_allocator)
+        mock_allocator.get_current_usage.return_value = 0
+
+        worker.load_model()
+
+        # Assertions
+        mock_allocator.use_memory_pool.assert_not_called()
+        worker.model_runner.load_model.assert_called_once()
+
+        # Test case: sleep mode is enabled
+        worker.model_config.enable_sleep_mode = True
+        worker.load_model()
+        mock_allocator.use_memory_pool.assert_called_once_with(tag="weights")
+        worker.model_runner.load_model.assert_called()
+
+        # Test case: allocator usage is not zero
+        mock_allocator.get_current_usage.return_value = 1
+        with pytest.raises(
+                RuntimeError,
+                match=
+                "Sleep mode can only be used for one instance per process."):
+            worker.load_model()
+
+    def test_execute_dummy_batch(self, monkeypatch):
+        """Test execute_dummy_batch method.
+        
+        Verifies that dummy batch execution calls model_runner._dummy_run
+        with the correct parameters.
+        """
+        worker = self._create_worker(monkeypatch)
+
+        worker.execute_dummy_batch()
+
+        worker.model_runner._dummy_run.assert_called_once_with(
+            1, uniform_decode=True, force_attention=True)
+
+    def test_execute_model(self, monkeypatch):
+        """Test execute_model method.
+        
+        Verifies model execution in different scenarios:
+        - Normal execution without profiler
+        - Execution with profiler but token threshold disabled
+        - Execution with token threshold enabled (profiler start/stop logic)
+        """
+        worker = self._create_worker(monkeypatch)
+
+        # Ensure _use_token_for_profile attribute exists (avoid AttributeError)
+        # This attribute is usually initialized in _init_profiler(), but may not be called in tests
+        if not hasattr(worker, "_use_token_for_profile"):
+            worker._use_token_for_profile = False
+        if not hasattr(worker, "profile_already_start"):
+            worker.profile_already_start = False
+        if not hasattr(worker, "profile_finished"):
+            worker.profile_finished = False
+        if not hasattr(worker, "profile_step"):
+            worker.profile_step = 0
+        if not hasattr(worker, "profiler_token_threshold"):
+            worker.profiler_token_threshold = 0
+        if not hasattr(worker, "profiler_stop_step"):
+            worker.profiler_stop_step = 0
+
+        # Mock scheduler_output
+        mock_scheduler_output = SimpleNamespace(
+            total_num_scheduled_tokens=3,
+            num_scheduled_tokens=[1, 2, 3],
+        )
+        mock_output = IntermediateTensors(MagicMock())
+        worker.model_runner.execute_model.return_value = mock_output
+        
+        # Test case: normal execution (no profiler)
+        worker.profiler = None
+        mock_tp_group = SimpleNamespace(rank_in_group=0)
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.get_tp_group",
+            lambda: mock_tp_group,
+        )
+        
+        mock_send_recv = lambda *args, **kwargs: MagicMock()
+        mock_pp_group = MagicMock()
+        mock_pp_group.is_first_rank = False
+        mock_pp_group.recv_tensor_dict = mock_send_recv
+        mock_pp_group.send_tensor_dict = mock_send_recv
+        monkeypatch.setattr("omni_npu.worker.npu_worker.get_pp_group",
+                            mock_pp_group)
+        result = worker.execute_model(mock_scheduler_output)
+        assert result is None
+        worker.model_runner.execute_model.assert_called_once_with(
+            mock_scheduler_output, None)
+
+        # Test case: pp logic
+        mock_output = ModelRunnerOutput(req_ids=MagicMock(), req_id_to_index=MagicMock())
+        worker.model_runner.execute_model.return_value = mock_output
+        
+        mock_pp_group.is_first_rank = True
+        monkeypatch.setattr("omni_npu.worker.npu_worker.get_pp_group",
+                            mock_pp_group)
+        result = worker.execute_model(mock_scheduler_output)
+
+        # Test case: profiler exists but token threshold is not enabled
+        mock_profiler = MagicMock()
+        worker.profiler = mock_profiler
+        worker._use_token_for_profile = False
+        worker.profile_already_start = False
+        worker.profile_finished = False
+
+        worker.model_runner.execute_model.reset_mock()
+        result = worker.execute_model(mock_scheduler_output)
+        assert result is mock_output
+        mock_profiler.start.assert_not_called()
+        mock_profiler.stop.assert_not_called()
+
+        # Test case: token threshold is enabled
+        monkeypatch.setenv("PROFILER_TOKEN_THRESHOLD", "3")
+        monkeypatch.setenv("PROFILER_STOP_STEP", "5")
+        import vllm.envs as envs
+        monkeypatch.setattr(envs, "VLLM_TORCH_PROFILER_DIR", "/tmp/profiler")
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR", "/tmp/profiler")
+
+        worker._use_token_for_profile = True
+        worker.profile_already_start = False
+        worker.profile_finished = False
+        worker.profiler_token_threshold = 3
+        worker.profiler_stop_step = 5
+        worker.profile_step = 0
+        worker.profiler_skip_requests = 0
+        worker.enable_prefill_profiler = False
+        worker._requests_seen = 0
+
+        # Add scheduled_new_reqs so that _requests_seen gets incremented (covers lines 267-269)
+        mock_scheduler_output.scheduled_new_reqs = [MagicMock()]
+
+        # First call should start profiler:
+        # - new_reqs is non-empty → _requests_seen becomes 1 → 1 > 0 triggers logger.info (lines 267-269)
+        # - _requests_seen(1) > profiler_skip_requests(0) and num_tokens(3) == profiler_token_threshold(3)
+        #   → profiler.start() is called (lines 284-286)
+        worker.model_runner.execute_model.reset_mock()
+        mock_profiler.reset_mock()
+        result = worker.execute_model(mock_scheduler_output)
+        assert worker.profile_already_start is True
+        assert worker._requests_seen == 1
+        mock_profiler.start.assert_called_once()
+
+        # After multiple calls, profiler should be stopped
+        worker.profile_step = 6
+        result = worker.execute_model(mock_scheduler_output)
+        assert worker.profile_finished is True
+        mock_profiler.stop.assert_called_once()
+
+    def test_init_profiler(self, monkeypatch):
+        """Test _init_profiler method.
+        
+        Verifies profiler initialization in different scenarios:
+        - Profiler disabled (no VLLM_TORCH_PROFILER_DIR)
+        - Profiler enabled with token threshold
+        - Profiler enabled without token threshold
+        """
+        worker = self._create_worker(monkeypatch)
+
+        # Test case: profiler disabled
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR", None)
+        monkeypatch.delenv("PROFILER_TOKEN_THRESHOLD", raising=False)
+        monkeypatch.delenv("PROFILER_STOP_STEP", raising=False)
+
+        profiler = worker._init_profiler()
+        assert profiler is None
+        assert worker._use_token_for_profile is False
+        assert worker.profile_already_start is False
+        assert worker.profile_finished is False
+
+        # Test case: profiler enabled with token threshold
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR",
+            "/tmp/profiler")
+        monkeypatch.setenv("PROFILER_TOKEN_THRESHOLD", "10")
+        monkeypatch.setenv("PROFILER_STOP_STEP", "20")
+
+        # Mock torch_npu.profiler to avoid NPU dependency
+        mock_profiler = MagicMock()
+        mock_tensorboard_trace_handler = MagicMock()
+        mock_experimental_config = MagicMock()
+
+        monkeypatch.setattr(
+            "torch_npu.profiler.profile",
+            MagicMock(return_value=mock_profiler),
+        )
+        monkeypatch.setattr(
+            "torch_npu.profiler.tensorboard_trace_handler",
+            mock_tensorboard_trace_handler,
+        )
+        monkeypatch.setattr(
+            "torch_npu.profiler._ExperimentalConfig",
+            MagicMock(return_value=mock_experimental_config),
+        )
+        monkeypatch.setattr(
+            "torch_npu.profiler.AiCMetrics",
+            SimpleNamespace(PipeUtilization="pipe_utilization"),
+        )
+        monkeypatch.setattr(
+            "torch_npu.profiler.ProfilerLevel",
+            SimpleNamespace(Level1="level1"),
+        )
+        monkeypatch.setattr(
+            "torch_npu.profiler.ProfilerActivity",
+            SimpleNamespace(CPU="cpu", NPU="npu"),
+        )
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_RECORD_SHAPES",
+            False)
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY",
+            False)
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_STACK",
+            False)
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_FLOPS",
+            False)
+
+        profiler = worker._init_profiler()
+
+        assert profiler is not None
+        assert worker._use_token_for_profile is True
+        assert worker.profiler_token_threshold == 10
+        assert worker.profiler_stop_step == 20
+        assert worker.profile_already_start is False
+        assert worker.profile_finished is False
+
+    def test_sleep(self, monkeypatch):
+        """Test the sleep method."""
+        worker = self._create_worker(monkeypatch)
+        monkeypatch.setattr("torch.npu.synchronize", lambda: None)
+
+        mock_model = MagicMock()
+        worker.model_runner.get_model.return_value = mock_model
+        worker.model_runner.drafter = None
+
+        stor = MagicMock()
+        stor.nbytes.return_value = 128
+        kv_tensor = MagicMock()
+        kv_tensor.untyped_storage.return_value = stor
+        worker.model_runner.kv_caches = [[kv_tensor]]
+
+        monkeypatch.setattr("torch.npu.mem_get_info", lambda:
+                            (15 * (1 << 30), 20 * (1 << 30)))
+
+        worker.sleep(level=1)
+
+        worker.model_runner.unregister_kv_caches.assert_called_once_with()
+        mock_model.to.assert_called_once_with("cpu")
+        stor.resize_.assert_called_once_with(0)
+
+    def test_wake_up_weights(self, monkeypatch):
+        """wake_up(tags=['weights']) moves main (and drafter) model to NPU."""
+        worker = self._create_worker(monkeypatch)
+        monkeypatch.setattr("torch.npu.synchronize", lambda: None)
+
+        mock_main = MagicMock()
+        mock_drafter_model = MagicMock()
+        worker.model_runner.get_model.return_value = mock_main
+        worker.model_runner.get_drafter_model.return_value = mock_drafter_model
+        worker.model_runner.drafter = object()
+
+        worker.wake_up(tags=["weights"])
+
+        mock_main.to.assert_called_once_with("npu")
+        mock_drafter_model.to.assert_called_once_with("npu")
+
+    def test_wake_up_kv_cache_enforce_eager(self, monkeypatch):
+        """wake_up(tags=['kv_cache']) restores KV storages and reregister; no capture when eager."""
+        worker = self._create_worker(monkeypatch)
+        monkeypatch.setattr("torch.npu.synchronize", lambda: None)
+        mock_recapture = MagicMock()
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.set_aclgraph_recapture",
+            mock_recapture)
+
+        worker.kv_nbytes = [[256]]
+        stor = MagicMock()
+        kv_tensor = MagicMock()
+        kv_tensor.untyped_storage.return_value = stor
+        worker.model_runner.kv_caches = [[kv_tensor]]
+        worker.model_config = SimpleNamespace(enforce_eager=True)
+
+        worker.wake_up(tags=["kv_cache"])
+
+        stor.resize_.assert_called_once_with(256)
+        worker.model_runner.reregister_kv_caches.assert_called_once_with()
+        mock_recapture.assert_not_called()
+        worker.model_runner.capture_model.assert_not_called()
+
+    def test_wake_up_kv_cache_triggers_recapture(self, monkeypatch):
+        """wake_up(kv_cache) triggers acl graph recapture when not enforce_eager."""
+        worker = self._create_worker(monkeypatch)
+        monkeypatch.setattr("torch.npu.synchronize", lambda: None)
+        mock_recapture = MagicMock()
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_worker.set_aclgraph_recapture",
+            mock_recapture)
+
+        worker.kv_nbytes = [[128]]
+        stor = MagicMock()
+        kv_tensor = MagicMock()
+        kv_tensor.untyped_storage.return_value = stor
+        worker.model_runner.kv_caches = [[kv_tensor]]
+        worker.model_config = SimpleNamespace(enforce_eager=False)
+
+        worker.wake_up(tags=["kv_cache"])
+
+        mock_recapture.assert_called_once_with(True)
+        worker.model_runner.capture_model.assert_called_once_with()
+
+class TestInitWorkerDistributedEnvironment:
+    """Tests for init_worker_distributed_environment function."""
+
+    @pytest.fixture
+    def mock_vllm_config(self):
+        """Create a mock VllmConfig for testing."""
+        vllm_config = MagicMock()
+        vllm_config.attention_config = MagicMock()
+        vllm_config.attention_config.backend = "attention_backend"
+        vllm_config.parallel_config = MagicMock()
+        vllm_config.parallel_config.disable_custom_all_reduce = False
+        vllm_config.parallel_config.world_size = 4
+        vllm_config.parallel_config.tensor_parallel_size = 2
+        vllm_config.parallel_config.pipeline_parallel_size = 1
+        vllm_config.parallel_config.prefill_context_parallel_size = 1
+        vllm_config.parallel_config.decode_context_parallel_size = 1
+        return vllm_config
+
+    def test_init_with_default_init_method(self, mock_vllm_config, monkeypatch):
+        """Test initialization with default init_method when world_ranks is None."""
+        from omni_npu.worker.npu_worker import init_worker_distributed_environment
+
+        # Track calls
+        calls = []
+
+        def mock_init_batch_invariance(backend):
+            calls.append(('init_batch_invariance', backend))
+
+        def mock_set_custom_all_reduce(enable):
+            calls.append(('set_custom_all_reduce', enable))
+
+        def mock_init_distributed_environment(world_size, rank, init_method, local_rank, backend):
+            calls.append(('init_distributed_environment', world_size, rank, init_method, local_rank, backend))
+
+        def mock_ensure_model_parallel_initialized(tp_size, pp_size, pcp_size, dcp_size):
+            calls.append(('ensure_model_parallel_initialized', tp_size, pp_size, pcp_size, dcp_size))
+
+        def mock_ensure_ec_transfer_initialized(config):
+            calls.append(('ensure_ec_transfer_initialized', config))
+
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_batch_invariance", mock_init_batch_invariance)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.set_custom_all_reduce", mock_set_custom_all_reduce)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_distributed_environment", mock_init_distributed_environment)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_model_parallel_initialized", mock_ensure_model_parallel_initialized)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_ec_transfer_initialized", mock_ensure_ec_transfer_initialized)
+
+        # Execute
+        init_worker_distributed_environment(
+            vllm_config=mock_vllm_config,
+            rank=0,
+            distributed_init_method="tcp://localhost:12345",
+            local_rank=0,
+            backend="hccl",
+            world_ranks=None,
+        )
+
+        # Verify init_distributed_environment was called (not init_world_group)
+        assert any(call[0] == 'init_distributed_environment' for call in calls)
+        assert any(call[0] == 'ensure_ec_transfer_initialized' for call in calls)
+
+    def test_init_with_env_method_when_no_init_method(self, mock_vllm_config, monkeypatch):
+        """Test initialization uses 'env://' when distributed_init_method is None."""
+        from omni_npu.worker.npu_worker import init_worker_distributed_environment
+
+        captured_init_method = []
+
+        def mock_init_distributed_environment(world_size, rank, init_method, local_rank, backend):
+            captured_init_method.append(init_method)
+
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_batch_invariance", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.set_custom_all_reduce", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_distributed_environment", mock_init_distributed_environment)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_model_parallel_initialized", lambda *args: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_ec_transfer_initialized", lambda x: None)
+
+        # Execute with None init_method
+        init_worker_distributed_environment(
+            vllm_config=mock_vllm_config,
+            rank=0,
+            distributed_init_method=None,
+            local_rank=0,
+            backend="hccl",
+            world_ranks=None,
+        )
+
+        # Verify env:// was used as default
+        assert captured_init_method[0] == "env://"
+
+    def test_init_with_world_ranks(self, mock_vllm_config, monkeypatch):
+        """Test initialization with world_ranks provided (RL scenario)."""
+        from omni_npu.worker.npu_worker import init_worker_distributed_environment
+
+        # Track calls
+        calls = []
+
+        def mock_init_world_group(ranks, local_rank, backend):
+            calls.append(('init_world_group', ranks, local_rank, backend))
+
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_batch_invariance", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.set_custom_all_reduce", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_world_group", mock_init_world_group)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_model_parallel_initialized", lambda *args: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_ec_transfer_initialized", lambda x: None)
+
+        world_ranks = [0, 1, 2, 3]
+
+        # Execute
+        init_worker_distributed_environment(
+            vllm_config=mock_vllm_config,
+            rank=0,
+            distributed_init_method="tcp://localhost:12345",
+            local_rank=0,
+            backend="hccl",
+            world_ranks=world_ranks,
+        )
+
+        # Verify init_world_group was called with correct arguments
+        assert len(calls) == 1
+        assert calls[0][0] == 'init_world_group'
+        assert calls[0][1] == world_ranks
+        assert calls[0][2] == 0
+        assert calls[0][3] == "hccl"
+
+    def test_ensure_model_parallel_initialized_called(self, mock_vllm_config, monkeypatch):
+        """Test that ensure_model_parallel_initialized is called with correct parameters."""
+        from omni_npu.worker.npu_worker import init_worker_distributed_environment
+
+        captured_args = []
+
+        def mock_ensure_model_parallel_initialized(tp_size, pp_size, pcp_size, dcp_size):
+            captured_args.append((tp_size, pp_size, pcp_size, dcp_size))
+
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_batch_invariance", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.set_custom_all_reduce", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_distributed_environment", lambda *args: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_model_parallel_initialized", mock_ensure_model_parallel_initialized)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_ec_transfer_initialized", lambda x: None)
+
+        # Execute
+        init_worker_distributed_environment(
+            vllm_config=mock_vllm_config,
+            rank=0,
+            local_rank=0,
+            backend="hccl",
+            world_ranks=None,
+        )
+
+        # Verify
+        assert len(captured_args) == 1
+        assert captured_args[0] == (2, 1, 1, 1)  # tp_size, pp_size, pcp_size, dcp_size
+
+
+class TestInitWorldGroup:
+    """Tests for init_world_group function."""
+
+    def test_init_world_group_success(self, monkeypatch):
+        """Test successful initialization of world group."""
+        from omni_npu.worker.npu_worker import init_world_group
+
+        # Mock torch.distributed
+        mock_dist = MagicMock()
+        mock_dist.is_initialized.return_value = True
+        mock_dist.get_rank.return_value = 0
+        mock_dist.get_world_size.return_value = 4
+        monkeypatch.setattr("torch.distributed", mock_dist)
+
+        # Mock parallel_state
+        mock_parallel_state = MagicMock()
+        mock_parallel_state._WORLD = None
+        mock_world_group = MagicMock()
+        mock_parallel_state.init_world_group.return_value = mock_world_group
+        monkeypatch.setattr("omni_npu.worker.npu_worker.parallel_state", mock_parallel_state)
+
+        # Mock GroupCoordinator
+        mock_group_coordinator = MagicMock()
+        monkeypatch.setattr("omni_npu.worker.npu_worker.GroupCoordinator", mock_group_coordinator)
+
+        ranks = [0, 1, 2, 3]
+
+        # Execute
+        init_world_group(ranks=ranks, local_rank=0, backend="hccl")
+
+        # Verify
+        mock_parallel_state.init_world_group.assert_called_once_with(ranks, 0, "hccl")
+        assert mock_parallel_state._WORLD == mock_world_group
+
+    def test_init_world_group_raises_when_dist_not_initialized(self, monkeypatch):
+        """Test that RuntimeError is raised when torch.distributed is not initialized."""
+        from omni_npu.worker.npu_worker import init_world_group
+
+        # Mock torch.distributed as not initialized
+        mock_dist = MagicMock()
+        mock_dist.is_initialized.return_value = False
+        monkeypatch.setattr("torch.distributed", mock_dist)
+
+        with pytest.raises(RuntimeError, match="torch.distributed must be initialized"):
+            init_world_group(ranks=[0, 1, 2, 3], local_rank=0, backend="hccl")
+
+    def test_init_world_group_raises_when_world_already_initialized(self, monkeypatch):
+        """Test that RuntimeError is raised when _WORLD is already initialized."""
+        from omni_npu.worker.npu_worker import init_world_group
+
+        # Mock torch.distributed as initialized
+        mock_dist = MagicMock()
+        mock_dist.is_initialized.return_value = True
+        monkeypatch.setattr("torch.distributed", mock_dist)
+
+        # Mock parallel_state with _WORLD already set
+        mock_parallel_state = MagicMock()
+        mock_parallel_state._WORLD = MagicMock()  # Already initialized
+        monkeypatch.setattr("omni_npu.worker.npu_worker.parallel_state", mock_parallel_state)
+
+        with pytest.raises(RuntimeError, match="_WORLD must not be initialized"):
+            init_world_group(ranks=[0, 1, 2, 3], local_rank=0, backend="hccl")
+
+    def test_init_world_group_sets_local_synchronization_when_ranks_mismatch(self, monkeypatch):
+        """Test that use_local_synchronization is set when ranks length != world_size."""
+        from omni_npu.worker.npu_worker import init_world_group
+
+        # Mock torch.distributed
+        mock_dist = MagicMock()
+        mock_dist.is_initialized.return_value = True
+        mock_dist.get_rank.return_value = 0
+        mock_dist.get_world_size.return_value = 8  # world_size is 8
+        monkeypatch.setattr("torch.distributed", mock_dist)
+
+        # Mock parallel_state
+        mock_parallel_state = MagicMock()
+        mock_parallel_state._WORLD = None
+        mock_world_group = MagicMock()
+        mock_parallel_state.init_world_group.return_value = mock_world_group
+        monkeypatch.setattr("omni_npu.worker.npu_worker.parallel_state", mock_parallel_state)
+
+        # Mock GroupCoordinator
+        mock_group_coordinator = MagicMock()
+        monkeypatch.setattr("omni_npu.worker.npu_worker.GroupCoordinator", mock_group_coordinator)
+
+        # Use fewer ranks than world_size
+        ranks = [0, 1, 2, 3]  # len(ranks) = 4, world_size = 8
+
+        # Execute
+        init_world_group(ranks=ranks, local_rank=0, backend="hccl")
+
+        # Verify use_local_synchronization was set to True
+        assert mock_group_coordinator.use_local_synchronization is True
+
+    def test_init_world_group_no_local_synchronization_when_ranks_match(self, monkeypatch):
+        """Test that use_local_synchronization is not set when ranks length == world_size."""
+        from omni_npu.worker.npu_worker import init_world_group
+
+        # Mock torch.distributed
+        mock_dist = MagicMock()
+        mock_dist.is_initialized.return_value = True
+        mock_dist.get_rank.return_value = 0
+        mock_dist.get_world_size.return_value = 4  # world_size matches len(ranks)
+        monkeypatch.setattr("torch.distributed", mock_dist)
+
+        # Mock parallel_state
+        mock_parallel_state = MagicMock()
+        mock_parallel_state._WORLD = None
+        mock_world_group = MagicMock()
+        mock_parallel_state.init_world_group.return_value = mock_world_group
+        monkeypatch.setattr("omni_npu.worker.npu_worker.parallel_state", mock_parallel_state)
+
+        # Mock GroupCoordinator
+        mock_group_coordinator = MagicMock()
+        monkeypatch.setattr("omni_npu.worker.npu_worker.GroupCoordinator", mock_group_coordinator)
+
+        ranks = [0, 1, 2, 3]  # len(ranks) = 4, world_size = 4
+
+        # Execute
+        init_world_group(ranks=ranks, local_rank=0, backend="hccl")
+
+        # Verify use_local_synchronization was NOT set to True
+        # (it should remain at its default value)
+        assert not hasattr(mock_group_coordinator, 'use_local_synchronization') or \
+               mock_group_coordinator.use_local_synchronization != True

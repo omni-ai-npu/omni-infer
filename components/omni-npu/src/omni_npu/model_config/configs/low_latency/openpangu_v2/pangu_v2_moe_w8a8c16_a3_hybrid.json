@@ -1,0 +1,20 @@
+{
+    "model_parallel_config": {
+        "ena_seq_parallel": false,
+        "ena_context_parallel": false,
+        "enable_flashcomm2": false,
+        "enable_aicpu_dp_sync": false,
+        "layer_parallel_config": {
+        }
+    },
+    "operator_optimization_config": {
+        "moe_comm_strategy": "dispatch_combine",
+        "use_aicpu_fa_tiling": true,
+        "use_noncontiguous_kv": true,
+        "use_mome_inplace_update": true,
+        "use_rope_fusion_op": true,
+        "use_mhc_fusion_op": false,
+        "enable_multi_stream": false,
+        "split_q_up_in_multistream": false
+    }
+}

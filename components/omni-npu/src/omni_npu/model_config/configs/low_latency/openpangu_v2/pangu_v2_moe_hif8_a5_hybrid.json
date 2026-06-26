@@ -1,0 +1,14 @@
+{
+  "model_parallel_config": {
+    "enable_aicpu_dp_sync": false,
+    "layer_parallel_config": {
+    }
+  },
+  "operator_optimization_config": {
+    "use_aicpu_fa_tiling": true,
+    "use_noncontiguous_kv": true,
+    "shared_expert_parallel_schedule": "with_routed_experts_cv",
+    "enable_mhc_multistream": true,
+    "split_q_up_in_multistream": false
+  }
+}

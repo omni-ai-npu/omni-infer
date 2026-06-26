@@ -1,0 +1,21 @@
+{
+    "model_parallel_config": {
+        "ena_seq_parallel": true,
+        "ena_context_parallel": true,
+        "enable_flashcomm2": true,
+        "layer_parallel_config": {
+        }
+    },
+    "operator_optimization_config": {
+        "moe_comm_strategy": "all2allv",
+        "use_aicpu_fa_tiling": true,
+        "use_noncontiguous_kv": true,
+        "use_rope_fusion_op": false,
+        "use_mhc_fusion_op": false,
+        "use_mome_inplace_update": true,
+        "split_q_up_in_multistream": false,
+        "num_extra_reserved_blocks": 0,
+        "disable_npu_top_k_top_p_sample": true,
+        "optimize_first_chunk": false
+    }
+}

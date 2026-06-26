@@ -1,0 +1,108 @@
+diff --git a/vllm/config/vllm.py b/vllm/config/vllm.py
+index ec699b629..fc7766f80 100644
+--- a/vllm/config/vllm.py
++++ b/vllm/config/vllm.py
+@@ -950,9 +950,6 @@ class VllmConfig:
+         if not current_platform.support_hybrid_kv_cache():
+             # Hybrid KV cache manager is not supported on non-GPU platforms.
+             need_disable_hybrid_kv_cache_manager = True
+-        if self.kv_events_config is not None:
+-            # Hybrid KV cache manager is not compatible with KV events.
+-            need_disable_hybrid_kv_cache_manager = True
+         if (
+             self.model_config is not None
+             and self.model_config.attention_chunk_size is not None
+diff --git a/vllm/distributed/kv_events.py b/vllm/distributed/kv_events.py
+index 123af17ef..726ee0647 100644
+--- a/vllm/distributed/kv_events.py
++++ b/vllm/distributed/kv_events.py
+@@ -59,6 +59,7 @@ class BlockStored(KVCacheEvent):
+ 
+     medium: str | None
+     lora_name: str | None
++    group_idx: int | None = None
+ 
+     def __hash__(self) -> int:
+         return hash(
+@@ -69,6 +70,7 @@ class BlockStored(KVCacheEvent):
+                 self.block_size,
+                 self.lora_id,
+                 self.medium,
++                self.group_idx,
+             )
+         )
+ 
+@@ -76,9 +78,10 @@ class BlockStored(KVCacheEvent):
+ class BlockRemoved(KVCacheEvent):
+     block_hashes: list[ExternalBlockHash]
+     medium: str | None
++    group_idx: int | None = None
+ 
+     def __hash__(self) -> int:
+-        return hash((tuple(self.block_hashes), self.medium))
++        return hash((tuple(self.block_hashes), self.medium, self.group_idx))
+ 
+ 
+ class AllBlocksCleared(KVCacheEvent):
+diff --git a/vllm/v1/core/block_pool.py b/vllm/v1/core/block_pool.py
+index cf93218a1..d30eb3676 100644
+--- a/vllm/v1/core/block_pool.py
++++ b/vllm/v1/core/block_pool.py
+@@ -21,6 +21,7 @@ from vllm.v1.core.kv_cache_utils import (
+     FreeKVCacheBlockQueue,
+     KVCacheBlock,
+     get_block_hash,
++    get_group_id,
+     make_block_hash_with_group_id,
+     maybe_convert_block_hash,
+ )
+@@ -235,14 +236,21 @@ class BlockPool:
+         if num_cached_blocks >= num_full_blocks:
+             return
+         new_full_blocks = blocks[num_cached_blocks:num_full_blocks]
+-        assert len(request.block_hashes) >= num_full_blocks
++        if len(request.block_hashes) < num_full_blocks:
++            raise ValueError(
++                "The request does not contain enough block hashes for the "
++                "number of full blocks."
++            )
+         if block_size == self.hash_block_size:
+             # Common case.
+             block_hashes: BlockHashList = request.block_hashes
+         else:
+             # block_size is a multiple of hash_block_size. This happens when
+             # different KV cache groups have different block sizes.
+-            assert block_size % self.hash_block_size == 0
++            if block_size % self.hash_block_size != 0:
++                raise ValueError(
++                    "The block size must be divisible by the hash block size."
++                )
+             # Recalculate block_hashes at the granularity of block_size, using
+             # the original block_hashes (at the granularity of hash_block_size).
+             block_hashes = BlockHashListWithBlockSize(
+@@ -258,7 +266,8 @@ class BlockPool:
+             # sliding window attention. We skip null blocks here.
+             if blk.is_null:
+                 continue
+-            assert blk.block_hash is None
++            if blk.block_hash is not None:
++                raise RuntimeError("Cannot cache a block that already has a hash.")
+             block_hash = new_block_hashes[i]
+ 
+             # Update and added the full block to the cache.
+@@ -293,6 +302,7 @@ class BlockPool:
+                     lora_name=request.lora_request.name
+                     if request.lora_request
+                     else None,
++                    group_idx=kv_cache_group_id,
+                 )
+             )
+ 
+@@ -364,6 +374,7 @@ class BlockPool:
+                 BlockRemoved(
+                     block_hashes=[maybe_convert_block_hash(get_block_hash(block_hash))],
+                     medium=MEDIUM_GPU,
++                    group_idx=get_group_id(block_hash),
+                 )
+             )
+         return True

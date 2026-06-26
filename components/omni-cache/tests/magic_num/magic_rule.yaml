@@ -1,0 +1,140 @@
+rules:
+  # ============================================
+  # 通用正则：匹配整数和浮点数
+  # ============================================
+  # 整数: 100, -1, 0
+  # 浮点数: 9.0, 888.22587, -3.14
+
+  # ============================================
+  # 1. 赋值语句中的魔鬼数字
+  # ============================================
+  - id: magic-number-assign
+    patterns:
+      - pattern: $VAR = $NUM
+      - metavariable-regex:
+          metavariable: $NUM
+          regex: '^-?[0-9]+(\.[0-9]+)?$'
+      # 排除常量定义：变量名全大写或以下划线开头的大写
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: '^(?![_A-Z][A-Z0-9_]*$).+$'
+      # 排除 print/logger/raise 中的数字（不影响功能逻辑）
+      - pattern-not-inside: print(...)
+      - pattern-not-inside: logger.$METHOD(...)
+      - pattern-not-inside: logging.$METHOD(...)
+      - pattern-not-inside: raise $EXC(...)
+    message: "发现赋值中的魔鬼数字: $NUM，建议定义为常量"
+    severity: WARNING
+    languages: [python]
+
+  # ============================================
+  # 2. 比较运算中的魔鬼数字
+  # ============================================
+  - id: magic-number-compare
+    patterns:
+      - pattern-either:
+          - pattern: $X > $NUM
+          - pattern: $X < $NUM
+          - pattern: $X >= $NUM
+          - pattern: $X <= $NUM
+          - pattern: $X == $NUM
+          - pattern: $X != $NUM
+      - metavariable-regex:
+          metavariable: $NUM
+          regex: '^-?[0-9]+(\.[0-9]+)?$'
+      # 排除 print/logger/raise 中的数字（不影响功能逻辑）
+      - pattern-not-inside: print(...)
+      - pattern-not-inside: logger.$METHOD(...)
+      - pattern-not-inside: logging.$METHOD(...)
+      - pattern-not-inside: raise $EXC(...)
+    message: "发现比较中的魔鬼数字: $NUM，建议定义为常量"
+    severity: WARNING
+    languages: [python]
+
+  # ============================================
+  # 3. 加减乘除运算中的魔鬼数字
+  # ============================================
+  - id: magic-number-arithmetic
+    patterns:
+      - pattern-either:
+          - pattern: $X * $NUM
+          - pattern: $NUM * $X
+          - pattern: $X + $NUM
+          - pattern: $NUM + $X
+          - pattern: $X - $NUM
+          - pattern: $NUM - $X
+          - pattern: $X / $NUM
+          - pattern: $NUM / $X
+          - pattern: $X // $NUM
+          - pattern: $NUM // $X
+          - pattern: $X % $NUM
+          - pattern: $NUM % $X
+      - metavariable-regex:
+          metavariable: $NUM
+          regex: '^-?[0-9]+(\.[0-9]+)?$'
+      # 排除 print/logger/raise 中的数字（不影响功能逻辑）
+      - pattern-not-inside: print(...)
+      - pattern-not-inside: logger.$METHOD(...)
+      - pattern-not-inside: logging.$METHOD(...)
+      - pattern-not-inside: raise $EXC(...)
+    message: "发现运算中的魔鬼数字: $NUM，建议定义为常量"
+    severity: WARNING
+    languages: [python]
+
+  # ============================================
+  # 4. 数组索引和切片中的魔鬼数字
+  # ============================================
+  - id: magic-number-index
+    patterns:
+      - pattern-either:
+          # 数组索引: arr[5]
+          - pattern: $ARR[$NUM]
+          # 切片: arr[:10]
+          - pattern: $ARR[:$NUM]
+          # 切片: arr[5:]
+          - pattern: $ARR[$NUM:]
+          # 切片: arr[1:10]
+          - pattern: $ARR[$NUM1:$NUM2]
+          # 切片: arr[::2]
+          - pattern: $ARR[::$NUM]
+          # 切片: arr[:10:2]
+          - pattern: $ARR[:$NUM1:$NUM2]
+          # 切片: arr[5::2]
+          - pattern: $ARR[$NUM1::$NUM2]
+          # 切片: arr[1:10:2]
+          - pattern: $ARR[$NUM1:$NUM2:$NUM3]
+      - metavariable-regex:
+          metavariable: $NUM
+          regex: '^-?[0-9]+(\.[0-9]+)?$'
+      # 排除 -1（常用索引，如 arr[-1] 获取最后一个元素），但保留 -1.0 的检测
+      - metavariable-regex:
+          metavariable: $NUM
+          regex: '^(?!-1$).+$'
+      # 排除 print/logger/raise 中的数字（不影响功能逻辑）
+      - pattern-not-inside: print(...)
+      - pattern-not-inside: logger.$METHOD(...)
+      - pattern-not-inside: logging.$METHOD(...)
+      - pattern-not-inside: raise $EXC(...)
+    message: "发现索引/切片中的魔鬼数字: $NUM，建议定义为常量"
+    severity: WARNING
+    languages: [python]
+
+  # ============================================
+  # 5. 函数参数中的魔鬼数字
+  # ============================================
+  - id: magic-number-func-arg
+    patterns:
+      - pattern-either:
+          - pattern: $FUNC(..., $NUM, ...)
+          - pattern: $FUNC(..., $ARG=$NUM, ...)
+      - metavariable-regex:
+          metavariable: $NUM
+          regex: '^-?[0-9]+(\.[0-9]+)?$'
+      # 排除 print/logger/raise 中的数字（不影响功能逻辑）
+      - pattern-not-inside: print(...)
+      - pattern-not-inside: logger.$METHOD(...)
+      - pattern-not-inside: logging.$METHOD(...)
+      - pattern-not-inside: raise $EXC(...)
+    message: "发现函数参数中的魔鬼数字: $NUM，建议定义为常量"
+    severity: WARNING
+    languages: [python]

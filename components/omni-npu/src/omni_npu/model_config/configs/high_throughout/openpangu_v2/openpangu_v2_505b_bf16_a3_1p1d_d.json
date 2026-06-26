@@ -1,0 +1,45 @@
+{
+    "model_parallel_config": {
+        "layer_parallel_config": {
+            "self_attn.o_proj": {
+                "tp_size_or_ranks": 1,
+                "x_transform": {
+                    "type": "None"
+                },
+                "y_transform": {
+                    "type": "AllReduce",
+                    "tp_size_or_ranks": 1
+                }
+            },
+            "mlp.gate_up_proj": {
+                "tp_size_or_ranks": 2,
+                "x_transform": {
+                    "type": "AllGather",
+                    "tp_size_or_ranks": 2
+                }
+            },
+            "mlp.down_proj": {
+                "tp_size_or_ranks": 2,
+                "x_transform": {
+                    "type": "None"
+                },
+                "y_transform": {
+                    "type": "ReduceScatter",
+                    "tp_size_or_ranks": 2
+                }
+            }
+        }
+    },
+    "operator_optimization_config": {
+        "use_noncontiguous_kv": true,
+        "enable_kv_rmsnorm_rope_cache": true,
+        "decode_moe_dispatch_combine": true,
+        "kv_nz": false,
+        "merge_q_kv_conv": false,
+        "shared_expert_multi_stream": false,
+        "enable_moe_agrs": true,
+        "disable_npu_top_k_top_p_sample": true,
+        "use_batch_invariant_op": true,
+        "router_gating_in_fp32": false
+    }
+}

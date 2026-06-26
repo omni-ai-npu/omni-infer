@@ -1,0 +1,19 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+export GLOO_SOCKET_IFNAME="<YOUR_SOCKET_IFNAME>"
+export TP_SOCKET_IFNAME="<YOUR_SOCKET_IFNAME>"
+export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+export MM_ALL_REDUCE_OP_THRESHOLD=1000000
+export HCCL_OP_EXPANSION_MODE="AIV"
+export NUMEXPR_MAX_THREADS=192
+export OMNI_PLANNER_CONFIG="/home/omni/omni_planner/config.yaml"
+# unset OMNI_PLANNER_CONFIG
+
+
+export ENABLE_MOE_EP=1
+export DP_SIZE=4
+unset VLLM_ENABLE_PROFILING
+unset VLLM_TORCH_PROFILER_DIR
+
+ray start --address='<RAY_HEAD_ADDRESS>:<RAY_HEAD_PORT>' --num-gpus=8

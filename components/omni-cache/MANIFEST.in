@@ -1,0 +1,2 @@
+include omni_cache/connector/backends/ox/ox
+include omni_cache/cache/device_backend/ascend/tensor_register_lib/*

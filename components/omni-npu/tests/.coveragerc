@@ -1,0 +1,14 @@
+[run]
+source =
+    omni_npu
+parallel = True
+concurrency = multiprocessing
+
+omit =
+    */omni_npu/vllm_patches/*
+    */omni_npu/v1/layers/attention/npu_pangu.py
+
+[paths]
+source =
+    */omni-npu
+    */omni-npu/src

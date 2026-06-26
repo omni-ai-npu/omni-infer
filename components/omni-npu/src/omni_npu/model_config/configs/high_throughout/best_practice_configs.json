@@ -1,0 +1,354 @@
+[
+    {
+        "model": "deepseek_v3",
+        "hardware": "A3",
+        "precision": "w8a8c16",
+        "configs":{
+            "1P1D": {
+                "prefill_config_file": "deepseek/ds_r1_w8a8c16_a3_xp1d_p.json",
+                "decode_config_file": "deepseek/ds_r1_w8a8c16_a3_xp1d_d.json"
+            },
+            "4P1D":{
+                "prefill_config_file": "deepseek/ds_r1_w8a8c16_a3_xp1d_p.json",
+                "decode_config_file": "deepseek/ds_r1_w8a8c16_a3_xp1d_d.json"
+            }
+        }
+    },
+    {
+        "model": "deepseek_v32",
+        "hardware": "A3",
+        "precision": "w8a8c16",
+        "configs":{
+            "1P1D": {
+                "prefill_config_file": "deepseek/ds_v32_w8a8c16_a3_1p1d_p.json",
+                "decode_config_file": "deepseek/ds_v32_w8a8c16_a3_1p1d_d.json"
+            },
+            "2P1D": {
+                "prefill_config_file": "deepseek/ds_v32_w8a8c16_a3_1p1d_p.json",
+                "decode_config_file": "deepseek/ds_v32_w8a8c16_a3_1p1d_d.json"
+            },
+            "4P1D": {
+                "prefill_config_file": "deepseek/ds_v32_w8a8c16_a3_1p1d_p.json",
+                "decode_config_file": "deepseek/ds_v32_w8a8c16_a3_1p1d_d.json"
+            }
+        }
+    },
+    {
+        "model": "glm_moe_dsa",
+        "hardware": "A3",
+        "precision": "w8a8c16",
+        "configs":{
+            "1P1D": {
+                "prefill_config_file": "glm/glm_5_w8a8c16_a3_1p1d_p.json",
+                "decode_config_file": "glm/glm_5_w8a8c16_a3_1p1d_d.json"
+            },
+            "2P1D": {
+                "prefill_config_file": "glm/glm_5_w8a8c16_a3_1p1d_p.json",
+                "decode_config_file": "glm/glm_5_w8a8c16_a3_1p1d_d.json"
+            },
+            "4P1D": {
+                "prefill_config_file": "glm/glm_5_w8a8c16_a3_1p1d_p.json",
+                "decode_config_file": "glm/glm_5_w8a8c16_a3_1p1d_d.json"
+            }
+        }
+    },
+    {
+        "model": "qwen3_vl_moe",
+        "hardware": "A2",
+        "precision": "w8a8c16",
+        "configs":{
+            "hybrid": {
+                "config_file": "qwen3/qwen3_vl_moe_w8a8c16_a2_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "qwen3_moe",
+        "hardware": "A2",
+        "precision": "w8a8c16",
+        "configs":{
+            "hybrid": {
+                "config_file": "qwen3/qwen3_moe_w8a8c16_a2_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "qwen3_vl",
+        "hardware": "A2",
+        "precision": "w8a8c16",
+        "configs":{
+            "hybrid": {
+                "config_file": "qwen3/qwen3_vl_w8a8c16_a2_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "qwen3_next",
+        "hardware": "A2",
+        "precision": "w8a8c16",
+        "configs":{
+            "hybrid": {
+                "config_file": "qwen3/qwen3_next_w8a8c16_a2_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "qwen3_5",
+        "hardware": "A2",
+        "precision": "bf16",
+        "configs":{
+            "hybrid": {
+                "config_file": "qwen3/qwen3_5_w8a8c16_a2_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "qwen3_5",
+        "hardware": "A2",
+        "precision": "w8a8c16",
+        "configs":{
+            "hybrid": {
+                "config_file": "qwen3/qwen3_5_w8a8c16_a2_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "pangu_ultra_moe",
+        "hardware": "A3",
+        "precision": "w8a8c16",
+        "configs":{
+            "1P1D": {
+                "prefill_config_file": "pangu_ultra_moe/pangu_ultra_moe_w8a8c16_a3_xp1d_p.json",
+                "decode_config_file": "pangu_ultra_moe/pangu_ultra_moe_w8a8c16_a3_xp1d_d.json"
+            },
+            "4P1D":{
+                "prefill_config_file": "pangu_ultra_moe/pangu_ultra_moe_w8a8c16_a3_xp1d_p.json",
+                "decode_config_file": "pangu_ultra_moe/pangu_ultra_moe_w8a8c16_a3_xp1d_d.json"
+            },
+            "hybrid":{
+                "config_file":"pangu_ultra_moe/pangu_ultra_moe_a3_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "glm4_moe",
+        "hardware": "A2",
+        "precision": "w8a8c16",
+        "configs":{
+            "1P1D": {
+                "prefill_config_file": "glm/glm_moe_w8a8c16_a2_1p1d_pd.json",
+                "decode_config_file": "glm/glm_moe_w8a8c16_a2_1p1d_pd.json"
+            }
+        }
+    },
+    {
+        "model": "gpt_oss",
+        "hardware": "A3",
+        "precision": "w8a8c16",
+        "configs":{
+            "hybrid": {
+                "config_file": "gpt_oss/gpt_oss_w8a8c16_a3_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "gpt_oss",
+        "hardware": "A2",
+        "precision": "w8a8c16",
+        "configs":{
+            "hybrid": {
+                "config_file": "gpt_oss/gpt_oss_w8a8c16_a2_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "pangu_72B_VL",
+        "hardware": "A2",
+        "precision": "bf16",
+        "configs":{
+            "hybrid": {
+                "config_file": "pangu_pro_moe/pangu_pro_moe_bf16_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "PanguProMoE",
+        "hardware": "A2",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"pangu_pro_moe/pangu_pro_moe_bf16_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "PanguProMoE",
+        "hardware": "A3",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"pangu_pro_moe/pangu_pro_moe_bf16_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "openpangu_v2_35B",
+        "hardware": "A2",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"openpangu_v2/openpangu_v2_bf16_a2_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_35b_bf16_a2_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_35b_bf16_a2_1p1d_d.json"
+            }
+        }
+    },
+    {
+        "model": "openpangu_v2_35B",
+        "hardware": "A5",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"openpangu_v2/openpangu_v2_bf16_a5_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_35b_bf16_a5_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_35b_bf16_a5_1p1d_d.json"
+            }
+        }
+    },
+    {
+        "model": "openpangu_v2_92B",
+        "hardware": "A3",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"openpangu_v2/openpangu_v2_bf16_a3_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_d.json"
+            },
+            "2P2D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_d.json"
+            },
+            "pd_elastic_scaling": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_xpyd_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_xpyd_d.json"
+            }
+        }
+    },
+    {
+        "model": "openpangu_v2_505B",
+        "hardware": "A3",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"openpangu_v2/openpangu_v2_bf16_a3_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_505b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_505b_bf16_a3_1p1d_d.json"
+            },
+            "2P2D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_505b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_505b_bf16_a3_1p1d_d.json"
+            }
+        }
+    },
+    {
+        "model": "openpangu_v2_vl_92B",
+        "hardware": "A3",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"openpangu_v2/openpangu_v2_bf16_a3_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_d.json"
+            },
+            "2P2D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_d.json"
+            },
+            "pd_elastic_scaling": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_xpyd_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_xpyd_d.json"
+            }
+        }
+    },
+    {
+        "model": "openpangu_v2_vl_505B",
+        "hardware": "A3",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"openpangu_v2/openpangu_v2_bf16_a3_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_505b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_505b_bf16_a3_1p1d_d.json"
+            },
+            "2P2D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_505b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_505b_bf16_a3_1p1d_d.json"
+            }
+        }
+    },
+    {
+        "model": "openpangu_v2_omni_moe",
+        "hardware": "A3",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"openpangu_v2/openpangu_v2_bf16_a3_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_bf16_a3_1p1d_d.json"
+            }
+        }
+    },
+    {
+        "model": "kimi_k25",
+        "hardware": "A2",
+        "precision": "w4a8c16",
+        "configs":{
+            "hybrid":{
+                "config_file":"kimi/kimi_k25_w4a8c16_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "kimi/kimi_k25_w4a8c16_a2_1p1d_p.json",
+                "decode_config_file": "kimi/kimi_k25_w4a8c16_a2_1p1d_d.json"
+            }
+        }
+    },
+    {
+        "model": "kimi_k25",
+        "hardware": "A3",
+        "precision": "w4a8c16",
+        "configs":{
+            "hybrid":{
+                "config_file":"kimi/kimi_k25_w4a8c16_hybrid.json"
+            }
+        }
+    },
+    {
+        "model": "minimax_m2",
+        "hardware": "A2",
+        "precision": "w8a8c16",
+        "configs":{
+            "hybrid": {
+                "config_file": "minimax/minimax_m2_w8a8c16_a2_hybrid.json"
+            },
+            "2P1D": {
+                "prefill_config_file": "minimax/minimax_m2_w8a8c16_a2_2p1d_p.json",
+                "decode_config_file": "minimax/minimax_m2_w8a8c16_a2_2p1d_d.json"
+            }
+        }
+    }
+]

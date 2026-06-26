@@ -1,0 +1,19 @@
+# 强制所有文本文件使用 LF，禁止 CRLF
+* text=auto eol=lf
+
+# 明确标记 shell 脚本为 LF
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+
+# 二进制文件不处理
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.mo binary

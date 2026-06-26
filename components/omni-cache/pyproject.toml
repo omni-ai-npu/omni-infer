@@ -1,0 +1,107 @@
+[build-system]
+requires = [
+    "setuptools>=64",
+    "wheel",
+    "pybind11",
+    "torch",
+    "numpy",
+    "concurrent_log_handler"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omni-cache"
+version = "0.1.0"
+description = "PD-separated KV cache connectors and KV cache manager integration for vLLM."
+authors = [
+    { name = "Huawei" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "torch",
+    "pybind11",
+    "pyyaml>=6.0",
+    "concurrent_log_handler",
+    "msgpack",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=9.0",
+    "pytest-cov>=7.0",
+    "pytest-html>=4.0",
+    "semgrep==1.120.0",
+    "setuptools<80",
+]
+
+[project.entry-points."vllm.platform_plugins"]
+omni-cache = "omni_cache.plugin:register"
+omni-cache-mock = "tools.diagnostics.mock_schedule:install_in_worker"
+
+[project.entry-points."omni.kv_connectors"]
+omni-cache = "omni_cache.connector:register_connectors"
+
+[project.entry-points."omni.attention_backends"]
+attention-ext = "omni_cache.attention.backends.attention_ext:NPUAttentionMetadataBuilderExt"
+dsa-ext = "omni_cache.attention.backends.dsa_ext:NPUDSABackendExt"
+mla-ext = "omni_cache.attention.backends.mla_ext:NPUMLABackendExt"
+mome-ext = "omni_cache.attention.backends.mome_ext:NPUPanguMomeBackendExt"
+
+[project.entry-points."omni.compress_mqa_attn_decorators"]
+compressed_mqa = "omni_cache.attn_plugins.implementations:CompressMQAAttnPlugin"
+
+[project.entry-points."omni.mqa_attn_decorators"]
+mqa = "omni_cache.attn_plugins.implementations:GeneralMQAAttnPlugin"
+
+[project.entry-points."omni.mla_attn_decorators"]
+mla = "omni_cache.attn_plugins.implementations:MLAAttnPlugin"
+
+[project.entry-points."omni.dsa_attn_decorators"]
+dsa = "omni_cache.attn_plugins.implementations:DSAAttnPlugin"
+
+[project.entry-points."omni.mome_attn_decorators"]
+mome = "omni_cache.attn_plugins.implementations:MOMEAttnPlugin"
+
+[project.entry-points."omni.moe_ffn_attn_decorators"]
+moe_ffn = "omni_cache.attn_plugins.implementations:MoEFFNPlugin"
+
+[project.entry-points."omni.load_model_decorators"]
+omni-cache = "omni_cache.plugin:LoadModelPlugin"
+
+[project.entry-points."omni.model_forward_decorators"]
+omni-cache = "omni_cache.attn_plugins.implementations:ModelForwardPlugin"
+
+[project.entry-points."omni.init_config_decorators"]
+omni-cache = "omni_cache.plugin:InitConfigPlugin"
+
+[project.entry-points."omni.reinitialize_input_batch_decorators"]
+omni-cache = "omni_cache.plugin:InputBatchPlugin"
+
+[project.entry-points."omni.update_from_output_decorators"]
+omni-cache = "omni_cache.attn_plugins.implementations:UpdateFromOutputPlugin"
+
+[project.entry-points."omni.model_output_decorators"]
+omni-cache = "omni_cache.attn_plugins.implementations:ModelOutputPlugin"
+
+[project.entry-points."vllm.general_plugins"]
+omni_cache_kv_dump = "tools.diagnostics.dump_controller:install"
+omni_cache_kv_step_dumper = "tools.diagnostics.kv_step_dumper:install"
+omni_cache_mock_schedule = "tools.diagnostics.mock_schedule:install_in_worker"
+omni_cache_input_swap = "tools.diagnostics.input_swap:install"
+omni-npu = "omni_cache.metrics_plugin:patch_scheduler_stats"
+
+[project.entry-points."vllm.stat_logger_plugins"]
+omni-npu = "omni_cache.reuse_rate_logger:ReusRateStatLogger"
+
+[project.entry-points."omni.prepare_inputs_decorators"]
+omni-cache = "omni_cache.plugin:PrepareInputsPlugin"
+
+[tool.setuptools]
+packages.find.where = ["."]
+packages.find.include = ["*"]
+
+include-package-data = true
+license-files = ["LICEN[CS]E*", "COPYING*", "NOTICE*", "AUTHORS*"]
+
+[tool.setuptools.package-data]

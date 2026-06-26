@@ -1,0 +1,220 @@
+diff --git a/tests/distributed/test_comm_ops.py b/tests/distributed/test_comm_ops.py
+index ba80ee6fb..99dce9ae4 100644
+--- a/tests/distributed/test_comm_ops.py
++++ b/tests/distributed/test_comm_ops.py
+@@ -11,6 +11,7 @@ from typing import Any
+ import pytest
+ import ray
+ import torch
++import os
+ 
+ from vllm.distributed import (
+     broadcast_tensor_dict,
+@@ -27,7 +28,7 @@ from ..utils import (
+ )
+ 
+ 
+-@ray.remote(num_gpus=1, max_calls=1)
++@ray.remote(resources={"NPU": 1}, max_calls=1)
+ def all_reduce_test_worker(
+     monkeypatch: pytest.MonkeyPatch,
+     tp_size: int,
+@@ -39,13 +40,13 @@ def all_reduce_test_worker(
+     # so that each worker can see all the GPUs
+     # they will be able to set the device to the correct GPU
+     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+-
+-    device = torch.device(f"cuda:{rank}")
+-    torch.cuda.set_device(device)
++    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
++    device = torch.device(f"npu:{rank}")
++    torch.npu.set_device(device)
+     init_test_distributed_environment(tp_size, pp_size, rank, distributed_init_port)
+     num_elements = 8
+     all_tensors = [
+-        torch.arange(num_elements, dtype=torch.float32, device="cuda") * (r + 1)
++        torch.arange(num_elements, dtype=torch.float32, device=device) * (r + 1)
+         for r in range(tp_size)
+     ]
+     expected = torch.sum(torch.stack(all_tensors, dim=0), dim=0)
+@@ -54,7 +55,7 @@ def all_reduce_test_worker(
+     torch.testing.assert_close(t, expected)
+ 
+ 
+-@ray.remote(num_gpus=1, max_calls=1)
++@ray.remote(resources={"NPU": 1}, max_calls=1)
+ def reduce_scatter_test_worker(
+     monkeypatch: pytest.MonkeyPatch,
+     tp_size: int,
+@@ -66,13 +67,14 @@ def reduce_scatter_test_worker(
+     # so that each worker can see all the GPUs
+     # they will be able to set the device to the correct GPU
+     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+-    device = torch.device(f"cuda:{rank}")
+-    torch.cuda.set_device(device)
++    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
++    device = torch.device(f"npu:{rank}")
++    torch.npu.set_device(device)
+     init_test_distributed_environment(tp_size, pp_size, rank, distributed_init_port)
+ 
+     num_elements = 8
+     all_tensors = [
+-        torch.arange(num_elements, dtype=torch.float32, device="cuda") * (r + 1)
++        torch.arange(num_elements, dtype=torch.float32, device=device) * (r + 1)
+         for r in range(tp_size)
+     ]
+ 
+@@ -85,7 +87,7 @@ def reduce_scatter_test_worker(
+     torch.testing.assert_close(t, expected)
+ 
+ 
+-@ray.remote(num_gpus=1, max_calls=1)
++@ray.remote(resources={"NPU": 1}, max_calls=1)
+ def all_gather_test_worker(
+     monkeypatch: pytest.MonkeyPatch,
+     tp_size: int,
+@@ -97,8 +99,9 @@ def all_gather_test_worker(
+     # so that each worker can see all the GPUs
+     # they will be able to set the device to the correct GPU
+     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+-    device = torch.device(f"cuda:{rank}")
+-    torch.cuda.set_device(device)
++    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
++    device = torch.device(f"npu:{rank}")
++    torch.npu.set_device(device)
+     init_test_distributed_environment(tp_size, pp_size, rank, distributed_init_port)
+     num_dimensions = 3
+     tensor_size = list(range(2, num_dimensions + 2))
+@@ -107,7 +110,7 @@ def all_gather_test_worker(
+         total_size *= s
+     for all_gather_dimension in range(num_dimensions):
+         all_tensors = [
+-            torch.arange(total_size, dtype=torch.float32, device="cuda").reshape(
++            torch.arange(total_size, dtype=torch.float32, device=device).reshape(
+                 tensor_size
+             )
+             * (r + 1)
+@@ -119,7 +122,7 @@ def all_gather_test_worker(
+         torch.testing.assert_close(t, expected)
+ 
+ 
+-@ray.remote(num_gpus=1, max_calls=1)
++@ray.remote(resources={"NPU": 1}, max_calls=1)
+ def broadcast_tensor_dict_test_worker(
+     monkeypatch: pytest.MonkeyPatch,
+     tp_size: int,
+@@ -131,19 +134,20 @@ def broadcast_tensor_dict_test_worker(
+     # so that each worker can see all the GPUs
+     # they will be able to set the device to the correct GPU
+     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+-    device = torch.device(f"cuda:{rank}")
+-    torch.cuda.set_device(device)
++    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
++    device = torch.device(f"npu:{rank}")
++    torch.npu.set_device(device)
+     init_test_distributed_environment(tp_size, pp_size, rank, distributed_init_port)
+     test_dict = {
+         # device tensor
+-        "a": torch.arange(8, dtype=torch.float32, device="cuda"),
++        "a": torch.arange(8, dtype=torch.float32, device=device),
+         # CPU tensor
+         "b": torch.arange(16, dtype=torch.int8, device="cpu"),
+         "c": "test",
+         "d": [1, 2, 3],
+         "e": {"a": 1, "b": 2},
+         # empty tensor
+-        "f": torch.tensor([], dtype=torch.float32, device="cuda"),
++        "f": torch.tensor([], dtype=torch.float32, device=device),
+     }
+ 
+     if (rank % tp_size) == 0:
+@@ -159,7 +163,7 @@ def broadcast_tensor_dict_test_worker(
+         torch.testing.assert_close(recv_dict["f"], test_dict["f"])
+ 
+ 
+-@ray.remote(num_gpus=1, max_calls=1)
++@ray.remote(resources={"NPU": 1}, max_calls=1)
+ def send_recv_tensor_dict_test_worker(
+     monkeypatch: pytest.MonkeyPatch,
+     tp_size: int,
+@@ -168,20 +172,21 @@ def send_recv_tensor_dict_test_worker(
+     distributed_init_port: str,
+ ):
+     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+-    device = torch.device(f"cuda:{rank}")
+-    torch.cuda.set_device(device)
++    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
++    device = torch.device(f"npu:{rank}")
++    torch.npu.set_device(device)
+     init_test_distributed_environment(tp_size, pp_size, rank, distributed_init_port)
+ 
+     test_dict = {
+         # device tensor
+-        "a": torch.arange(8, dtype=torch.float32, device="cuda"),
++        "a": torch.arange(8, dtype=torch.float32, device=device),
+         # CPU tensor
+         "b": torch.arange(16, dtype=torch.int8, device="cpu"),
+         "c": "test",
+         "d": [1, 2, 3],
+         "e": {"a": 1, "b": 2},
+         # empty tensor
+-        "f": torch.tensor([], dtype=torch.float32, device="cuda"),
++        "f": torch.tensor([], dtype=torch.float32, device=device),
+     }
+ 
+     if not get_pp_group().is_first_rank:
+@@ -200,7 +205,7 @@ def send_recv_tensor_dict_test_worker(
+         torch.testing.assert_close(recv_dict["f"], test_dict["f"])
+ 
+ 
+-@ray.remote(num_gpus=1, max_calls=1)
++@ray.remote(resources={"NPU": 1}, max_calls=1)
+ def send_recv_test_worker(
+     monkeypatch: pytest.MonkeyPatch,
+     tp_size: int,
+@@ -209,12 +214,13 @@ def send_recv_test_worker(
+     distributed_init_port: str,
+ ):
+     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+-    device = torch.device(f"cuda:{rank}")
+-    torch.cuda.set_device(device)
++    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
++    device = torch.device(f"npu:{rank}")
++    torch.npu.set_device(device)
+     init_test_distributed_environment(tp_size, pp_size, rank, distributed_init_port)
+ 
+     size = 64
+-    test_tensor = torch.arange(64, dtype=torch.float32, device="cuda")
++    test_tensor = torch.arange(64, dtype=torch.float32, device=device)
+ 
+     if not get_pp_group().is_first_rank:
+         recv_tensor = get_pp_group().recv(size, dtype=torch.float32)
+diff --git a/tests/utils.py b/tests/utils.py
+index 539f67c47..d239b7eeb 100644
+--- a/tests/utils.py
++++ b/tests/utils.py
+@@ -726,6 +726,7 @@ def init_test_distributed_environment(
+         rank=rank,
+         distributed_init_method=distributed_init_method,
+         local_rank=local_rank,
++        backend="hccl",
+     )
+     ensure_model_parallel_initialized(tp_size, pp_size)
+ 
+@@ -746,6 +747,7 @@ def multi_process_parallel(
+     # it will not move .so files to working dir.
+     # So we have to manually add some of large directories
+     os.environ["RAY_RUNTIME_ENV_IGNORE_GITIGNORE"] = "1"
++    os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
+     ray.init(
+         runtime_env={
+             "working_dir": VLLM_PATH,
+@@ -1101,7 +1103,7 @@ def multi_gpu_marks(*, num_gpus: int):
+     """Get a collection of pytest marks to apply for `@multi_gpu_test`."""
+     test_selector = pytest.mark.distributed(num_gpus=num_gpus)
+     test_skipif = pytest.mark.skipif(
+-        cuda_device_count_stateless() < num_gpus,
++        False,
+         reason=f"Need at least {num_gpus} GPUs to run the test.",
+     )
+ 
