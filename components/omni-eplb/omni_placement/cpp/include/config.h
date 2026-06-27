@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+// Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 #ifndef OMNI_CONFIG_H
 #define OMNI_CONFIG_H

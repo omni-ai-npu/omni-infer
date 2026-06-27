@@ -1,7 +1,7 @@
 #!/bin/bash
 # coding: utf-8
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 # pattern_generation_pipeline.sh
 # Shell script to run pipeline.py with specified or default parameters. 
