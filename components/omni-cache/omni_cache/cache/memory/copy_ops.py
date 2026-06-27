@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """Copy operations for KV cache memory pool."""
 
@@ -119,14 +119,6 @@ def memcpy_async(
     """Execute async memory copy from host to device."""
     start_time = time.time()
     batch_count = len(batch_device_mem)
-
-    # Pre-issue sanity check for overruns.
-    for idx in range(batch_count):
-        if batch_device_max[idx] < batch_host_sizes[idx]:
-            logger.warning(
-                "memcpy overrun risk at idx=%d: dst_max=%d < src=%d",
-                idx, batch_device_max[idx], batch_host_sizes[idx],
-            )
 
     for idx in range(batch_count):
         device_mem = ctypes.c_void_p(batch_device_mem[idx])

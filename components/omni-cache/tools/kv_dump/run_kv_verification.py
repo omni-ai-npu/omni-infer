@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -39,11 +40,28 @@ REPO_DIR = TOOLS_DIR.parent  # repo root
 
 DEFAULT_DUMP_STEP = "/tmp/kv_dumps_step"
 DEFAULT_RESPONSES = "/tmp/kv_responses"
+_SAFE_BRANCH_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def _run(cmd: list[str], **kwargs):
     print(f"  RUN: {' '.join(cmd)}")
     return subprocess.run(cmd, check=True, cwd=str(REPO_DIR), **kwargs)
+
+
+def _validate_branch_name(branch: str) -> str:
+    if not _SAFE_BRANCH_RE.fullmatch(branch):
+        raise ValueError(
+            f"unsafe dump branch name: {branch!r}; expected {_SAFE_BRANCH_RE.pattern}"
+        )
+    return branch
+
+
+def _resolve_under_root(root: str, child: str) -> Path:
+    root_path = Path(root).resolve()
+    target = (root_path / child).resolve()
+    if root_path != target and root_path not in target.parents:
+        raise ValueError(f"resolved path escapes dump root: {target}")
+    return target
 
 
 def _send_requests(n: int, max_tokens: int, id_prefix: str,
@@ -77,11 +95,13 @@ def _send_requests(n: int, max_tokens: int, id_prefix: str,
 
 def do_send(args):
     """Send requests for one run (baseline or omnicache)."""
-    branch = args.mode if args.mode else os.environ.get("OMNI_KV_DUMP_BRANCH", "run")
+    branch = _validate_branch_name(
+        args.mode if args.mode else os.environ.get("OMNI_KV_DUMP_BRANCH", "run")
+    )
     resp_dir = os.path.join(args.responses_dir, branch)
 
     # Clean up previous step dumps
-    target = Path(DEFAULT_DUMP_STEP) / branch
+    target = _resolve_under_root(DEFAULT_DUMP_STEP, branch)
     if target.exists():
         _run(["rm", "-rf", str(target)])
 

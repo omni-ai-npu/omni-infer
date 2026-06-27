@@ -37,6 +37,16 @@ SUPER_A = [0,1,2]
 SUPER_B = [3,4,5]
 
 
+def safe_torch_load(path):
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError as exc:
+        raise RuntimeError(
+            "This PyTorch version does not support weights_only=True; "
+            "refusing unsafe pickle-backed torch.load"
+        ) from exc
+
+
 def _interleave(groups, lbg):
     """Return ordered list of (group,layer) interleaved across groups."""
     max_len = max(max(lbg[g]) for g in groups) + 1 if any(lbg[g] for g in groups) else 0
@@ -98,8 +108,8 @@ def compare_one(base_dir, omni_dir, rid):
 
     for k in common:
         rel, g, layer, kind = k
-        a = torch.load(bi[k], map_location="cpu", weights_only=False)
-        b = torch.load(oi[k], map_location="cpu", weights_only=False)
+        a = safe_torch_load(bi[k])
+        b = safe_torch_load(oi[k])
         akv = a.get("kv",{}); bkv = b.get("kv",{})
         max_d = 0.0
         for sk, va in akv.items():

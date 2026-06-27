@@ -15,13 +15,17 @@ TARGET_PAGES=""               # Empty means auto-calc
 MAX_RETRY=5
 
 # Parse arguments
-for arg in "$@"; do
-    case $arg in
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --target-pages=*)
-            TARGET_PAGES="${arg#*=}"
+            TARGET_PAGES="${1#*=}"
             ;;
         --target-pages)
             # Supports --target-pages 1048576 format
+            [[ $# -ge 2 ]] || {
+                echo "ERROR: --target-pages requires a value" >&2
+                exit 1
+            }
             TARGET_PAGES="$2"
             shift
             ;;
@@ -30,8 +34,18 @@ for arg in "$@"; do
             echo "  --target-pages=N  : Manually specify number of hugepages (2MB each), otherwise auto-calculated."
             exit 0
             ;;
+        *)
+            echo "ERROR: unknown argument: $1" >&2
+            exit 1
+            ;;
     esac
+    shift
 done
+
+if [[ -n "$TARGET_PAGES" && ! "$TARGET_PAGES" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: --target-pages must be a non-negative integer: $TARGET_PAGES" >&2
+    exit 1
+fi
 
 #############################
 # Color output

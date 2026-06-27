@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 #
 # launch_prefill.sh — bring up the prefill side of a Pangu V2 hybrid PD
 # deployment.

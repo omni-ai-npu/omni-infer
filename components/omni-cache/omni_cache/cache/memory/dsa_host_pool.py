@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 """Dedicated DSA-only host pool, MMU-aliased into HBM (feature-gated).
 
 Design summary
@@ -67,8 +67,10 @@ logger = init_logger("vllm.v1.omni")
 ENV_ENABLE = "ENABLE_OMNI_CACHE_DSA_SPLIT"
 ENV_PATH = "OMNI_CACHE_DSA_MMAP_PATH"
 ENV_FILE = "OMNI_CACHE_DSA_MMAP_FILE"
+ENV_ALLOW_UNSAFE_PATH = "OMNI_CACHE_ALLOW_UNSAFE_DSA_MMAP_PATH"
 
 DEFAULT_FILE = "omni_cache_decode_dsa"
+HUGEPAGE_ROOT = "/dev/hugepages"
 # Fallback head size (kv_lora_rank 512 + qk_rope 64) used only
 # when hf_config cannot be resolved at construction time.
 _FALLBACK_HEAD_SIZE = 576
@@ -81,8 +83,29 @@ def is_enabled() -> bool:
 def resolve_mmap_path() -> str:
     raw = os.getenv(ENV_PATH)
     if raw:
-        return raw
-    return os.path.join("/dev/hugepages", os.getenv(ENV_FILE, DEFAULT_FILE))
+        if os.getenv(ENV_ALLOW_UNSAFE_PATH, "0") == "1":
+            return raw
+        return _validate_hugepage_path(raw)
+    filename = os.getenv(ENV_FILE, DEFAULT_FILE)
+    if os.path.basename(filename) != filename:
+        raise ValueError(
+            f"{ENV_FILE} must be a file name under {HUGEPAGE_ROOT}, got: {filename!r}"
+        )
+    return _validate_hugepage_path(os.path.join(HUGEPAGE_ROOT, filename))
+
+
+def _validate_hugepage_path(path: str) -> str:
+    root = os.path.realpath(HUGEPAGE_ROOT)
+    resolved = os.path.realpath(path)
+    try:
+        common = os.path.commonpath([root, resolved])
+    except ValueError as exc:
+        raise ValueError(f"invalid DSA mmap path: {path!r}") from exc
+    if common != root:
+        raise ValueError(
+            f"DSA mmap path must stay under {HUGEPAGE_ROOT}: {path!r}"
+        )
+    return resolved
 
 
 def resolve_head_size(hf_config=None) -> int:
@@ -211,7 +234,13 @@ class DsaSecondaryHostPool:
         esize_s = self.element_size
         kv_bytes = bs * h * esize_p
         block_list = sorted(set(int(b) for b in block_ids))
-        layers_list = list(dsa_layer_indices)
+        layers_list = [int(layer) for layer in dsa_layer_indices]
+        self._validate_copy_indices(
+            primary_shared_tensor,
+            primary_device_tensor,
+            layers_list,
+            block_list,
+        )
 
         use_async = (
             AscendCLStream is not None
@@ -252,6 +281,40 @@ class DsaSecondaryHostPool:
             self.shared_tensor[L[:, None], idx[None, :], :, :] = (
                 kv_view[L[:, None], idx[None, :], :, :]
             )
+
+    def _validate_copy_indices(
+        self,
+        primary_shared_tensor: torch.Tensor,
+        primary_device_tensor: Optional[torch.Tensor],
+        layers_list: Sequence[int],
+        block_list: Sequence[int],
+    ) -> None:
+        if primary_shared_tensor.dim() < 2:
+            raise ValueError(
+                f"primary_shared_tensor must have at least 2 dims, got "
+                f"{tuple(primary_shared_tensor.shape)}"
+            )
+        primary_layers = int(primary_shared_tensor.shape[0])
+        primary_blocks = int(primary_shared_tensor.shape[1])
+        if primary_device_tensor is not None and primary_device_tensor.dim() < 2:
+            raise ValueError(
+                f"primary_device_tensor must have at least 2 dims, got "
+                f"{tuple(primary_device_tensor.shape)}"
+            )
+        for layer in layers_list:
+            if layer < 0 or layer >= self.num_layers or layer >= primary_layers:
+                raise ValueError(
+                    f"DSA layer out of range: layer={layer}, "
+                    f"secondary_layers={self.num_layers}, "
+                    f"primary_layers={primary_layers}"
+                )
+        for blk in block_list:
+            if blk < 0 or blk >= self.num_blocks or blk >= primary_blocks:
+                raise ValueError(
+                    f"DSA block out of range: block={blk}, "
+                    f"secondary_blocks={self.num_blocks}, "
+                    f"primary_blocks={primary_blocks}"
+                )
 
 
 

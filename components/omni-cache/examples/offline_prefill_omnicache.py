@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 """
 Offline inference test for Pangu V2 prefill node with Automatic Prefix Caching (APC)
 and optional OmniCache.

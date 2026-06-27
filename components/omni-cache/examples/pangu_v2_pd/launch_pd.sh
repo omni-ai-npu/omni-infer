@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 #
 # launch_pd.sh — launch prefill + decode from outside containers.
 #
@@ -106,25 +107,27 @@ _PASSTHROUGH_VARS=(
     OMNI_CACHE_PACKED_HBM DISABLE_GATHER_SELECTION
     BSZ MAX_LEN OMNI_CACHE_LAYER_BYTES MAP_SIZE_BYTES
 )
-_PASSTHROUGH_ENV=""
+_DOCKER_ENV_ARGS=()
 for _var in "${_PASSTHROUGH_VARS[@]}"; do
     [[ -n "${!_var:-}" ]] || continue
-    _PASSTHROUGH_ENV+=" ${_var}='${!_var}'"
+    _DOCKER_ENV_ARGS+=("-e" "${_var}=${!_var}")
 done
+_DOCKER_ENV_ARGS+=("-e" "SCRIPT_DIR_CONTAINER=${SCRIPT_DIR_CONTAINER}")
 
 # ─── Launch prefill ───────────────────────────────────────────────────────
 if [[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "prefill" ]]; then
     echo "[launch_pd] starting prefill..."
-    sudo -n docker exec -d "$PREFILL_CONTAINER" bash -c "
+    sudo -n docker exec -d \
+        "${_DOCKER_ENV_ARGS[@]}" \
+        -e "P_NODE_LIST=${P_NODE_LIST_PREFILL}" \
+        -e "TP_SIZE=${TP_SIZE}" \
+        -e "DP_SIZE=${DP_SIZE}" \
+        -e "ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES}" \
+        "$PREFILL_CONTAINER" bash -lc '
         source ~/.bashrc
-        export $_PASSTHROUGH_ENV
-        export P_NODE_LIST='$P_NODE_LIST_PREFILL'
-        export TP_SIZE='$TP_SIZE'
-        export DP_SIZE='$DP_SIZE'
-        export ASCEND_RT_VISIBLE_DEVICES='$ASCEND_RT_VISIBLE_DEVICES'
-        mkdir -p $SCRIPT_DIR_CONTAINER/logs/prefill
-        nohup bash $SCRIPT_DIR_CONTAINER/launch_prefill.sh &>$SCRIPT_DIR_CONTAINER/logs/prefill/prefill_launch.log &
-    "
+        mkdir -p "$SCRIPT_DIR_CONTAINER/logs/prefill"
+        nohup bash "$SCRIPT_DIR_CONTAINER/launch_prefill.sh" &>"$SCRIPT_DIR_CONTAINER/logs/prefill/prefill_launch.log" &
+    '
 else
     echo "[launch_pd] skipping prefill (LAUNCH_MODE=$LAUNCH_MODE)"
 fi
@@ -132,14 +135,15 @@ fi
 # ─── Launch decode ────────────────────────────────────────────────────────
 if [[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "decode" ]]; then
     echo "[launch_pd] starting decode..."
-    sudo -n docker exec -d "$DECODE_CONTAINER" bash -c "
+    sudo -n docker exec -d \
+        "${_DOCKER_ENV_ARGS[@]}" \
+        -e "P_NODE_LIST=${P_NODE_LIST_DECODE}" \
+        -e "DECODE_DP_SIZE=${DECODE_DP_SIZE}" \
+        "$DECODE_CONTAINER" bash -lc '
         source ~/.bashrc
-        export $_PASSTHROUGH_ENV
-        export P_NODE_LIST='$P_NODE_LIST_DECODE'
-        export DECODE_DP_SIZE='$DECODE_DP_SIZE'
-        mkdir -p $SCRIPT_DIR_CONTAINER/logs/decode
-        nohup bash $SCRIPT_DIR_CONTAINER/launch_decode.sh &>$SCRIPT_DIR_CONTAINER/logs/decode/decode_launch.log &
-    "
+        mkdir -p "$SCRIPT_DIR_CONTAINER/logs/decode"
+        nohup bash "$SCRIPT_DIR_CONTAINER/launch_decode.sh" &>"$SCRIPT_DIR_CONTAINER/logs/decode/decode_launch.log" &
+    '
 else
     echo "[launch_pd] skipping decode (LAUNCH_MODE=$LAUNCH_MODE)"
 fi

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 #
 # launch_decode.sh — bring up the decode side of a Pangu V2 hybrid PD
 # deployment. Decode is data-parallel: this script starts DECODE_DP_SIZE

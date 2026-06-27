@@ -109,7 +109,7 @@ class NPUTensorRegister:
             pass
 
         host_ptr = ctypes.c_void_p(host_tensor.data_ptr())
-        size = host_tensor.numel() * host_tensor.element_size()
+        size = host_tensor.nbytes
 
         dev_ptr = ctypes.c_void_p()
         ret = _lib.register_tensor(host_ptr, size, ctypes.byref(dev_ptr), device_id)

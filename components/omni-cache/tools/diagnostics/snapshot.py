@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """Data model for KV cache snapshots: BlockRecord, KVSnap, and .npz serialization."""
 
@@ -110,7 +110,7 @@ def save_snap(snap: KVSnap, dump_dir: str) -> str:
 
 
 def load_snap(path: str) -> KVSnap:
-    data = np.load(path, allow_pickle=True)
+    data = np.load(path, allow_pickle=False)
     meta = json.loads(str(data["metadata"]))
 
     tensors = {}

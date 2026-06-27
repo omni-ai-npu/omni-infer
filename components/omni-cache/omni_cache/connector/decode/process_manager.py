@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """Process and thread management for decode connector."""
 
@@ -386,6 +386,8 @@ class ProcessManager:
                     )
             except Exception as _exc:
                 logger.warning('[DSA-SPLIT] post-pull copy failed: %s', _exc)
+                if os.getenv("ENABLE_OMNI_CACHE_DSA_SPLIT", "0") == "1":
+                    raise RuntimeError(f"[DSA-SPLIT] post-pull copy failed: {_exc}") from _exc
 
         # Only TP rank 0 pulls KV (single-sender model — see
         # kv_loader._read_blocks). Scheduler queries rank 0's

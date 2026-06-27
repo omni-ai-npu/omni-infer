@@ -1,6 +1,5 @@
 #!/bin/bash
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
 # Script to run tests for omni-cache
 
 set -e

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # SPDX-License-Identifier: MIT
 """Unified KV dump comparator for omni-cache PD diagnostics.
@@ -87,6 +87,17 @@ try:
 except ImportError:
     HAS_TQDM = False
 
+
+def safe_torch_load(path):
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError as exc:
+        raise RuntimeError(
+            "This PyTorch version does not support weights_only=True; "
+            "refusing unsafe pickle-backed torch.load"
+        ) from exc
+
+
 _FILE_RE = re.compile(
     r".*_g(\d+)_model_layers_(\d+)_self_attn_(attn|conv)\.pt$"
 )
@@ -104,8 +115,7 @@ def step_root(dump_dir: str) -> str:
     """Return the root directory holding `<branch>/step{NNNN}/` dumps.
 
     Tries `<dump_dir>/_step` first (unified layout); then checks if
-    dump_dir itself contains branch subdirectories; falls back to
-    `/tmp/kv_dumps_step` (legacy `OMNI_KV_STEP_DUMP_DIR` default).
+    dump_dir itself contains branch subdirectories.
     """
     cand = os.path.join(dump_dir, "_step")
     if os.path.isdir(cand):
@@ -115,9 +125,6 @@ def step_root(dump_dir: str) -> str:
         for name in ("baseline", "omnicache"):
             if os.path.isdir(os.path.join(dump_dir, name)):
                 return dump_dir
-    legacy = "/tmp/kv_dumps_step"
-    if os.path.isdir(legacy):
-        return legacy
     return cand
 
 
@@ -262,8 +269,8 @@ def _compare_one_request(base_dir, omni_dir, base_id, omni_id, atol, mismatch_fi
         key_iter = tqdm(common, desc="  Quick peek", unit="key", leave=False) if HAS_TQDM else common
         for k in key_iter:
             rel, g, layer, kind = k
-            a = torch.load(base_idx[k], map_location="cpu", weights_only=False)
-            b = torch.load(omni_idx[k], map_location="cpu", weights_only=False)
+            a = safe_torch_load(base_idx[k])
+            b = safe_torch_load(omni_idx[k])
             akv = a.get("kv", {})
             bkv = b.get("kv", {})
             for sk, va in akv.items():
@@ -289,8 +296,8 @@ def _compare_one_request(base_dir, omni_dir, base_id, omni_id, atol, mismatch_fi
     key_iter = tqdm(common, desc="  Comparing keys", unit="key", leave=False) if HAS_TQDM else common
     for k in key_iter:
         rel, g, layer, kind = k
-        a = torch.load(base_idx[k], map_location="cpu", weights_only=False)
-        b = torch.load(omni_idx[k], map_location="cpu", weights_only=False)
+        a = safe_torch_load(base_idx[k])
+        b = safe_torch_load(omni_idx[k])
         akv = a.get("kv", {})
         bkv = b.get("kv", {})
         ok = True
@@ -515,11 +522,11 @@ def self_consistency_compare(args):
             continue
         rid, g, layer, kind = k
         prev_step, prev_path = entries[0]
-        prev_data = torch.load(prev_path, map_location="cpu", weights_only=False)
+        prev_data = safe_torch_load(prev_path)
         prev_kv = prev_data.get("kv", {})
 
         for step, path in entries[1:]:
-            cur_data = torch.load(path, map_location="cpu", weights_only=False)
+            cur_data = safe_torch_load(path)
             cur_kv = cur_data.get("kv", {})
             for comp_name, prev_t in prev_kv.items():
                 if not hasattr(prev_t, "shape"):
@@ -623,3 +630,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

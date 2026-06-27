@@ -24,7 +24,7 @@ def test_zero_copy():
     device_id = 0
     FILE_PATH = os.path.join(HUGEPAGE_DIR, "zero_copy_hugepage.bin")
 
-    fd = os.open(FILE_PATH, os.O_CREAT | os.O_RDWR, 0o666)
+    fd = os.open(FILE_PATH, os.O_CREAT | os.O_RDWR, 0o600)
     os.ftruncate(fd, SIZE)
     buf = mmap.mmap(fd, SIZE,
                     flags=mmap.MAP_SHARED | MAP_HUGETLB,

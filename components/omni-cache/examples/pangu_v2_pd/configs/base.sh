@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # base.sh — default configuration for Pangu V2 hybrid PD deployment.
 # Sourced by launch_prefill.sh / launch_decode.sh.
 # Every value can be overridden via environment variable or a profile config.

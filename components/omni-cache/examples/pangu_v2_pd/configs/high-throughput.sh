@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # high-throughput.sh — high-throughput profile overrides for Pangu V2 hybrid PD.
 # Source after base.sh.  Set CONFIG_PROFILE=high-throughput to activate.
 # Uses direct assignment (not :=) because base.sh has already set defaults.

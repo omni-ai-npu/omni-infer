@@ -1,6 +1,6 @@
 # test_dsa_ext.py
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """
 Unit tests for omni_cache/attention/backends/dsa_ext.py

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 #
 # Usage examples:
 #   # default: build using current environment, project dir = script parent dir
@@ -24,6 +24,10 @@ INSTALL_TORCH="${INSTALL_TORCH:-0}"      # default do not auto-install torch
 TORCH_WHEEL_URL="${TORCH_WHEEL_URL:-}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-}"
 EXTRA_PIP_ARGS="${EXTRA_PIP_ARGS:-}"
+EXTRA_PIP_ARGS_ARRAY=()
+if [ -n "${EXTRA_PIP_ARGS}" ]; then
+  read -r -a EXTRA_PIP_ARGS_ARRAY <<< "${EXTRA_PIP_ARGS}"
+fi
 # PROJECT_DIR: directory to pass as source to python -m build; default = parent dir of this script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${PROJECT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
@@ -46,7 +50,7 @@ echo
 # Helper: run pip install with the chosen python
 install_with_python() {
   local py="$1"; shift
-  "${py}" -m pip install "$@" ${EXTRA_PIP_ARGS}
+  "${py}" -m pip install "$@" "${EXTRA_PIP_ARGS_ARRAY[@]}"
 }
 
 # Choose python executable
@@ -126,7 +130,7 @@ PYCODE
 
 # Install omni-cache in editable mode (triggers build_py for native C++ components)
 echo "Running: ${PY} -m pip install -e ${PROJECT_DIR} --no-build-isolation ${EXTRA_PIP_ARGS}"
-"${PY}" -m pip install -e "${PROJECT_DIR}" --no-build-isolation ${EXTRA_PIP_ARGS} || {
+"${PY}" -m pip install -e "${PROJECT_DIR}" --no-build-isolation "${EXTRA_PIP_ARGS_ARRAY[@]}" || {
   echo
   echo "Build failed. Common causes:"
   echo " - missing runtime dependency at import-time (numpy/concurrent_log_handler/msgpack/torch)"
