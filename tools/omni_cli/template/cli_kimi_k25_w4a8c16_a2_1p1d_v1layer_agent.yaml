@@ -579,7 +579,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              max-num-batched-tokens: 40000
+              max-num-batched-tokens: 32768
               max-num-seqs: 4
               no-enable-prefix-caching: ''
             gpu-util: '0.95'
@@ -706,7 +706,7 @@ all:
               disable-log-requests: ''
               enable-expert-parallel: ''
               enforce-eager: ''
-              max-num-batched-tokens: 40000
+              max-num-batched-tokens: 32768
               max-num-seqs: 4
               no-enable-prefix-caching: ''
             gpu-util: '0.95'
