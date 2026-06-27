@@ -93,7 +93,7 @@
       export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
 
       # patch
-      export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
+      export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
       export HYBRID_ATTN_GROUP_SIZE=17
       export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
       export OMNI_NPU_VLLM_PATCHES="ALL"
@@ -105,10 +105,10 @@
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
       KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
-      EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --max-num-batched-tokens 92160  --enable-expert-parallel --max-num-seqs 4 --enable-prefix-caching --enable-chunked-prefill --dtype bfloat16 --enforce-eager --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu --kv-cache-dtype li_int8_ds_mla --enable-lopt --lopt-pool-size 16 --lopt-chunk-size 4096"
+      EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --max-num-batched-tokens 32768  --enable-expert-parallel --max-num-seqs 12 --enable-prefix-caching --enable-chunked-prefill --dtype bfloat16 --enforce-eager --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu --kv-cache-dtype li_int8_ds_mla --enable-lopt --lopt-pool-size 16 --lopt-chunk-size 4096"
       REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
       EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
-      GPU_UTIL=0.8
+      GPU_UTIL=0.85
       VLLM_ENABLE_MC2=1
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
       unset https_proxy
@@ -183,7 +183,7 @@
       export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
 
       # patch
-      export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
+      export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
       export HYBRID_ATTN_GROUP_SIZE=17
       export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
       export OMNI_NPU_VLLM_PATCHES="ALL"
@@ -229,7 +229,7 @@
       rm -rf /usr/local/Ascend/cann/opp/static_kernel
       rm -rf /usr/local/Ascend/cann-9.1.0-beta.1/opp/static_kernel
       rm -rf graph_cache/
-      EXTRA_ARGS='--no-disable-hybrid-kv-cache-manager --enable-expert-parallel --disable-log-requests --max-num-seqs 3 --enable-prefix-caching --enable-chunked-prefill --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[12], "backend":"", "compile_sizes":[12]} --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu  --kv-cache-dtype li_int8_ds_mla --enable-lopt --lopt-pool-size 16 --lopt-chunk-size 4096'
+      EXTRA_ARGS='--no-disable-hybrid-kv-cache-manager --enable-expert-parallel --disable-log-requests --max-num-seqs 4 --enable-prefix-caching --enable-chunked-prefill --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[16], "backend":"", "compile_sizes":[16]} --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu  --kv-cache-dtype li_int8_ds_mla --enable-lopt --lopt-pool-size 16 --lopt-chunk-size 4096'
       REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
       EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
       GPU_UTIL=0.82
@@ -324,8 +324,8 @@
           --decode-pod-size "$DECODE_POD_NUM" \
           --omni-proxy-pd-policy sequential \
           --omni-proxy-max-batch-num-token 100000 \
-          --omni-proxy-prefill-max-num-seqs 4 \
-          --omni-proxy-decode-max-num-seqs 3
+          --omni-proxy-prefill-max-num-seqs 12 \
+          --omni-proxy-decode-max-num-seqs 4
       else
         cd /workspace/omniinfer/tools/scripts
         bash global_proxy.sh \
@@ -339,8 +339,8 @@
           --start-core-index 16 \
           --prefill-lb-sdk ${PREFILL_LB_SDK} \
           --decode-lb-sdk ${DECODE_LB_SDK} \
-          --prefill-max-num-seqs 4 \
-          --decode-max-num-seqs 3
+          --prefill-max-num-seqs 12 \
+          --decode-max-num-seqs 4
       fi
 
     reload_proxy_cmd: |
