@@ -7,8 +7,6 @@ fusion_result.json
 *.input
 *.xml
 CMakeFiles/
-Makefile
-*.cmake
 CMakeCache.txt
 test_moe_weights
 test_tensor

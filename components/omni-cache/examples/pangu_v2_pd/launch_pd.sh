@@ -177,15 +177,16 @@ if [[ "$LAUNCH_MODE" == "all" || "$LAUNCH_MODE" == "proxy" ]]; then
     done
 
     echo "[launch_pd] starting proxy in $PROXY_CONTAINER..."
-    sudo -n docker exec -d "$PROXY_CONTAINER" bash -c "
+    sudo -n docker exec -d \
+        "${_DOCKER_ENV_ARGS[@]}" \
+        -e "PYTHONHASHSEED=123" \
+        -e "PREFILL_ENDPOINTS=${_prefill_eps}" \
+        -e "DECODE_ENDPOINTS=${_decode_eps}" \
+        "$PROXY_CONTAINER" bash -lc '
         source ~/.bashrc
-        export PYTHONHASHSEED=123
-        export $_PASSTHROUGH_ENV
-        export PREFILL_ENDPOINTS='$_prefill_eps'
-        export DECODE_ENDPOINTS='$_decode_eps'
-        mkdir -p $SCRIPT_DIR_CONTAINER/logs/proxy
-        nohup bash $SCRIPT_DIR_CONTAINER/launch_proxy.sh &>$SCRIPT_DIR_CONTAINER/logs/proxy/proxy_launch.log &
-    "
+        mkdir -p "$SCRIPT_DIR_CONTAINER/logs/proxy"
+        nohup bash "$SCRIPT_DIR_CONTAINER/launch_proxy.sh" &>"$SCRIPT_DIR_CONTAINER/logs/proxy/proxy_launch.log" &
+    '
 else
     echo "[launch_pd] skipping proxy (LAUNCH_MODE=$LAUNCH_MODE)"
 fi
