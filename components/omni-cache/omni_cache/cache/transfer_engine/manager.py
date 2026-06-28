@@ -61,10 +61,6 @@ class TransferManager:
             max_num_seqs: Maximum number of sequences
             max_model_len: Maximum model length
         """
-        # Initialize thread pool FIRST so cache.num_stages_layer_copy is
-        # set before the cpu buffers allocate themselves. Otherwise the
-        # cpu buffers default to single-stage and can collide when
-        # num_stages_layer_copy >= 2.
         self.thread_pool.initialize(self.cache, max_workers=1)
 
         # Initialize CPU buffers (now N-staged off num_stages_layer_copy)

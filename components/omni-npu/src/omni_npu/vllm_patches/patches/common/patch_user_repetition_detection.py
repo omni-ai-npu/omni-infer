@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
-#
-# Backport repetition detection for release branches that predate upstream
-# vLLM PR #35451. This file must load *after* ``patch_thinking_limit.py`` (and
-# ``patch_ti_epd_zmq.py`` when present) so relay registrations overwrite the
-# same ``register_patch`` names and call upstream.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 from __future__ import annotations
 

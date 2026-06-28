@@ -50,8 +50,6 @@ def _kernel(fn):
 
 # ---------------------------------------------------------------------------
 # build_fake_block_table_kernel_compress
-# Write the fake (per-request) block_table: each request i gets
-#   block_table[i, :select_len] = base_block_list[:select_len] + req_offset * real_indices[i]
 # ---------------------------------------------------------------------------
 @_kernel
 def build_fake_block_table_kernel_compress(
@@ -72,7 +70,6 @@ def build_fake_block_table_kernel_compress(
     # valid: rows where real_indices >= 0
     valid = real_indices >= 0
     offsets = (req_offset_base * real_indices).to(block_table.dtype)
-    # broadcast: [num_reqs, 1] + [select_len]
     values = base_slice.unsqueeze(0) + offsets_col(offsets)
     block_table[valid_rows(valid=valid), :select_len] = values[valid]
 
@@ -87,8 +84,6 @@ def valid_rows(valid: torch.Tensor) -> torch.Tensor:
 
 # ---------------------------------------------------------------------------
 # move_slots_kernel
-# For each request, shift its three adjacent blocks in a pool by one:
-#   pool[base+1] = pool[base+2]; pool[base+2] = pool[base+3]; pool[base+3] = 0
 # ---------------------------------------------------------------------------
 @_kernel
 def move_slots_kernel(

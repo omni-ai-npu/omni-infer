@@ -1,5 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright contributors to the vLLM project.
 
 import argparse
 
@@ -220,6 +221,7 @@ class OpenAIServingLoptPatch(VLLMPatch):
 # ────────────────────────────────────────────────────────────
 # Patch 4: vllm.tokenizers module — export maybe_get_lopt_tokenizer
 # ────────────────────────────────────────────────────────────
+
 
 @register_patch("TokenizerModuleLoptPatch", _vllm_tokenizers_module)
 class TokenizerModuleLoptPatch(VLLMPatch):

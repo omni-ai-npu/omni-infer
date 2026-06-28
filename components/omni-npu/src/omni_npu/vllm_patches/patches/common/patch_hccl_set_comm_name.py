@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 from datetime import timedelta
 from typing import Any, Optional, Union
@@ -11,6 +12,8 @@ from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 
 _original_new_group = torch.distributed.new_group
+
+
 @register_patch("NewGroupHCCLPatch", torch.distributed)
 class NewGroupHCCLPatch(VLLMPatch):
     """
@@ -57,6 +60,8 @@ class NewGroupHCCLPatch(VLLMPatch):
 
 
 _original_init_process_group = torch.distributed.init_process_group
+
+
 @register_patch("InitProcessGroupHCCLPatch", torch.distributed)
 class InitProcessGroupHCCLPatch(VLLMPatch):
     """

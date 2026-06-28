@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright contributors to the vLLM project.
+
 import torch
 
 from vllm.model_executor.models.config import (
@@ -20,11 +21,12 @@ from vllm.config import VllmConfig
 
 logger = init_logger(__name__)
 
-_SKIP_HYBRID_ATTENTION_MAMBA_ARCHITECTURES = {"PanguV2MoEForCausalLM"}
+_SKIP_HYBRID_ATTENTION_MAMBA_ARCHITECTURES = {"OpenPanguV2ForCausalLM"}
 
 _original_hybrid_verify_and_update_config = (
     HybridAttentionMambaModelConfig.__dict__["verify_and_update_config"]
 )
+
 
 class PanguV2HybridForCausalLMConfig(MambaModelConfig):
     @classmethod
@@ -106,6 +108,7 @@ class PanguV2HybridForCausalLMConfig(MambaModelConfig):
 
         cache_config.mamba_page_size_padded = target_page_size
 
+
 class PanguV2MoEForCausalLMConfig(MambaModelConfig):
     @classmethod
     def verify_and_update_config(cls, vllm_config: "VllmConfig") -> None:
@@ -113,6 +116,7 @@ class PanguV2MoEForCausalLMConfig(MambaModelConfig):
         # set mamba_block_size
         # TODO: align pagesizes, particularly for dsa c8
         super().verify_and_update_config(vllm_config)
+
 
 @register_patch("PanguV2HybridModelsConfigMapPatch", models_config_module)
 class PanguV2HybridModelsConfigMapPatch(VLLMPatch):
@@ -124,8 +128,9 @@ class PanguV2HybridModelsConfigMapPatch(VLLMPatch):
         "PanguUltraMoEForCausalLM": PanguV2HybridForCausalLMConfig,
         "OpenPanguV2VLForConditionalGeneration": PanguV2HybridForCausalLMConfig,
         "OpenPanguUltraOmniForConditionalGeneration": PanguV2HybridForCausalLMConfig,
-        "PanguV2MoEForCausalLM": PanguV2MoEForCausalLMConfig,
+        "OpenPanguV2ForCausalLM": PanguV2MoEForCausalLMConfig,
     }
+
 
 @register_patch("PanguV2HybridVllmConfigPatch", VllmConfig)
 class PanguV2HybridVllmConfigPatch(VLLMPatch):
@@ -181,13 +186,14 @@ class PanguV2HybridVllmConfigPatch(VLLMPatch):
                     f"Model: {self.model_config.model}"
                 )
 
+
 @register_patch(
     "PanguV2MoEHybridAttentionMambaConfigPatch",
     HybridAttentionMambaModelConfig,
 )
 class PanguV2MoEHybridAttentionMambaConfigPatch(VLLMPatch):
     """Override HybridAttentionMambaModelConfig.verify_and_update_config
-    to skip the hybrid page size alignment for PanguV2MoEForCausalLM,
+    to skip the hybrid page size alignment for OpenPanguV2ForCausalLM,
     while still running MambaModelConfig.verify_and_update_config."""
 
     _attr_names_to_apply = ["verify_and_update_config"]

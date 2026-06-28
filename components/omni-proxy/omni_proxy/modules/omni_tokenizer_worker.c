@@ -90,7 +90,7 @@ static void *omni_tokenizer_worker_func(void *data)
                 break;
             }
 
-            printf("Tokenize batch %ld\n", batch_count);
+            printf("Tokenize batch %lu\n", batch_count);
 
             if (omni_batch_chat_encode(batch_requests, batch_count) == 0)
             {
@@ -98,7 +98,7 @@ static void *omni_tokenizer_worker_func(void *data)
             }
             else
             {
-                for (int i = 0; i < batch_count; i++)
+                for (ngx_uint_t i = 0; i < batch_count; i++)
                 {
                     batch_requests[i]->failed = true;
                 }
@@ -163,7 +163,7 @@ ngx_int_t omni_tokenizer_worker_init(ngx_cycle_t *cycle, ngx_omni_tokenize_worke
     for (int i = 0; i < 4; i++)
     {
         flags = fcntl(fds[i], F_GETFL, 0);
-        if (flags == -1 || fcntl(fds[i], F_SETFL, flags | O_NONBLOCK) == -1)
+        if (flags == -1 || fcntl(fds[i], F_SETFL, (unsigned int)flags | O_NONBLOCK) == -1)
         {
             ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno, "Failed to set pipe non-blocking");
             close(worker->epoll_fd);
@@ -181,7 +181,9 @@ ngx_int_t omni_tokenizer_worker_init(ngx_cycle_t *cycle, ngx_omni_tokenize_worke
     int err = pthread_create(&worker->thread_id, NULL, omni_tokenizer_worker_func, worker);
     if (err != 0)
     {
-        ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "Failed to create worker thread: %s", strerror(err));
+        char errbuf[128];
+        strerror_r(err, errbuf, sizeof(errbuf));
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "Failed to create worker thread: %s", errbuf);
         close(worker->epoll_fd);
         close(worker->cmd_pipe[OMNI_PIPE_READ]);
         close(worker->cmd_pipe[OMNI_PIPE_WRITE]);

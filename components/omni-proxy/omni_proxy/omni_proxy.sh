@@ -328,7 +328,7 @@ function clear_model_transformers_cache() {
     [[ ! -d "$tfm_cache" ]] && return 0
 
     local name target
-    name="$(basename "${omni_proxy_model_path%/}" | awk '{gsub(/[^a-zA-Z0-9_]/, "__"); print}')"
+    name="$(basename "${omni_proxy_model_path%/}" | awk '{gsub(/\./, "_dot_"); gsub(/-/, "_hyphen_"); if ($0 ~ /^[0-9]/) $0 = "_" $0; print}')"
     target="${tfm_cache}/${name}"
     if [[ -d "$target" ]]; then
         echo "Clearing transformers dynamic cache: $target"

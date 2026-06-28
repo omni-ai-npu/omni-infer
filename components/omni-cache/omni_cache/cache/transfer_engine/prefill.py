@@ -23,6 +23,7 @@ logger = init_logger("vllm.v1.omni")
 @dataclass
 class D2HContext:
     """Context for D2H operations."""
+
     layer_list: List[int] = field(default_factory=list)
     group_list: List[int] = field(default_factory=list)
     num_token_list: List[int] = field(default_factory=list)
@@ -87,6 +88,7 @@ def _prepare_blocks(attn_meta, device, spec=None):
       - APC:     slice between ``cache_indices_start_sched`` and
                  ``cache_indices_end_sched`` per request.
     """
+
     def _to_1d(t):
         if t is None:
             return None
@@ -169,8 +171,7 @@ def _prepare_blocks(attn_meta, device, spec=None):
 
     if seq_lens is None or block_size is None:
         raise RuntimeError(
-            "seq_lens or block_size missing from attention metadata "
-            "-- cannot compute per-request block count."
+            "seq_lens or block_size missing from attention metadata -- cannot compute per-request block count."
         )
 
     # Read num_computed_tokens recorded by the MoME metadata builder
@@ -178,6 +179,7 @@ def _prepare_blocks(attn_meta, device, spec=None):
     # processed before this step, so we only offload blocks for the
     # newly-added tail.
     from omni_cache.cache import omni_cache
+
     _num_comp = getattr(omni_cache, "num_computed_tokens", None)
     if _num_comp is None:
         raise ValueError(
@@ -213,7 +215,7 @@ def _prepare_blocks(attn_meta, device, spec=None):
 
     # Merge DSA-specific tables (score_states, kv_states) as extra columns.
     extra = []
-    for attr in ('score_states_block_table', 'kv_states_block_table'):
+    for attr in ("score_states_block_table", "kv_states_block_table"):
         t = getattr(attn_meta, attr, None)
         if t is not None:
             if t.dim() == 1:
@@ -322,6 +324,7 @@ def _resolve_real_block_tables(metadata, cache=None, group_idx=None) -> Optional
             if isinstance(stashed, torch.Tensor):
                 return stashed
             import numpy as _np
+
             if isinstance(stashed, _np.ndarray):
                 return torch.from_numpy(stashed)
     return None
@@ -380,8 +383,7 @@ def copy_kv_to_buffers(
         if cache.enable_dsa and not cache.is_hybrid_attn:
             for i, _ in enumerate(kv_states):
                 cache.batch_buffer_cpu[i][:num_tokens].copy_(
-                    kv_states[i].squeeze(1)[cache.batch_token_indices],
-                    non_blocking=True
+                    kv_states[i].squeeze(1)[cache.batch_token_indices], non_blocking=True
                 )
 
         elif cache.is_hybrid_attn:
@@ -412,13 +414,11 @@ def copy_kv_to_buffers(
                     if fake_bt is None:
                         fake_bt = getattr(metadata.prefill, "block_tables", None)
                 if fake_bt is not None:
-                    fake_bt_cpu = fake_bt.detach().to('cpu', non_blocking=False)
+                    fake_bt_cpu = fake_bt.detach().to("cpu", non_blocking=False)
                     if fake_bt_cpu.shape != real_block_tables.shape:
                         fake_bt_cpu = fake_bt_cpu[: real_block_tables.shape[0], : real_block_tables.shape[1]]
                 else:
-                    fake_bt_cpu = volatile_table[:num_reqs, :max_blocks_per_req].detach().to(
-                        'cpu', non_blocking=False
-                    )
+                    fake_bt_cpu = volatile_table[:num_reqs, :max_blocks_per_req].detach().to("cpu", non_blocking=False)
                 fake_max = int(fake_bt_cpu.max().item()) if fake_bt_cpu.numel() > 0 else 0
                 hbm_end = 1 + max(fake_max, num_reqs * max_blocks_per_req)
                 if should_log_rank(cache):
@@ -439,23 +439,21 @@ def copy_kv_to_buffers(
                     )
 
                 layer_async = {
-                    'layer_idx': layer_idx,
-                    'layer_name': layer_name,
-                    'group_idx': group_idx,
-                    'blocks_cpu': None,
-                    'mode': 'contiguous',
-                    'real_block_tables_cpu': torch.as_tensor(
-                        real_block_tables
-                    ).detach().to('cpu', non_blocking=False),
-                    'volatile_table_cpu': fake_bt_cpu,
-                    'num_reqs': num_reqs,
-                    'max_blocks_per_req': max_blocks_per_req,
-                    'bufs': [],
+                    "layer_idx": layer_idx,
+                    "layer_name": layer_name,
+                    "group_idx": group_idx,
+                    "blocks_cpu": None,
+                    "mode": "contiguous",
+                    "real_block_tables_cpu": torch.as_tensor(real_block_tables).detach().to("cpu", non_blocking=False),
+                    "volatile_table_cpu": fake_bt_cpu,
+                    "num_reqs": num_reqs,
+                    "max_blocks_per_req": max_blocks_per_req,
+                    "bufs": [],
                 }
 
                 for i, buf_tmp in enumerate(bufs):
                     if num_reqs == 0 or hbm_end <= 1:
-                        layer_async['bufs'].append(None)
+                        layer_async["bufs"].append(None)
                         continue
 
                     # Single contiguous slice — rows 0..hbm_end (exclusive).
@@ -464,17 +462,19 @@ def copy_kv_to_buffers(
                     # anyway but keeping the slice aligned at 0 lets us use
                     # the fake id directly without offset arithmetic.
                     slab = buf_tmp[:hbm_end]
-                    pinned = torch.empty_like(slab, device='cpu', pin_memory=True)
+                    pinned = torch.empty_like(slab, device="cpu", pin_memory=True)
                     pinned.copy_(slab, non_blocking=True)
 
                     buf_event = torch.npu.Event(blocking=False)
                     buf_event.record(d2h_stream)
 
-                    layer_async['bufs'].append({
-                        'buf_idx': i,
-                        'pinned': pinned,
-                        'event': buf_event,
-                    })
+                    layer_async["bufs"].append(
+                        {
+                            "buf_idx": i,
+                            "pinned": pinned,
+                            "event": buf_event,
+                        }
+                    )
 
                 ctx.async_data.append(layer_async)
                 continue
@@ -497,39 +497,34 @@ def copy_kv_to_buffers(
                 )
 
             layer_async = {
-                'layer_idx': layer_idx,
-                'layer_name': layer_name,
-                'group_idx': group_idx,
-                'blocks_cpu': blocks_cpu,
-                'mode': 'gather',
-                'bufs': []
+                "layer_idx": layer_idx,
+                "layer_name": layer_name,
+                "group_idx": group_idx,
+                "blocks_cpu": blocks_cpu,
+                "mode": "gather",
+                "bufs": [],
             }
 
             for i, buf_tmp in enumerate(bufs):
                 if blocks_npu.numel() == 0:
-                    layer_async['bufs'].append(None)
+                    layer_async["bufs"].append(None)
                     continue
 
                 selected = buf_tmp[blocks_npu]
-                pinned = torch.empty_like(selected, device='cpu', pin_memory=True)
+                pinned = torch.empty_like(selected, device="cpu", pin_memory=True)
                 pinned.copy_(selected, non_blocking=True)
 
                 buf_event = torch.npu.Event(blocking=False)
                 buf_event.record(d2h_stream)
 
-                layer_async['bufs'].append({
-                    'buf_idx': i,
-                    'pinned': pinned,
-                    'event': buf_event
-                })
+                layer_async["bufs"].append({"buf_idx": i, "pinned": pinned, "event": buf_event})
 
             ctx.async_data.append(layer_async)
 
         else:
             for i, _ in enumerate(kv_states):
                 cache.batch_buffer_cpu[i][:num_tokens].copy_(
-                    _nd_to_nz(cache, kv_states[i].squeeze(1)),
-                    non_blocking=True
+                    _nd_to_nz(cache, kv_states[i].squeeze(1)), non_blocking=True
                 )
 
 
@@ -553,17 +548,11 @@ def submit_async_updates(
             d2h_event,
             cache.host_cache.kvi_tensors,
             cache.dp_local_rank,
-            cache.dp_world_size_local
+            cache.dp_world_size_local,
         )
     elif not cache.is_hybrid_attn:
         cache.copy_futures[cache.stage_record] = cache.d2h_thrp.submit(
-            update_host_cache_thread,
-            cache,
-            ctx.num_token_list,
-            ctx.layer_list,
-            d2h_event,
-            ctx.group_list,
-            None
+            update_host_cache_thread, cache, ctx.num_token_list, ctx.layer_list, d2h_event, ctx.group_list, None
         )
 
 
@@ -573,7 +562,7 @@ def update_host_cache_thread(
     layer_idx,
     event,
     group_idx: Optional = None,
-    layer_name_list: Optional = None
+    layer_name_list: Optional = None,
 ):
     """Background thread function for updating host cache.
 
@@ -588,33 +577,28 @@ def update_host_cache_thread(
     Returns:
         None
     """
-    import torch
     torch.npu.set_device(cache.device)
     event.synchronize()
 
     layers = [layer_idx] if isinstance(layer_idx, int) else layer_idx
-    groups = [group_idx] if isinstance(group_idx, int) else (
-        group_idx or [None] * len(layers)
-    )
+    groups = [group_idx] if isinstance(group_idx, int) else (group_idx or [None] * len(layers))
     token_counts = [num_tokens] if isinstance(num_tokens, int) else num_tokens
-    names = [None] * len(layers) if layer_name_list is None else (
-        [layer_name_list] if isinstance(layer_name_list, str) else layer_name_list
+    names = (
+        [None] * len(layers)
+        if layer_name_list is None
+        else ([layer_name_list] if isinstance(layer_name_list, str) else layer_name_list)
     )
 
     dp_rank = cache.dp_local_rank
     dp_size = cache.dp_world_size_local
     kvi_tensors = cache.host_cache.kvi_tensors
 
-    for layer, grp, n_tokens, name in zip(layers, groups, token_counts, names):
+    for layer, grp, n_tokens, _name in zip(layers, groups, token_counts, names):
         if cache.is_hybrid_attn:
             if grp == 1 and layer == 21:
                 draft_index = 0
-                slots = cache.batch_slots_cpu[
-                    cache.num_attn_group + draft_index
-                ][:n_tokens]
-                raw_buf = cache.batch_buffer_cpu[
-                    cache.num_attn_group + draft_index
-                ]
+                slots = cache.batch_slots_cpu[cache.num_attn_group + draft_index][:n_tokens]
+                raw_buf = cache.batch_buffer_cpu[cache.num_attn_group + draft_index]
                 bufs = raw_buf if isinstance(raw_buf, tuple) else (raw_buf,)
             else:
                 slots = cache.batch_slots_cpu[grp][:n_tokens]
@@ -628,18 +612,12 @@ def update_host_cache_thread(
             target_layer = kvi_tensors[i][layer]
             src_data = buf_tmp[:n_tokens]
             last_dim = buf_tmp.shape[-1]
-            target_view = target_layer.view(buf_tmp.dtype).view(
-                dp_size, -1, last_dim
-            )
+            target_view = target_layer.view(buf_tmp.dtype).view(dp_size, -1, last_dim)
             target_view[dp_rank, slots] = src_data
 
+
 def update_host_cache_thread_compress(
-    cache: "PrefillOmniCache",
-    async_data: list,
-    d2h_event: torch.npu.Event,
-    kvi_tensors,
-    dp_rank: int,
-    dp_size: int
+    cache: "PrefillOmniCache", async_data: list, d2h_event: torch.npu.Event, kvi_tensors, dp_rank: int, dp_size: int
 ):
     """Background-thread scatter of pinned HBM copies into the host KV pool.
 
@@ -663,24 +641,25 @@ def update_host_cache_thread_compress(
     layer buffer.
     """
     import time
+
     start_time = time.time()
 
     try:
         torch.npu.set_device(cache.device)
 
         for layer_data in async_data:
-            for buf_info in layer_data['bufs']:
+            for buf_info in layer_data["bufs"]:
                 if buf_info is None:
                     continue
-                buf_info['event'].synchronize()
+                buf_info["event"].synchronize()
 
         for layer_data in async_data:
-            layer_idx = layer_data['layer_idx']
-            mode = layer_data.get('mode', 'gather')
+            layer_idx = layer_data["layer_idx"]
+            mode = layer_data.get("mode", "gather")
 
-            if mode == 'contiguous':
-                real_bt = layer_data['real_block_tables_cpu']
-                fake_bt = layer_data['volatile_table_cpu']
+            if mode == "contiguous":
+                real_bt = layer_data["real_block_tables_cpu"]
+                fake_bt = layer_data["volatile_table_cpu"]
                 # Flatten to 1-D pairs and drop padding/null entries. Both
                 # real_id == 0 and fake_id == 0 represent unused slots; fake
                 # 0 is the packed-HBM null row, not fresh KV.
@@ -708,14 +687,14 @@ def update_host_cache_thread_compress(
             else:
                 real_sel = None
                 fake_sel = None
-                blocks_cpu = layer_data['blocks_cpu']
+                blocks_cpu = layer_data["blocks_cpu"]
 
-            for buf_info in layer_data['bufs']:
+            for buf_info in layer_data["bufs"]:
                 if buf_info is None:
                     continue
 
-                i = buf_info['buf_idx']
-                pinned = buf_info['pinned']
+                i = buf_info["buf_idx"]
+                pinned = buf_info["pinned"]
 
                 # For unified-pool hybrid (Pangu), kvi_tensors has 1 component but
                 # DSA D2H produces 3 buffers (k_nope, k_rope, indexer). Skip extras.
@@ -736,7 +715,7 @@ def update_host_cache_thread_compress(
 
                 tgt_head_dim = target_view.shape[-1]
 
-                if mode == 'contiguous':
+                if mode == "contiguous":
                     if real_sel.numel() == 0:
                         continue
                     # Gather fake rows out of the pinned contiguous slab,
@@ -759,6 +738,7 @@ def update_host_cache_thread_compress(
     except Exception as e:
         logger.error(f"Compress thread failed: {e}")
         import traceback
+
         logger.error(traceback.format_exc())
         raise
 
@@ -809,6 +789,7 @@ def _nd_to_nz(cache: "PrefillOmniCache", tensor):
     Moved from prefill_d2h.py — only caller is copy_kv_to_buffers.
     """
     from omni_cache.cache.prefill.tensor_utils import nd_to_nz
+
     return nd_to_nz(
         tensor,
         cache.sum_total_len,

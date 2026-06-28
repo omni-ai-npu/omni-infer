@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
-# vllm_patches Reference: https://blog.vllm.ai/2025/11/20/vllm-plugin-system.html
-
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 import logging
 import os
 from typing import Dict, List
 
 logger = logging.getLogger(__name__)
+
 
 class PatchManager:
     registered_patches: Dict[str, type] = {}

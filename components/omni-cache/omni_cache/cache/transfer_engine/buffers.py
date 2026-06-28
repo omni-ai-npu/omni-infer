@@ -39,9 +39,7 @@ class TransferBuffers:
 
     def _init_arange_tensors(self, max_model_len: int) -> None:
         """Initialize arange tensors for indexing."""
-        self.arange_cpu = torch.arange(
-            max_model_len, device='cpu', dtype=torch.int64
-        )
+        self.arange_cpu = torch.arange(max_model_len, device="cpu", dtype=torch.int64)
         self.arange = self.arange_cpu.to(device=self.cache.device)
 
     def _get_mome_head_size(self, spec):
@@ -58,8 +56,10 @@ class TransferBuffers:
         cache = self.cache
         if cache.is_hybrid_attn:
             group_specs = [g.kv_cache_spec for g in kv_cache_config.kv_cache_groups]
-            head_sizes_buf = [ self._get_mome_head_size(s) if type(s).__name__ == "MomeSpec" else \
-                s.head_size * s.num_kv_heads for s in group_specs]
+            head_sizes_buf = [
+                self._get_mome_head_size(s) if type(s).__name__ == "MomeSpec" else s.head_size * s.num_kv_heads
+                for s in group_specs
+            ]
         else:
             group_specs = [None] * len(cache.head_sizes)
             head_sizes_buf = cache.head_sizes
@@ -77,14 +77,12 @@ class TransferBuffers:
             Created CPU tensor
         """
         cache = self.cache
-        pin_enabled = torch.cuda.is_available() or (
-            hasattr(torch, "npu") and torch.npu.is_available()
-        )
+        pin_enabled = torch.cuda.is_available() or (hasattr(torch, "npu") and torch.npu.is_available())
         return torch.empty(
             cache.max_num_batched_tokens * 2 // cache.tp_world_size,
             size_d,
             dtype=dtype,
-            device='cpu',
+            device="cpu",
             pin_memory=(pin and pin_enabled),
         )
 
@@ -102,10 +100,7 @@ class TransferBuffers:
         has_separate_kvscale = spec and getattr(spec, "separate_kvscale", False)
 
         if has_separate_kvscale:
-            return (
-                self._create_cpu_tensor(D, spec.dtype),
-                self._create_cpu_tensor(1, spec.separate_kvscale)
-            )
+            return (self._create_cpu_tensor(D, spec.dtype), self._create_cpu_tensor(1, spec.separate_kvscale))
 
         if cache.is_hybrid_attn:
             return (self._create_cpu_tensor(D, cache.dtype),)
@@ -127,6 +122,7 @@ class TransferBuffers:
     def _log_buffer_shapes(self) -> None:
         """Log buffer shapes for debugging."""
         from vllm.logger import init_logger
+
         logger = init_logger("vllm.v1.omni")
         cache = self.cache
 
@@ -168,10 +164,8 @@ class TransferBuffers:
         elems_per_rank = page_elems // cache.tp_world_size
         max_blocks = cache.max_model_len * cache.max_num_seqs // cache.block_size
 
-        pin_enabled = torch.cuda.is_available() or (
-            hasattr(torch, "npu") and torch.npu.is_available()
-        )
-        n_stages = max(1, int(getattr(cache, 'num_stages_layer_copy', 1) or 1))
+        pin_enabled = torch.cuda.is_available() or (hasattr(torch, "npu") and torch.npu.is_available())
+        n_stages = max(1, int(getattr(cache, "num_stages_layer_copy", 1) or 1))
         n_groups = len(kv_cache_config.kv_cache_groups)
         # Per-(stage, group) host pinned scratch, pre-allocated at init.
         # Multiple sub-attention calls inside one decoder block all hit
@@ -184,13 +178,13 @@ class TransferBuffers:
             stage_dict = {}
             for gi, grp in enumerate(kv_cache_config.kv_cache_groups):
                 spec = grp.kv_cache_spec
-                grp_page_bytes = getattr(spec, 'page_size_bytes', 0) or page_size_bytes
+                grp_page_bytes = getattr(spec, "page_size_bytes", 0) or page_size_bytes
                 grp_elems_per_rank = (grp_page_bytes // elem_size) // cache.tp_world_size
                 stage_dict[gi] = torch.empty(
                     max_blocks,
                     grp_elems_per_rank,
                     dtype=torch.bfloat16,
-                    device='cpu',
+                    device="cpu",
                     pin_memory=pin_enabled,
                 )
             self.batch_buffer_raw_stages.append(stage_dict)
@@ -211,6 +205,7 @@ class TransferBuffers:
         total_comp = sum(comp_elem_sizes)
         if total_comp != page_elems:
             from vllm.logger import init_logger
+
             _logger = init_logger("vllm.v1.omni")
             _logger.warning(
                 f"byte-split: comp_elem_sizes sum={total_comp} != page_elems={page_elems}; "
@@ -235,9 +230,9 @@ class TransferBuffers:
         cache = self.cache
         cache.batch_buffer_cpu_stages = self.batch_buffer_cpu_stages
         cache.batch_buffer_cpu = self.batch_buffer_cpu_stages[0]
-        if hasattr(self, 'batch_buffer_raw_stages'):
+        if hasattr(self, "batch_buffer_raw_stages"):
             cache.batch_buffer_raw_stages = self.batch_buffer_raw_stages
-            cache._raw_alloc_kwargs = getattr(self, '_raw_alloc_kwargs', None)
+            cache._raw_alloc_kwargs = getattr(self, "_raw_alloc_kwargs", None)
             cache.batch_buffer_raw = None
         else:
             cache.batch_buffer_raw_stages = None
@@ -266,22 +261,18 @@ class TransferBuffers:
         group_specs, head_sizes_buf = self._get_head_size_config(kv_cache_config)
         self.cache.head_sizes_buf = head_sizes_buf
 
-        n_stages = max(1, int(getattr(self.cache, 'num_stages_layer_copy', 1) or 1))
+        n_stages = max(1, int(getattr(self.cache, "num_stages_layer_copy", 1) or 1))
         # batch_buffer_cpu is shaped [stage][group]. Existing call sites
         # that don't yet pass a stage index keep working against
         # cache.batch_buffer_cpu (= stage 0) when num_stages == 1.
         self.batch_buffer_cpu_stages = [
-            [
-                self._create_single_buffer(D, spec)
-                for D, spec in zip(head_sizes_buf, group_specs)
-            ]
+            [self._create_single_buffer(D, spec) for D, spec in zip(head_sizes_buf, group_specs)]
             for _ in range(n_stages)
         ]
         self.batch_buffer_cpu = self.batch_buffer_cpu_stages[0]
 
         self._init_raw_byte_buffer(kv_cache_config)
         # FIXME(runze): this is only for DSV4, should be refactored later
-        # self._clone_speculation_buffers()
         self._log_buffer_shapes()
         self._attach_to_cache()
 
@@ -294,15 +285,11 @@ class TransferBuffers:
             max_num_batched_tokens: Maximum number of batched tokens
         """
         cache = self.cache
-        pin_enabled = torch.cuda.is_available() or (
-            hasattr(torch, "npu") and torch.npu.is_available()
-        )
+        pin_enabled = torch.cuda.is_available() or (hasattr(torch, "npu") and torch.npu.is_available())
 
-        n_stages = max(1, int(getattr(cache, 'num_stages_layer_copy', 1) or 1))
+        n_stages = max(1, int(getattr(cache, "num_stages_layer_copy", 1) or 1))
         if cache.is_hybrid_attn:
-            cache.num_called_builder = (
-                len(cache.kv_cache_config.kv_cache_groups) + cache.num_spec_token
-            )
+            cache.num_called_builder = len(cache.kv_cache_config.kv_cache_groups) + cache.num_spec_token
             cache.num_attn_group = len(cache.kv_cache_config.kv_cache_groups)
             cache.count_called = 0
             cache.batch_token_indices = [None] * cache.num_called_builder
@@ -407,19 +394,18 @@ class ThreadPoolManager:
             cache: The cache instance
             max_workers: Maximum number of worker threads
         """
-        self.d2h_thrp = ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="D2H_Worker"
-        )
+        self.d2h_thrp = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="D2H_Worker")
         self.copy_future = None
 
         import os as _os_pp
+
         # OMNI_CACHE_PREFILL_NUM_STAGES (>=1) sets the prefill ping-pong
         # depth. Default keeps the prior behaviour: 2 for non-hybrid
         # (already shipping), 1 for hybrid (Pangu V2). Opt in to >=2 on
         # hybrid to overlap D2H with the next layer's compute. Pairs
         # with the qa_conv-gated wait in MOMEAttnPlugin.pre_attn.
         try:
-            _override = int(_os_pp.environ.get('OMNI_CACHE_PREFILL_NUM_STAGES', '0'))
+            _override = int(_os_pp.environ.get("OMNI_CACHE_PREFILL_NUM_STAGES", "0"))
         except ValueError:
             _override = 0
         if _override >= 1:
@@ -439,23 +425,18 @@ class ThreadPoolManager:
         # for the older _wait_for_pending_d2h reader; the new
         # copy_futures_stages is the authoritative list-of-futures view.
         self.copy_futures: List[Optional[Future]] = [None] * cache.num_stages_layer_copy
-        cache.copy_futures_stages: List[dict] = [
-            {} for _ in range(cache.num_stages_layer_copy)
-        ]
-        cache.d2h_event_stages: List[dict] = [
-            {} for _ in range(cache.num_stages_layer_copy)
-        ]
-        cache.h2d_event_stages: List[dict] = [
-            {} for _ in range(cache.num_stages_layer_copy)
-        ]
+        cache.copy_futures_stages: List[dict] = [{} for _ in range(cache.num_stages_layer_copy)]
+        cache.d2h_event_stages: List[dict] = [{} for _ in range(cache.num_stages_layer_copy)]
+        cache.h2d_event_stages: List[dict] = [{} for _ in range(cache.num_stages_layer_copy)]
         # post-copy event onto cache.d2h_stream; consumed at the layer
         # boundary by MoEAttnPlugin._moe_post_sync to guarantee the HBM
         # source for stage S is no longer being read by the d2h_stream
         # before the next decoder block writes that stage.
         if cache.num_stages_layer_copy > 1 and cache.is_hybrid_attn:
             from vllm.logger import init_logger as _il
-            _il('vllm.v1.omni').warning(
-                '[PINGPONG] hybrid prefill ping-pong enabled: num_stages_layer_copy=%d',
+
+            _il("vllm.v1.omni").warning(
+                "[PINGPONG] hybrid prefill ping-pong enabled: num_stages_layer_copy=%d",
                 cache.num_stages_layer_copy,
             )
 

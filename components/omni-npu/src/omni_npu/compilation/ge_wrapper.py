@@ -1,4 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 from abc import abstractmethod
 import types
 from typing import Union
@@ -16,11 +18,13 @@ from vllm.v1.attention.backends.utils import PAD_SLOT_ID
 from vllm.forward_context import get_forward_context
 
 logger = init_logger(__name__)
-torch._dynamo.config.inline_inbuilt_nn_modules=False
+torch._dynamo.config.inline_inbuilt_nn_modules = False
+
 
 def get_tp_pad_size(num_seqs: int):
     tp_size = get_tensor_model_parallel_world_size()
     return (tp_size - num_seqs % tp_size) % tp_size
+
 
 def GE_graph_padding(
     graph_pad_size: int,
@@ -97,6 +101,7 @@ def GE_graph_padding(
         attn_metadata.seq_lens += [1] * graph_pad_size
 
     return input_ids, positions
+
 
 class TorchNpuCompilerWrapperWithCustomDispatcher:
 

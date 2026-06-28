@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 #include "omni_radix_tree.h"
-#include <assert.h>
+#include "omni_utils.h"
 #include <limits.h>
 
 /*
@@ -261,25 +261,47 @@ ngx_uint_t omni_radix_tree_match_optimistic(omni_radix_tree_t *tree, uint64_t *h
     return match_depth;
 }
 
-static void omni_recursive_remove(omni_radix_tree_t *tree, omni_radix_node_t *node)
+static void omni_recursive_remove(omni_radix_tree_t *tree, omni_radix_node_t *root)
 {
-    omni_radix_node_t *child, *next_child;
-
-    if (node == NULL)
-    {
+    if (root == NULL) {
         return;
     }
 
-    child = node->first_child;
-    while (child != NULL)
-    {
-        next_child = child->next_sibling;
-        omni_recursive_remove(tree, child);
-        child = next_child;
+    omni_radix_node_t *work, *current, *child, *tmp, *head;
+
+    root->next_sibling = NULL;
+
+    /* Phase 1: Flatten subtree into a post-order linked list.
+     * work list holds nodes whose subtrees still need processing.
+     * head list accumulates nodes in post-order (children before parent).
+     * O(1) auxiliary space — only pointer reassignments. */
+    head = NULL;
+    work = root;
+
+    while (work != NULL) {
+        current = work;
+        work = current->next_sibling;
+
+        child = current->first_child;
+        while (child != NULL) {
+            tmp = child->next_sibling;
+            child->next_sibling = work;
+            work = child;
+            child = tmp;
+        }
+        current->first_child = NULL;
+
+        current->next_sibling = head;
+        head = current;
     }
 
-    ngx_rbtree_delete(&tree->lookup_tree, &node->rb_node);
-    ngx_slab_free(tree->shpool, node);
+    /* Phase 2: Delete all nodes linearly in post-order */
+    while (head != NULL) {
+        current = head;
+        head = current->next_sibling;
+        ngx_rbtree_delete(&tree->lookup_tree, &current->rb_node);
+        ngx_slab_free(tree->shpool, current);
+    }
 }
 
 static void omni_remove_from_parent(omni_radix_tree_t *tree, omni_radix_node_t *parent,
@@ -358,123 +380,263 @@ void omni_radix_tree_destroy(omni_radix_tree_t *tree)
 typedef ngx_uint_t (*omni_matcher)(omni_radix_tree_t *tree, uint64_t *hash_chain,
                                    ngx_uint_t chain_len);
 
-static void omni_radix_tree_test_internal(omni_radix_tree_t *tree, omni_matcher matcher)
+static ngx_int_t omni_radix_tree_test_internal(omni_radix_tree_t *tree, omni_matcher matcher)
 {
     ngx_uint_t match_depth;
 
     // Test 1: Basic chain addition and matching
     printf("Test 1: Basic chain operations\n");
     uint64_t chain1[] = {128803, 7282};
-    assert(omni_radix_tree_add_chain(tree, chain1, 2) == NGX_OK);
+    if (omni_radix_tree_add_chain(tree, chain1, 2) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: add_chain failed in test 1");
+        return NGX_ERROR;
+    }
 
     match_depth = matcher(tree, chain1, 2);
-    assert(match_depth == 2);
+    if (match_depth != 2)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 2, got %ui in test 1", match_depth);
+        return NGX_ERROR;
+    }
 
     // Test 2: Partial matching
     printf("Test 2: Partial matching\n");
     uint64_t query1[] = {128803, 7282, 9999, 8888};
     match_depth = matcher(tree, query1, 4);
-    assert(match_depth == 2);
+    if (match_depth != 2)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 2, got %ui in test 2", match_depth);
+        return NGX_ERROR;
+    }
 
     // Test 3: Add another chain with common prefix
     printf("Test 3: Chains with common prefix\n");
     uint64_t chain2[] = {128803, 2282};
-    assert(omni_radix_tree_add_chain(tree, chain2, 2) == NGX_OK);
+    if (omni_radix_tree_add_chain(tree, chain2, 2) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: add_chain failed in test 3");
+        return NGX_ERROR;
+    }
 
     match_depth = matcher(tree, chain2, 2);
-    assert(match_depth == 2);
+    if (match_depth != 2)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 2, got %ui in test 3", match_depth);
+        return NGX_ERROR;
+    }
 
     // Test 4: Test common prefix matching
     printf("Test 4: Common prefix matching\n");
     uint64_t query2[] = {128803, 1182};
     match_depth = matcher(tree, query2, 2);
-    assert(match_depth == 1);
+    if (match_depth != 1)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 1, got %ui in test 4", match_depth);
+        return NGX_ERROR;
+    }
 
     // Test 5: Add longer chain
     printf("Test 5: Longer chains\n");
     uint64_t chain3[] = {128803, 1182, 5567};
-    assert(omni_radix_tree_add_chain(tree, chain3, 3) == NGX_OK);
+    if (omni_radix_tree_add_chain(tree, chain3, 3) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: add_chain failed in test 5");
+        return NGX_ERROR;
+    }
 
     match_depth = matcher(tree, chain3, 3);
-    assert(match_depth == 3);
+    if (match_depth != 3)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 3, got %ui in test 5", match_depth);
+        return NGX_ERROR;
+    }
 
     // Test 6: Test longest prefix matching
     printf("Test 6: Longest prefix matching\n");
     uint64_t query3[] = {128803, 1182, 5567, 2342, 34242};
     match_depth = matcher(tree, query3, 5);
-    assert(match_depth == 3);
+    if (match_depth != 3)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 3, got %ui in test 6", match_depth);
+        return NGX_ERROR;
+    }
     // Test 7: Add chain with different starting point
     printf("Test 7: Different starting chains\n");
     uint64_t chain4[] = {24928, 1288031, 17282};
-    assert(omni_radix_tree_add_chain(tree, chain4, 3) == NGX_OK);
+    if (omni_radix_tree_add_chain(tree, chain4, 3) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: add_chain failed in test 7");
+        return NGX_ERROR;
+    }
 
     match_depth = matcher(tree, chain4, 3);
-    assert(match_depth == 3);
+    if (match_depth != 3)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 3, got %ui in test 7", match_depth);
+        return NGX_ERROR;
+    }
 
     // Test 8: Test non-matching chain
     printf("Test 8: Non-matching chains\n");
     uint64_t query4[] = {999999, 8888};
     match_depth = matcher(tree, query4, 2);
-    assert(match_depth == 0);
+    if (match_depth != 0)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 0, got %ui in test 8", match_depth);
+        return NGX_ERROR;
+    }
 
     // Test 9: Test empty query
     printf("Test 9: Empty query\n");
     match_depth = matcher(tree, NULL, 0);
-    assert(match_depth == 0);
+    if (match_depth != 0)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 0, got %ui in test 9", match_depth);
+        return NGX_ERROR;
+    }
 
     // Test 10: Remove operation
     printf("Test 10: Remove operation\n");
-    assert(omni_radix_tree_remove(tree, 128803) == NGX_OK);
+    if (omni_radix_tree_remove(tree, 128803) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: remove failed in test 10");
+        return NGX_ERROR;
+    }
 
     // Verify removal worked -
     match_depth = matcher(tree, chain1, 2);
-    assert(match_depth == 0);
+    if (match_depth != 0)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth after remove expected 0, got %ui in test 10", match_depth);
+        return NGX_ERROR;
+    }
 
     match_depth = matcher(tree, chain2, 2);
-    assert(match_depth == 0);
+    if (match_depth != 0)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth after remove expected 0, got %ui in test 10 (chain2)", match_depth);
+        return NGX_ERROR;
+    }
 
     match_depth = matcher(tree, chain3, 3);
-    assert(match_depth == 0);
+    if (match_depth != 0)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth after remove expected 0, got %ui in test 10 (chain3)", match_depth);
+        return NGX_ERROR;
+    }
 
     // Test 11: Try to remove non-existent node
     printf("Test 11: Remove non-existent node\n");
-    assert(omni_radix_tree_remove(tree, 999999) == NGX_ERROR);
+    if (omni_radix_tree_remove(tree, 999999) != NGX_ERROR)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: remove non-existent node expected NGX_ERROR in test 11");
+        return NGX_ERROR;
+    }
 
     // Test 12: Add chains after removal
     printf("Test 12: Add after removal\n");
     uint64_t chain5[] = {55555, 66666};
-    assert(omni_radix_tree_add_chain(tree, chain5, 2) == NGX_OK);
+    if (omni_radix_tree_add_chain(tree, chain5, 2) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: add_chain failed in test 12");
+        return NGX_ERROR;
+    }
 
     match_depth = matcher(tree, chain5, 2);
-    assert(match_depth == 2);
+    if (match_depth != 2)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 2, got %ui in test 12", match_depth);
+        return NGX_ERROR;
+    }
 
     // Test 13: Edge case - single element chain
     printf("Test 13: Single element chains\n");
     uint64_t chain6[] = {77777};
-    assert(omni_radix_tree_add_chain(tree, chain6, 1) == NGX_OK);
+    if (omni_radix_tree_add_chain(tree, chain6, 1) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: add_chain failed in test 13");
+        return NGX_ERROR;
+    }
 
     match_depth = matcher(tree, chain6, 1);
-    assert(match_depth == 1);
+    if (match_depth != 1)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 1, got %ui in test 13", match_depth);
+        return NGX_ERROR;
+    }
 
     // Test 14: Test exact matching after various operations
     printf("Test 14: Exact matching verification\n");
     uint64_t exact_chain[] = {55555, 66666};
     match_depth = matcher(tree, exact_chain, 2);
-    assert(match_depth == 2);
+    if (match_depth != 2)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 2, got %ui in test 14", match_depth);
+        return NGX_ERROR;
+    }
 
     // Test 15: Test chain with zero as data value (not root)
     printf("Test 15: Chain with zero data value\n");
     uint64_t chain7[] = {123, 0, 456};
-    assert(omni_radix_tree_add_chain(tree, chain7, 3) == NGX_OK);
+    if (omni_radix_tree_add_chain(tree, chain7, 3) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: add_chain failed in test 15");
+        return NGX_ERROR;
+    }
 
     match_depth = matcher(tree, chain7, 3);
-    assert(match_depth == 3);
+    if (match_depth != 3)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: match_depth expected 3, got %ui in test 15", match_depth);
+        return NGX_ERROR;
+    }
 
     printf("All tests passed successfully!\n");
+    return NGX_OK;
 }
 
 void omni_radix_tree_test(omni_radix_tree_t *tree)
 {
-    omni_radix_tree_test_internal(tree, omni_radix_tree_match);
-    omni_radix_tree_test_internal(tree, omni_radix_tree_match_optimistic);
+    ngx_int_t rc = omni_radix_tree_test_internal(tree, omni_radix_tree_match);
+    if (rc != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: omni_radix_tree_match test failed");
+        printf("Radix tree unit test FAILED (match)\n");
+        return;
+    }
+    rc = omni_radix_tree_test_internal(tree, omni_radix_tree_match_optimistic);
+    if (rc != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "radix_tree_test: omni_radix_tree_match_optimistic test failed");
+        printf("Radix tree unit test FAILED (match_optimistic)\n");
+        return;
+    }
 }

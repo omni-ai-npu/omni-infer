@@ -119,9 +119,6 @@ class DecodeConnectorScheduler:
         """Round x up to nearest multiple of y."""
         return ((x + y - 1) // y) * y
 
-    # def get_unhashed_block_ids(self, blocks) -> list[int]:
-    #     """Get block_ids of unhashed blocks from KVCacheBlocks instance."""
-    #     return [block.block_id for group in blocks.blocks for block in group if block.block_hash is None]
     def get_unhashed_block_ids(self, blocks) -> tuple[list[int], ...]:
         return tuple(
             [block.block_id for block in group if block.block_hash is None]

@@ -1,4 +1,7 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
+
 import torch
 from torch import nn
 

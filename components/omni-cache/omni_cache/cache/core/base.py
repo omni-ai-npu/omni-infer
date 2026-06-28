@@ -93,7 +93,8 @@ class RequestWindowState:
     is kept in pre-allocated contiguous buffers for zero-copy access.
     Reading max_lb or num_assigned directly accesses the buffers.
     """
-    __slots__ = ['base', 'win_size', 'state_idx', '_omni_cache_ref']
+
+    __slots__ = ["base", "win_size", "state_idx", "_omni_cache_ref"]
 
     base: int
     win_size: int
@@ -114,23 +115,20 @@ class RequestWindowState:
     def logic_to_phys(self) -> np.ndarray:
         """Get view of logic_to_phys buffer for this state."""
         offset = self.state_idx * self._omni_cache_ref.MAX_LOGIC_BLOCKS
-        return self._omni_cache_ref._logic_to_phys_buffer[
-            offset:offset + self._omni_cache_ref.MAX_LOGIC_BLOCKS
-        ]
+        return self._omni_cache_ref._logic_to_phys_buffer[offset:offset + self._omni_cache_ref.MAX_LOGIC_BLOCKS]
 
     @property
     def logic_valid(self) -> np.ndarray:
         """Get view of logic_valid buffer for this state."""
         offset = self.state_idx * self._omni_cache_ref.MAX_LOGIC_BLOCKS
-        return self._omni_cache_ref._logic_valid_buffer[
-            offset:offset + self._omni_cache_ref.MAX_LOGIC_BLOCKS
-        ]
+        return self._omni_cache_ref._logic_valid_buffer[offset:offset + self._omni_cache_ref.MAX_LOGIC_BLOCKS]
 
 
 @dataclass
 class _SlotInfo:
     """Minimal dataclass for slot mapping information."""
-    __slots__ = ['q_start', 'q_len', 'last_seq_len', 'state']
+
+    __slots__ = ["q_start", "q_len", "last_seq_len", "state"]
 
     q_start: int
     q_len: int
@@ -139,15 +137,10 @@ class _SlotInfo:
 
 
 class BaseOmniCache(ABC):
-    MEMMAP_PATH = os.environ.get('OMNI_CACHE_MMAP_PATH', '/dev/hugepages/omni_cache')
+    MEMMAP_PATH = os.environ.get("OMNI_CACHE_MMAP_PATH", "/dev/hugepages/omni_cache")
     GATHER_SELECTION_POOL_SIZE = 8192
 
-    def __init__(
-            self,
-            kv_cache_config: KVCacheConfig,
-            runner: NPUModelRunner,
-            vllm_config: VllmConfig = None
-    ):
+    def __init__(self, kv_cache_config: KVCacheConfig, runner: NPUModelRunner, vllm_config: VllmConfig = None):
         parallel_state = resolve_parallel_cache_state(
             vllm_config=vllm_config,
             get_tp_group=get_tp_group,
@@ -188,7 +181,7 @@ class BaseOmniCache(ABC):
                 enable_dsa=self.enable_dsa,
                 enable_c8_indexer=ENABLE_C8_INDEXER,
                 mla_attention_spec_type=MLAAttentionSpec,
-                force_hybrid_attn=False, # only for quick debugging, need to remove for stable version
+                force_hybrid_attn=False,  # only for quick debugging, need to remove for stable version
             )
         )
 
@@ -201,12 +194,13 @@ class BaseOmniCache(ABC):
         if self.is_pangu_v2:
             _cc_bs = getattr(
                 getattr(vllm_config, "cache_config", None),
-                "block_size", None,
+                "block_size",
+                None,
             )
             logger.warning(
-                "[PANGU-V2-BLOCK-SIZE] self.block_size=%d, "
-                "cache_config.block_size=%s, forcing to 128",
-                self.block_size, _cc_bs,
+                "[PANGU-V2-BLOCK-SIZE] self.block_size=%d, cache_config.block_size=%s, forcing to 128",
+                self.block_size,
+                _cc_bs,
             )
             self.block_size = 128
 
@@ -229,20 +223,22 @@ class BaseOmniCache(ABC):
             from omni_cache.cache.memory.dsa_host_pool import (
                 maybe_build_from_primary as _dsa_maybe_build,
             )
+
             _dsa_pool = _dsa_maybe_build(self.host_cache)
             if _dsa_pool is not None:
                 _dsa_pool.register_mmu(self.host_cache)
                 self.dsa_host_pool = _dsa_pool
                 logger.warning(
-                    '[DSA-SPLIT] secondary host pool active: '
-                    'layers=%d blocks=%d block_size=%d head=%d',
-                    _dsa_pool.num_layers, _dsa_pool.num_blocks,
-                    _dsa_pool.block_size, _dsa_pool.head_size,
+                    "[DSA-SPLIT] secondary host pool active: layers=%d blocks=%d block_size=%d head=%d",
+                    _dsa_pool.num_layers,
+                    _dsa_pool.num_blocks,
+                    _dsa_pool.block_size,
+                    _dsa_pool.head_size,
                 )
         except ImportError:
             pass
         except Exception as _e:
-            logger.warning('[DSA-SPLIT] secondary pool init failed: %s', _e)
+            logger.warning("[DSA-SPLIT] secondary pool init failed: %s", _e)
         self.block_len_dtype, self.dp_offset = self.calculate_kv_xsfer_params()
 
         self.device_cache = None
@@ -262,11 +258,7 @@ class BaseOmniCache(ABC):
         # so we hardcode head_num to be 1 here
         head_num = 1
         bs = self.block_size
-        return (
-            self.GATHER_SELECTION_POOL_SIZE
-            + head_num * bs
-            - 1
-        ) // (head_num * bs)
+        return (self.GATHER_SELECTION_POOL_SIZE + head_num * bs - 1) // (head_num * bs)
 
     @property
     def use_input_batch_lane_mapping(self) -> bool:
@@ -274,15 +266,11 @@ class BaseOmniCache(ABC):
 
     def _layer_name_to_group_and_layer_idx(self, layer_name):
         for grp_idx in range(len(self.kv_cache_config.kv_cache_groups)):
-            layer_name_list = (
-                self.kv_cache_config.kv_cache_groups[grp_idx].layer_names
-            )
+            layer_name_list = self.kv_cache_config.kv_cache_groups[grp_idx].layer_names
             if layer_name in layer_name_list:
                 layer_idx = layer_name_list.index(layer_name)
                 return grp_idx, layer_idx
-        raise ValueError(
-            f"Invalid layer name '{layer_name}' that cannot be found in any kv group."
-        )
+        raise ValueError(f"Invalid layer name '{layer_name}' that cannot be found in any kv group.")
 
     def _apply_kv_spec_state(self, spec_state) -> None:
         self.num_spec_token = spec_state.num_spec_token
@@ -327,7 +315,6 @@ class BaseOmniCache(ABC):
             decode_omni_cache_cls = None
 
         if ENABLE_HOST_MAPPING and decode_omni_cache_cls is not None and isinstance(self, decode_omni_cache_cls):
-
             # import at runtime to avoid circular import
             from omni_cache.cache.decode.host_kv_cache_utils import parse_pa_kv_cache
             from omni_cache.cache.decode.hbm_buffer_utils import construct_hbm_buffer
@@ -342,6 +329,7 @@ class BaseOmniCache(ABC):
 
             import multiprocessing
             from multiprocessing import current_process
+
             curr_proc = current_process()
             was_daemon = curr_proc.daemon
             curr_proc.daemon = False
@@ -356,8 +344,12 @@ class BaseOmniCache(ABC):
             for idx_batch in range(self.num_max_batch_pool):
                 self.record_batch_idx_to_req[idx_batch] = None
 
-            self.id_to_idx_table = torch.full((self.vllm_config.scheduler_config.max_num_seqs,), -1, device=self.device, dtype=torch.int32)
-            self.indices_cpu_buffer = torch.zeros(self.vllm_config.scheduler_config.max_num_seqs, dtype=torch.int32).pin_memory()
+            self.id_to_idx_table = torch.full(
+                (self.vllm_config.scheduler_config.max_num_seqs,), -1, device=self.device, dtype=torch.int32
+            )
+            self.indices_cpu_buffer = torch.zeros(
+                self.vllm_config.scheduler_config.max_num_seqs, dtype=torch.int32
+            ).pin_memory()
 
     def update_model_runner(self, model_runner: NPUModelRunner):
         self.runner = model_runner
@@ -371,11 +363,7 @@ class BaseOmniCache(ABC):
         pass
 
     @abstractmethod
-    def initialize_device_cache(
-            self,
-            kv_cache_config: KVCacheConfig,
-            runner: NPUModelRunner
-    ):
+    def initialize_device_cache(self, kv_cache_config: KVCacheConfig, runner: NPUModelRunner):
         pass
 
     def initialize_shared_memory(self) -> KVCacheMemoryPool:
@@ -404,11 +392,8 @@ class BaseOmniCache(ABC):
     def synchronize_d2h(self, attn_names: list[str], attn_metadatas: list[str], kv_event: torch.npu.Event) -> None:
         pass
 
-def create_omni_cache(
-        kv_cache_config: KVCacheConfig,
-        vllm_config: VllmConfig,
-        runner: NPUModelRunner
-) -> BaseOmniCache:
+
+def create_omni_cache(kv_cache_config: KVCacheConfig, vllm_config: VllmConfig, runner: NPUModelRunner) -> BaseOmniCache:
     """
     Factory function to create the appropriate BaseOmniCache instance based on the is_prefill flag.
 
@@ -421,15 +406,26 @@ def create_omni_cache(
         PrefillOmniCache or DecodeOmniCache instance based on the is_prefill flag
     """
     from .. import set_omni_cache
+
     is_prefill = vllm_config.kv_transfer_config.kv_role != "kv_consumer"
     if is_prefill:
         from ..prefill.prefill_omni_cache import PrefillOmniCache
+
         max_num_batched_tokens = vllm_config.scheduler_config.max_num_batched_tokens
         max_num_seqs = vllm_config.scheduler_config.max_num_seqs
         max_model_len = runner.max_model_len
-        set_omni_cache(PrefillOmniCache(kv_cache_config, runner, max_num_batched_tokens=max_num_batched_tokens,
-                                      max_num_seqs=max_num_seqs, max_model_len=max_model_len, vllm_config=vllm_config))
+        set_omni_cache(
+            PrefillOmniCache(
+                kv_cache_config,
+                runner,
+                max_num_batched_tokens=max_num_batched_tokens,
+                max_num_seqs=max_num_seqs,
+                max_model_len=max_model_len,
+                vllm_config=vllm_config,
+            )
+        )
         from .. import omni_cache
+
         runner.kv_caches = None
 
         # Initialize device_cache for omni_cache
@@ -444,6 +440,7 @@ def create_omni_cache(
             retrieves the appropriate cache from omni_cache.device_cache based on the
             current stage_record and layer_name.
             """
+
             def __init__(self, layer_name, omni_cache):
                 self.layer_name = layer_name
                 self._omni_cache = omni_cache
@@ -466,6 +463,7 @@ def create_omni_cache(
                 layer_obj.kv_cache = OmniKvCacheAccessor(layer_name, omni_cache)
     else:
         from ..decode.decode_omni_cache import DecodeOmniCache
+
         set_omni_cache(DecodeOmniCache(kv_cache_config, runner, vllm_config=vllm_config))
         from .. import omni_cache
     return omni_cache
@@ -510,7 +508,7 @@ class PrefixCopyMeta:
 
         if get_world_group() == 0:
             logger.debug(
-                f"!!! Totally {total_copy_ops} copy operations with {total_copy_blocks} blocks will be executed. ***")
+                f"!!! Totally {total_copy_ops} copy operations with {total_copy_blocks} blocks will be executed. ***"
+            )
 
         self.num_copy_blocks = total_copy_blocks
-

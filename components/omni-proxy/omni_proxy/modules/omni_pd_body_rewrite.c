@@ -16,13 +16,10 @@ static char *prefill_response_json_keys[] = {
     "kv_transfer_params",
 };
 static char *encoder_response_json_keys = "ec_transfer_params";
-static unsigned int encoder_response_json_keys_len = sizeof(encoder_response_json_keys);
 
 
 static const ngx_str_t stream_options_content_str = ngx_string("\"stream_options\":{\"include_usage\":true,\"continuous_usage_stats\":true}");
 static const ngx_str_t stream_all_content_str = ngx_string("\"stream\":true,\"stream_options\":{\"include_usage\":true,\"continuous_usage_stats\":true}");
-
-extern ngx_module_t ngx_http_omni_proxy_module;
 
 static unsigned int prefill_response_json_keys_len = sizeof(prefill_response_json_keys) / sizeof(char *);
 
@@ -49,17 +46,19 @@ static int omni_json_skip(const jsmntok_t *tokens, int count, int i)
         return i;
     }
 
-    int j = i + 1;
-    int size = tokens[i].size;
-    if (tokens[i].type == JSMN_OBJECT) {
-        for (int k = 0; k < size * 2; k++) {
-            j = omni_json_skip(tokens, count, j);
+    int j = i;
+    int remaining = 1;
+
+    while (remaining > 0 && j < count) {
+        if (tokens[j].type == JSMN_OBJECT) {
+            remaining += tokens[j].size * 2;
+        } else if (tokens[j].type == JSMN_ARRAY) {
+            remaining += tokens[j].size;
         }
-    } else if (tokens[i].type == JSMN_ARRAY) {
-        for (int k = 0; k < size; k++) {
-            j = omni_json_skip(tokens, count, j);
-        }
+        remaining--;
+        j++;
     }
+
     return j;
 }
 
@@ -108,7 +107,7 @@ static int omni_origin_body_jsmn_cached(ngx_http_request_t *r,
     ctx->body_cache.json_len = len;
     ctx->body_cache.tokens = tokens;
     ctx->body_cache.tokens_count = ret;
-    ctx->body_cache.tokens_capacity = tokens_size;
+    ctx->body_cache.tokens_capacity = (int)tokens_size;
     ctx->body_cache.is_parsed = 1;
 
     ctx->origin_body_tokens = tokens;
@@ -258,6 +257,10 @@ int find_jsmn_key(ngx_http_request_t *r, const char *json, jsmntok_t *tokens, in
         if (tokens[i].type == JSMN_STRING && (int)key_len == tokens[i].end - tokens[i].start &&
             strncmp(json + tokens[i].start, key, tokens[i].end - tokens[i].start) == 0)
         {
+            if (i + 1 >= tokens_size)
+            {
+                continue;
+            }
             return i;
         }
     }
@@ -296,6 +299,10 @@ ngx_int_t omni_check_kv_transfer_params_null(ngx_http_request_t *r, char *body, 
     }
 
     int val_idx = key_idx + 1;
+    if (val_idx >= ret)
+    {
+        return KV_TRANSFER_ABSENT;
+    }
     if (tokens[val_idx].type == JSMN_PRIMITIVE && tokens[val_idx].end - tokens[val_idx].start == 4 &&
         strncmp(body + tokens[val_idx].start, "null", 4) == 0)
     {
@@ -364,6 +371,10 @@ ngx_int_t omni_remove_kv_transfer_params_null(
     }
 
     int val_idx = key_idx + 1;
+    if (val_idx >= ret)
+    {
+        return -1;
+    }
     jsmntok_t *val_tok = &tokens[val_idx];
 
     // Calculate end position of the value
@@ -545,6 +556,10 @@ void omni_proxy_prepare_decode_request_body(ngx_http_request_t *r, omni_req_cont
 
         // Key found, we will palloc a new buf for this key value pair string
         int val_idx = key_idx + 1;
+        if (val_idx >= prefill_ret)
+        {
+            continue;
+        }
         int val_len = tokens[val_idx].end - tokens[val_idx].start;
         int key_len = ngx_strlen(prefill_response_json_keys[i]);
         int len = key_len + val_len + 16;
@@ -557,7 +572,7 @@ void omni_proxy_prepare_decode_request_body(ngx_http_request_t *r, omni_req_cont
             return;
         }
 
-        int pos = 0;
+        size_t pos = 0;
         b_new->pos[pos++] = ',';
         b_new->pos[pos++] = '\"';
         ngx_memcpy(b_new->pos + pos, prefill_response_json_keys[i], key_len);
@@ -569,7 +584,7 @@ void omni_proxy_prepare_decode_request_body(ngx_http_request_t *r, omni_req_cont
             b_new->pos[pos++] = '\"';
         }
         ngx_memcpy(b_new->pos + pos, ctx->prefill_response_body + tokens[val_idx].start, val_len);
-        pos += val_len;
+        pos += (size_t)val_len;
         if (tokens[val_idx].type == JSMN_STRING)
         {
             b_new->pos[pos++] = '\"';
@@ -596,7 +611,7 @@ void omni_proxy_prepare_decode_request_body(ngx_http_request_t *r, omni_req_cont
     }
 
     jsmntok_t *origin_tokens = ctx->origin_body_tokens;
-    size_t origin_token_size = ctx->origin_body_tokens_size;
+    size_t origin_token_size = (size_t)ctx->origin_body_tokens_size;
 
     if (origin_tokens == NULL || origin_token_size <= 0)
     {
@@ -630,7 +645,8 @@ void omni_proxy_prepare_decode_request_body(ngx_http_request_t *r, omni_req_cont
         if (stream_idx != -1)
         {
             int stream_val_idx = stream_idx + 1;
-            if (origin_tokens[stream_val_idx].type == JSMN_PRIMITIVE &&
+            if (stream_val_idx < (int) origin_token_size &&
+                origin_tokens[stream_val_idx].type == JSMN_PRIMITIVE &&
                 strncmp(ctx->origin_body_data + origin_tokens[stream_val_idx].start, "true", 4) == 0)
             {
                 stream_is_true = 1;
@@ -652,14 +668,23 @@ void omni_proxy_prepare_decode_request_body(ngx_http_request_t *r, omni_req_cont
         if (stream_option_idx != -1)
         {
             int stream_option_val_idx = stream_option_idx + 1;
-            if (origin_tokens[stream_option_val_idx].type == JSMN_OBJECT)
+            if (stream_option_val_idx < (int) origin_token_size &&
+                origin_tokens[stream_option_val_idx].type == JSMN_OBJECT)
             {
                 for (int i = 0; i < origin_tokens[stream_option_val_idx].size; ++i)
                 {
                     int key_token_idx = stream_option_val_idx + 1 + 2 * i;
+                    if (key_token_idx >= (int) origin_token_size)
+                    {
+                        break;
+                    }
                     char keybuf[32];
                     json_token_tostr((char *)(ctx->origin_body_data), &origin_tokens[key_token_idx], keybuf, sizeof(keybuf));
                     int val_token_idx = key_token_idx + 1;
+                    if (val_token_idx >= (int) origin_token_size)
+                    {
+                        break;
+                    }
                     if (strcmp(keybuf, "include_usage") == 0)
                     {
                         if (origin_tokens[val_token_idx].type == JSMN_PRIMITIVE &&
@@ -740,7 +765,7 @@ void omni_proxy_prepare_decode_request_body(ngx_http_request_t *r, omni_req_cont
             return;
         }
 
-        int pos = 0;
+        size_t pos = 0;
         b_new->pos[pos++] = ',';
         ngx_memcpy(b_new->pos + pos, content_data_to_copy, content_len);
         pos += content_len;
@@ -944,8 +969,14 @@ static int get_encode_transfer_params(ngx_http_request_t *r, omni_req_context_t 
     }
 
     int val_idx = key_idx + 1;
+    if (val_idx >= encoder_tokens_size)
+    {
+        encode_str->data = NULL;
+        encode_str->len = 0;
+        return NGX_OK;
+    }
     encode_str->data = ctx->encoder_response_body + tokens[val_idx].start;
-    encode_str->len = tokens[val_idx].end - tokens[val_idx].start;
+    encode_str->len = (size_t)(tokens[val_idx].end - tokens[val_idx].start);
     ngx_log_error(NGX_LOG_INFO,
                   r->connection->log,
                   0,
@@ -1009,8 +1040,15 @@ void gen_prefill_json_str_jsmn(
                 stream_options_key_idx = i;
                 stream_options_val_idx = i + 1;
                 // Locate key start and value end for removal, including preceding comma if any
-                size_t so_key_start = tokens[stream_options_key_idx].start;
-                size_t so_val_end = tokens[stream_options_val_idx].end;
+                if (tokens[stream_options_key_idx].start < 0 ||
+                    tokens[stream_options_val_idx].end < 0)
+                {
+                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                                  "gen prefill json: invalid negative stream_options token boundary");
+                    return;
+                }
+                size_t so_key_start = (size_t) tokens[stream_options_key_idx].start;
+                size_t so_val_end = (size_t) tokens[stream_options_val_idx].end;
                 size_t j = so_key_start;
                 while (j > 0 && json[j - 1] != ',')
                     j--;
@@ -1170,7 +1208,11 @@ ngx_int_t omni_proxy_save_origin_body(
         }
         else
         {
-            len += ngx_buf_size(buf);
+            off_t buf_size = ngx_buf_size(buf);
+            if (buf_size > 0)
+            {
+                len += (size_t)buf_size;
+            }
         }
     }
 
@@ -1219,7 +1261,7 @@ ngx_int_t omni_proxy_save_origin_body(
         }
         else
         {
-            buf_size = ngx_buf_size(buf);
+            buf_size = (size_t)ngx_buf_size(buf);
             if (buf_size > 0)
             {
                 p = ngx_cpymem(p, buf->pos, buf_size);
@@ -1363,14 +1405,14 @@ ngx_int_t omni_proxy_prepare_prefill_subrequest(
     }
 
     // Update subrequest's Content-Length header
-    sr->headers_in.content_length_n = str_len;
+    sr->headers_in.content_length_n = (off_t) str_len;
     if (sr->headers_in.content_length)
     {
         sr->headers_in.content_length->value.len =
             ngx_sprintf(sr->headers_in.content_length->value.data, "%uz", str_len) -
             sr->headers_in.content_length->value.data;
     }
-    sr->request_length = str_len;
+    sr->request_length = (off_t) str_len;
 
     return NGX_DONE;
 }
@@ -1587,13 +1629,13 @@ ngx_int_t omni_proxy_prepare_encoder_subrequest(
         sr->request_body->temp_file = NULL;
     }
 
-    sr->headers_in.content_length_n = ctx->encoder_body_data_size;
+    sr->headers_in.content_length_n = (off_t)ctx->encoder_body_data_size;
     if (sr->headers_in.content_length) {
         sr->headers_in.content_length->value.len =
             ngx_sprintf(sr->headers_in.content_length->value.data, "%uz", ctx->encoder_body_data_size) -
             sr->headers_in.content_length->value.data;
     }
-    sr->request_length = ctx->encoder_body_data_size;
+    sr->request_length = (off_t)ctx->encoder_body_data_size;
 
     return NGX_DONE;
 }

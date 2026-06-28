@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
+
 import time
 
 from vllm.distributed.ec_transfer.ec_connector.base import (
@@ -24,6 +26,7 @@ from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from omni_npu.vllm_patches.patches.common.patch_user_repetition_detection import check_stop
 
 logger = init_logger(__name__)
+
 
 @register_patch("PanguV2SchedulerPatch", Scheduler)
 class PanguV2SchedulerPatch(VLLMPatch):

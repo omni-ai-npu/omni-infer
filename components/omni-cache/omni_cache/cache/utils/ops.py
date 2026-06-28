@@ -50,12 +50,12 @@ def generate_full_block_slot(slot_mapping, query_lens, block_size):
     return torch.concat(result, dim=0).view(-1)
 
 
-def pad_inputs(input: torch.Tensor, query_lens: list[int], sp_size: int, pad_value: int):
+def pad_inputs(input_tensor: torch.Tensor, query_lens: list[int], sp_size: int, pad_value: int):
     count = 0
     res = []
     for length in query_lens:
         pad_size = (sp_size - length % sp_size) % sp_size
-        tmp_tensor = input[count:count + length]
+        tmp_tensor = input_tensor[count:count + length]
         padded_tensor = pad_tensor(tmp_tensor, pad_size, pad_value)
         res.append(padded_tensor)
         count += length

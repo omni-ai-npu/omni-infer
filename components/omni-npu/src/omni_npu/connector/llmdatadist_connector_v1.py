@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import json
 import os
@@ -46,7 +46,6 @@ logger = init_logger(__name__)
 
 GET_META_MSG = b"get_meta_msg"
 
-thread_dump_path = os.environ.get("VLLM_THREAD_DUMP_PATH", "/tmp/vllm_thread_info")
 # seconds, use to free blocks when the request is finished for a long time
 BLOCK_RELEASE_DELAY = int(os.environ.get("BLOCK_RELEASE_DELAY", 600))
 LLMDATADIST_BASE_PORT = int(os.environ.get("VLLM_LLMDATADIST_BASE_PORT", 15567))
@@ -266,6 +265,7 @@ class LLMDataDistConnector(KVConnectorBase_V1, SupportsHMA):
     ) -> tuple[bool, dict[str, Any] | None]:
         return self.request_finished(request, [list(group) for group in block_ids])
 
+
 class PrefillConnectorScheduler:
     """Implementation of Scheduler side methods"""
 
@@ -357,7 +357,6 @@ class PrefillConnectorWorker:
             thread_name = "prefill_connector_get_pulled_kv_req_list"
             self.thread = threading.Thread(target=self.get_pulled_kv_req_list, daemon=True, name=thread_name)
             self.thread.start()
-            dump_thread_to_file(self.thread, thread_name, thread_dump_path)
 
             hb_port = int(os.environ.get("VLLM_LLMDATADIST_HEARTBEAT_PORT", int(datadist_host_port) - 1))
             self.hb_socket = self.ctx.socket(zmq.PUB)
@@ -687,9 +686,6 @@ class DecodeConnectorWorker:
             self.thread_on_fast_path_req.start()
             logger.warning(f"DecodeConnectorWorker initialized with self.async_pull_kv enabled.")
 
-            # Write thread name and native_id to file
-            dump_thread_to_file(self.thread_on_fast_path_req, thread_name, thread_dump_path)
-
         # TODO: multi_thread_pull_kv and multi_rank_pull_kv are not supported yet
         logger.info(" ***** Using single thread to pull kv.")
         max_concurrents = 1
@@ -950,35 +946,12 @@ class DecodeConnectorWorker:
         transfers.clear()
         return done_req_ids
 
+
 def handle_exception(future):
     if future.exception():
         logger.error(f"Exception occurred in future: {future.exception()}")
         raise future.exception()
 
-
-def dump_thread_to_file(thread, thread_name: str, folder_path: str):
-    timeout = 5  # seconds
-    start_time = time.time()
-    while not hasattr(thread, "native_id"):
-        if time.time() - start_time > timeout:
-            logger.error(f"Timeout waiting for thread {thread_name} to have native_id.")
-            return
-        time.sleep(0.005)
-
-    # ensure the folder exists
-    if not os.path.exists(folder_path):
-        try:
-            os.makedirs(folder_path, exist_ok=True)
-        except Exception as e:
-            logger.error(f"Failed to create folder {folder_path}: {e}")
-            return
-
-    file_path = os.path.join(folder_path, thread_name)
-    try:
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(str(thread.native_id))
-    except Exception as e:
-        logger.error(f"Failed to write thread info to {file_path}: {e}")
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

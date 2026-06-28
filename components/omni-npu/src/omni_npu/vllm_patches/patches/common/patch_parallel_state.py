@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-#
-# This file is based on vLLM implementation:
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-# https://github.com/vllm-project/vllm/blob/v0.16.0/vllm/distributed/parallel_state.py
+# Copyright contributors to the vLLM project.
 
 import torch
 import torch_npu
@@ -31,6 +28,7 @@ from omni_npu.model_config.config_loader.loader import model_extra_config
 
 
 logger = init_logger(__name__)
+
 
 @register_patch("ParallelStatePatch", parallel_state)
 class ParallelStatePatch(VLLMPatch):

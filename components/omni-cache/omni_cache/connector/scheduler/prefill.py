@@ -126,6 +126,11 @@ class PrefillConnectorScheduler:
         delay_free_blocks = len(block_ids) > 0
         if delay_free_blocks:
             self.requests_finish_time[request.request_id] = time.monotonic()
+            logger.warning(
+                "KV produced req_id=%s cluster_id=%s host=%s:%s blocks=%d",
+                request.request_id, self.cluster_id_start,
+                self.host_ip, self.host_port, len(block_ids),
+            )
 
         return delay_free_blocks, dict(
             remote_block_ids=block_ids,

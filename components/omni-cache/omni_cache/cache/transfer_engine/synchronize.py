@@ -40,6 +40,7 @@ def _resolve_next_layer(cache, layer_name: str):
         next layer is not found in any KV cache group.
     """
     from vllm.model_executor.models.utils import extract_layer_index
+
     try:
         global_idx = extract_layer_index(layer_name)
     except (ValueError, IndexError) as e:
@@ -51,16 +52,10 @@ def _resolve_next_layer(cache, layer_name: str):
         return None
 
     next_global_idx = global_idx + 1
-    next_layer = (
-        layer_name[:match.start(3)]
-        + str(next_global_idx)
-        + layer_name[match.end(3):]
-    )
+    next_layer = layer_name[:match.start(3)] + str(next_global_idx) + layer_name[match.end(3):]
 
     try:
-        next_group_idx, layer_idx = cache._layer_name_to_group_and_layer_idx(
-            next_layer
-        )
+        next_group_idx, layer_idx = cache._layer_name_to_group_and_layer_idx(next_layer)
     except ValueError:
         return None
 
@@ -82,7 +77,7 @@ def _wait_for_pending_d2h(cache, context: str = "") -> None:
         context: Context string for logging
     """
     # Wait for single-layer D2H future
-    if hasattr(cache, 'copy_future') and cache.copy_future is not None:
+    if hasattr(cache, "copy_future") and cache.copy_future is not None:
         if not cache.copy_future.done():
             try:
                 cache.copy_future.result()
@@ -90,7 +85,7 @@ def _wait_for_pending_d2h(cache, context: str = "") -> None:
                 logger.warning("_wait_for_pending_d2h: copy_future wait failed: %s", e)
 
     # Wait for hybrid D2H futures (array)
-    if hasattr(cache, 'copy_futures') and cache.copy_futures:
+    if hasattr(cache, "copy_futures") and cache.copy_futures:
         for i, fut in enumerate(cache.copy_futures):
             if fut is not None:
                 try:
@@ -184,19 +179,21 @@ def synchronize_h2d_prefill(
                 load_next_layer,
                 getattr(prefix_meta, "consecutive_blocks", None),
             )
-        logger.debug(f"<<< before synchronize_h2d_prefill_unified: {target_layer_name=} {layer_idx=} {prefix_meta.consecutive_blocks}")
+        logger.debug(
+            "<<< before synchronize_h2d_prefill_unified: "
+            f"{target_layer_name=} {layer_idx=} {prefix_meta.consecutive_blocks}"
+        )
         if load_next_layer:
             from vllm.forward_context import get_forward_context
+
             prefix_meta = get_forward_context().attn_metadata[target_layer_name].prefix_meta
-        _synchronize_h2d_prefill_unified(cache, prefix_meta, target_layer_name, layer_idx, load_next_layer=load_next_layer)
+        _synchronize_h2d_prefill_unified(
+            cache, prefix_meta, target_layer_name, layer_idx, load_next_layer=load_next_layer
+        )
 
 
 def _synchronize_h2d_prefill_unified(
-    cache: "PrefillOmniCache",
-    prefix_meta,
-    layer_name: str,
-    layer_idx: int,
-    load_next_layer: bool = True
+    cache: "PrefillOmniCache", prefix_meta, layer_name: str, layer_idx: int, load_next_layer: bool = True
 ) -> None:
     """Unified H2D for both MoME and Attention layers during APC.
 
@@ -246,7 +243,7 @@ def _synchronize_h2d_prefill_unified(
 
     # Wait for the D2H stream to finish reading the H2D target stage
     # before H2D overwrites it.  Critical for n_stages=1.
-    _evt_stages = getattr(cache, 'd2h_event_stages', None)
+    _evt_stages = getattr(cache, "d2h_event_stages", None)
     if _evt_stages and 0 <= next_layer_device_stage_idx < len(_evt_stages):
         _evt = _evt_stages[next_layer_device_stage_idx].get(group_idx)
         if _evt is not None:
@@ -310,6 +307,7 @@ def _synchronize_h2d_prefill_unified(
         device_shard = host_shard.to(device=cache.device, non_blocking=True)
         if cache.tp_world_size > 1:
             from vllm.distributed import tensor_model_parallel_all_gather
+
             device_full = tensor_model_parallel_all_gather(device_shard, dim=1)
         else:
             device_full = device_shard
@@ -319,7 +317,7 @@ def _synchronize_h2d_prefill_unified(
 
     # Store per-stage per-group event so _moe_post_sync can fence on the
     # correct stage for the correct attention group.
-    h2d_stages = getattr(cache, 'h2d_event_stages', None)
+    h2d_stages = getattr(cache, "h2d_event_stages", None)
     if h2d_stages is not None and 0 <= next_layer_device_stage_idx < len(h2d_stages):
         h2d_stages[next_layer_device_stage_idx][group_idx] = h2d_event
 
@@ -363,10 +361,7 @@ def _restore_volatile_swap_np_for_d2h(cache: "PrefillOmniCache") -> bool:
     for grp_idx, bt_item in enumerate(staged_bts):
         if grp_idx >= len(restore_tables) or restore_tables[grp_idx] is None:
             continue
-        if not (
-            hasattr(bt_item, "block_table")
-            and hasattr(bt_item.block_table, "np")
-        ):
+        if not (hasattr(bt_item, "block_table") and hasattr(bt_item.block_table, "np")):
             continue
         real_bt = restore_tables[grp_idx]
         bt_np = bt_item.block_table.np
@@ -383,10 +378,7 @@ def _restore_volatile_swap_np_for_d2h(cache: "PrefillOmniCache") -> bool:
 
 
 def synchronize_d2h_prefill(
-    cache: "PrefillOmniCache",
-    attn_names: list[str],
-    attn_metadatas: list[str],
-    kv_event: torch.npu.Event
+    cache: "PrefillOmniCache", attn_names: list[str], attn_metadatas: list[str], kv_event: torch.npu.Event
 ) -> None:
     """Synchronize D2H for prefill operations (unified API).
 
@@ -417,16 +409,16 @@ def synchronize_d2h_prefill(
     # cache.stage_record after this point - we will advance it ourselves
     # at the end. With num_stages_layer_copy == 1, stage_idx is always 0
     # and behaviour matches the legacy single-stage path.
-    n_stages = max(1, int(getattr(cache, 'num_stages_layer_copy', 1) or 1))
-    stage_idx = int(getattr(cache, 'stage_record', 0) or 0) % n_stages
-    raw_stages_attr = getattr(cache, 'batch_buffer_raw_stages', None)
+    n_stages = max(1, int(getattr(cache, "num_stages_layer_copy", 1) or 1))
+    stage_idx = int(getattr(cache, "stage_record", 0) or 0) % n_stages
+    raw_stages_attr = getattr(cache, "batch_buffer_raw_stages", None)
 
     # If the same (stage, group) already has an in-flight D2H future, wait
     # for it before submitting a new one.  This guards against the same
     # attention type being invoked more than once per block for the same
     # layer, which would otherwise overwrite the previous future and leak
     # an un-waited D2H scatter.
-    fut_stages = getattr(cache, 'copy_futures_stages', None)
+    fut_stages = getattr(cache, "copy_futures_stages", None)
     if fut_stages is not None and 0 <= stage_idx < len(fut_stages):
         bucket = fut_stages[stage_idx]
         if isinstance(bucket, dict):
@@ -437,7 +429,9 @@ def synchronize_d2h_prefill(
                 except Exception as e:
                     logger.error(
                         "prev D2H scatter failed on stage=%d group=%d: %s",
-                        stage_idx, group_idx, e,
+                        stage_idx,
+                        group_idx,
+                        e,
                     )
                     raise
 
@@ -445,6 +439,7 @@ def synchronize_d2h_prefill(
 
     with torch.npu.stream(cache.d2h_stream):
         from .prefill import _prepare_blocks
+
         spec = cache.kv_cache_config.kv_cache_groups[group_idx].kv_cache_spec
         block_ids_cpu, block_ids_npu = _prepare_blocks(metadata, cache.device, spec)
 
@@ -458,11 +453,8 @@ def synchronize_d2h_prefill(
         maps = getattr(input_batch, "_volatile_real_to_fake_per_group", None)
         if maps is not None and group_idx < len(maps) and maps[group_idx]:
             fake_to_real = {v: k for k, v in maps[group_idx].items()}
-            real_list = [fake_to_real.get(int(fid), int(fid))
-                         for fid in block_ids_cpu.tolist()]
-            real_block_ids_cpu = torch.tensor(
-                real_list, dtype=block_ids_cpu.dtype
-            )
+            real_list = [fake_to_real.get(int(fid), int(fid)) for fid in block_ids_cpu.tolist()]
+            real_block_ids_cpu = torch.tensor(real_list, dtype=block_ids_cpu.dtype)
         if should_log_rank(cache):
             logger.warning(
                 "[APCDBG/D2H_PREP] tp_rank=%s dp_rank=%s stage=%s "
@@ -475,8 +467,7 @@ def synchronize_d2h_prefill(
                 layer_name,
                 layer_idx,
                 block_ids_cpu.tolist(),
-                (real_block_ids_cpu.tolist()
-                 if real_block_ids_cpu is not None else None),
+                (real_block_ids_cpu.tolist() if real_block_ids_cpu is not None else None),
                 summarize_map(
                     "real_to_fake",
                     maps[group_idx] if maps is not None and group_idx < len(maps) else None,
@@ -487,14 +478,15 @@ def synchronize_d2h_prefill(
         CHUNK_SIZE = 512
 
         # KV diagnostics: probe prefill HBM (Stage 1) before D2H overwrites it
-        # should be put after cache.d2h_stream.wait_event(kv_event) --> need to make sure the kv is updated 
+        # should be put after cache.d2h_stream.wait_event(kv_event) --> need to make sure the kv is updated
         from tools.diagnostics.probes import probe_prefill_hbm
+
         probe_prefill_hbm(cache, attn_names, attn_metadatas, kv_event)
 
         # Byte-dimension TP split. Each TP rank offloads 1/tp_world_size of
         # every KV block. Read HBM from device_raw_tensors[stage_idx] and
         # copy into the matching host pinned buffer.
-        raw_by_layer = getattr(cache, 'device_raw_tensors_by_layer', None)
+        raw_by_layer = getattr(cache, "device_raw_tensors_by_layer", None)
         if raw_by_layer is not None and stage_idx < len(raw_by_layer):
             raw = raw_by_layer[stage_idx].get(layer_name, cache.device_raw_tensors[stage_idx])
         else:
@@ -521,7 +513,12 @@ def synchronize_d2h_prefill(
     host_block_ids = real_block_ids_cpu if real_block_ids_cpu is not None else block_ids_cpu
     fut = cache.d2h_thrp.submit(
         _update_host_cache_thread,
-        cache, host_block_ids, group_idx, layer_idx, d2h_event, stage_idx,
+        cache,
+        host_block_ids,
+        group_idx,
+        layer_idx,
+        d2h_event,
+        stage_idx,
     )
     # Append to per-stage lists. Multiple sub-attentions in the same
     # decoder block all use this stage_idx; storing a list lets the
@@ -530,14 +527,14 @@ def synchronize_d2h_prefill(
     # block-boundary hook will iterate every entry in the dict for the
     # current stage so all sub-attention sub-calls within a block are
     # waited on, not just the last one.
-    fut_stages = getattr(cache, 'copy_futures_stages', None)
+    fut_stages = getattr(cache, "copy_futures_stages", None)
     if fut_stages is not None and 0 <= stage_idx < len(fut_stages):
         bucket = fut_stages[stage_idx]
         if isinstance(bucket, dict):
             bucket[group_idx] = fut
         elif isinstance(bucket, list):  # legacy fallback
             bucket.append(fut)
-    evt_stages = getattr(cache, 'd2h_event_stages', None)
+    evt_stages = getattr(cache, "d2h_event_stages", None)
     if evt_stages is not None and 0 <= stage_idx < len(evt_stages):
         bucket = evt_stages[stage_idx]
         if isinstance(bucket, dict):
@@ -562,6 +559,7 @@ def _hash_kv_slots(cache, label: str) -> None:
     Guarded by `OMNI_CACHE_VERIFY_TRANSFER=1`.
     """
     import os
+
     if not int(os.getenv("OMNI_CACHE_VERIFY_TRANSFER", "0")):
         return
     tp_rank = getattr(cache, "tp_rank", 0)
@@ -578,6 +576,7 @@ def _hash_kv_slots(cache, label: str) -> None:
         else:
             layers = [pool0[i] for i in range(pool0.shape[0])]
         import hashlib
+
         probes = [0, min(len(layers) // 2, len(layers) - 1), len(layers) - 1]
         for layer_idx in probes:
             lt = layers[layer_idx]
@@ -588,22 +587,21 @@ def _hash_kv_slots(cache, label: str) -> None:
                     continue
                 bbytes = lt[block_id].reshape(-1).view(torch.uint8)
                 n = int(min(bbytes.numel(), 4096))
-                sha = hashlib.sha256(
-                    bbytes[:n].cpu().numpy().tobytes()
-                ).hexdigest()[:16]
+                sha = hashlib.sha256(bbytes[:n].cpu().numpy().tobytes()).hexdigest()[:16]
                 logger.warning(
                     "[VERIFY-TRANSFER/%s] layer=%d block=%d first%dB sha=%s",
-                    label, layer_idx, block_id, n, sha,
+                    label,
+                    layer_idx,
+                    block_id,
+                    n,
+                    sha,
                 )
     except Exception as e:
         logger.warning("[VERIFY-TRANSFER/%s] hash failed: %s", label, e)
 
 
 def synchronize_d2h_hybrid(
-    cache: "PrefillOmniCache",
-    layer_name_list: List[str],
-    attn_metadata_list: List,
-    kv_event: torch.npu.Event
+    cache: "PrefillOmniCache", layer_name_list: List[str], attn_metadata_list: List, kv_event: torch.npu.Event
 ) -> None:
     """Synchronize D2H for hybrid attention mode.
 
@@ -626,7 +624,7 @@ def synchronize_d2h_hybrid(
     # were already overwritten by this layer's compute) and is at
     # best redundant. With num_stages_layer_copy == 1 there is no
     # rotation and the prior single-stage behaviour is preserved.
-    if getattr(cache, 'num_stages_layer_copy', 1) <= 1:
+    if getattr(cache, "num_stages_layer_copy", 1) <= 1:
         if cache.copy_futures[cache.stage_record] is not None:
             try:
                 cache.copy_futures[cache.stage_record].result()
@@ -641,15 +639,14 @@ def synchronize_d2h_hybrid(
     # KV diagnostics: probe prefill HBM (Stage 1) BEFORE D2H starts
     # This must run before copy_kv_to_buffers reads from HBM
     from tools.diagnostics.probes import probe_prefill_hbm
+
     probe_prefill_hbm(cache, layer_name_list, attn_metadata_list, kv_event)
 
     ctx = prepare_d2h_metadata(cache, layer_name_list, attn_metadata_list)
 
     with torch.npu.stream(cache.d2h_stream):
         cache.d2h_stream.wait_event(kv_event)
-        copy_kv_to_buffers(
-            cache, layer_name_list, attn_metadata_list, ctx, cache.d2h_stream
-        )
+        copy_kv_to_buffers(cache, layer_name_list, attn_metadata_list, ctx, cache.d2h_stream)
         d2h_event.record(cache.d2h_stream)
 
     # Wait for the async D2H to actually land in the host pool before
@@ -667,11 +664,7 @@ def synchronize_d2h_hybrid(
 
 
 def synchronize_h2d_decode(
-    cache: "DecodeOmniCache",
-    batch_device_mem,
-    batch_device_max,
-    batch_host_mem,
-    batch_host_sizes
+    cache: "DecodeOmniCache", batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes
 ) -> None:
     """Synchronize H2D for decode operations.
 
@@ -696,10 +689,7 @@ def synchronize_h2d_decode(
     # KV diagnostics: probe decode host pool (Stage 3) after OX, before H2D
     # ctxs are passed through from _post_success via the h2d_q batch
 
-    cache.host_cache.memcpy_async(
-        batch_device_mem, batch_device_max,
-        batch_host_mem, batch_host_sizes
-    )
+    cache.host_cache.memcpy_async(batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes)
     # The memcpy above is queued on `ascend_cl_stream` asynchronously. The
     # caller `_post_success` marks the request as KV-ready immediately after
     # we return, and the scheduler will then dispatch the first decode step.
@@ -711,6 +701,7 @@ def synchronize_h2d_decode(
         cache.host_cache.ascend_cl_stream.sync()
     except Exception:
         import logging as _logging
+
         _logging.getLogger("vllm.v1.omni").exception(
             "synchronize_h2d_decode: stream.sync failed; continuing "
             "without blocking — expect intermittent empty replies."
@@ -723,7 +714,7 @@ def synchronize_d2h_decode(
     value_states: torch.Tensor,
     slot_mapping: torch.Tensor,
     layer_idx: int,
-    kv_event: torch.npu.Event
+    kv_event: torch.npu.Event,
 ) -> None:
     """Synchronize D2H for decode operations (stub).
 
@@ -750,7 +741,7 @@ def _update_host_cache_thread(
     torch.npu.set_device(cache.device)
     event.synchronize()
 
-    raw_stages = getattr(cache, 'batch_buffer_raw_stages', None)
+    raw_stages = getattr(cache, "batch_buffer_raw_stages", None)
     if raw_stages is not None and 0 <= stage_idx < len(raw_stages):
         entry = raw_stages[stage_idx]
         if isinstance(entry, dict):
@@ -761,7 +752,7 @@ def _update_host_cache_thread(
         stage_buf = None
     if stage_buf is None:
         stage_buf = cache.batch_buffer_raw
-    buf = stage_buf[:len(block_ids)]
+    buf = stage_buf[: len(block_ids)]
     total_elems = sum(cache.comp_elem_sizes)
     elems_per_rank = total_elems // cache.tp_world_size
     rank_start = cache.tp_rank * elems_per_rank
@@ -784,11 +775,5 @@ def _update_host_cache_thread(
 
             target_layer = tensor[layer_idx]
             block_flat_elems = target_layer.shape[-2] * target_layer.shape[-1]
-            target_flat = target_layer.view(torch.bfloat16).reshape(
-                cache.dp_world_size_local, -1, block_flat_elems
-            )
-            target_flat[
-                cache.dp_local_rank,
-                block_ids,
-                comp_offset:comp_offset + length
-            ] = src_data
+            target_flat = target_layer.view(torch.bfloat16).reshape(cache.dp_world_size_local, -1, block_flat_elems)
+            target_flat[cache.dp_local_rank, block_ids, comp_offset:comp_offset + length] = src_data

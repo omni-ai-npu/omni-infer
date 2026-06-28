@@ -103,7 +103,6 @@ def extract_block_prefill_host(
         if isinstance(pool, (list, tuple)):
             layer_tensor = pool[virtual_layer_idx]
             if layer_tensor.dim() == 4:
-                # (dp_world, blocks_per_rank, block_size, head_dim)
                 row = layer_tensor[dp_rank, block_id].cpu().float().numpy()
             else:
                 row = layer_tensor[block_id].cpu().float().numpy()

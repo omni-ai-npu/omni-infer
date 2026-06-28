@@ -36,6 +36,7 @@ def _next_power_of_2(n: int) -> int:
         return 1
     return 1 << (n - 1).bit_length()
 
+
 if TYPE_CHECKING:
     from vllm.v1.attention.backends.utils import (
         AttentionCGSupport,
@@ -87,10 +88,18 @@ def _extract_metadata_params(cache, common_attn_metadata):
     query_start_loc_cpu = torch_to_numpy_zero_copy(common_attn_metadata.query_start_loc_cpu)
 
     return (
-        num_reqs, num_actual_tokens, max_query_len, max_seq_len,
-        query_start_loc, seq_lens, block_table_tensor,
-        block_size, max_model_len, hbm_block_pool,
-        seq_lens_cpu, query_start_loc_cpu
+        num_reqs,
+        num_actual_tokens,
+        max_query_len,
+        max_seq_len,
+        query_start_loc,
+        seq_lens,
+        block_table_tensor,
+        block_size,
+        max_model_len,
+        hbm_block_pool,
+        seq_lens_cpu,
+        query_start_loc_cpu,
     )
 
 
@@ -120,7 +129,7 @@ def _fix_padding_metadata(common_attn_metadata, seq_lens_cpu, seq_lens, query_st
 
     if first_pad_pos != -1:
         seq_lens[first_pad_pos:].fill_(0)
-        query_start_loc[first_pad_pos + 1 :] = query_start_loc[first_pad_pos]
+        query_start_loc[first_pad_pos + 1:] = query_start_loc[first_pad_pos]
         block_table_tensor[first_pad_pos:].fill_(0)
 
     setattr(common_attn_metadata, "cmp_metadata_fixed", True)
@@ -146,9 +155,7 @@ def _should_skip_fake_build(cache) -> bool:
     return cache.metadata_grp_id in skip_conditions
 
 
-def _build_fake_block_table(
-    cache, block_table_tensor, num_reqs, block_size, max_model_len, hbm_block_pool
-) -> None:
+def _build_fake_block_table(cache, block_table_tensor, num_reqs, block_size, max_model_len, hbm_block_pool) -> None:
     """Build fake block table contents using Triton kernel.
 
     Fills the block table tensor with fake contents from HBM buffer pool.
@@ -182,19 +189,16 @@ def _build_fake_block_table(
     if not ENABLE_HOST_MAPPING:
         raise RuntimeError("fake_build_compress requires ENABLE_HOST_MAPPING=1")
 
-    BLOCK_SIZE = (
-        triton.next_power_of_2(select_len) if triton is not None
-        else _next_power_of_2(select_len)
-    )
+    BLOCK_SIZE = triton.next_power_of_2(select_len) if triton is not None else _next_power_of_2(select_len)
     build_fake_block_table_kernel_compress[(actual_num_reqs,)](
         block_table_tensor,
-        hbm_block_pool['block_table_ts'],
+        hbm_block_pool["block_table_ts"],
         real_indices_tensor,
         block_table_tensor.stride(0),
         block_table_tensor.stride(1),
-        hbm_block_pool['req_offset'],
+        hbm_block_pool["req_offset"],
         select_len,
-        BLOCK_SIZE=BLOCK_SIZE
+        BLOCK_SIZE=BLOCK_SIZE,
     )
 
 
@@ -214,11 +218,11 @@ def _prepare_block_table_buffer(builder, block_table_tensor) -> int:
 
     if builder.block_table_buf is None:
         assert len_table > 0, f"Block table length should be positive, but got {len_table}."
-        builder.block_table_buf = torch.zeros(
-            builder.max_num_reqs, len_table, dtype=torch.int32, device=builder.device)
+        builder.block_table_buf = torch.zeros(builder.max_num_reqs, len_table, dtype=torch.int32, device=builder.device)
 
-    assert builder.block_table_buf.shape[1] + builder.num_extra_blocks == block_table_tensor.shape[1], \
+    assert builder.block_table_buf.shape[1] + builder.num_extra_blocks == block_table_tensor.shape[1], (
         f"{builder.block_table_buf.shape=}, {block_table_tensor.shape=}"
+    )
 
     return len_table
 
@@ -241,7 +245,7 @@ def _check_apc_hits(builder, common_attn_metadata, seq_lens, query_start_loc, cu
         return
 
     query_lens = query_start_loc[1:] - query_start_loc[:-1]
-    computed_lens = builder.computed_lens_buffer[:seq_lens.shape[0]]
+    computed_lens = builder.computed_lens_buffer[: seq_lens.shape[0]]
     is_apc_hit_mask = (computed_lens > 1) & (query_lens > 1)
 
     if not torch.any(is_apc_hit_mask):
@@ -289,32 +293,32 @@ def fake_build_compress(
 
     # Step 1: Extract metadata parameters
     (
-        num_reqs, num_actual_tokens, max_query_len, max_seq_len,
-        query_start_loc, seq_lens, block_table_tensor,
-        block_size, max_model_len, hbm_block_pool,
-        seq_lens_cpu, query_start_loc_cpu
+        num_reqs,
+        num_actual_tokens,
+        max_query_len,
+        max_seq_len,
+        query_start_loc,
+        seq_lens,
+        block_table_tensor,
+        block_size,
+        max_model_len,
+        hbm_block_pool,
+        seq_lens_cpu,
+        query_start_loc_cpu,
     ) = _extract_metadata_params(cache, common_attn_metadata)
 
     # Step 2: Fix padding metadata if needed
-    _fix_padding_metadata(
-        common_attn_metadata, seq_lens_cpu,
-        seq_lens, query_start_loc, block_table_tensor
-    )
+    _fix_padding_metadata(common_attn_metadata, seq_lens_cpu, seq_lens, query_start_loc, block_table_tensor)
 
     # Step 3: Split decodes and prefills
-    num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
-        split_decodes_and_prefills(
-            common_attn_metadata,
-            decode_threshold=builder.reorder_batch_threshold,
-        )
+    num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = split_decodes_and_prefills(
+        common_attn_metadata,
+        decode_threshold=builder.reorder_batch_threshold,
     )
 
     # Step 4: Build fake block table contents (if not skipped)
     if seq_lens_cpu[0] > 1 and not _should_skip_fake_build(cache):
-        _build_fake_block_table(
-            cache, block_table_tensor, num_reqs,
-            block_size, max_model_len, hbm_block_pool
-        )
+        _build_fake_block_table(cache, block_table_tensor, num_reqs, block_size, max_model_len, hbm_block_pool)
 
     # Step 5: Prepare block table buffer
     len_table = _prepare_block_table_buffer(builder, block_table_tensor)
@@ -395,7 +399,7 @@ def fake_build_compress(
         num_decodes=num_decodes,
         num_decode_tokens=num_decode_tokens,
         tiling_meta=builder.tiling_meta,
-        computed_lens=builder.computed_lens_buffer[:seq_lens.shape[0]],
+        computed_lens=builder.computed_lens_buffer[: seq_lens.shape[0]],
     )
 
     return cmp_metadata

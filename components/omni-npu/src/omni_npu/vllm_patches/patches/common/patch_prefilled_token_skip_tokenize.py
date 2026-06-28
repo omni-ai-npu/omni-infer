@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 # This patch is used for reuse prefilled tokens
 
@@ -40,6 +41,7 @@ _ROUTED_EXPERT_KEYS = (
     "routed_experts_str_len",
     "routed_experts_str",
 )
+
 
 def _update_waiting_for_remote_kv_patched(self: Scheduler, request: Request) -> bool:
     assert self.connector is not None
@@ -343,6 +345,7 @@ class OpenAIServingChatPatch(VLLMPatch):
                         prefilled_cumulative_logprob)
         return conversation, [engine_prompt]
 
+
 @register_patch("PrefilledTokenSkipOpenAIServing", OpenAIServing)
 class OpenAIServingPatch(VLLMPatch):
     _attr_names_to_apply = ['_preprocess_chat']
@@ -399,6 +402,7 @@ class SchedulerPatch(VLLMPatch):
 @register_patch("PrefilledTokenSkipAsyncLLM", AsyncLLM)
 class AsyncLLMPatch(VLLMPatch):
     _attr_names_to_apply = ['generate']
+
     async def generate(
         self,
         prompt: EngineCoreRequest | PromptType,
@@ -418,6 +422,8 @@ class AsyncLLMPatch(VLLMPatch):
         from vllm.sampling_params import RequestOutputKind
 
         Logprob = namedtuple('Logprob', ['logprob', 'rank', 'decoded_token'])
+
+        
         def convert_to_standard_logprobs(prefilled_logprobs: List[Dict[str, Any]]) -> List[Dict[int, Logprob]]:
             if prefilled_logprobs is None:
                 return None

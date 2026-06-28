@@ -1,6 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright contributors to the vLLM project.
 
 """
 Add new KV cache spec classes for Pangu V2 hybrid attention:
@@ -214,6 +214,8 @@ class UniformTypeKVCacheSpecsPatch(VLLMPatch):
 
 from typing_extensions import Self
 from vllm.v1.kv_cache_interface import MLAAttentionSpec
+
+
 @dataclass(frozen=True)
 class SinkMLAAttentionSpec(MLAAttentionSpec):
     sink_len: int = 0
@@ -241,6 +243,7 @@ class SinkMLAAttentionSpec(MLAAttentionSpec):
             cache_dtype_str=cache_dtype_str_set.pop(),
             sink_len=specs[0].sink_len,
         )
+
 
 @register_patch("PanguNewKVCacheSpecsPatch", kv_cache_interface)
 class PanguNewKVCacheSpecsPatch(VLLMPatch):

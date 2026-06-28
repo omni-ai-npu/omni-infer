@@ -197,4 +197,7 @@ def create_layer_tensor_tuples(
         tensor_list_swap = list(kvi_tensor.unsqueeze(-2).unbind(dim=0))
         shared_tensor_list.append(tensor_list_swap)
 
-    return [tuple(l[i] for l in shared_tensor_list) for i in range(num_layers)]
+    return [
+        tuple(layer_tensors[layer_idx] for layer_tensors in shared_tensor_list)
+        for layer_idx in range(num_layers)
+    ]

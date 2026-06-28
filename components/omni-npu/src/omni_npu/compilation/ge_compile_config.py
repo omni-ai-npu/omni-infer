@@ -1,4 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 import hashlib
 import os
 from typing import Any, Callable, Optional, Union
@@ -11,12 +13,12 @@ from torchair import patch_for_hcom
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 
-#from omni_npu.models.config_loader.loader import model_extra_config
 
 logger = init_logger(__name__)
 
 MAX_GEAR_NUM = 6
 BLOCK_NUM_FLOATING_RANGE = 30
+
 
 def get_torchair_config(vllm_config: VllmConfig):
     patch_for_hcom()
@@ -46,7 +48,7 @@ class NPUCompilationConfig:
     block_num_floating_range: int = BLOCK_NUM_FLOATING_RANGE
     """The compilation cache allows for the range of fluctuations"""
 
-    def build_from_cli(self, raw_graph_config: dict[str,Any], vllm_config: VllmConfig):
+    def build_from_cli(self, raw_graph_config: dict[str, Any], vllm_config: VllmConfig):
         """Parse the CLI value for the compilation config.
         """
         import os

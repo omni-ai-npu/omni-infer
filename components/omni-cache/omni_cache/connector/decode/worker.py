@@ -23,7 +23,13 @@ from vllm.logger import init_logger
 from omni_cache.connector.utils.helpers import align_remote_block_ids
 from omni_cache.connector.utils.metadata import DatadistConnectorMetadata, PendingReq, DTypeUtils, _SendItem
 from omni_cache.connector.utils.process_utils import handle_exception, stdout_printer, stdout_reader
-from omni_cache.connector.utils.settings import OX_LOG_PATH, OX_PATH, P_NODE_PORT_LIST, PER_REQUEST_CONNECTION, ZMQ_BASE_PORT
+from omni_cache.connector.utils.settings import (
+    OX_LOG_PATH,
+    OX_PATH,
+    P_NODE_PORT_LIST,
+    PER_REQUEST_CONNECTION,
+    ZMQ_BASE_PORT,
+)
 from omni_cache.connector.zmq_transport import RouterDealerClient, ZMQSendProxy
 
 from .kv_loader import KVLoader, handle_future_callback
@@ -115,11 +121,7 @@ class DecodeConnectorWorker:
     def _start_async_pull_thread(self) -> None:
         """Start async pull KV thread."""
         thread_name = f"async_pull_kv_{self.dp_rank}"
-        self.thread_on_fast_path_req = threading.Thread(
-            target=self.on_fast_path_req,
-            daemon=True,
-            name=thread_name
-        )
+        self.thread_on_fast_path_req = threading.Thread(target=self.on_fast_path_req, daemon=True, name=thread_name)
         self.thread_on_fast_path_req.start()
         logger.warning("DecodeConnectorWorker initialized with async_pull_kv enabled.")
 
@@ -208,24 +210,20 @@ class DecodeConnectorWorker:
         """Fast path request handler for async KV pull."""
         context = zmq.Context()
         sub = context.socket(zmq.SUB)
-        sub.connect(
-            f"ipc:///tmp/sched-pub-{self.vllm_config.parallel_config.data_parallel_rank_local}"
-        )
+        sub.connect(f"ipc:///tmp/sched-pub-{self.vllm_config.parallel_config.data_parallel_rank_local}")
         sub.setsockopt_string(zmq.SUBSCRIBE, "")
 
         while True:
             serialized_data = sub.recv()
             metadata: DatadistConnectorMetadata = pickle.loads(serialized_data)
             for req_id, meta in metadata.requests.items():
-                if (len(meta.local_block_ids) > 0 and
-                    len(meta.remote_block_ids) > 0):
+                if len(meta.local_block_ids) > 0 and len(meta.remote_block_ids) > 0:
                     self.start_load_kv(metadata)
                     logger.info(
-                        "Received fast path request for request %s with "
-                        "local_block_ids: %s, remote_block_ids: %s.",
+                        "Received fast path request for request %s with local_block_ids: %s, remote_block_ids: %s.",
                         req_id,
                         len(meta.local_block_ids),
-                        len(meta.remote_block_ids)
+                        len(meta.remote_block_ids),
                     )
 
     def register_kv_caches(self, kv_pool_mmap_path, data_type, block_len_dtype, omni_cache):
@@ -271,25 +269,28 @@ class DecodeConnectorWorker:
 
         cmd = [
             str(OX_PATH),
-            "--shard-list", str(P_NODE_PORT_LIST),
-            "--zmq-port", end_port,
-            "--block-table-shm", str(kv_pool_mmap_path),
-            "--num-block-tables", str(omni_cache.dp_world_size_local),
-            "--num-blocks", str(omni_cache.num_blocks),
-            "--num-layers", str(omni_cache.num_layers),
-            "--tokens-per-block", str(omni_cache.block_size),
-            "--num-connections-per-req", str(PER_REQUEST_CONNECTION),
-            "--dims", ",".join(map(str, omni_cache.head_sizes)),
+            "--shard-list",
+            str(P_NODE_PORT_LIST),
+            "--zmq-port",
+            end_port,
+            "--block-table-shm",
+            str(kv_pool_mmap_path),
+            "--num-block-tables",
+            str(omni_cache.dp_world_size_local),
+            "--num-blocks",
+            str(omni_cache.num_blocks),
+            "--num-layers",
+            str(omni_cache.num_layers),
+            "--tokens-per-block",
+            str(omni_cache.block_size),
+            "--num-connections-per-req",
+            str(PER_REQUEST_CONNECTION),
+            "--dims",
+            ",".join(map(str, omni_cache.head_sizes)),
         ]
         logger.warning(f"<<<Executing {cmd}")
 
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
-        )
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         q = queue.Queue()
 
         t_read = threading.Thread(target=stdout_reader, args=(proc.stdout, q))
@@ -418,8 +419,11 @@ class DecodeConnectorWorker:
         logger.warning(
             " ***** Pull kv timing (network only): req_id:%s, num_blocks:%d, "
             "submit->send: %.3f ms, send->resp: %.3f ms, submit->resp: %.3f ms",
-            ctx.request_id, num_blocks,
-            cost_submit_to_send, cost_send_to_resp, cost_submit_to_resp
+            ctx.request_id,
+            num_blocks,
+            cost_submit_to_send,
+            cost_send_to_resp,
+            cost_submit_to_resp,
         )
 
     def start_load_kv_mock_prefill(self, metadata: DatadistConnectorMetadata) -> None:

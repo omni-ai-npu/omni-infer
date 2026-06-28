@@ -77,13 +77,14 @@ if ENABLE_OMNI_CACHE and not USE_OMNI_INPUT_BATCH:
             if not hasattr(self, "_oc"):
                 import omni_cache.cache as _ocache
                 from omni_cache.cache.decode import DecodeOmniCache
+
                 self._oc = _ocache.omni_cache
                 self.is_decode = isinstance(self._oc, DecodeOmniCache)
             if self.is_decode and ENABLE_HOST_MAPPING:
                 self._rewrite_decode_block_table(common_attn_metadata.block_table_tensor)
-                
+
             # Prefill-side: Force prefill only construct prefill metadata
-            if get_active_prefill_cache() is not None and getattr(self, 'reorder_batch_threshold', 1) != 0:
+            if get_active_prefill_cache() is not None and getattr(self, "reorder_batch_threshold", 1) != 0:
                 self.reorder_batch_threshold = 0
 
             metadata = super().build(
@@ -128,7 +129,7 @@ if ENABLE_OMNI_CACHE and not USE_OMNI_INPUT_BATCH:
             ci.copy_(host_buf[:num_decodes], non_blocking=True)
 
         def _get_lane_plus1_host_buffer(self, cache, ci):
-            host_buf = getattr(self, '_lane_plus1_pin', None)
+            host_buf = getattr(self, "_lane_plus1_pin", None)
             if host_buf is None or host_buf.numel() < ci.shape[0]:
                 host_buf = torch.empty(
                     max(ci.shape[0], cache.num_max_batch_pool + 1),
@@ -176,9 +177,10 @@ if ENABLE_OMNI_CACHE and not USE_OMNI_INPUT_BATCH:
                     from omni_cache.cache.transfer_engine.synchronize import (
                         synchronize_h2d_prefill,
                     )
-                    synchronize_h2d_prefill(
-                        omni_cache, prefix_meta, first_layer_name, load_next_layer=False
-                    )
+
+                    synchronize_h2d_prefill(omni_cache, prefix_meta, first_layer_name, load_next_layer=False)
+
+
     @register_attention_backend(NPUPanguMome)
     class NPUPanguMomeBackendExt(NPUPanguMomeBackend):
         @staticmethod

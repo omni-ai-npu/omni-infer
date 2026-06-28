@@ -254,8 +254,12 @@ for ((rank=0; rank<DECODE_DP_SIZE; rank++)); do
         --data-parallel-size "$DECODE_DP_SIZE"
         --data-parallel-rank "$rank"
         --no-disable-hybrid-kv-cache-manager
+        --reasoning-parser pangu
+        --enable-auto-tool-choice
+        --tool-call-parser pangu
         --kv-transfer-config "$kv_conf"
         --additional-config '{"enable_low_latency": true, "npugraph_ex_config" :{"enable": true, "super_kernel_optimze": false, "static_kernel_compile": true}}'
+        --reasoning-config '{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
     )
     if [[ "${MTP}" -ge "1" ]]; then
         spec_conf=$(printf '{"num_speculative_tokens": %d, "method": "deepseek_mtp"}' "$MTP")

@@ -26,7 +26,7 @@ typedef struct
     ngx_rbtree_node_t sentinel;
     ngx_shmtx_t mutex;
     ngx_shmtx_sh_t lock;
-    ngx_uint_t writer_pid;
+    ngx_pid_t writer_pid;
     ngx_uint_t version;
 } omni_radix_tree_t;
 

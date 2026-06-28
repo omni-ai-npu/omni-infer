@@ -5,6 +5,8 @@
 #include <string.h>
 #include "omni_utils.h"
 
+#define OMNI_ZMQ_MAX_MSG_SIZE  (64 * 1024 * 1024)
+
 static void omni_zmq_dummy_write_handler(ngx_event_t *ev)
 {
 }
@@ -13,7 +15,7 @@ static void omni_zmq_event_handler(ngx_event_t *ev)
 {
     omni_zmq_handler_t *handler = ev->data;
 
-    int events;
+    unsigned int events;
     size_t events_size = sizeof(events);
     if (zmq_getsockopt(handler->zmq_socket, ZMQ_EVENTS, &events, &events_size) != 0)
     {
@@ -163,6 +165,9 @@ ngx_int_t omni_zmq_handler_reinit(omni_zmq_handler_t *handler)
         handler->zmq_context = NULL;
         return NGX_ERROR;
     }
+
+    int64_t max_msg_size = OMNI_ZMQ_MAX_MSG_SIZE;
+    zmq_setsockopt(handler->zmq_socket, ZMQ_MAXMSGSIZE, &max_msg_size, sizeof(max_msg_size));
 
     int timeout = 100;
     zmq_setsockopt(handler->zmq_socket, ZMQ_RCVTIMEO, &timeout, sizeof(timeout));

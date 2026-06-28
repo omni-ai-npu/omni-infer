@@ -68,6 +68,12 @@ def mla_setup():
         {
             "vllm.v1.attention.backends.utils": utils_mod,
             "vllm.v1.attention.backend": attn_backend_mod,
+            # Stub out the real vllm gdn_attn backend so its module body
+            # (which imports compute_causal_conv1d_metadata and other utils
+            # names not provided by the stub above) is never executed during
+            # unit tests. mome only needs GDNAttentionMetadataBuilder at
+            # import time, which the MagicMock satisfies.
+            "vllm.v1.attention.backends.gdn_attn": MagicMock(),
         },
     )
     utils_mod_patcher.start()
@@ -332,23 +338,44 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         builder.vllm_config.kv_transfer_config = None
         builder.dcp_world_size = 1
         builder.sink_len = 128
+        builder.device = torch.device("cpu")
+        builder.model_config = MagicMock()
+        builder.model_config.get_head_size.return_value = None
+        # Attributes normally set by MLACommonMetadataBuilder.__init__, which is
+        # bypassed via __new__ above. Only the ones touched on the prefill path
+        # (no chunked context, dcp_world_size == 1) are populated.
+        builder.prefill_metadata_cls = mla_mod.NPUMLAPrefillMetadata
+        builder.metadata_cls = mla_mod.NPUMLAMetadata
+        builder._use_cudnn_prefill = False
+        builder._use_trtllm_ragged_prefill = False
+        builder._use_fi_prefill = False
 
-        metadata = MagicMock(
-            prefill=type(
-                "PrefillMeta",
-                (),
-                {"query_start_loc": torch.tensor([0, 3], dtype=torch.int32)},
-            )(),
-            decode=None,
-            num_prefills=1,
-            num_decodes=0,
-        )
+        # One prefill request, 3 query tokens, no already-computed context.
+        query_start_loc = torch.tensor([0, 3], dtype=torch.int32)
         common_attn_metadata = MagicMock(
+            num_reqs=1,
+            num_actual_tokens=1,
+            max_query_len=3,
+            max_seq_len=3,
+            block_table_tensor=torch.zeros((1, 1), dtype=torch.int32),
+            slot_mapping=torch.zeros((1,), dtype=torch.int32),
+            query_start_loc=query_start_loc,
+            query_start_loc_cpu=query_start_loc,
             seq_lens=torch.tensor([0], dtype=torch.int32),
+            seq_lens_cpu=torch.tensor([0], dtype=torch.int32),
+            dcp_local_seq_lens=None,
         )
 
-        with patch.object(
-            mla_mod.MLACommonMetadataBuilder, "build", return_value=metadata
+        # Drive the prefill branch: num_decodes=0, num_prefills=1.
+        with (
+            patch.object(
+                mla_mod, "split_decodes_and_prefills",
+                return_value=(0, 1, 0, 1),
+            ),
+            patch.object(
+                mla_mod.model_extra_config.operator_opt_config,
+                "use_aicpu_fa_tiling", False,
+            ),
         ):
             result = builder.build(
                 common_prefix_len=0,
@@ -1556,24 +1583,37 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         builder.vllm_config.kv_transfer_config = MagicMock()
         builder.dcp_world_size = 1
         builder.mc2_mask = torch.zeros(256, dtype=torch.bool)
+        builder.device = torch.device("cpu")
+        builder.model_config = MagicMock()
+        builder.model_config.get_head_size.return_value = None
+        builder.metadata_cls = mla_mod.NPUMLAMetadata
+        builder._use_fi_prefill = False
 
-        decode_meta = self.mla_setup["decode_metadata"](
-            block_table=torch.tensor([[0, 1]], dtype=torch.int32),
-            seq_lens=[10],
-            query_cumlens=[1],
-            dcp_tot_seq_lens=None,
+        # One decode request, one decode token.
+        query_start_loc = torch.tensor([0, 1], dtype=torch.int32)
+        common_attn_metadata = MagicMock(
+            num_reqs=1,
+            num_actual_tokens=1,
+            max_query_len=1,
+            max_seq_len=10,
+            block_table_tensor=torch.tensor([[0, 1]], dtype=torch.int32),
+            slot_mapping=torch.zeros((1,), dtype=torch.int32),
+            query_start_loc=query_start_loc,
+            query_start_loc_cpu=query_start_loc,
+            seq_lens=torch.tensor([10], dtype=torch.int32),
+            dcp_local_seq_lens=None,
         )
 
-        metadata = MagicMock(
-            prefill=None,
-            decode=decode_meta,
-            num_prefills=0,
-            num_decodes=1,
-        )
-        common_attn_metadata = MagicMock()
-
-        with patch.object(
-            mla_mod.MLACommonMetadataBuilder, "build", return_value=metadata
+        # Drive the decode branch: num_decodes=1, num_prefills=0.
+        with (
+            patch.object(
+                mla_mod, "split_decodes_and_prefills",
+                return_value=(1, 0, 1, 0),
+            ),
+            patch.object(
+                mla_mod.model_extra_config.operator_opt_config,
+                "use_aicpu_fa_tiling", False,
+            ),
         ):
             result = builder.build(
                 common_prefix_len=0,
@@ -1593,25 +1633,33 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         builder.vllm_config.kv_transfer_config = None
         builder.dcp_world_size = 1
         builder.sink_len = 64
+        builder.device = torch.device("cpu")
+        builder.model_config = MagicMock()
+        builder.model_config.get_head_size.return_value = None
+        builder.metadata_cls = mla_mod.NPUMLAMetadata
+        builder._use_fi_prefill = False
 
-        decode_meta = self.mla_setup["decode_metadata"](
-            block_table=torch.tensor([[0, 1], [2, 3]], dtype=torch.int32),
-            seq_lens=[0, 5],
-            query_cumlens=[1, 2],
-            dcp_tot_seq_lens=None,
+        # Two decode requests, one decode token each. seq_lens=[0, 5] so that
+        # after applying sink_len the decode seq_lens become [64, 5].
+        query_start_loc = torch.tensor([0, 1, 2], dtype=torch.int32)
+        common_attn_metadata = MagicMock(
+            num_reqs=2,
+            num_actual_tokens=2,
+            max_query_len=1,
+            max_seq_len=5,
+            block_table_tensor=torch.tensor([[0, 1], [2, 3]], dtype=torch.int32),
+            slot_mapping=torch.zeros((2,), dtype=torch.int32),
+            query_start_loc=query_start_loc,
+            query_start_loc_cpu=query_start_loc,
+            seq_lens=torch.tensor([0, 5], dtype=torch.int32),
+            dcp_local_seq_lens=None,
         )
 
-        metadata = MagicMock(
-            prefill=None,
-            decode=decode_meta,
-            num_prefills=0,
-            num_decodes=2,
-        )
-        common_attn_metadata = MagicMock()
-
+        # Drive the decode branch: num_decodes=2, num_prefills=0.
         with (
             patch.object(
-                mla_mod.MLACommonMetadataBuilder, "build", return_value=metadata
+                mla_mod, "split_decodes_and_prefills",
+                return_value=(2, 0, 2, 0),
             ),
             patch.object(
                 mla_mod.model_extra_config.operator_opt_config,
@@ -1627,3 +1675,93 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
 
         self.assertEqual(result.decode.sink_len, 64)
         self.assertEqual(result.decode.seq_lens, [64, 5])
+
+    def test_build_prefill_with_dcp_chunked_context(self):
+        """Cover the DCP (dcp_world_size > 1) chunked-prefill branch in build().
+
+        This path is the part copied from upstream super().build() that the
+        other unit tests skip (they use dcp_world_size == 1). One prefill
+        request with a non-zero context so max_context_len_cpu > 0 drives the
+        chunked-context + DCP-local-sharding code.
+        """
+        import omni_npu.attention.backends.mla as mla_mod
+
+        builder = self.mla_setup["builder"].__new__(self.mla_setup["builder"])
+        builder.reorder_batch_threshold = 0
+        builder.vllm_config = MagicMock()
+        builder.vllm_config.kv_transfer_config = None
+        builder.dcp_world_size = 2
+        builder.sink_len = 0
+        builder.device = torch.device("cpu")
+        builder.model_config = MagicMock()
+        builder.model_config.get_head_size.return_value = None
+        builder.prefill_metadata_cls = mla_mod.NPUMLAPrefillMetadata
+        builder.metadata_cls = mla_mod.NPUMLAMetadata
+        # DCP-related attrs normally set in MLACommonMetadataBuilder.__init__.
+        builder.dcp_local_block_size = 1
+        builder.dcp_virtual_block_size = 2  # dcp_local_block_size * dcp_world_size
+        builder.cp_kv_cache_interleave_size = 1
+        builder.chunked_prefill_workspace_size = 128
+        builder.aot_schedule = False  # NPU path, skips page_size alignment
+        builder._use_cudnn_prefill = False
+        builder._use_trtllm_ragged_prefill = False
+        builder._use_fi_prefill = False
+
+        # Force CPU as the default device for EVERY tensor in this test: the
+        # mock input tensors below AND the torch.arange/torch.zeros allocated
+        # inside build(). On real NPU CI the default device is npu:0, so
+        # device-less torch.tensor/zeros would land on NPU. That both breaks
+        # the device-matched torch.min (mla.py:300, needs both operands on the
+        # same device) and the .pin_memory() calls (mla.py:390, only works on
+        # dense CPU tensors -> "cannot pin 'npuIntType'"). Keeping the whole
+        # branch on CPU reproduces the local (CPU-default) behaviour the test
+        # was written against.
+        with torch.device("cpu"):
+            # 1 prefill req: query_len=3, seq_len=10 -> context=7 (>0, chunked).
+            builder.chunked_prefill_workspace = torch.zeros(
+                128, dtype=torch.float32)
+            query_start_loc = torch.tensor([0, 3], dtype=torch.int32)
+            common_attn_metadata = MagicMock(
+                num_reqs=1,
+                num_actual_tokens=1,
+                max_query_len=3,
+                max_seq_len=10,
+                block_table_tensor=torch.zeros((1, 16), dtype=torch.int32),
+                slot_mapping=torch.zeros((3,), dtype=torch.int32),
+                query_start_loc=query_start_loc,
+                query_start_loc_cpu=query_start_loc,
+                seq_lens=torch.tensor([10], dtype=torch.int32),
+                seq_lens_cpu=torch.tensor([10], dtype=torch.int32),
+                dcp_local_seq_lens=torch.tensor([10], dtype=torch.int32),
+            )
+
+            # Drive prefill branch: num_decodes=0, num_prefills=1.
+            with (
+                patch.object(
+                    mla_mod, "split_decodes_and_prefills",
+                    return_value=(0, 1, 0, 1),
+                ),
+                patch.object(
+                    mla_mod.model_extra_config.operator_opt_config,
+                    "use_aicpu_fa_tiling", False,
+                ),
+                patch.object(
+                    mla_mod, "get_dcp_local_seq_lens",
+                    return_value=torch.zeros((2, 1), dtype=torch.int32),
+                ),
+                # DCP post-processing calls real distributed helpers
+                # (TP_Convertor) which need an initialized TP group; stub them
+                # out for the unit test.
+                patch.object(mla_mod.TP_Convertor, "do_scheduled_kv_reorg"),
+                patch.object(builder, "prepare_dcp_slots"),
+                patch.object(builder, "prepare_dcp_ag_reorg"),
+            ):
+                result = builder.build(
+                    common_prefix_len=0,
+                    common_attn_metadata=common_attn_metadata,
+                    fast_build=False,
+                )
+
+            # The DCP branch produced a chunked context on the prefill metadata.
+            self.assertIsNotNone(result.prefill)
+            self.assertIsNotNone(result.prefill.chunked_context)

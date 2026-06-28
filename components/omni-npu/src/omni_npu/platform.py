@@ -1,5 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright contributors to the vLLM project.
 
 import os
 import traceback
@@ -14,6 +15,7 @@ from omni_npu.logger import update_configure_vllm_root_logger
 
 update_configure_vllm_root_logger()
 logger = init_logger(__name__)
+
 
 class ConfigUpdater:
     """Handles configuration validation and updates for the NPU platform."""
@@ -45,6 +47,7 @@ class ConfigUpdater:
         if not supports_dynamo():
             logger.warning("Graph mode unsupported due to low torch version. Disabling.")
             vllm_config.npu_compilation_config.use_gegraph = False
+
 
 class NPUPlatform(Platform):
     try:

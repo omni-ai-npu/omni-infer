@@ -166,7 +166,14 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
         return -1;
     }
 
-    size_t result_count = PyList_Size(pPrompts);
+    Py_ssize_t py_result_count = PyList_Size(pPrompts);
+    if (py_result_count < 0)
+    {
+        Py_DECREF(pResult);
+        return -1;
+    }
+
+    size_t result_count = (size_t)py_result_count;
     if (result_count != num_reqs)
     {
         Py_DECREF(pResult);
@@ -186,7 +193,7 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
                 {
                     memcpy(requests[i]->prompt, prompt_data, prompt_size);
                     requests[i]->prompt[prompt_size] = '\0';
-                    requests[i]->prompt_len = prompt_size;
+                    requests[i]->prompt_len = (size_t)prompt_size;
                 }
             }
         }
@@ -194,7 +201,8 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
         PyObject *pInputIdList = PyList_GetItem(pInputIds, i);
         if (PyList_Check(pInputIdList))
         {
-            size_t id_count = PyList_Size(pInputIdList);
+            Py_ssize_t py_id_count = PyList_Size(pInputIdList);
+            size_t id_count = (size_t)py_id_count;
             if (id_count <= requests[i]->input_ids_buf_size)
             {
                 for (size_t j = 0; j < id_count; j++)
@@ -212,7 +220,8 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
         PyObject *pBlockIdList = PyList_GetItem(pBlockIds, i);
         if (PyList_Check(pBlockIdList))
         {
-            size_t id_count = PyList_Size(pBlockIdList);
+            Py_ssize_t py_id_count = PyList_Size(pBlockIdList);
+            size_t id_count = (size_t)py_id_count;
             if (id_count <= requests[i]->block_hashes_buf_size)
             {
                 for (size_t j = 0; j < id_count; j++)
@@ -220,7 +229,7 @@ int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs)
                     PyObject *pId = PyList_GetItem(pBlockIdList, j);
                     if (PyLong_Check(pId))
                     {
-                        requests[i]->block_hashes[j] = PyLong_AsUnsignedLongLong(pId);
+                        requests[i]->block_hashes[j] = (int64_t)PyLong_AsUnsignedLongLong(pId);
                     }
                 }
                 requests[i]->block_hashes_len = id_count;

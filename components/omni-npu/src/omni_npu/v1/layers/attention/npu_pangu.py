@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 from typing import Callable, Optional, Union, Tuple
 from itertools import accumulate
@@ -687,7 +687,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         self.scaling = self.qk_head_dim**-0.5
         self.max_position_embeddings = max_position_embeddings
         self.quant_symbol = quant_config is not None
-        self.rope_interleaved = getattr(config, "rope_interleaved", True)
+        self.rope_interleave = getattr(config, "rope_interleave", True)
         self.moe_comm_strategy = model_extra_config.operator_opt_config.moe_comm_strategy
         self.vllm_config = vllm_config
         self.quant_config = quant_config
@@ -876,7 +876,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             self.qk_rope_head_dim,
             max_position=self.max_position_embeddings,
             rope_parameters=rope_parameters,
-            is_neox_style=(not self.rope_interleaved),
+            is_neox_style=(not self.rope_interleave),
         )
         if (
             self.hf_config.rope_parameters["rope_type"] != "default"
@@ -1807,7 +1807,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             q_pe.view(-1, 1, self.num_local_heads, self.qk_rope_head_dim),
             cp_cos.view(-1, 1, 1, self.qk_rope_head_dim),
             cp_sin.view(-1, 1, 1, self.qk_rope_head_dim),
-            rotary_mode="half" if not self.rope_interleaved else "interleave",
+            rotary_mode="half" if not self.rope_interleave else "interleave",
         ).squeeze(1)
         q_nope = q_nope.contiguous()
         q_pe = q_pe.contiguous()
@@ -1858,7 +1858,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             "index": attn_metadata.slot_mapping,
             "epsilon": self.kv_a_layernorm.variance_epsilon,
             "cache_mode": "PA",
-            "rotary_mode": "half" if not self.rope_interleaved else "interleave-half",
+            "rotary_mode": "half" if not self.rope_interleave else "interleave-half",
             "quant_mode": "none",
             "is_output_kv": True,
         }
@@ -2047,7 +2047,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             q_pe.view(-1, 1, self.num_local_heads, self.qk_rope_head_dim),
             prefill_cos.view(-1, 1, 1, self.qk_rope_head_dim),
             prefill_sin.view(-1, 1, 1, self.qk_rope_head_dim),
-            rotary_mode="half" if not self.rope_interleaved else "interleave",
+            rotary_mode="half" if not self.rope_interleave else "interleave",
         ).squeeze(1)
         if enable_pa:
             q_nope = q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim)            
@@ -2682,7 +2682,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             q_pe.view(-1, 1, self.num_local_heads, self.qk_rope_head_dim),
             cos.view(-1, 1, 1, self.qk_rope_head_dim),
             sin.view(-1, 1, 1, self.qk_rope_head_dim),
-            rotary_mode="half" if not self.rope_interleaved else "interleave",
+            rotary_mode="half" if not self.rope_interleave else "interleave",
         ).squeeze(1)
         q_nope = q_nope.contiguous()
         q_pe = q_pe.contiguous()
@@ -2754,7 +2754,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             q_pe.view(-1, 1, self.num_local_heads, self.qk_rope_head_dim),
             cos.view(-1, 1, 1, self.qk_rope_head_dim),
             sin.view(-1, 1, 1, self.qk_rope_head_dim),
-            rotary_mode="half" if not self.rope_interleaved else "interleave",
+            rotary_mode="half" if not self.rope_interleave else "interleave",
         ).squeeze(1)
         return q_pe.contiguous()
 
@@ -3227,7 +3227,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 "index": attn_metadata.slot_mapping,
                 "epsilon": self.kv_a_layernorm.variance_epsilon,
                 "cache_mode": "PA",
-                "rotary_mode": "half" if not self.rope_interleaved else "interleave-half",
+                "rotary_mode": "half" if not self.rope_interleave else "interleave-half",
                 "quant_mode": "pertile128",
                 "is_output_kv": True,
                 "k_cache": None,
@@ -3254,7 +3254,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         k_nope = torch_npu.npu_rms_norm(k_nope, self.kv_a_layernorm.weight, self.kv_a_layernorm.variance_epsilon)[0]
 
         # Rotary embedding on k_pe
-        rotary_mode = "half" if not self.rope_interleaved else "interleave"
+        rotary_mode = "half" if not self.rope_interleave else "interleave"
         k_pe = torch_npu.npu_rotary_mul(k_pe, cos, sin, rotary_mode=rotary_mode)
 
         # Scatter update caches
@@ -3309,7 +3309,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 "index": attn_metadata.slot_mapping,
                 "epsilon": self.kv_a_layernorm.variance_epsilon,
                 "cache_mode": "PA",
-                "rotary_mode": "half" if not self.rope_interleaved else "interleave-half",
+                "rotary_mode": "half" if not self.rope_interleave else "interleave-half",
                 "quant_mode": "none",
                 "is_output_kv": True,
             }

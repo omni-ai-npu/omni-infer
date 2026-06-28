@@ -1,4 +1,7 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
+
 from vllm.logger import init_logger
 from vllm.transformers_utils import model_arch_config_convertor
 from vllm.transformers_utils.model_arch_config_convertor import (

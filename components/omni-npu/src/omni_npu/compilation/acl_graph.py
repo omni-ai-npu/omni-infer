@@ -1,6 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright contributors to the vLLM project.
 
 import time
 import copy
@@ -23,6 +23,7 @@ from vllm.platforms import current_platform
 
 global_recapture = False
 
+
 def set_aclgraph_recapture(enable: bool):
     global global_recapture
     if not enable or global_recapture:
@@ -30,12 +31,14 @@ def set_aclgraph_recapture(enable: bool):
 
     global_recapture = True
 
+
 def consume_aclgraph_recapture() -> bool:
     global global_recapture
     if not global_recapture:
         return False
     global_recapture = False
     return True
+
 
 def weak_ref_tensor(tensor: Any) -> Any:
     """
@@ -47,6 +50,7 @@ def weak_ref_tensor(tensor: Any) -> Any:
         return torch.ops._C_ascend.weak_ref_tensor(tensor)
     else:
         return tensor
+
 
 def weak_ref_tensors(
     tensors: Union[torch.Tensor, list[torch.Tensor], tuple[torch.Tensor]]
@@ -70,6 +74,7 @@ def weak_ref_tensors(
         return tuple(weak_ref_tensor(t) for t in tensors)
     raise ValueError("Invalid type for tensors")
 
+
 @dataclass
 class OpDescriptor:
     """Describes how to capture and update an op in a graph task."""
@@ -77,6 +82,7 @@ class OpDescriptor:
     workspace_fn: Callable
     weak_ref_keys: tuple[str, ...] = ()
     compute_dynamic_kwargs: Optional[Callable] = None
+
 
 @dataclass
 class GraphTaskEntry:
@@ -86,6 +92,7 @@ class GraphTaskEntry:
     out_tensors: list[Any]
     handle: Any
     event: Any
+
 
 @dataclasses.dataclass
 class ACLGraphEntry:
@@ -371,6 +378,7 @@ class ACLGraphWrapper:
                 torch.npu.graph_task_update_end(update_stream)
                 task_entry.event.record(update_stream)
 
+
 def ensure_weak_ref_graph_params():
     """Weak-ref all captured tensors in task entries and workspaces."""
     graph_params = get_graph_params()
@@ -385,12 +393,14 @@ def ensure_weak_ref_graph_params():
         for workspace_fn in workspaces.keys():              # iterate different workspace_fn
             workspaces[workspace_fn] = weak_ref_tensors(workspaces[workspace_fn])
 
+
 @dataclass
 class GraphParams:
     task_entries: dict[int, dict[str, GraphTaskEntry]]
     workspaces: dict[int, dict[Callable, torch.Tensor]]
 
 _graph_params: Optional[GraphParams] = None
+
 
 def set_graph_params(aclgraph_capture_sizes: set[int]):
     global _graph_params
@@ -400,6 +410,7 @@ def set_graph_params(aclgraph_capture_sizes: set[int]):
         task_entries={size: dict() for size in aclgraph_capture_sizes},
         workspaces={size: dict() for size in aclgraph_capture_sizes},
     )
+
 
 def get_graph_params():
     return _graph_params

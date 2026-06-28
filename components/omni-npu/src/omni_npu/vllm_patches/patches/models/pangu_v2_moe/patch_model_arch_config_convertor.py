@@ -1,6 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright contributors to the vLLM project.
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from vllm.transformers_utils.model_arch_config_convertor import ModelArchConfigConvertorBase
@@ -9,7 +9,7 @@ from vllm.transformers_utils.model_arch_config_convertor import ModelArchConfigC
 @register_patch("PanguV2MoeModelArchConfigConvertorPatch", ModelArchConfigConvertorBase)
 class PanguV2MoeModelArchConfigConvertorPatch(VLLMPatch):
     """
-    Patch for ModelArchConfigConvertor to support pangu_v2_moe MLA architecture.
+    Patch for ModelArchConfigConvertor to support openpangu-v2 MLA architecture.
     """
 
     def _is_deepseek_mla(self) -> bool:
@@ -28,7 +28,7 @@ class PanguV2MoeModelArchConfigConvertorPatch(VLLMPatch):
             "longcat_flash",
             "pangu_ultra_moe",
             "pangu_ultra_moe_mtp",
-            "pangu_v2_moe",
+            "openpangu_v2",
         ):
             return self.hf_text_config.kv_lora_rank is not None
         elif self.hf_text_config.model_type == "eagle":

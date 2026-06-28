@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import os
 from collections.abc import Callable, Iterable
@@ -84,6 +84,7 @@ try:
 except ImportError as e:
     logger.warning(f"Failed to import omni_custom_ops: {e}")
 
+
 def check_ffn_act_fn(act_fn: str) -> None:
     """Validate FFN activation function.
 
@@ -128,7 +129,7 @@ def _has_mla_config(config: PretrainedConfig) -> bool:
     )
 
 
-class PanguV2MLP(nn.Module):
+class OpenPanguV2MLP(nn.Module):
     """Dense FFN block used by Pangu layers (and shared experts)."""
 
     def __init__(
@@ -195,7 +196,7 @@ class PanguV2MLP(nn.Module):
         return out
 
 
-class PanguV2MOE(nn.Module):
+class OpenPanguV2MOE(nn.Module):
     def __init__(
         self,
         config: PretrainedConfig,
@@ -248,7 +249,7 @@ class PanguV2MOE(nn.Module):
 
         assert config.n_shared_experts is not None
         intermediate_size = config.moe_intermediate_size * config.n_shared_experts
-        self.shared_experts = PanguV2MLP(
+        self.shared_experts = OpenPanguV2MLP(
             hidden_size=config.hidden_size,
             intermediate_size=intermediate_size,
             hidden_act=config.hidden_act,
@@ -623,14 +624,6 @@ class PanguV2MOE(nn.Module):
                     shared_done_event = torch.npu.Event()
                     shared_pre_event = torch.npu.Event()
                     shared_pre_event.record()
-
-                # Prefetch w2_weight after init_routing, overlapping with gate_up_matmul + swiglu
-                # if use_fetch_stream:
-                #     w2_prefetch_event = torch.npu.Event()
-                #     w2_prefetch_event.record()
-                #     with torch.npu.stream(self.fetch_stream):
-                #         w2_prefetch_event.wait(self.fetch_stream)
-                #         torch_npu.npu_prefetch(self.experts.w2_weight, hidden_states, 10000000)
 
                 gate_up_proj_output = torch_npu.npu_grouped_matmul(
                     [sorted_tokens],
@@ -1268,7 +1261,7 @@ class PanguV2MOE(nn.Module):
         return final_output
 
 
-class PanguV2DecoderLayer(nn.Module):
+class OpenPanguV2DecoderLayer(nn.Module):
     def __init__(
         self,
         config: PretrainedConfig | None,
@@ -1355,14 +1348,14 @@ class PanguV2DecoderLayer(nn.Module):
             getattr(config, "n_routed_experts", None) is not None
             and self.layer_idx >= config.first_k_dense_replace
         ):
-            self.mlp = PanguV2MOE(
+            self.mlp = OpenPanguV2MOE(
                 config=config,
                 parallel_config=parallel_config,
                 quant_config=quant_config,
                 prefix=f"{prefix}.mlp",
             )
         else:
-            self.mlp = PanguV2MLP(
+            self.mlp = OpenPanguV2MLP(
                 hidden_size=self.hidden_size,
                 intermediate_size=config.intermediate_size,
                 hidden_act=config.hidden_act,
@@ -1413,7 +1406,7 @@ class PanguV2DecoderLayer(nn.Module):
         # Pre-compute task keys for the cube-side multistream optimization.
         # None means "run sinkhorn synchronously" — either because the
         # optimization is disabled, or because the call site is the dense
-        # PanguV2MLP whose down_proj isn't wrapped in a custom op (no cube-side
+        # OpenPanguV2MLP whose down_proj isn't wrapped in a custom op (no cube-side
         # overlap available). The helpers in cube_side_task_ops short-circuit
         # on None, so forward() doesn't need to branch on the flag itself.
         self.attn_mhc_task_key = (
@@ -1439,7 +1432,7 @@ class PanguV2DecoderLayer(nn.Module):
         self.side_stream = side_stream
         self.fetch_stream = fetch_stream
         # Forward to MoE layer for shared expert overlap and prefetch
-        if isinstance(self.mlp, PanguV2MOE):
+        if isinstance(self.mlp, OpenPanguV2MOE):
             self.mlp.side_stream = side_stream
             self.mlp.fetch_stream = fetch_stream
         # Forward to attention layer for future MLA prolog overlap
@@ -1550,20 +1543,6 @@ class PanguV2DecoderLayer(nn.Module):
             if use_side_stream and sk_event is not None:
                 sk_event.wait(main_stream)
 
-            # hidden_states, residual = torch.ops.custom.npu_ai_infra_mhc_sandwich_norm_post_preonly(
-            #     hidden_states,
-            #     residual,
-            #     h_post,
-            #     h_res,
-            #     pre_mhc_module.phi.weight[:self.mhc_num_stream] * pre_mhc_module.norm_gamma,
-            #     pre_mhc_module.branch_alpha[0],
-            #     pre_mhc_module.branch_beta[:self.mhc_num_stream],
-            #     post_norm_module.weight.float(),
-            #     pre_norm_module.weight.float(),
-            #     gamma_2=block_norm_module.weight.float() if block_norm_module is not None else None,
-            #     norm_eps=pre_mhc_module.norm_eps,
-            #     hc_eps=pre_mhc_module.hc_eps,
-            # )
 
             if return_h_in_f32:
                 hidden_states, residual, hidden_states_fp32 = torch.ops.custom.npu_ai_infra_mhc_sandwich_norm_post_preonly_v2(
@@ -1989,7 +1968,7 @@ def _maybe_gather_and_unpadding(
 
 
 @support_torch_compile
-class PanguV2Model(nn.Module):
+class OpenPanguV2Model(nn.Module):
     fall_back_to_pt_during_load = False
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
@@ -2023,7 +2002,7 @@ class PanguV2Model(nn.Module):
 
         self.start_layer, self.end_layer, self.layers = make_layers(
             config.num_hidden_layers,
-            lambda prefix: PanguV2DecoderLayer(config, prefix, vllm_config),
+            lambda prefix: OpenPanguV2DecoderLayer(config, prefix, vllm_config),
             prefix=f"{prefix}.layers",
         )
 
@@ -2142,7 +2121,7 @@ class PanguV2Model(nn.Module):
         return hidden_states
 
 
-class PanguV2MoEForCausalLM(
+class OpenPanguV2ForCausalLM(
     nn.Module,
     SupportsPP,
     SupportsLoRA,
@@ -2201,7 +2180,7 @@ class PanguV2MoEForCausalLM(
                 "kv_a_proj_with_mqa",
             ]
 
-        self.model = PanguV2Model(
+        self.model = OpenPanguV2Model(
             vllm_config=vllm_config, prefix=maybe_prefix(prefix, "model")
         )
         parall_cfg = model_extra_config.parall_config
@@ -2243,8 +2222,8 @@ class PanguV2MoEForCausalLM(
             if isinstance(layer, PPMissingLayer):
                 continue
 
-            assert isinstance(layer, PanguV2DecoderLayer)
-            if isinstance(layer.mlp, PanguV2MOE):
+            assert isinstance(layer, OpenPanguV2DecoderLayer)
+            if isinstance(layer.mlp, OpenPanguV2MOE):
                 # Pick last one layer since the first ones may be dense layers.
                 example_moe = layer.mlp
                 self.moe_layers.append(layer.mlp.experts)
@@ -2295,7 +2274,7 @@ class PanguV2MoEForCausalLM(
         self.num_local_physical_experts = num_local_physical_experts
         self.num_redundant_experts = num_physical_experts - self.num_logical_experts
         for layer in self.model.layers:
-            if isinstance(layer.mlp, PanguV2MOE):
+            if isinstance(layer.mlp, OpenPanguV2MOE):
                 moe = layer.mlp
                 moe.n_local_physical_experts = num_local_physical_experts
                 moe.n_physical_experts = num_physical_experts

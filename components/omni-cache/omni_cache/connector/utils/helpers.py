@@ -25,7 +25,13 @@ def resolve_prefill_endpoint(
 
     node_idx = node_ip_specs.index(target_ip)
     cluster_id_start = node_idx // cluster_size
-    host_ip = node_ip_specs[cluster_id_start * cluster_size]
+
+    kv_rank = getattr(vllm_config.kv_transfer_config, "kv_rank", None)
+    if kv_rank is not None:
+        cluster_id_start = kv_rank
+
+    idx = cluster_id_start * cluster_size
+    host_ip = node_ip_specs[idx] if idx < len(node_ip_specs) else target_ip
     host_port = get_config_value(
         vllm_config.kv_transfer_config,
         "kv_port",
@@ -62,15 +68,16 @@ def align_remote_block_ids(
         raise ValueError(f"remote_tail_skip must be non-negative: {remote_tail_skip}")
 
     if len(remote_ids) < len(local_ids):
-        return local_ids[:len(remote_ids)], remote_ids
+        return local_ids[: len(remote_ids)], remote_ids
     if len(remote_ids) > len(local_ids):
         if remote_overflow == "tail":
             end = len(remote_ids) - remote_tail_skip
             start = max(0, end - len(local_ids))
             aligned_remote_ids = remote_ids[start:end]
-            return local_ids[:len(aligned_remote_ids)], aligned_remote_ids
-        return local_ids, remote_ids[:len(local_ids)]
+            return local_ids[: len(aligned_remote_ids)], aligned_remote_ids
+        return local_ids, remote_ids[: len(local_ids)]
     return local_ids, remote_ids
+
 
 def get_config_from_dict_or_env(config, config_var_name, env_var_name, default_value, value_type):
     env_value = os.environ.get(env_var_name)
@@ -82,7 +89,6 @@ def get_config_from_dict_or_env(config, config_var_name, env_var_name, default_v
     if default_value is None:
         raise ValueError(f"ENV {env_var_name} or args {config_var_name} should not be None.")
     return value_type(default_value)
-
 
 
 __all__ = [

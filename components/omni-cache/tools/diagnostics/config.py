@@ -65,7 +65,7 @@ def resolve_config() -> DiagnosticsConfig:
 
     layers_str = os.getenv("KV_DUMP_LAYERS")
     layers = (
-        [int(l.strip()) for l in layers_str.split(",")]
+        [int(layer.strip()) for layer in layers_str.split(",")]
         if layers_str else None
     )
 

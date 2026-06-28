@@ -1,6 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright contributors to the vLLM project.
 
 """
 Add MomeManager class and update spec_manager_map for Pangu V2 hybrid attention.
@@ -123,6 +123,7 @@ class MomeManager(SingleTypeKVCacheManager):
                 + self.num_extra_reserved_blocks * self.block_size
         return max(0, num_computed_tokens - num_retained)
 
+
 class ShareKVSlidingWindowManager(SlidingWindowManager):
     def __init__(
         self,
@@ -161,6 +162,7 @@ class SinkFullAttentionManager(FullAttentionManager):
         # assert sink_len is not None and sink_len > 0 and sink_len % self.block_size == 0
         num_sink_block = sink_len // self.block_size
         self.sink_blocks = self.block_pool.free_block_queue.popleft_n(num_sink_block)
+
 
 @register_patch("HybridKVCacheCoordinatorPatch", HybridKVCacheCoordinator)
 class HybridKVCacheCoordinatorPatch(VLLMPatch):

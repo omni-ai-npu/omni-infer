@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 """OMNI-CONF schema constants: key classification, field projection tables,
 sensitive-env masking and the dot-path codec.
 

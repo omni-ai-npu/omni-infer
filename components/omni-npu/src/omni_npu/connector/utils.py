@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import os
 import math
@@ -235,6 +235,7 @@ def get_p_start_rank(p_tp_size, p_dp_size, d_tp_size, d_dp_size, d_node_num, cur
     stride = p_tp_size // kv_group_size
     offset = replica_index + cur_d_tp * stride
     return p_dp_index * p_tp_size + offset
+
 
 def get_config_from_dict_or_env(config, config_var_name, env_var_name, default_value, value_type):
     env_value = os.environ.get(env_var_name, None)

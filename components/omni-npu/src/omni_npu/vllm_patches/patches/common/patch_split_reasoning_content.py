@@ -1,5 +1,6 @@
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 """Split combined reasoning+content DeltaMessage chunks into separate SSE events.
 
@@ -153,6 +154,7 @@ def _maybe_split_sse_line(line: str) -> list[str] | None:
         for k, v in delta.items()
         if k not in ("reasoning", "reasoning_content", "role")
     }
+    content_delta['reasoning_content'] = None
 
     reasoning_choice = {**choice0, "delta": reasoning_delta}
     content_choice = {**choice0, "delta": content_delta}

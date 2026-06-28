@@ -65,23 +65,35 @@ ngx_module_t ngx_http_set_request_id_module = {NGX_MODULE_V1,
     NULL,                                 // exit master
     NGX_MODULE_V1_PADDING};
 
-static void gen_uuid(unsigned char out[UUID_STR_LEN])
+static void gen_uuid(unsigned char *out, size_t out_len)
 {
     uuid_t uuid_data;
+
+    if (out == NULL || out_len < UUID_STR_LEN) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "gen_uuid: invalid buffer (out=%p, out_len=%uz)",
+                      out, out_len);
+        return;
+    }
+
     uuid_generate(uuid_data);
     uuid_unparse_lower(uuid_data, (char *)out);
     return;
 }
 
-static void gen_traceparent(u_char out[TRACE_ID_STR_LEN])
+static void gen_traceparent(u_char *out, size_t out_len)
 {
     /* 55 = 2 + 1 + 32 + 1 + 16 + 1 + 2 + 1  (end \0) */
     u_char trace_id[16];
     u_char span_id[8];
 
     /*  16+8 bytes */
-    for (size_t i = 0; i < 16; i++) trace_id[i] = ngx_random() & 0xff;
-    for (size_t i = 0; i < 8; i++)  span_id[i]  = ngx_random() & 0xff;
+    for (size_t i = 0; i < 16; i++) {
+        trace_id[i] = (u_char)((uint32_t)ngx_random() & 0xffU);
+    }
+    for (size_t i = 0; i < 8; i++) {
+        span_id[i] = (u_char)((uint32_t)ngx_random() & 0xffU);
+    }
 
     uint64_t trace_hi, trace_lo;
     memcpy(&trace_hi, trace_id,      8);
@@ -89,17 +101,17 @@ static void gen_traceparent(u_char out[TRACE_ID_STR_LEN])
 
     uint64_t span;
     memcpy(&span, span_id, 8);
-    ngx_snprintf(out, TRACE_ID_STR_LEN, "00-%016xL%016xL-%016xL-01",
+    ngx_snprintf(out, out_len, "00-%016xL%016xL-%016xL-01",
                  trace_hi, trace_lo, span);
 
 }
 
-static void gen_start_time_ns(unsigned char out[TIME_STR_LEN])
+static void gen_start_time_ns(unsigned char *out, size_t out_len)
 {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     unsigned long long nsec = (unsigned long long)tv.tv_sec * 1000000000ULL + (unsigned long long)tv.tv_usec * 1000ULL;
-    snprintf((char *)out, TIME_STR_LEN, "%llu", nsec);
+    snprintf((char *)out, out_len, "%llu", nsec);
     // out end with '\0'
 }
 static u_char x_request_id[] = "X-Request-Id";
@@ -197,7 +209,7 @@ static ngx_int_t ngx_http_set_request_id_handler(ngx_http_request_t *r)
         // If not found X-Request-Id, create a new Header structure
         if (!found) {
             unsigned char uuid[UUID_STR_LEN];
-            gen_uuid(uuid);
+            gen_uuid(uuid, sizeof(uuid));
             gettimeofday(&tv, NULL);
             ngx_log_error(
                 NGX_LOG_INFO, r->connection->log, 0, "<<<Action: Start to schedule; Timestamp:%d.%06d; RequestID:%s", tv.tv_sec, tv.tv_usec, uuid);
@@ -244,7 +256,7 @@ static ngx_int_t ngx_http_set_request_id_handler(ngx_http_request_t *r)
     // If traceparent does not exists, and set_trace_headers_force=on, then force to add trace_headers: Traceparent, TTFT_traceparent, Start_time_ns, TTFT_Start_time
     if (!found) {
         u_char tp[TRACE_ID_STR_LEN];
-        gen_traceparent(tp);
+        gen_traceparent(tp, sizeof(tp));
         gettimeofday(&tv, NULL);
         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "****Action: Inject Traceparent****; Timestamp:%d.%06d; trace_headers:%s", tv.tv_sec, tv.tv_usec, tp);
 
@@ -262,7 +274,7 @@ static ngx_int_t ngx_http_set_request_id_handler(ngx_http_request_t *r)
 
     /* ====== Add: Start_time_ns ====== */
     u_char start_time_ns[TIME_STR_LEN];
-    gen_start_time_ns(start_time_ns);
+    gen_start_time_ns(start_time_ns, sizeof(start_time_ns));
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "****Action: Inject start_time****; start_time:%s", start_time_ns);
     rc = add_header(r, x_start_time_ns, sizeof(x_start_time_ns), start_time_ns, 0 ,ngx_strlen(start_time_ns));
     if (rc != NGX_OK){

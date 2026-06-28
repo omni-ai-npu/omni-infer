@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-#
-# This file is based on vLLM implementation:
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-# https://github.com/vllm-project/vllm/blob/v0.23.0/vllm/model_executor/layers/rotary_embedding/mrope.py
+# Copyright contributors to the vLLM project.
 
 import torch
 import torch_npu

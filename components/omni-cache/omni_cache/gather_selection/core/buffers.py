@@ -48,6 +48,7 @@ class SelectionBuffers:
         dsa_layer = None
         for group in omni_cache.kv_cache_config.kv_cache_groups:
             from vllm.v1.kv_cache_interface import DSAAttentionSpec
+
             if isinstance(group.kv_cache_spec, DSAAttentionSpec):
                 dsa_layer = group.layer_names[0]
                 break
@@ -57,7 +58,9 @@ class SelectionBuffers:
 
         headnum = 1
         s_block_size = omni_cache.block_size
-        k_rope_sz = omni_cache.k_rope_size if dsa_layer is not None and len(omni_cache.host_cache_pa[dsa_layer]) == 3 else 1
+        k_rope_sz = (
+            omni_cache.k_rope_size if dsa_layer is not None and len(omni_cache.host_cache_pa[dsa_layer]) == 3 else 1
+        )
         kvcache_sz = omni_cache.kvcache_size
 
         s_max_block_num = omni_cache.s_max_block_num
@@ -77,11 +80,15 @@ class SelectionBuffers:
         ).contiguous()
 
         if not int(os.getenv("USE_OMNI_INPUT_BATCH", "0")):
-            omni_cache.selection_kv_block_table = torch.arange(
-                batch_size * headnum * s_max_block_num,
-                dtype=torch.int32,
-                device=omni_cache.device,
-            ).view(batch_size, headnum * s_max_block_num).contiguous()
+            omni_cache.selection_kv_block_table = (
+                torch.arange(
+                    batch_size * headnum * s_max_block_num,
+                    dtype=torch.int32,
+                    device=omni_cache.device,
+                )
+                .view(batch_size, headnum * s_max_block_num)
+                .contiguous()
+            )
 
             omni_cache.selection_kv_block_status = -torch.ones(
                 [omni_cache.num_layers, batch_size, state_size],
@@ -96,19 +103,19 @@ class SelectionBuffers:
                 device=omni_cache.device,
             ).contiguous()
 
-            omni_cache.selection_kv_block_status_buffer = torch.empty(
-                [omni_cache.num_layers, batch_size, state_size],
-                dtype=torch.int32,
-                device=omni_cache.device,
-            ).contiguous().view(omni_cache.num_layers, batch_size, state_size)
+            omni_cache.selection_kv_block_status_buffer = (
+                torch.empty(
+                    [omni_cache.num_layers, batch_size, state_size],
+                    dtype=torch.int32,
+                    device=omni_cache.device,
+                )
+                .contiguous()
+                .view(omni_cache.num_layers, batch_size, state_size)
+            )
 
         omni_cache.index_buffer = torch.empty(batch_size, dtype=torch.long, device=omni_cache.device)
 
-        omni_cache.reuse_rate = torch.zeros(
-            omni_cache.num_layers,
-            dtype=torch.float64,
-            device=omni_cache.device
-        )
+        omni_cache.reuse_rate = torch.zeros(omni_cache.num_layers, dtype=torch.float64, device=omni_cache.device)
 
         omni_cache.record_smooth_alpha = 0.7
 

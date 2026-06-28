@@ -5,7 +5,6 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 #include <stdint.h>
-#include <assert.h>
 #include <ngx_atomic.h>
 #include <omni_utils.h>
 
@@ -78,14 +77,25 @@ void omni_free_request(omni_request_pool_t *pool, omni_req_t *req)
 {
     /* Compute index of req in the pool */
     ptrdiff_t idx = req - pool->slots;
-    assert(idx >= 0 && idx < (ptrdiff_t)pool->max_slots);
+    if (idx < 0 || idx >= (ptrdiff_t)pool->max_slots)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "omni_free_request: invalid idx=%td (max_slots=%uz)",
+                      idx, pool->max_slots);
+        return;
+    }
 
     size_t word = (size_t)idx / 64;
     unsigned bit = (unsigned)idx % 64;
     uint64_t mask = (1ULL << bit);
 
     /* Ensure it was in use */
-    assert(pool->in_use_bitmap[word] & mask);
+    if (!(pool->in_use_bitmap[word] & mask))
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "omni_free_request: slot %td not in use", idx);
+        return;
+    }
 
     /* Clear the bit */
     pool->in_use_bitmap[word] &= ~mask;

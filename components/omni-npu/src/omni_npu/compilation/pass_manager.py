@@ -1,4 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 from torch import fx
 from vllm.config import VllmConfig
 from vllm.logger import init_logger

@@ -33,7 +33,7 @@ def _cleanup_departed_states(cache, cur_metadata_grp_id: int) -> None:
         cache: The DecodeOmniCache instance
         cur_metadata_grp_id: Current metadata group ID
     """
-    req_ids_list = cache.req_ids_update_buffer if hasattr(cache, 'req_ids_update_buffer') else []
+    req_ids_list = cache.req_ids_update_buffer if hasattr(cache, "req_ids_update_buffer") else []
     current_req_ids = set(req_ids_list)
 
     sks_to_remove = []
@@ -80,7 +80,7 @@ def _compute_request_metadata(
     L_currs = (seq_lens_batch - 1) // 128
 
     q_starts = query_start_loc[:actual_num_reqs]
-    q_ends = query_start_loc[1:actual_num_reqs+1]
+    q_ends = query_start_loc[1:actual_num_reqs + 1]
     q_lens = q_ends - q_starts
 
     return actual_num_reqs, req_ids, seq_lens_batch, L_currs, q_starts, q_lens
@@ -127,10 +127,7 @@ def _lookup_or_allocate_state_indices(
     return batch_state_indices, new_state_indices
 
 
-def _check_state_switching(
-    cache, rid: str, cur_metadata_grp_id: int,
-    block_table: np.ndarray, batch_idx: int
-) -> bool:
+def _check_state_switching(cache, rid: str, cur_metadata_grp_id: int, block_table: np.ndarray, batch_idx: int) -> bool:
     """Check if a request is switching window states.
 
     Determines if the physical block start has changed, indicating
@@ -155,14 +152,10 @@ def _check_state_switching(
     active_physical_ids = row_orig[row_orig > 0]
     current_phys_start = active_physical_ids[0] if active_physical_ids.size > 0 else -1
 
-    return (current_phys_start != -1 and
-            recorded_info[0] is not None and
-            current_phys_start != recorded_info[0])
+    return current_phys_start != -1 and recorded_info[0] is not None and current_phys_start != recorded_info[0]
 
 
-def _clone_switching_pool_buffers(
-    cache, cur_metadata_grp_id: int, base_addr: int
-) -> None:
+def _clone_switching_pool_buffers(cache, cur_metadata_grp_id: int, base_addr: int) -> None:
     """Clone pool buffers when switching with init_win=2.
 
     Copies pool[base_addr + 2] to pool[base_addr + 1] for all layers
@@ -181,9 +174,15 @@ def _clone_switching_pool_buffers(
 
 
 def _initialize_window_state(
-    cache, batch_idx: int, rid: str, L_curr: int, sk: tuple,
-    state_idx: int, cur_metadata_grp_id: int, block_table: np.ndarray
-) -> 'RequestWindowState':
+    cache,
+    batch_idx: int,
+    rid: str,
+    L_curr: int,
+    sk: tuple,
+    state_idx: int,
+    cur_metadata_grp_id: int,
+    block_table: np.ndarray,
+) -> "RequestWindowState":
     """Initialize a new window state for a request.
 
     Sets up buffer values, handles switching logic, and creates
@@ -203,14 +202,12 @@ def _initialize_window_state(
         Initialized RequestWindowState object
     """
     idx_in_pool = cache.req_id_to_idx.get(rid, -1)
-    pool_unit = cache.hbm_buffer_block_table_pool[cur_metadata_grp_id]['req_offset']
+    pool_unit = cache.hbm_buffer_block_table_pool[cur_metadata_grp_id]["req_offset"]
     init_win = 2 if L_curr >= 2 else 1
     base_addr = pool_unit * idx_in_pool
 
     # Check if switching now
-    is_switching_now = _check_state_switching(
-        cache, rid, cur_metadata_grp_id, block_table, batch_idx
-    )
+    is_switching_now = _check_state_switching(cache, rid, cur_metadata_grp_id, block_table, batch_idx)
 
     # If switching and init_win == 2, clone pool buffers
     if init_win == 2 and is_switching_now:
@@ -229,6 +226,7 @@ def _initialize_window_state(
 
     # Create state object
     from omni_cache.cache.core.base import RequestWindowState
+
     state = RequestWindowState(
         base=base_addr,
         win_size=init_win,
@@ -240,10 +238,14 @@ def _initialize_window_state(
 
 
 def _prepare_slot_infos(
-    cache, q_starts: np.ndarray, q_lens: np.ndarray,
-    seq_lens_batch: np.ndarray, base_addrs: np.ndarray,
-    batch_state_indices: np.ndarray, actual_num_reqs: int
-) -> List['_SlotInfo']:
+    cache,
+    q_starts: np.ndarray,
+    q_lens: np.ndarray,
+    seq_lens_batch: np.ndarray,
+    base_addrs: np.ndarray,
+    batch_state_indices: np.ndarray,
+    actual_num_reqs: int,
+) -> List["_SlotInfo"]:
     """Prepare slot info objects for slot mapping computation.
 
     Creates _SlotInfo objects for requests with valid query lengths.
@@ -268,6 +270,7 @@ def _prepare_slot_infos(
         return slot_infos
 
     from omni_cache.cache.core.base import RequestWindowState
+
     valid_indices = np.where(valid_mask)[0]
 
     for i in valid_indices:
@@ -314,15 +317,16 @@ def post_process_fake_metadata(
         Tuple of (block_table, slot_mapping) after processing
     """
     # Delay initialization of req_window_states until first use
-    if not hasattr(cache, 'req_window_states'):
-        cache.req_window_states: Dict[Tuple, 'RequestWindowState'] = {}
+    if not hasattr(cache, "req_window_states"):
+        cache.req_window_states: Dict[Tuple, "RequestWindowState"] = {}
 
     # Step 1: Clean up states for requests that left the batch
     _cleanup_departed_states(cache, cur_metadata_grp_id)
 
     # Step 2: Compute request metadata
-    actual_num_reqs, req_ids, seq_lens_batch, L_currs, q_starts, q_lens = \
-        _compute_request_metadata(cache, num_reqs, query_start_loc, seq_lens_cpu)
+    actual_num_reqs, req_ids, seq_lens_batch, L_currs, q_starts, q_lens = _compute_request_metadata(
+        cache, num_reqs, query_start_loc, seq_lens_cpu
+    )
 
     if actual_num_reqs == 0:
         return block_table, slot_mapping
@@ -334,10 +338,7 @@ def post_process_fake_metadata(
 
     # Step 4: Initialize new states
     for batch_idx, rid, L_curr, sk, state_idx in new_state_indices:
-        _initialize_window_state(
-            cache, batch_idx, rid, L_curr, sk, state_idx,
-            cur_metadata_grp_id, block_table
-        )
+        _initialize_window_state(cache, batch_idx, rid, L_curr, sk, state_idx, cur_metadata_grp_id, block_table)
 
     # Step 5: Collect base addresses and prepare for block table fill
     base_addrs = cache._base_addrs_buffer[batch_state_indices]
@@ -345,18 +346,21 @@ def post_process_fake_metadata(
 
     # Step 6: Fill block tables
     _batch_fill_block_table_with_reorder(
-        block_table, base_addrs,
-        cache._logic_to_phys_buffer, cache._logic_valid_buffer,
+        block_table,
+        base_addrs,
+        cache._logic_to_phys_buffer,
+        cache._logic_valid_buffer,
         cache._L_currs_buffer[:actual_num_reqs],
         cache._win_sizes_buffer,
-        cache._num_assigneds_buffer, cache._max_lbs_buffer,
-        batch_state_indices, cache.MAX_LOGIC_BLOCKS
+        cache._num_assigneds_buffer,
+        cache._max_lbs_buffer,
+        batch_state_indices,
+        cache.MAX_LOGIC_BLOCKS,
     )
 
     # Step 7: Prepare and compute slot mapping
     slot_infos = _prepare_slot_infos(
-        cache, q_starts, q_lens, seq_lens_batch,
-        base_addrs, batch_state_indices, actual_num_reqs
+        cache, q_starts, q_lens, seq_lens_batch, base_addrs, batch_state_indices, actual_num_reqs
     )
     _compute_slot_mapping_vectorized(cache, slot_mapping, slot_infos)
 
@@ -365,7 +369,8 @@ def post_process_fake_metadata(
 
 class _SlotInfo:
     """Minimal dataclass for slot mapping information."""
-    __slots__ = ['q_start', 'q_len', 'last_seq_len', 'state']
+
+    __slots__ = ["q_start", "q_len", "last_seq_len", "state"]
 
     def __init__(self, q_start: int, q_len: int, last_seq_len: int, state):
         self.q_start = q_start
@@ -377,7 +382,7 @@ class _SlotInfo:
 def _compute_slot_mapping_vectorized(
     cache,
     slot_mapping: np.ndarray,
-    slot_infos: List['_SlotInfo'],
+    slot_infos: List["_SlotInfo"],
 ) -> None:
     """Vectorized slot mapping computation.
 
@@ -411,5 +416,5 @@ def _compute_slot_mapping_vectorized(
         slot_base_addrs,
         slot_state_indices,
         cache._logic_to_phys_buffer,
-        cache.MAX_LOGIC_BLOCKS
+        cache.MAX_LOGIC_BLOCKS,
     )

@@ -68,14 +68,10 @@ class ProcessManager:
         if not (self.worker.resp_process and self.worker.resp_process.is_alive()):
             self.worker.resp_stop.clear()
             self.worker.resp_process = multiprocessing.get_context("fork").Process(
-                target=self._process_zmq,
-                name="ZMQ-Recv-Thread",
-                daemon=True
+                target=self._process_zmq, name="ZMQ-Recv-Thread", daemon=True
             )
             self.worker.resp_process.start()
-            self.worker.zmq_client.set_client(
-                self.worker._create_zmq_proxy()
-            )
+            self.worker.zmq_client.set_client(self.worker._create_zmq_proxy())
             logger.info("ZMQ receive thread started at %s", self.worker.endpoint)
 
     def _start_address_process(self) -> None:
@@ -83,9 +79,7 @@ class ProcessManager:
         if not (self.worker.address_process and self.worker.address_process.is_alive()):
             self.worker.address_stop.clear()
             self.worker.address_process = multiprocessing.get_context("fork").Process(
-                target=self._process_h2d_address,
-                name="Address-Process",
-                daemon=True
+                target=self._process_h2d_address, name="Address-Process", daemon=True
             )
             self.worker.address_process.start()
             logger.info("Address-Process started at %s", self.worker.endpoint)
@@ -94,11 +88,7 @@ class ProcessManager:
         """Start H2D worker thread."""
         if not (self.worker.h2d_thread and self.worker.h2d_thread.is_alive()):
             self.worker.h2d_stop.clear()
-            self.worker.h2d_thread = threading.Thread(
-                target=self._h2d_worker,
-                name="H2D-Worker",
-                daemon=True
-            )
+            self.worker.h2d_thread = threading.Thread(target=self._h2d_worker, name="H2D-Worker", daemon=True)
             self.worker.h2d_thread.start()
             logger.info("H2D worker thread started")
 
@@ -107,9 +97,7 @@ class ProcessManager:
         if not (self.worker.monitor_thread and self.worker.monitor_thread.is_alive()):
             self.worker.monitor_stop.clear()
             self.worker.monitor_thread = threading.Thread(
-                target=self._monitor_processes,
-                name="Process Monitor",
-                daemon=True
+                target=self._monitor_processes, name="Process Monitor", daemon=True
             )
             self.worker.monitor_thread.start()
             logger.info("Process Monitor thread started")
@@ -119,12 +107,10 @@ class ProcessManager:
         while not self.worker.monitor_stop.is_set():
             is_alive = [
                 self.worker.resp_process.is_alive() if self.worker.resp_process else False,
-                self.worker.address_process.is_alive() if self.worker.address_process else False
+                self.worker.address_process.is_alive() if self.worker.address_process else False,
             ]
             if sum(is_alive) != len(is_alive):
-                logger.warning(
-                    f"[resp_process, address_process] alive status = {is_alive}"
-                )
+                logger.warning(f"[resp_process, address_process] alive status = {is_alive}")
             time.sleep(1)
 
     def _process_zmq(self) -> None:
@@ -144,26 +130,20 @@ class ProcessManager:
                     src_id_list=item.src_ids,
                     dst_id_list=item.dst_ids,
                     rank_id=item.rank_id,
-                    src_dp_rank=getattr(item, 'src_dp_rank', 0),
+                    src_dp_rank=getattr(item, "src_dp_rank", 0),
                 )
                 if not ok:
                     raise ValueError(f"Send failed for req_id={item.request_id}")
-                logger.warning(
-                    "Sent req_id=%s in %.6f s",
-                    item.request_id, time.time() - t0
-                )
+                logger.warning("Sent req_id=%s in %.6f s", item.request_id, time.time() - t0)
 
         async def receiver():
             while not self.worker.resp_stop.is_set():
                 try:
                     resp = await asyncio.to_thread(client.receive_response, None)
-                    logger.warning(f"<<<<<<<<< in receiver: {resp=} >>>>>>>>>")
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    raise RuntimeError(
-                        f" ***** Failed to receive zmq response with error code {e}"
-                    )
+                    raise RuntimeError(f" ***** Failed to receive zmq response with error code {e}") from e
 
                 req_id = resp.get("request_id")
                 success = bool(resp.get("success"))
@@ -203,9 +183,7 @@ class ProcessManager:
         # back to prefill is a pure control message — no cross-TP sync
         # needed.
         if ctx.remote_request_id is not None:
-            self.worker._send_pulled_kv_req_list(
-                ctx.remote_host_ip, [ctx.remote_request_id]
-            )
+            self.worker._send_pulled_kv_req_list(ctx.remote_host_ip, [ctx.remote_request_id])
 
     def _process_h2d_address(self) -> None:
         """Process H2D address mappings in subprocess."""
@@ -226,18 +204,14 @@ class ProcessManager:
                         req_to_lane = self.omni_cache.req_id_to_idx
                         if req_to_lane is None:
                             raise RuntimeError("req_id_to_idx is not initialized")
-                        real_full = (
-                            len(req_to_lane) >= self.omni_cache.num_max_batch_pool
-                        )
+                        real_full = len(req_to_lane) >= self.omni_cache.num_max_batch_pool
                         if real_full:
                             break
                     else:
                         rmap = self.omni_cache.record_batch_idx_to_req
                         if rmap is not None:
                             real_full = all(
-                                v is not None
-                                for k, v in rmap.items()
-                                if int(k) < self.omni_cache.num_max_batch_pool
+                                v is not None for k, v in rmap.items() if int(k) < self.omni_cache.num_max_batch_pool
                             )
                             if real_full:
                                 break
@@ -255,8 +229,8 @@ class ProcessManager:
 
                 self.worker._log_network_timing(ctx)
 
-                device_mem, device_max, host_mem, host_sizes = (
-                    self.omni_cache.build_h2d_ops(ctx.local_block_ids, ctx.request_id)
+                device_mem, device_max, host_mem, host_sizes = self.omni_cache.build_h2d_ops(
+                    ctx.local_block_ids, ctx.request_id
                 )
                 batch_device_mem.extend(device_mem)
                 batch_device_max.extend(device_max)
@@ -266,33 +240,23 @@ class ProcessManager:
 
             if len(ctxs) > 0:
                 logger.debug(
-                    f" ***** process batch copy address: len(req_id): {len(ctxs)}, "
-                    f"cost: {time.time() - start_time} s"
+                    f" ***** process batch copy address: len(req_id): {len(ctxs)}, cost: {time.time() - start_time} s"
                 )
-                self.worker.h2d_q.put(
-                    (batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes, ctxs)
-                )
+                self.worker.h2d_q.put((batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes, ctxs))
 
     def _h2d_worker(self) -> None:
         """H2D worker thread main loop."""
         self.omni_cache.host_cache.ascend_cl_stream.create()
 
         while not self.worker.h2d_stop.is_set():
-            batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes, ctxs = (
-                self.worker.h2d_q.get()
-            )
+            batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes, ctxs = self.worker.h2d_q.get()
             t_h2d_start = time.time()
 
             try:
-                self._post_success(
-                    batch_device_mem, batch_device_max,
-                    batch_host_mem, batch_host_sizes, ctxs
-                )
+                self._post_success(batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes, ctxs)
             except Exception as e:
                 logger.exception(
-                    "H2D worker error on req_id=%s: %s",
-                    ",".join([str(ctx.request_id) for ctx in ctxs]),
-                    e
+                    "H2D worker error on req_id=%s: %s", ",".join([str(ctx.request_id) for ctx in ctxs]), e
                 )
             finally:
                 for ctx in ctxs:
@@ -301,7 +265,8 @@ class ProcessManager:
             t_h2d_end = time.time()
             logger.debug(
                 " **** Time cost of decode synchronize_h2d is %.3f ms len(req_id):%s",
-                (t_h2d_end - t_h2d_start) * 1000.0, len(ctxs)
+                (t_h2d_end - t_h2d_start) * 1000.0,
+                len(ctxs),
             )
             total_cost = [round(t_h2d_end - ctx.t_submit, 6) for ctx in ctxs]
             logger.debug(f" **** Read block Total: len(req_id): {len(ctxs)}, cost: {total_cost} s")
@@ -319,12 +284,11 @@ class ProcessManager:
         if self.omni_cache is None or self.omni_cache.device_cache is None:
             raise RuntimeError("Error! omni_cache is None or device_cache is None.")
 
-        self.omni_cache.synchronize_h2d(
-            batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes
-        )
+        self.omni_cache.synchronize_h2d(batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes)
 
         # KV diagnostics: probe decode host pool (Stage 3) — host bytes before H2D
         from tools.diagnostics.probes import probe_decode_host
+
         probe_decode_host(self.omni_cache, ctxs)
 
         # DSA-split: post-pull copy into secondary host pool
@@ -336,33 +300,33 @@ class ProcessManager:
         # actually pulled (by the same convention as the primary
         # H2D above). Best-effort — any failure here is logged and
         # swallowed so a malformed layout cannot stall the pull.
-        _dsa_pool = getattr(self.omni_cache, 'dsa_host_pool', None)
+        _dsa_pool = getattr(self.omni_cache, "dsa_host_pool", None)
         if _dsa_pool is not None:
             try:
                 # kvi_tensors_swap[0] is the 4-D (L,B,T,H) reshape; fallback to shared_tensor only if missing.
                 _pkvi = getattr(self.omni_cache.host_cache, "kvi_tensors", None)
-                primary_shared = _pkvi[0] if (_pkvi and len(_pkvi) > 0) else getattr(self.omni_cache.host_cache, 'shared_tensor', None)
+                primary_shared = (
+                    _pkvi[0]
+                    if (_pkvi and len(_pkvi) > 0)
+                    else getattr(self.omni_cache.host_cache, "shared_tensor", None)
+                )
                 _pkvi_swap = getattr(self.omni_cache.host_cache, "kvi_tensors_swap", None)
                 primary_swap = _pkvi_swap[0] if (_pkvi_swap and len(_pkvi_swap) > 0) else None
                 # If still not 4-D, the copy helper will error and be caught.
                 # Resolve the index of the DSA group so we can pick only DSA blocks.
                 dsa_group_idx = None
-                kv_cfg = getattr(self.omni_cache, 'kv_cache_config', None)
+                kv_cfg = getattr(self.omni_cache, "kv_cache_config", None)
                 if kv_cfg is not None:
                     for _gi, _g in enumerate(kv_cfg.kv_cache_groups):
-                        if type(_g.kv_cache_spec).__name__ == 'DSAAttentionSpec':
+                        if type(_g.kv_cache_spec).__name__ == "DSAAttentionSpec":
                             dsa_group_idx = _gi
                             break
                 # DSA secondary pool is aligned 1:1 with the primary's DSA-only
                 # per-layer pool, so dsa_layer_indices is just range(num_dsa_layers).
                 dsa_layers = list(range(_dsa_pool.num_layers))
-                # Collect only the DSA group's block ids from each ctx.
-                # local_block_ids structure observed:
-                #   local_block_ids = [flat_list, (per_group_tuple,)]
-                # DSA blocks live at local_block_ids[1][dsa_group_idx].
                 all_block_ids = []
                 for ctx in ctxs:
-                    blks = getattr(ctx, 'local_block_ids', None)
+                    blks = getattr(ctx, "local_block_ids", None)
                     if not blks or dsa_group_idx is None:
                         continue
                     per_group = None
@@ -385,7 +349,7 @@ class ProcessManager:
                         primary_device_tensor=primary_swap,
                     )
             except Exception as _exc:
-                logger.warning('[DSA-SPLIT] post-pull copy failed: %s', _exc)
+                logger.warning("[DSA-SPLIT] post-pull copy failed: %s", _exc)
                 if os.getenv("ENABLE_OMNI_CACHE_DSA_SPLIT", "0") == "1":
                     raise RuntimeError(f"[DSA-SPLIT] post-pull copy failed: {_exc}") from _exc
 
@@ -408,12 +372,14 @@ class ProcessManager:
         # (typically just the newest token `k=num_total_tokens-1`,
         # masking the H2D fill with only the fresh-slot data).
         import torch as _torch
+
         try:
             _torch.npu.synchronize()
         except Exception:
             pass
 
         from tools.diagnostics.probes import probe_decode_hbm
+
         probe_decode_hbm(self.omni_cache, ctxs)
 
         for ctx in ctxs:

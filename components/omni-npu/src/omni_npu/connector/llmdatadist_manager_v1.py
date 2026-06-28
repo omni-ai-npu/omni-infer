@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import os
 import socket
@@ -114,7 +114,6 @@ class LLMDataDistConfig:
             for ip in host_ip_list
         ]
 
-        # (timestamp_ms, ip1_int, ip2_int, ip3_int, ...)
         self.host_cluster_id = (timestamp_ms, *ip_integers)
 
     def _ips_from_config(self) -> list:
@@ -200,11 +199,13 @@ class LLMDataDistConfig:
     def is_prefill(self):
         return self.role == LLMRole.PROMPT
 
+
 @dataclass
 class PPKVCaches:
     cache: Cache
     pp_rank: int
     model_id: int
+
 
 class LLMDataDistManager:
     def __init__(self, vllm_config: VllmConfig, local_host_ip, host_port):
@@ -495,7 +496,6 @@ class LLMDataDistManager:
         for host_cluster_id in host_cluster_ids:
             ip_port, prefill_tp_size, prefill_pp_size, _ = self.cluster_id_to_ip_port(host_cluster_id)
             ip_ports.append(ip_port)
-        # decode_tp_size = self.data_dist_config.kv_parallel_size
         decode_tp_size = self.tp_size # set decode_tp_size using parallel_config instead of kv_config
         decode_id = 0
         decode_num = int(os.getenv('DECODE_POD_NUM', "1"))
@@ -671,6 +671,7 @@ def unzip_kv_cache_list(kv_caches: list[torch.Tensor], ):
             flatten_kv_caches[0].append(kv_cache)
     return flatten_kv_caches
 
+
 # reuse the existing code
 def maybe_merge_kv_caches(flatten_kv_caches):
     # only 1 kvcache tensor with shape (2, b, s, n, d)
@@ -681,6 +682,7 @@ def maybe_merge_kv_caches(flatten_kv_caches):
             merged_kv_caches[1].append(sub_kv_caches[1])
         return merged_kv_caches
     return flatten_kv_caches
+
 
 # reuse the existing code
 def maybe_split_kv_caches_for_spec_layers(flatten_kv_caches):
@@ -701,6 +703,7 @@ def maybe_split_kv_caches_for_spec_layers(flatten_kv_caches):
         return flatten_kv_caches
     else:
         return flatten_kv_caches_split
+
 
 def ip_port_to_int(ip_port, tp_size, pp_size, tp_rank=0):
     """ convert ip_port to int64 cluster id
@@ -724,6 +727,7 @@ def ip_port_to_int(ip_port, tp_size, pp_size, tp_rank=0):
     # result = (ip_int << 48) | (port << 32) | (tp_size << 16) | (tp_rank)
     result = (ip_int << 32) | (port << 16) | ((tp_size - 1) << 8) | (pp_size - 1)
     return result
+
 
 def get_pp_partition(num_hidden_layers, pp_size, partition):
     if pp_size == 1:

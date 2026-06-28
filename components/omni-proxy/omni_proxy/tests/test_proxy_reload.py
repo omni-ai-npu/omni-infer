@@ -26,13 +26,13 @@ import port_manager
 
 PREFILL_NUM = 3
 DECODE_NUM = 3
-VLLM_POOL = os.getenv("PROXY_VLLM_POOL")
+VLLM_POOL = os.getenv("PROXY_VLLM_POOL") == "1"
 
 @pytest.fixture(scope="module")
 def reload_env(vllm_keep_alive):
     os.environ["no_proxy"] = "localhost,127.0.0.1"
 
-    if os.getenv("PROXY_VLLM_POOL") == "1":
+    if VLLM_POOL:
         ports = port_manager.get_ports_from_file()
         proxy_port = ports["proxy_port"]
         prefill_ports = ports["prefill"][:PREFILL_NUM]
@@ -507,7 +507,7 @@ def test_proxy_reload(reload_env):
 
         # Case 3: +P3 / +D3
         if SELECT_CASE in (None, "3"):
-            if VLLM_POOL == 1:
+            if VLLM_POOL:
                 ports = port_manager.get_ports_from_file()
                 p3_port = ports["prefill"][PREFILL_NUM]
                 d3_port = ports["decode"][DECODE_NUM]
@@ -788,7 +788,7 @@ def test_proxy_reload_under_concurrent_traffic(reload_env):
                 if VLLM_POOL:
                     ports = port_manager.get_ports_from_file()
                     p3 = ports["prefill"][PREFILL_NUM]
-                    d3 = ports["prefill"][DECODE_NUM]
+                    d3 = ports["decode"][DECODE_NUM]
                 else:
                     p3 = port_manager.find_free_port_excluding_existing()
                     d3 = port_manager.find_free_port_excluding_existing(p3)

@@ -1,4 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 """
 Minimal, self-contained NPU MLA attention with indexer backend for omni_npu.
 

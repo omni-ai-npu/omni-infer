@@ -1,6 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright contributors to the vLLM project.
 
 import copy
 from functools import partial
@@ -40,6 +40,7 @@ def _pad_list(lst, n, fill=None):
         fill = lst[-1]
     return lst + [fill] * (n - len(lst))
 
+
 def _extract_fia_params(metadata, vllm_config, batch_descriptor):
     """Extract and pad sequence lengths from attention metadata."""
 
@@ -66,6 +67,7 @@ def _extract_fia_params(metadata, vllm_config, batch_descriptor):
     seq_qlen = _pad_list(seq_qlen, padding_lens)
     seq_kvlen = _pad_list(seq_kvlen, padding_lens, 0)
     return seq_qlen, seq_kvlen
+
 
 def _compute_fia_dynamic_kwargs(
     forward_context, layer_name, vllm_config, *, seq_len_q_key, seq_len_kv_key,
@@ -167,6 +169,7 @@ except Exception as e:
     OP_FIA_PIONEER = DUMMY_OP_DESCRIPTOR
     logger.warning(f"Failed to create OP_FIA_PIONEER descriptor: {e}")
 
+
 def _get_or_create_workspace(
     op_desc: OpDescriptor,
     op_kwargs: dict,
@@ -185,6 +188,7 @@ def _get_or_create_workspace(
         graph_params.workspaces[num_tokens][workspace_fn] = weak_ref_tensors(workspace)
     return workspace
 
+
 def _capture_kwargs(
     op_desc: OpDescriptor,
     op_kwargs: dict,
@@ -195,6 +199,7 @@ def _capture_kwargs(
         if key in captured_kwargs and captured_kwargs[key] is not None:
             captured_kwargs[key] = weak_ref_tensors(captured_kwargs[key])
     return captured_kwargs
+
 
 def capture_graph_task(
     op_desc: OpDescriptor,

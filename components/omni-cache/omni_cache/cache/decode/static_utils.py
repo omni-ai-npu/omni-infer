@@ -38,17 +38,10 @@ def record_current_batch_order(input_batch, omni_cache: "DecodeOmniCache") -> No
         return
     if getattr(omni_cache, "record_batch_idx_to_req", None) is None:
         return
-    import sys as _s, os as _o
-    if _o.environ.get("MLA_SLOT_DEBUG","0") == "1":
-        print("[RBO] record_current_batch_order called: req_ids=%s" % list(input_batch.req_id_to_index)[:3], file=_s.stderr, flush=True)
 
     # Step 1: Update request ID buffers from input batch
     req_ids_update_mapping = input_batch.req_id_to_index
-    req_ids_update = [
-        req_id for req_id, _ in sorted(
-            req_ids_update_mapping.items(), key=lambda item: item[1]
-        )
-    ]
+    req_ids_update = [req_id for req_id, _ in sorted(req_ids_update_mapping.items(), key=lambda item: item[1])]
 
     if getattr(omni_cache, "req_ids_update_buffer", None) is None:
         omni_cache.req_ids_update_buffer = None
@@ -72,9 +65,7 @@ def record_current_batch_order(input_batch, omni_cache: "DecodeOmniCache") -> No
         if not use_input_batch_lane_mapping:
             # Step 3: Rebuild req_id_to_idx from record_batch_idx_to_req.
             omni_cache.req_id_to_idx = {
-                req_id: idx
-                for idx, req_id in omni_cache.record_batch_idx_to_req.items()
-                if req_id is not None
+                req_id: idx for idx, req_id in omni_cache.record_batch_idx_to_req.items() if req_id is not None
             }
 
     # Step 4: Synchronize id_to_idx_table to device
@@ -105,7 +96,7 @@ def get_block_table_np(
     kv_cache_gid: int,
     blk_table_tensor: Any,
     num_reqs_padded: int,
-    num_tokens_padded: int
+    num_tokens_padded: int,
 ) -> tuple:
     """Get numpy arrays for block table and slot mapping.
 
@@ -121,27 +112,24 @@ def get_block_table_np(
     Returns:
         Tuple of (blk_table_np, slot_mapping_np) numpy arrays.
     """
-    if not hasattr(omni_cache, 'blk_table_buffers'):
+    if not hasattr(omni_cache, "blk_table_buffers"):
         omni_cache.blk_table_buffers = {}
     if kv_cache_gid not in omni_cache.blk_table_buffers:
         omni_cache.blk_table_buffers[kv_cache_gid] = torch.empty(
-            (runner.vllm_config.scheduler_config.max_num_seqs,
-             blk_table_tensor.shape[1]),
+            (runner.vllm_config.scheduler_config.max_num_seqs, blk_table_tensor.shape[1]),
             dtype=torch.int32,
-            pin_memory=True
+            pin_memory=True,
         )
 
     buf = torch_to_numpy_zero_copy(omni_cache.blk_table_buffers[kv_cache_gid])
     buf[:num_reqs_padded] = blk_table.get_numpy_array()[:num_reqs_padded]
     blk_table_np = buf[:num_reqs_padded]
 
-    if not hasattr(omni_cache, 'slot_mapping_buffers'):
+    if not hasattr(omni_cache, "slot_mapping_buffers"):
         omni_cache.slot_mapping_buffers = {}
     if kv_cache_gid not in omni_cache.slot_mapping_buffers:
         max_len = runner.vllm_config.scheduler_config.max_num_seqs * (omni_cache.num_spec_token + 1)
-        omni_cache.slot_mapping_buffers[kv_cache_gid] = torch.empty(
-            max_len, dtype=torch.int64, pin_memory=True
-        )
+        omni_cache.slot_mapping_buffers[kv_cache_gid] = torch.empty(max_len, dtype=torch.int64, pin_memory=True)
 
     buf = torch_to_numpy_zero_copy(omni_cache.slot_mapping_buffers[kv_cache_gid])
     if num_tokens_padded > buf.shape[0]:
@@ -170,6 +158,7 @@ def update_status_buffered(
         fill_value: Value to use for filling.
     """
     from omni_cache.gather_selection.status_updater.updater import GatherSelectionUpdater
+
     GatherSelectionUpdater._update_status_buffered(
         omni_cache,
         reshaped_status,
@@ -180,10 +169,7 @@ def update_status_buffered(
 
 
 def reorder_block_table_only(
-    omni_cache: "DecodeOmniCache",
-    reshaped_table: Any,
-    old_req_ids: List[str],
-    new_req_ids: List[str]
+    omni_cache: "DecodeOmniCache", reshaped_table: Any, old_req_ids: List[str], new_req_ids: List[str]
 ) -> None:
     """Reorder block table with new request IDs.
 
@@ -194,6 +180,7 @@ def reorder_block_table_only(
         new_req_ids: New request IDs.
     """
     from omni_cache.gather_selection.status_updater.updater import GatherSelectionUpdater
+
     GatherSelectionUpdater._reorder_block_table_only(
         omni_cache,
         reshaped_table,
@@ -203,9 +190,7 @@ def reorder_block_table_only(
 
 
 def maybe_update_selection_kv_block_status(
-    input_batch,
-    omni_cache: "DecodeOmniCache",
-    num_scheduled_tokens: int
+    input_batch, omni_cache: "DecodeOmniCache", num_scheduled_tokens: int
 ) -> None:
     """Maybe update selection KV block status.
 
@@ -215,6 +200,7 @@ def maybe_update_selection_kv_block_status(
         num_scheduled_tokens: Number of scheduled tokens.
     """
     from omni_cache.gather_selection.status_updater.updater import GatherSelectionUpdater
+
     GatherSelectionUpdater.maybe_update_selection_kv_block_status(
         input_batch,
         omni_cache,

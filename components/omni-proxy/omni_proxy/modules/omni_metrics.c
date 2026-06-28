@@ -88,11 +88,11 @@ static inline const char *omni_metrics_get_model_name(omni_global_state_t *gs) {
         OMNI_METRIC_GAUGE,                                                                                    \
         {{0}},                                                                                                \
         2,                                                                                                    \
-        {.int_values = &endpoint->value},                                                                     \
+        {.int_values = &((endpoint)->value)},                                                                  \
         OMNI_VALUE_INT32,                                                                                     \
         1};                                                                                                   \
     snprintf(&metrics_registry[index].label_names[0][0],                                                      \
-             OMNI_METRICS_MAX_LABEL_LEN, "endpoint=\"%s:%d\"", endpoint->comm.address.ip, endpoint->comm.address.port); \
+             OMNI_METRICS_MAX_LABEL_LEN, "endpoint=\"%s:%d\"", (endpoint)->comm.address.ip, (endpoint)->comm.address.port); \
     snprintf(&metrics_registry[index].label_names[1][0],                                                      \
              OMNI_METRICS_MAX_LABEL_LEN, "role=\"prefill\"");                                                 \
     index++;
@@ -104,7 +104,7 @@ static inline const char *omni_metrics_get_model_name(omni_global_state_t *gs) {
         OMNI_METRIC_GAUGE,                                        \
         {{0}},                                                    \
         1,                                                        \
-        {.int_values = &global_state->groups[phase].value},       \
+        {.int_values = &global_state->groups[(phase)].value},      \
         OMNI_VALUE_INT32,                                         \
         1};                                                       \
     snprintf(&metrics_registry[index].label_names[0][0],          \
@@ -118,11 +118,11 @@ static inline const char *omni_metrics_get_model_name(omni_global_state_t *gs) {
         OMNI_METRIC_GAUGE,                                                                                    \
         {{0}},                                                                                                \
         2,                                                                                                    \
-        {.int64_values = (int64_t *)&endpoint->value},                                                        \
+        {.int64_values = (int64_t *)&((endpoint)->value)},                                                     \
         OMNI_VALUE_INT64,                                                                                     \
         1};                                                                                                   \
     snprintf(&metrics_registry[index].label_names[0][0],                                                      \
-             OMNI_METRICS_MAX_LABEL_LEN, "endpoint=\"%s:%d\"", endpoint->comm.address.ip, endpoint->comm.address.port); \
+             OMNI_METRICS_MAX_LABEL_LEN, "endpoint=\"%s:%d\"", (endpoint)->comm.address.ip, (endpoint)->comm.address.port); \
     snprintf(&metrics_registry[index].label_names[1][0],                                                      \
              OMNI_METRICS_MAX_LABEL_LEN, "role=\"prefill\"");                                                 \
     index++;
@@ -279,6 +279,10 @@ static u_char *format_metric_value(u_char *p, u_char *end,
     {
         value = (double)(*desc->value.int_values);
     }
+    else if (desc->value_type == OMNI_VALUE_INT64)
+    {
+        value = (double)(*desc->value.int64_values);
+    }
     else
     {
         value = *desc->value.double_values;
@@ -342,6 +346,7 @@ ngx_str_t omni_metrics_export(omni_global_state_t *global_state)
     static u_char buffer[65536];
     u_char *p = buffer;
     u_char *end = buffer + sizeof(buffer);
+    u_char *help_output = NULL;
 
     if (!global_state)
     {
@@ -359,7 +364,13 @@ ngx_str_t omni_metrics_export(omni_global_state_t *global_state)
     }
 
     // Track which metrics we've already output HELP/TYPE for
-    int help_output[256] = {0}; // Simple deduplication array
+    help_output = ngx_alloc(count * sizeof(u_char), ngx_cycle->log);
+    if (help_output == NULL)
+    {
+        p = ngx_snprintf(p, end - p, "# ERROR: Failed to allocate metrics dedup buffer\n");
+        goto done;
+    }
+    ngx_memzero(help_output, count * sizeof(u_char));
 
     // Export all metrics
     for (size_t i = 0; i < count; i++)
@@ -445,6 +456,10 @@ ngx_str_t omni_metrics_export(omni_global_state_t *global_state)
 done:
     {
         ngx_str_t result;
+        if (help_output != NULL)
+        {
+            ngx_free(help_output);
+        }
         result.data = buffer;
         result.len = p - buffer;
 
@@ -495,11 +510,12 @@ ngx_str_t omni_health_status_export_json(omni_global_state_t *gs, ngx_pool_t *po
     u_char *end = buf + required_size;
     ngx_uint_t is_first_node = 1;
 
+    struct tm now_tm;
     time_t now_utc = ngx_time();
     time_t now_beijing_t = now_utc + 8 * 3600;
-    struct tm *now_tm = gmtime(&now_beijing_t);
+    gmtime_r(&now_beijing_t, &now_tm);
     u_char time_buf[64];
-    strftime((char *)time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", now_tm);
+    strftime((char *)time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &now_tm);
 
     ngx_uint_t healthy_prefill_count = 0;
     for (i = 0, cnt = 0; i < MAX_PREFILL_UPSTREAMS && cnt < gs->num_prefill_endpoints; i++) {
@@ -670,12 +686,6 @@ ngx_str_t omni_health_status_export_json(omni_global_state_t *gs, ngx_pool_t *po
     ngx_str_t result;
     result.data = buf;
     result.len = p - buf;
-
-    FILE *f = fopen("/tmp/omni_proxy_health.json", "w");
-    if (f) {
-        fwrite(result.data, 1, result.len, f);
-        fclose(f);
-    }
 
     return result;
 }

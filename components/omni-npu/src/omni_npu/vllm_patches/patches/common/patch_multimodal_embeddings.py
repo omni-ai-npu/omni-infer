@@ -1,4 +1,7 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
+
 import vllm.model_executor.models.utils as utils
 from vllm.multimodal import NestedTensors
 from vllm.model_executor.models.utils import (
@@ -8,6 +11,7 @@ from vllm.model_executor.models.utils import (
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 import torch
 
+
 @register_patch("NPU_merge_multimodal_embeddings", utils)  
 class NPU_MergeMultimodalEmbeddingsPatch(VLLMPatch):
     """
@@ -16,6 +20,7 @@ class NPU_MergeMultimodalEmbeddingsPatch(VLLMPatch):
     """
 
     _attr_names_to_apply = ['_merge_multimodal_embeddings'] 
+    
     @staticmethod
     def _merge_multimodal_embeddings( 
         inputs_embeds: torch.Tensor,

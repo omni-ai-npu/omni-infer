@@ -71,7 +71,6 @@ class KVCacheMemoryPool:
         self.rank = rank
         self.enable_dsa = enable_dsa
         self.vllm_config = vllm_config
-        # self.is_pangu_v2 = _is_pangu_v2_model(vllm_config)
         self.is_hybrid_attn = is_hybrid_attn
 
         self._init_config(shape, is_hybrid_attn)

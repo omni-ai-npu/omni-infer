@@ -65,25 +65,25 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
         max_num_batched_tokens: int,
         max_num_seqs: int,
         max_model_len: int,
-        vllm_config: VllmConfig = None
+        vllm_config: VllmConfig = None,
     ):
         super().__init__(kv_cache_config, runner, vllm_config)
         self.max_num_seqs = max_num_seqs  # Save max_num_seqs
 
         # Initialize TransferManager for H2D/D2H operations
         self.transfer_manager = TransferManager(self, max_num_batched_tokens, max_num_seqs)
-        self.transfer_manager.initialize_prefill(
-            kv_cache_config, max_num_batched_tokens, max_num_seqs, max_model_len
-        )
+        self.transfer_manager.initialize_prefill(kv_cache_config, max_num_batched_tokens, max_num_seqs, max_model_len)
 
         self._init_dp_sharding()
         self._init_prefix_buffer(max_num_seqs, max_model_len)
 
         from omni_cache.cache.core.constants import NZ_DIM
+
         self._nz_size = NZ_DIM
 
         self.stage_record = 0
         self._host_pool_write_lock = threading.Lock()
+
     def _init_dp_sharding(self) -> None:
         """Initialize DP sharding configuration."""
         if self.dp_world_size_local > 1:
@@ -100,42 +100,34 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
             target_shape = (self.dp_world_size_local, blocks_per_rank, *inner_dims)
 
             if self.dp_world_size_local > 1:
-                layers = [
-                    raw_cache[i, :total_blocks].view(target_shape)
-                    for i in range(num_layers)
-                ]
+                layers = [raw_cache[i, :total_blocks].view(target_shape) for i in range(num_layers)]
             else:
-                layers = [
-                    raw_cache[i, :total_blocks].unsqueeze(0)
-                    for i in range(num_layers)
-                ]
+                layers = [raw_cache[i, :total_blocks].unsqueeze(0) for i in range(num_layers)]
             distributed_kv_caches.append(tuple(layers))
 
         self.host_cache.kvi_tensors = distributed_kv_caches
+
     def _shard_kv_cache_by_dp_rank(self) -> None:
         """Legacy method name for backward compatibility. Calls _init_dp_sharding."""
         self._init_dp_sharding()
+
     # ── APC / prefix helpers ──────────────────────────────────────────────
 
     def get_prefill_prefix_copy_meta(
         self,
         vllm_config,
-        kv_lens: 'np.ndarray',
+        kv_lens: "np.ndarray",
         query_lens_list: List[int],
-        block_tables: 'np.ndarray',
+        block_tables: "np.ndarray",
     ) -> Optional["PrefixCopyMeta"]:
         result = compute_prefix_segments(
-            kv_lens, query_lens_list, block_tables,
-            self.block_size, self.arange_cpu, self.device
+            kv_lens, query_lens_list, block_tables, self.block_size, self.arange_cpu, self.device
         )
-        if result is None or result[0]==[[]]:
+        if result is None or result[0] == [[]]:
             return None
         all_segs, q_lens, q_slots = result
-        return PrefixCopyMeta(
-            consecutive_blocks=all_segs,
-            query_lens=q_lens,
-            query_slots=q_slots
-        )
+        return PrefixCopyMeta(consecutive_blocks=all_segs, query_lens=q_lens, query_slots=q_slots)
+
     def compute_prefix_meta_from_metadata(
         self,
         vllm_config: "VllmConfig",
@@ -155,18 +147,20 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
         Returns:
             PrefixCopyMeta or None if APC is not enabled
         """
-        if (not vllm_config.cache_config.enable_prefix_caching and
-            not vllm_config.scheduler_config.enable_chunked_prefill):
+        if (
+            not vllm_config.cache_config.enable_prefix_caching
+            and not vllm_config.scheduler_config.enable_chunked_prefill
+        ):
             logger.debug("compute_prefix_meta: prefix_caching disabled")
             return None
 
-        num_reqs = getattr(metadata, 'num_reqs', 0)
+        num_reqs = getattr(metadata, "num_reqs", 0)
         if num_reqs <= 0:
             logger.debug("compute_prefix_meta: num_reqs=%d", num_reqs)
             return None
 
         # Extract query lens and computed tokens from common metadata
-        query_start_loc = getattr(common_attn_metadata, 'query_start_loc_cpu', None)
+        query_start_loc = getattr(common_attn_metadata, "query_start_loc_cpu", None)
         if query_start_loc is None:
             logger.debug("compute_prefix_meta: query_start_loc_cpu is None")
             return None
@@ -174,9 +168,9 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
         query_seq_lens_cpu = query_start_loc[1:] - query_start_loc[:-1]
 
         # Get query_lens from prefill metadata
-        prefill_meta = getattr(metadata, 'prefill', None)
+        prefill_meta = getattr(metadata, "prefill", None)
         if prefill_meta is not None:
-            prefill_query_start_loc = getattr(prefill_meta, 'query_start_loc', None)
+            prefill_query_start_loc = getattr(prefill_meta, "query_start_loc", None)
             if prefill_query_start_loc is not None:
                 query_lens = prefill_query_start_loc[1:] - prefill_query_start_loc[:-1]
                 query_lens_list = query_lens.tolist()
@@ -190,7 +184,7 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
         num_computed_tokens_cpu = common_attn_metadata.seq_lens_cpu - query_seq_lens_cpu
 
         # Get block tables
-        block_table_tensor = getattr(common_attn_metadata, 'block_table_tensor', None)
+        block_table_tensor = getattr(common_attn_metadata, "block_table_tensor", None)
         if block_table_tensor is None:
             logger.debug("compute_prefix_meta: block_table_tensor is None")
             return None
@@ -217,9 +211,8 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
             query_lens_list=query_lens_list,
             block_tables=block_tables,
         )
-    def _init_prefix_buffer(
-        self, max_num_seqs: int, max_model_len: int
-    ) -> None:
+
+    def _init_prefix_buffer(self, max_num_seqs: int, max_model_len: int) -> None:
         """Initialize prefix buffer for chunked prefill and MoME APC buffers."""
         self.prefix_buffer_npu = torch.empty(
             max_num_seqs * max_model_len,
@@ -229,72 +222,40 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
             device=self.device,
         )
         self.h2d_stream = torch.npu.Stream(device=self.device)
-        self.h2d_event = torch.npu.Event(
-            blocking=False, enable_timing=False
-        )
+        self.h2d_event = torch.npu.Event(blocking=False, enable_timing=False)
+
     # ── Token indices ─────────────────────────────────────────────────────
 
     def init_batch_token_indices_hybrid(self, orig_slot_mapping: torch.Tensor):
         group_idx = self.count_called
         if group_idx >= self.num_attn_group:
-            current_block_size = (
-                self.kv_cache_config.kv_cache_groups[1].kv_cache_spec.block_size
-            )
+            current_block_size = self.kv_cache_config.kv_cache_groups[1].kv_cache_spec.block_size
         else:
-            current_block_size = (
-                self.kv_cache_config.kv_cache_groups[group_idx]
-                .kv_cache_spec.block_size
-            )
-        current_node_block_size = divide_or_raise(
-            current_block_size, self.tp_nnodes
-        )
-        current_rank_block_size = divide_or_raise(
-            current_block_size, self.tp_world_size
-        )
-        blocks, slots = (
-            orig_slot_mapping // current_block_size,
-            orig_slot_mapping % current_block_size
-        )
-        ranks, rank_slots = (
-            slots // current_rank_block_size,
-            slots % current_node_block_size
-        )
+            current_block_size = self.kv_cache_config.kv_cache_groups[group_idx].kv_cache_spec.block_size
+        current_node_block_size = divide_or_raise(current_block_size, self.tp_nnodes)
+        current_rank_block_size = divide_or_raise(current_block_size, self.tp_world_size)
+        blocks, slots = (orig_slot_mapping // current_block_size, orig_slot_mapping % current_block_size)
+        ranks, rank_slots = (slots // current_rank_block_size, slots % current_node_block_size)
         self.batch_token_indices[group_idx] = torch.nonzero(
-            (ranks == self.tp_rank) & (orig_slot_mapping > 0),
-            as_tuple=True
+            (ranks == self.tp_rank) & (orig_slot_mapping > 0), as_tuple=True
         )[0]
 
-        token_idx = torch.nonzero(
-            (ranks == self.tp_rank) & (orig_slot_mapping > 0),
-            as_tuple=True
-        )[0]
+        token_idx = torch.nonzero((ranks == self.tp_rank) & (orig_slot_mapping > 0), as_tuple=True)[0]
         slot_mapping = blocks[token_idx] * current_node_block_size + rank_slots[token_idx]
         num_tokens = token_idx.shape[0]
-        self.batch_slots_cpu[group_idx][:num_tokens].copy_(
-            slot_mapping, non_blocking=True
-        )
+        self.batch_slots_cpu[group_idx][:num_tokens].copy_(slot_mapping, non_blocking=True)
         self.count_called = (self.count_called + 1) % self.num_called_builder
-    def init_batch_token_indices(self, orig_slot_mapping: torch.Tensor):
-        blocks, slots = (
-            orig_slot_mapping // self.block_size,
-            orig_slot_mapping % self.block_size
-        )
-        ranks, rank_slots = (
-            slots // self.rank_block_size,
-            slots % self.node_block_size
-        )
-        self.batch_token_indices = torch.nonzero(
-            (ranks == self.tp_rank) & (orig_slot_mapping > 0),
-            as_tuple=True
-        )[0]
 
-        token_idx = torch.nonzero(
-            (ranks == self.tp_rank) & (orig_slot_mapping > 0),
-            as_tuple=True
-        )[0]
+    def init_batch_token_indices(self, orig_slot_mapping: torch.Tensor):
+        blocks, slots = (orig_slot_mapping // self.block_size, orig_slot_mapping % self.block_size)
+        ranks, rank_slots = (slots // self.rank_block_size, slots % self.node_block_size)
+        self.batch_token_indices = torch.nonzero((ranks == self.tp_rank) & (orig_slot_mapping > 0), as_tuple=True)[0]
+
+        token_idx = torch.nonzero((ranks == self.tp_rank) & (orig_slot_mapping > 0), as_tuple=True)[0]
         slot_mapping = blocks[token_idx] * self.node_block_size + rank_slots[token_idx]
         num_tokens = token_idx.shape[0]
         self.batch_slots_cpu[:num_tokens].copy_(slot_mapping, non_blocking=True)
+
     # ── Volatile metadata ─────────────────────────────────────────────────
 
     def get_volatile_metadata(
@@ -314,16 +275,13 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
             pad_slot_id,
             orig_slot_mapping,
         )
+
     # ── D2H / H2D synchronization ─────────────────────────────────────────
 
     def get_current_rank_host_data(self, layer_idx, prefix_meta):
         return _get_current_rank_host_data(self, layer_idx, prefix_meta)
 
-    def synchronize_h2d(
-        self,
-        prefix_meta: "PrefixCopyMeta",
-        attn_names: list[str]
-    ) -> None:
+    def synchronize_h2d(self, prefix_meta: "PrefixCopyMeta", attn_names: list[str]) -> None:
         """Synchronize H2D transfer for prefill."""
         return self.transfer_manager.sync_h2d_prefill(prefix_meta, attn_names)
 
@@ -339,10 +297,7 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
         return self.transfer_manager.sync_d2h_prefill(attn_names, attn_metadatas, kv_event)
 
     def synchronize_d2h_hybrid(
-        self,
-        layer_name_list: List[str],
-        attn_metadata_list: List[str],
-        kv_event: torch.npu.Event
+        self, layer_name_list: List[str], attn_metadata_list: List[str], kv_event: torch.npu.Event
     ) -> None:
         """Synchronize D2H transfer for hybrid attention mode."""
         return self.transfer_manager.sync_d2h_hybrid(layer_name_list, attn_metadata_list, kv_event)
@@ -373,8 +328,7 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
             return
 
         mome_group_indices: List[int] = [
-            i for i, g in enumerate(self.kv_cache_config.kv_cache_groups)
-            if isinstance(g.kv_cache_spec, MambaSpec)
+            i for i, g in enumerate(self.kv_cache_config.kv_cache_groups) if isinstance(g.kv_cache_spec, MambaSpec)
         ]
         if not mome_group_indices:
             return
@@ -393,10 +347,7 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
             self_attn = getattr(decoder_layer, "self_attn", None)
             if self_attn is None:
                 continue
-            mome_attn = (
-                getattr(self_attn, "conv", None)
-                or getattr(self_attn, "mome_attn", None)
-            )
+            mome_attn = getattr(self_attn, "conv", None) or getattr(self_attn, "mome_attn", None)
             if mome_attn is None:
                 continue
             mome_kv = getattr(mome_attn, "kv_cache", None)
@@ -409,10 +360,7 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
             attn_prefix = getattr(self_attn, "prefix", None)
             if attn_prefix is None:
                 continue
-            mome_meta = (
-                attn_metadata.get(f"{attn_prefix}.conv")
-                or attn_metadata.get(f"{attn_prefix}.mome")
-            )
+            mome_meta = attn_metadata.get(f"{attn_prefix}.conv") or attn_metadata.get(f"{attn_prefix}.mome")
             if mome_meta is None:
                 continue
             num_prefills = getattr(mome_meta, "num_prefills", 0)
@@ -438,13 +386,14 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
                 continue
             try:
                 _copy_mome_states_to_host_unified(
-                    state_tuple, host_layer, prefill_slots,
+                    state_tuple,
+                    host_layer,
+                    prefill_slots,
                     dp_local_rank=self.dp_local_rank,
                 )
             except Exception as e:
-                logger.debug(
-                    "snapshot_mome_states: layer=%d err=%s", layer_idx, e
-                )
+                logger.debug("snapshot_mome_states: layer=%d err=%s", layer_idx, e)
+
 
 # ── Module-level helpers retained for external callers ────────────────────
 

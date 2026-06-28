@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-#
-# This file is based on vLLM implementation:
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-# https://github.com/vllm-project/vllm/blob/v0.23.0/vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_w8a8_int8.py
+# Copyright contributors to the vLLM project.
 
 from typing import Callable, Any, Dict, List, Optional, Union
 

@@ -44,7 +44,7 @@ static int64_t *parse_int64_array(const msgpack_object *obj, size_t *out_count)
     {
         if (obj->via.array.ptr[j].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
         {
-            arr[j] = obj->via.array.ptr[j].via.u64;
+            arr[j] = (int64_t) obj->via.array.ptr[j].via.u64;
         }
         else if (obj->via.array.ptr[j].type == MSGPACK_OBJECT_NEGATIVE_INTEGER)
         {
@@ -101,7 +101,7 @@ static int parse_block_stored(const msgpack_object_array *array, KVCacheEvent *e
     event->data.block_stored.block_hashes_count = hashes_count;
 
     if (array->ptr[PARENT_BLOCK_HASH_INDEX].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
-        event->data.block_stored.parent_block_hash = array->ptr[PARENT_BLOCK_HASH_INDEX].via.u64;
+        event->data.block_stored.parent_block_hash = (int64_t)array->ptr[PARENT_BLOCK_HASH_INDEX].via.u64;
     else if (array->ptr[PARENT_BLOCK_HASH_INDEX].type == MSGPACK_OBJECT_NEGATIVE_INTEGER)
         event->data.block_stored.parent_block_hash = array->ptr[PARENT_BLOCK_HASH_INDEX].via.i64;
     else
@@ -119,7 +119,7 @@ static int parse_block_stored(const msgpack_object_array *array, KVCacheEvent *e
         event->data.block_stored.block_size = 128;
 
     if (array->ptr[LORA_ID_INDEX].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
-        event->data.block_stored.lora_id = array->ptr[LORA_ID_INDEX].via.u64;
+        event->data.block_stored.lora_id = (int64_t)array->ptr[LORA_ID_INDEX].via.u64;
     else if (array->ptr[LORA_ID_INDEX].type == MSGPACK_OBJECT_NEGATIVE_INTEGER)
         event->data.block_stored.lora_id = array->ptr[LORA_ID_INDEX].via.i64;
     else if (array->ptr[LORA_ID_INDEX].type == MSGPACK_OBJECT_NIL)
@@ -145,9 +145,9 @@ static int parse_block_stored(const msgpack_object_array *array, KVCacheEvent *e
 
     event->data.block_stored.group_idx = -1;
     if (array->ptr[GROUP_IDX_INDEX].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
-        event->data.block_stored.group_idx = array->ptr[GROUP_IDX_INDEX].via.u64;
+        event->data.block_stored.group_idx = (int64_t)array->ptr[GROUP_IDX_INDEX].via.u64;
     else if (array->ptr[GROUP_IDX_INDEX].type == MSGPACK_OBJECT_NEGATIVE_INTEGER)
-        event->data.block_stored.group_idx = array->ptr[GROUP_IDX_INDEX].via.i64;
+        event->data.block_stored.group_idx = (int64_t)array->ptr[GROUP_IDX_INDEX].via.i64;
 
     return 0;
 }
@@ -173,9 +173,9 @@ static int parse_block_removed(const msgpack_object_array *array, KVCacheEvent *
 
     event->data.block_removed.group_idx = -1;
     if (array->ptr[BLOCK_REMOVED_GROUP_IDX_INDEX].type == MSGPACK_OBJECT_POSITIVE_INTEGER)
-        event->data.block_removed.group_idx = array->ptr[BLOCK_REMOVED_GROUP_IDX_INDEX].via.u64;
+        event->data.block_removed.group_idx = (int64_t)array->ptr[BLOCK_REMOVED_GROUP_IDX_INDEX].via.u64;
     else if (array->ptr[BLOCK_REMOVED_GROUP_IDX_INDEX].type == MSGPACK_OBJECT_NEGATIVE_INTEGER)
-        event->data.block_removed.group_idx = array->ptr[BLOCK_REMOVED_GROUP_IDX_INDEX].via.i64;
+        event->data.block_removed.group_idx = (int64_t)array->ptr[BLOCK_REMOVED_GROUP_IDX_INDEX].via.i64;
        
     return 0;
 }
@@ -245,6 +245,11 @@ KVEventBatch *parse_kv_event_batch(const void *payload, size_t length)
     }
 
     KVEventBatch *batch = malloc(sizeof(KVEventBatch));
+    if (!batch)
+    {
+        msgpack_unpacked_destroy(&result);
+        return NULL;
+    }
     memset(batch, 0, sizeof(KVEventBatch));
     const msgpack_object_array *array = &obj->via.array;
 
@@ -262,9 +267,20 @@ KVEventBatch *parse_kv_event_batch(const void *payload, size_t length)
         size_t n = array->ptr[1].via.array.size;
         batch->events_count = n;
         batch->events = malloc(n * sizeof(KVCacheEvent *));
+        if (!batch->events)
+        {
+            batch->events_count = 0;
+            msgpack_unpacked_destroy(&result);
+            return batch;
+        }
         for (size_t j = 0; j < n; ++j)
         {
             KVCacheEvent *event = malloc(sizeof(KVCacheEvent));
+            if (!event)
+            {
+                batch->events[j] = NULL;
+                continue;
+            }
             memset(event, 0, sizeof(KVCacheEvent));
             if (parse_kv_event(&array->ptr[1].via.array.ptr[j], event) == 0)
             {

@@ -427,7 +427,7 @@ omni_scheduler_select_earliest_prefill(omni_global_state_t *gs,
 
         // Compute total waiting time before this batch can finish.
         // uint64_t total_wait = (uint64_t)incremental_exec * (uint64_t)queued;
-        uint64_t total_wait = (uint64_t)incremental_exec * (uint64_t)(queued * queued);
+        uint64_t total_wait = (uint64_t)incremental_exec * (uint64_t)queued * (uint64_t)queued;
         total_wait += (uint64_t)new_exec_time;
         total_wait += (uint64_t)current_exec_time;
 
@@ -542,7 +542,7 @@ omni_scheduler_select_earliest_prefill(omni_global_state_t *gs,
     // ------------------------------------------------------------------------
     if (filtered_count > 0)
     {
-        ngx_uint_t r = (ngx_uint_t)(rand() % filtered_count);
+        ngx_uint_t r = ((ngx_uint_t)ngx_random()) % filtered_count;
         selected = (ngx_int_t)filtered_idx[r];
         best_finish = filtered_finish[r];
 
@@ -598,7 +598,7 @@ static void update_prefill_weights(omni_req_group_t *group)
             max_prompt_tokens = req->metrics.prompt_num_tokens;
         }
 
-        ngx_msec_t waited = ngx_current_msec - TIMEVAL_TO_MSEC(req->metrics.time_received);
+        ngx_msec_t waited = ngx_current_msec - (ngx_msec_t) TIMEVAL_TO_MSEC(req->metrics.time_received);
         if (max_wait_time < waited)
         {
             max_wait_time = waited;
@@ -619,7 +619,7 @@ static void update_prefill_weights(omni_req_group_t *group)
         }
         omni_req_t *req = omni_info_to_req(info);
 
-        ngx_msec_t waited = ngx_current_msec - TIMEVAL_TO_MSEC(req->metrics.time_received);
+        ngx_msec_t waited = ngx_current_msec - (ngx_msec_t) TIMEVAL_TO_MSEC(req->metrics.time_received);
         double token_weight = (double)(max_prompt_tokens - req->metrics.prompt_num_tokens) / max_prompt_tokens;
         double time_weight = (double)waited / max_wait_time;
 
@@ -689,6 +689,11 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf
 {
     omni_req_group_t *group = &gs->groups[PHASE_PREFILL_WAITING_SCHEDULE];
 
+    if (gs->num_prefill_endpoints == 0)
+    {
+        return;
+    }
+
     // TODO: Check should schedule or wait based on upstream expected come back time
 
     update_prefill_weights(group);
@@ -698,9 +703,14 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf
         omni_req_info_t *info = &group->requests[i];
         omni_req_t *req = omni_info_to_req(info);
 
-        assert(omni_req_is_in_phase(req, PHASE_PREFILL_WAITING_SCHEDULE));
+        if (!omni_req_is_in_phase(req, PHASE_PREFILL_WAITING_SCHEDULE))
+        {
+            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                          "omni_proxy_schedule_prefill: req %ui not in PREFILL_WAITING_SCHEDULE phase", req->slot_index);
+            continue;
+        }
 
-        uint32_t selected = rand() % gs->num_prefill_endpoints;
+        uint32_t selected = (uint32_t)ngx_random() % gs->num_prefill_endpoints;
         uint32_t best_match = 0;
         uint32_t best_load_tokens = UINT32_MAX;
         uint32_t best_running = UINT32_MAX;
@@ -722,8 +732,8 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf
 
                 struct timeval est_tv;
                 omni_get_current_time(&est_tv);
-                est_tv.tv_sec += delta_ms / 1000;
-                est_tv.tv_usec += (delta_ms % 1000) * 1000;
+                est_tv.tv_sec += (long)(delta_ms / (ngx_msec_t)1000);
+                est_tv.tv_usec += (long)((delta_ms % (ngx_msec_t)1000) * (ngx_msec_t)1000);
                 if (est_tv.tv_usec >= 1000000)
                 {
                     est_tv.tv_sec += est_tv.tv_usec / 1000000;
@@ -750,11 +760,6 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf
 
         if (!used_earliest_algo)
         {
-            uint32_t best_match = 0;
-            uint32_t best_load_tokens = UINT32_MAX;
-            uint32_t best_running = UINT32_MAX;
-            uint32_t best_idx = UINT32_MAX;
-
             for (uint32_t j = 0; j < MAX_PREFILL_UPSTREAMS && cnt < gs->num_prefill_endpoints; j++)
             {
                 if (gs->prefill_states[j].comm.status != STATUS_ENABLE) {
@@ -787,17 +792,17 @@ void omni_proxy_schedule_prefill(omni_global_state_t *gs, ngx_http_omni_loc_conf
                               req->slot_index, selected, req->prefill_match_depths[selected]);
             } else {
                 uint32_t least_load = UINT32_MAX;
-                for (uint32_t m = gs->last_selected_prefill, cnt = 0;
-                    m < MAX_PREFILL_UPSTREAMS + gs->last_selected_prefill && cnt < gs->num_prefill_endpoints; m++) {
-                    uint32_t j = m % MAX_PREFILL_UPSTREAMS;
+                for (uint32_t mi = gs->last_selected_prefill, loop_cnt = 0;
+                    mi < MAX_PREFILL_UPSTREAMS + gs->last_selected_prefill && loop_cnt < gs->num_prefill_endpoints; mi++) {
+                    uint32_t j = mi % MAX_PREFILL_UPSTREAMS;
                     omni_upstream_prefill_t *prefill = &gs->prefill_states[j];
                     if (prefill->comm.status != STATUS_ENABLE) {
                         if (prefill->comm.status == STATUS_UNUSED) {
-                            m = MAX_PREFILL_UPSTREAMS - 1; /* skip unuse upstream and start from 0 */
+                            mi = MAX_PREFILL_UPSTREAMS - 1; /* skip unuse upstream and start from 0 */
                         }
                         continue;
                     }
-                    cnt++;
+                    loop_cnt++;
                     if (gs->prefill_states[j].num_tokens < least_load)
                     {
                         least_load = gs->prefill_states[j].num_tokens;
@@ -870,7 +875,12 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs, ngx_http_omni_loc_conf_
             continue;
         }
         omni_req_t *req = omni_info_to_req(info);
-        assert(omni_req_is_in_phase(req, PHASE_DECODE_WAITING_SCHEDULE));
+        if (!omni_req_is_in_phase(req, PHASE_DECODE_WAITING_SCHEDULE))
+        {
+            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                          "omni_proxy_schedule_decode: req %ui not in DECODE_WAITING_SCHEDULE phase", req->slot_index);
+            continue;
+        }
 
         uint32_t least_load = UINT32_MAX;
         uint32_t selected = UINT32_MAX;
@@ -927,13 +937,13 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs, ngx_http_omni_loc_conf_
                 continue;
             }
 
-            gs->group_matched_idx[matched_cnt] = j;
+            gs->group_matched_idx[matched_cnt] = (uint32_t)j;
             matched_cnt++;
 
             if (gs->decode_states[j].num_tokens < least_load && gs->decode_states[j].num_running < olcf->decode_max_num_seqs)
             {
                 least_load = gs->decode_states[j].num_tokens;
-                selected = j;
+                selected = (uint32_t)j;
                 if (least_load == 0)
                 {
                     break;
@@ -942,12 +952,18 @@ void omni_proxy_schedule_decode(omni_global_state_t *gs, ngx_http_omni_loc_conf_
         }
         
         if (selected == UINT32_MAX) {
-            ngx_uint_t rand_idx = rand() % matched_cnt;
+            if (matched_cnt == 0) {
+                ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                    "omni_proxy_schedule_decode: invalid matched_cnt=%ui, skip scheduling for request_id=%s",
+                    matched_cnt, req->request_id);
+                continue;
+            }
+            ngx_uint_t rand_idx = (ngx_uint_t)((uint32_t)ngx_random() % matched_cnt);
             selected = gs->group_matched_idx[rand_idx];
         }
 
-        req->decode_upstream_endpoint_idx = selected;
-        gs->last_selected_decode = selected + 1;
+        req->decode_upstream_endpoint_idx = (uint16_t)selected;
+        gs->last_selected_decode = (uint16_t)(selected + 1U);
         ngx_atomic_fetch_add(&gs->decode_states[selected].num_running, 1);
         ngx_atomic_fetch_add(&gs->decode_states[selected].num_tokens, req->metrics.prompt_num_tokens);
         ngx_atomic_fetch_add(&gs->decode_states[selected].comm.ref, 1);

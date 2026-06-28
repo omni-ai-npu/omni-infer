@@ -1,26 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
-#
-# Non-invasive patch for APC (automatic prefix cache) metrics when PD is split.
-#
-# Load order: this file must load after patch_prefilled_token_skip_tokenize.py and
-# patch_routed_experts.py (filename sort makes patch_serving_apc_relay >
-# patch_routed / patch_prefilled) so the register_patch names below override upstream
-# and relay delegates to the saved upstream methods.
-#
-# Changes relative to upstream vLLM:
-#   1. PromptTokenUsageInfo gains a cached_rate field.
-#   2. Inject prompt_cache_hit_rate() helper into the protocol module.
-#   3. Inject resolve_num_cached_tokens_for_usage() into the utils module.
-#      PD: read prefill_cached_tokens only from kv_transfer_params; otherwise use engine counts.
-#      Denominator: prefer forwarded prefill_prompt_tokens, else usage.prompt_tokens.
-#   4. serving_chat streaming: wire resolve_num_cached_tokens_for_usage and the
-#      stream_usage_info closure that includes cached_rate.
-#   5. serving_chat non-streaming: add cached_rate to usage; if the response already has
-#      kv_transfer_params (PD, etc.) merge APC fields. In mixed deployments when kv is None,
-#      do not create one; it stays null.
-#   6. serving_completion streaming/non-streaming: same as (4)/(5); streaming falls back to
-#      engine num_cached.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 import vllm.entrypoints.openai.protocol as _protocol_module
 import vllm.entrypoints.openai.utils as _utils_module

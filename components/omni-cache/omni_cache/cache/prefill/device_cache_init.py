@@ -383,7 +383,7 @@ class PrefillDeviceCacheMixin:
                 device_cache_size = uniform_page_size * target_num_blocks
 
             kv_caches = []
-            for i in range(self.num_stages_layer_copy):
+            for _i in range(self.num_stages_layer_copy):
                 raw_tensor = torch.zeros(
                     device_cache_size, dtype=torch.int8, device=self.device
                 )
@@ -425,5 +425,4 @@ class PrefillDeviceCacheMixin:
             )
         else:
             return kv_caches  # dict[str, Union[Tensor, Tuple[Tensor, ...]]]
-
 

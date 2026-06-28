@@ -47,7 +47,12 @@ void omni_free_request(omni_request_pool_t *pool, omni_req_t *req);
 
 static inline omni_req_info_t *omni_add_req_to_group(uint32_t req_index, omni_req_group_t *group)
 {
-    assert(group->watermark < MAX_REQUEST_SLOTS);
+    if (group->watermark >= MAX_REQUEST_SLOTS)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "omni_add_req_to_group: watermark=%ui exceeds MAX_REQUEST_SLOTS", group->watermark);
+        return NULL;
+    }
     uint32_t idx = group->watermark++;
     group->requests[idx].in_use = 1;
     group->requests[idx].slot_index = req_index;
@@ -59,11 +64,19 @@ static inline omni_req_info_t *omni_add_req_to_group(uint32_t req_index, omni_re
 
 static inline void omni_remove_from_group_by_req_info(omni_req_info_t *req_info, omni_req_group_t *group)
 {
-    assert(req_info != NULL);
+    if (req_info == NULL)
+    {
+        return;
+    }
     req_info->in_use = 0;
     // keep the weight for debug
     // req_info->weight = -1;
-    assert(group->num_requests > 0);
+    if (group->num_requests == 0)
+    {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "omni_remove_from_group_by_req_info: num_requests already 0");
+        return;
+    }
     group->num_requests--;
 }
 
@@ -106,8 +119,7 @@ static inline void omni_remove_req_from_group_by_req_index(uint32_t req_index, o
             return;
         }
     }
-    // not found ⇒ user error
-    assert(!"omni_remove_req_from_group: slot_index not in group");
+    // not found — silently return
 }
 
 static inline void omni_phase_change_to(
@@ -141,7 +153,14 @@ omni_worker_local_state_t *omni_get_local_state();
 
 static inline omni_req_t *omni_id_to_req(uint32_t slot)
 {
-    return &omni_get_global_state()->request_pool.slots[slot];
+    omni_global_state_t *gs = omni_get_global_state();
+    if (gs == NULL || gs->request_pool.slots == NULL || slot >= gs->request_pool.max_slots) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "omni_id_to_req: invalid slot=%ui (max_slots=%ui)",
+                      slot, (gs != NULL) ? gs->request_pool.max_slots : 0);
+        return NULL;
+    }
+    return &gs->request_pool.slots[slot];
 }
 
 static inline omni_req_t *omni_info_to_req(omni_req_info_t *info)

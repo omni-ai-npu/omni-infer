@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
-
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import copy
 import logging
@@ -13,6 +12,8 @@ from vllm.v1.engine.llm_engine import LLMEngine
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 logger = logging.getLogger(__name__)
+
+
 @register_patch("LLMEngineHelloWorld", LLMEngine)
 class LLMEngineHelloWorldPatch(VLLMPatch):
     """
@@ -28,6 +29,7 @@ class LLMEngineHelloWorldPatch(VLLMPatch):
     def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
         self.print_hello_world()
         return self.engine_core.get_supported_tasks()
+
 
 @register_patch("GetKwargsHelloWorld", arg_utils)
 class GetKwargsHelloWorldPatch(VLLMPatch):

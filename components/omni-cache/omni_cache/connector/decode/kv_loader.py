@@ -328,8 +328,10 @@ class KVLoader:
         )
 
         logger.warning(
-            "Adding Sent Queue req_id=%s in %.6f s",
-            request_id, time.time() - start
+            "KV pull req_id=%s cluster_id=%s remote_host=%s remote_dp_rank=%d "
+            "src_blocks=%d dst_blocks=%d in %.6f s",
+            request_id, dst_cluster_id, remote_host_ip, remote_dp_rank,
+            len(src_clean), len(dst_clean), time.time() - start,
         )
 
     def start_load_kv_mock_prefill(self, metadata: "DatadistConnectorMetadata") -> None:
@@ -402,4 +404,4 @@ class KVLoader:
         try:
             self.worker.recv_q.put(request_id)
         except Exception as e:
-            raise RuntimeError(f"Error: {e}")
+            raise RuntimeError(f"Error: {e}") from e

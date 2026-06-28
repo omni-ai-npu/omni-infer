@@ -15,12 +15,14 @@ logger = init_logger("vllm.v1.omni")
 # in all processes (main, EngineCore-fork, Worker-fork).
 try:
     from tools.diagnostics import mock_schedule  # noqa: F401
+
     mock_schedule.install_in_worker()
 except Exception:
     pass
 
 try:
     from tools.diagnostics import input_swap  # noqa: F401
+
     input_swap.install()
 except Exception:
     pass
@@ -44,9 +46,9 @@ def staged_bts_np(bt_item):
     or a `StagedWriteTensor` (with `.gpu`). Returns None when neither
     attribute exists so callers can skip gracefully.
     """
-    if hasattr(bt_item, 'block_table') and hasattr(bt_item.block_table, 'np'):
+    if hasattr(bt_item, "block_table") and hasattr(bt_item.block_table, "np"):
         return bt_item.block_table.np
-    if hasattr(bt_item, 'gpu'):
+    if hasattr(bt_item, "gpu"):
         return bt_item.gpu.cpu().numpy()
     return None
 
@@ -68,7 +70,6 @@ class LoadModelPlugin:
                    (first arg is self, i.e., NPUWorker instance)
             **kwargs: Keyword arguments passed to the decorated method
         """
-        import os
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
 
@@ -79,14 +80,11 @@ class LoadModelPlugin:
         worker = args[0]
 
         # Check environment and configuration
-        if int(os.getenv("ENABLE_OMNI_CACHE", "0")) and \
-            worker.vllm_config.kv_transfer_config.kv_role == "kv_consumer":
+        if int(os.getenv("ENABLE_OMNI_CACHE", "0")) and worker.vllm_config.kv_transfer_config.kv_role == "kv_consumer":
             from omni_cache.cache.decode import DecodeOmniCache
+
             # load_model after omni cache is created to register a larger host tensor in decode side
-            DecodeOmniCache.initialize_decode_omni_cache(
-                worker.vllm_config,
-                worker.model_runner
-            )
+            DecodeOmniCache.initialize_decode_omni_cache(worker.vllm_config, worker.model_runner)
 
     def post_load(self, *args, **kwargs):
         # At this point NPUModelRunner is imported in the Worker.
@@ -94,9 +92,11 @@ class LoadModelPlugin:
         # thread hasn't patched yet.
         try:
             from tools.diagnostics.input_swap import install as _swap_install
+
             _swap_install()
         except Exception:
             pass
+
 
 class InitConfigPlugin:
     """
@@ -135,6 +135,7 @@ class InitConfigPlugin:
 
         if model_runner.speculative_config and model_runner.speculative_config.use_eagle():
             from vllm.v1.spec_decode.eagle import EagleProposer
+
             assert isinstance(model_runner.drafter, EagleProposer)
             # validate all draft model layers belong to the same kv cache group
             model_runner.drafter.validate_same_kv_cache_group(kv_cache_config)
@@ -142,10 +143,14 @@ class InitConfigPlugin:
         logger.warning(f"<<< {model_runner.kv_cache_config=}")
 
         from omni_cache.cache import omni_cache
-        is_decode = omni_cache is not None and hasattr(omni_cache, 'hbm_buffer_pool') and omni_cache.hbm_buffer_pool is not None
+
+        is_decode = (
+            omni_cache is not None and hasattr(omni_cache, "hbm_buffer_pool") and omni_cache.hbm_buffer_pool is not None
+        )
 
         if not is_decode and model_runner.vllm_config.kv_transfer_config.kv_role == "kv_producer":
             from omni_cache.cache.core.base import create_omni_cache
+
             create_omni_cache(
                 kv_cache_config=model_runner.kv_cache_config,
                 vllm_config=model_runner.vllm_config,
@@ -161,6 +166,7 @@ class InitConfigPlugin:
 
         if model_runner.vllm_config.kv_transfer_config.kv_role == "kv_consumer" or is_decode:
             from vllm.v1.worker.utils import bind_kv_cache
+
             assert omni_cache.device_cache is not None
             # replace kv_a and k_pe in device.kv_caches by host swap caches
             if model_runner.omni_cache.enable_dsa and not model_runner.omni_cache.is_pangu_v2:
@@ -168,15 +174,9 @@ class InitConfigPlugin:
                     rest = omni_cache.device_cache[layer_name]
                     t0 = omni_cache.host_swap_tensor[i][0]
                     t1 = omni_cache.host_swap_tensor[i][1]
-                    logger.warning(
-                        f"<<< before bind_kv_cache: {t0.shape=}, {t1.shape=}, {rest[0].shape=}"
-                    )
+                    logger.warning(f"<<< before bind_kv_cache: {t0.shape=}, {t1.shape=}, {rest[0].shape=}")
                     omni_cache.device_cache[layer_name] = (t0, t1, *rest)
 
-            # for layer_name in omni_cache.device_cache.keys():
-            #     print(f"<<<<<<<<<<<<< {layer_name=}: {len(omni_cache.device_cache[layer_name])=} >>>>>>>>")
-            #     for idx_kvi in range(len(omni_cache.device_cache[layer_name])):
-            #         print(f"<<<<<<<<< {layer_name=}, {idx_kvi=}: {omni_cache.device_cache[layer_name][idx_kvi].shape=} >>>>>>>>>>>")
             if model_runner.omni_cache.is_pangu_v2:
                 # Create a patched version of bind_kv_cache that removes the layer name check
                 import torch
@@ -184,7 +184,9 @@ class InitConfigPlugin:
                 from vllm.attention.layer import Attention
                 from vllm.model_executor.models.utils import extract_layer_index
                 import vllm.v1.worker.gpu_model_runner as gpu_model_runner
-                def bind_kv_cache_patched(kv_caches: dict[str, torch.Tensor],
+
+                def bind_kv_cache_patched(
+                    kv_caches: dict[str, torch.Tensor],
                     forward_context: dict[str, Attention],
                     runner_kv_caches: list[torch.Tensor],
                     num_attn_module: int = 1,
@@ -206,6 +208,7 @@ class InitConfigPlugin:
                     for layer_name, kv_cache in kv_caches.items():
                         # NOTE: Use list because of v0 PP virtual engine.
                         forward_context[layer_name].kv_cache = [kv_cache]
+
                 bind_kv_cache = bind_kv_cache_patched
 
             bind_kv_cache(
@@ -215,12 +218,13 @@ class InitConfigPlugin:
             )
 
         from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
+
         if has_kv_transfer_group:
             get_kv_transfer_group().register_kv_caches(
                 omni_cache.MEMMAP_PATH,
                 omni_cache.dtype,
                 block_len_dtype=omni_cache.block_len_dtype,
-                omni_cache=omni_cache
+                omni_cache=omni_cache,
             )
 
     def pre_init_config(self, *args, **kwargs):
@@ -294,9 +298,7 @@ class InputBatchPlugin:
         kv_cache_config = args[1]
         kernel_block_sizes = args[2]
 
-        kv_role = getattr(
-            model_runner.vllm_config.kv_transfer_config, "kv_role", None
-        )
+        kv_role = getattr(model_runner.vllm_config.kv_transfer_config, "kv_role", None)
         if kv_role != "kv_consumer":
             return
 
@@ -305,8 +307,7 @@ class InputBatchPlugin:
         current_input_batch = getattr(model_runner, "input_batch", None)
         if isinstance(current_input_batch, OmniCacheInputBatch):
             logger.warning(
-                "[OMNI-INPUT-BATCH] input batch already installed; "
-                "kv_role=%s",
+                "[OMNI-INPUT-BATCH] input batch already installed; kv_role=%s",
                 kv_role,
             )
             return
@@ -317,11 +318,11 @@ class InputBatchPlugin:
         block_sizes = [spec.block_size for spec in kv_cache_specs]
 
         from omni_cache.cache import omni_cache as omni_cache_obj
+
         if omni_cache_obj is None:
             raise RuntimeError(f"Error! OmniCache object is not found.")
         logger.warning(
-            "[OMNI-INPUT-BATCH] installing OmniCacheInputBatch kv_role=%s "
-            "specs=%s kernel_block_sizes=%s",
+            "[OMNI-INPUT-BATCH] installing OmniCacheInputBatch kv_role=%s specs=%s kernel_block_sizes=%s",
             kv_role,
             [type(spec).__name__ for spec in kv_cache_specs],
             list(kernel_block_sizes),
@@ -343,15 +344,11 @@ class InputBatchPlugin:
             kv_cache_config=kv_cache_config,
             omni_cache=omni_cache_obj,
             logitsprocs=current_input_batch.logitsprocs,
-            logitsprocs_need_output_token_ids=(
-                current_input_batch.logitsprocs_need_output_token_ids
-            ),
+            logitsprocs_need_output_token_ids=(current_input_batch.logitsprocs_need_output_token_ids),
             is_spec_decode=bool(model_runner.vllm_config.speculative_config),
             is_pooling_model=model_runner.is_pooling_model,
             num_speculative_tokens=getattr(model_runner, "num_spec_tokens", 0),
-            cp_kv_cache_interleave_size=self._cp_kv_cache_interleave_size(
-                model_runner, current_input_batch
-            ),
+            cp_kv_cache_interleave_size=self._cp_kv_cache_interleave_size(model_runner, current_input_batch),
         )
 
         # make OmniCacheInputBatch available to omni_cache itself
@@ -385,8 +382,7 @@ class InputBatchPlugin:
 
 
 class PrepareInputsPlugin:
-    """
-    Plugin for handling omni_cache operations in prepare_inputs.
+    """Handle omni_cache operations in prepare_inputs.
 
     This plugin is responsible for updating selection_kv_block workspace
     when using gather selection in DSA mode.
@@ -399,28 +395,27 @@ class PrepareInputsPlugin:
         then sees only fake IDs for commit_block_table / slot_mapping /
         metadata build."""
         if _DEBUG:
-            logger.warning("[PRE-PREP] fired nargs=%d ENABLE_OC=%s ENABLE_VOL=%s",
-                       len(args),
-                       os.getenv("ENABLE_OMNI_CACHE", "0"),
-                       os.getenv("OMNI_CACHE_ENABLE_VOLATILE", "0"))
+            logger.warning(
+                "[PRE-PREP] fired nargs=%d ENABLE_OC=%s ENABLE_VOL=%s",
+                len(args),
+                os.getenv("ENABLE_OMNI_CACHE", "0"),
+                os.getenv("OMNI_CACHE_ENABLE_VOLATILE", "0"),
+            )
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
         # PACKED_HBM shrinks the physical buffer to ~100 blocks.  Without
         # the volatile swap remapping real block IDs into the packed range,
         # kernels can access OOB and trigger AICore crashes (507015).
-        if not int(os.getenv("OMNI_CACHE_ENABLE_VOLATILE", "0")) \
-           and not int(os.getenv("OMNI_CACHE_PACKED_HBM", "0")):
+        if not int(os.getenv("OMNI_CACHE_ENABLE_VOLATILE", "0")) and not int(os.getenv("OMNI_CACHE_PACKED_HBM", "0")):
             return
         if len(args) < 1:
             return
         model_runner = args[0]
-        has_oc = hasattr(model_runner, 'omni_cache')
+        has_oc = hasattr(model_runner, "omni_cache")
         oc_none = has_oc and model_runner.omni_cache is None
         if not has_oc or oc_none:
             return
-        kv_role = getattr(
-            model_runner.vllm_config.kv_transfer_config, 'kv_role', None
-        )
+        kv_role = getattr(model_runner.vllm_config.kv_transfer_config, "kv_role", None)
         if kv_role != "kv_producer":
             return
         input_batch = getattr(model_runner, "input_batch", None)
@@ -467,13 +462,10 @@ class PrepareInputsPlugin:
         model_runner = args[0]
         input_batch = getattr(model_runner, "input_batch", None)
 
-        if not (hasattr(model_runner, 'omni_cache') and
-                model_runner.omni_cache is not None):
+        if not (hasattr(model_runner, "omni_cache") and model_runner.omni_cache is not None):
             return
 
-        kv_role = getattr(
-            model_runner.vllm_config.kv_transfer_config, 'kv_role', None
-        )
+        kv_role = getattr(model_runner.vllm_config.kv_transfer_config, "kv_role", None)
 
         # Prefill (kv_producer): swap is restored at the first D2H entry,
         # after attention metadata/prefix_meta have been built from fake ids.
@@ -493,11 +485,13 @@ class PrepareInputsPlugin:
         # With USE_OMNI_INPUT_BATCH=1, H2D owns lane reservation and this hook
         # only syncs row order / device lookup state.
         from omni_cache.cache.decode.static_utils import record_current_batch_order
+
         record_current_batch_order(input_batch, model_runner.omni_cache)
 
         if model_runner.omni_cache.enable_gs:
             from omni_cache.cache import omni_cache
             from omni_cache.cache.decode import DecodeOmniCache
+
             DecodeOmniCache.maybe_update_selection_kv_block_status(input_batch, omni_cache, args[2])
 
     def _apply_volatile_swap_to_np(self, input_batch, num_reqs):
@@ -510,14 +504,16 @@ class PrepareInputsPlugin:
         `input_batch._real_block_tables_per_group` for D2H.
         """
         import omni_cache.cache as _cm
+
         _oc = _cm.omni_cache
         if _oc is None:
             return
         from omni_cache.cache.prefill import PrefillOmniCache
+
         if not isinstance(_oc, PrefillOmniCache):
             return
         bt_mgr = input_batch.block_table
-        staged_bts = getattr(bt_mgr, 'block_tables', None)
+        staged_bts = getattr(bt_mgr, "block_tables", None)
         if staged_bts is None:
             return
         # 1. Collect all non-zero real block_ids across groups in traversal
@@ -544,8 +540,7 @@ class PrepareInputsPlugin:
         apc_dbg = apc_debug_enabled() and should_log_rank(_oc)
         if apc_dbg:
             logger.warning(
-                "[APCDBG/SWAP] tp_rank=%s dp_rank=%s stage=%s group_idx=%s "
-                "layer_name=%s num_reqs=%d",
+                "[APCDBG/SWAP] tp_rank=%s dp_rank=%s stage=%s group_idx=%s layer_name=%s num_reqs=%d",
                 getattr(_oc, "tp_rank", None),
                 getattr(_oc, "dp_local_rank", None),
                 getattr(_oc, "stage_record", None),
@@ -561,7 +556,7 @@ class PrepareInputsPlugin:
             MambaSpec = None  # type: ignore[assignment]
 
         for grp_idx, bt_item in enumerate(staged_bts):
-            if not (hasattr(bt_item, 'block_table') and hasattr(bt_item.block_table, 'np')):
+            if not (hasattr(bt_item, "block_table") and hasattr(bt_item.block_table, "np")):
                 per_group_real.append(None)
                 per_group_restore_real.append(None)
                 per_group_maps.append({})
@@ -571,8 +566,8 @@ class PrepareInputsPlugin:
             sliding_window = getattr(kv_cache_spec, "sliding_window", None)
 
             bt_np = bt_item.block_table.np
-            num_computed_tokens_cpu = getattr(input_batch, 'num_computed_tokens_cpu', None)
-            num_blocks_per_row = getattr(bt_item, 'num_blocks_per_row', None)
+            num_computed_tokens_cpu = getattr(input_batch, "num_computed_tokens_cpu", None)
+            num_blocks_per_row = getattr(bt_item, "num_blocks_per_row", None)
 
             def valid_cols(row, bt_np, num_blocks_per_row=None):
                 if num_blocks_per_row is None:
@@ -596,26 +591,19 @@ class PrepareInputsPlugin:
                     summarize_array("bt_np_pre", bt_np[:n_reqs]),
                 )
 
-            prev_group_map = (
-                prev_maps[grp_idx]
-                if prev_maps is not None and grp_idx < len(prev_maps) else None
-            )
+            prev_group_map = prev_maps[grp_idx] if prev_maps is not None and grp_idx < len(prev_maps) else None
             if prev_group_map and num_computed_tokens_cpu is not None:
                 fake_to_real = {int(v): int(k) for k, v in prev_group_map.items()}
                 block_size = int(getattr(bt_item, "block_size", 1))
                 for i in range(n_reqs):
                     computed_tokens = int(num_computed_tokens_cpu[i])
-                    computed_blocks = (
-                        (computed_tokens + block_size - 1) // block_size
-                        if computed_tokens > 0 else 0
-                    )
+                    computed_blocks = (computed_tokens + block_size - 1) // block_size if computed_tokens > 0 else 0
                     prefix_cols = min(computed_blocks, valid_cols(i, bt_np, num_blocks_per_row))
 
             if apc_dbg:
                 if prev_group_map and num_computed_tokens_cpu is not None:
                     logger.warning(
-                        "[APCDBG/SWAP] tp_rank=%s dp_rank=%s stage=%s "
-                        "group_idx=%d layer_name=%s after_realize %s",
+                        "[APCDBG/SWAP] tp_rank=%s dp_rank=%s stage=%s group_idx=%d layer_name=%s after_realize %s",
                         getattr(_oc, "tp_rank", None),
                         getattr(_oc, "dp_local_rank", None),
                         getattr(_oc, "stage_record", None),
@@ -624,14 +612,11 @@ class PrepareInputsPlugin:
                         summarize_array("bt_np_realized", bt_np[:n_reqs]),
                     )
 
-            per_group_restore_real.append(
-                bt_np[:n_reqs].copy() if n_reqs else bt_np[:0].copy()
-            )
+            per_group_restore_real.append(bt_np[:n_reqs].copy() if n_reqs else bt_np[:0].copy())
 
             # MambaSpec: zero out blocks for already-computed tokens so they
             # are excluded from the volatile swap mapping and D2H.
-            if MambaSpec is not None and isinstance(kv_cache_spec, MambaSpec) \
-                    and num_computed_tokens_cpu is not None:
+            if MambaSpec is not None and isinstance(kv_cache_spec, MambaSpec) and num_computed_tokens_cpu is not None:
                 for i in range(n_reqs):
                     computed_blocks = int(num_computed_tokens_cpu[i]) // bt_item.block_size
                     out_of_window = max(0, computed_blocks - 2)
@@ -641,8 +626,7 @@ class PrepareInputsPlugin:
             # Sliding-window: zero out blocks that have fallen outside the
             # window so they are excluded from the volatile swap and D2H.
             # A block is out-of-window if its position < computed_blocks - window_blocks.
-            elif sliding_window is not None \
-                    and num_computed_tokens_cpu is not None:
+            elif sliding_window is not None and num_computed_tokens_cpu is not None:
                 window_blocks = int(sliding_window) // bt_item.block_size + 2
                 for i in range(n_reqs):
                     computed_blocks = int(num_computed_tokens_cpu[i]) // bt_item.block_size
@@ -651,8 +635,7 @@ class PrepareInputsPlugin:
                         bt_np[i, :out_of_window] = 0
             if apc_dbg:
                 logger.warning(
-                    "[APCDBG/SWAP] tp_rank=%s dp_rank=%s stage=%s "
-                    "group_idx=%d layer_name=%s after_zero %s",
+                    "[APCDBG/SWAP] tp_rank=%s dp_rank=%s stage=%s group_idx=%d layer_name=%s after_zero %s",
                     getattr(_oc, "tp_rank", None),
                     getattr(_oc, "dp_local_rank", None),
                     getattr(_oc, "stage_record", None),
@@ -672,8 +655,7 @@ class PrepareInputsPlugin:
             per_group_maps.append(group_map)
             if apc_dbg:
                 logger.warning(
-                    "[APCDBG/SWAP] tp_rank=%s dp_rank=%s stage=%s "
-                    "group_idx=%d layer_name=%s fake_counter=%d %s",
+                    "[APCDBG/SWAP] tp_rank=%s dp_rank=%s stage=%s group_idx=%d layer_name=%s fake_counter=%d %s",
                     getattr(_oc, "tp_rank", None),
                     getattr(_oc, "dp_local_rank", None),
                     getattr(_oc, "stage_record", None),
@@ -689,14 +671,15 @@ class PrepareInputsPlugin:
         for grp_idx, (bt_item, group_map) in enumerate(zip(staged_bts, per_group_maps)):
             if not group_map:
                 continue
-            if not (hasattr(bt_item, 'block_table') and hasattr(bt_item.block_table, 'np')):
+            if not (hasattr(bt_item, "block_table") and hasattr(bt_item.block_table, "np")):
                 continue
             bt_np = bt_item.block_table.np
-            num_blocks_per_row = getattr(bt_item, 'num_blocks_per_row', None)
+            num_blocks_per_row = getattr(bt_item, "num_blocks_per_row", None)
             for row in range(n_reqs):
                 n_cols = (
                     max(0, min(int(num_blocks_per_row[row]) + 1, bt_np.shape[1]))
-                    if num_blocks_per_row is not None else bt_np.shape[1]
+                    if num_blocks_per_row is not None
+                    else bt_np.shape[1]
                 )
                 for col in range(n_cols):
                     rid = int(bt_np[row, col])
@@ -704,8 +687,7 @@ class PrepareInputsPlugin:
                         bt_np[row, col] = group_map[rid]
             if apc_dbg:
                 logger.warning(
-                    "[APCDBG/SWAP] tp_rank=%s dp_rank=%s stage=%s "
-                    "group_idx=%d layer_name=%s after_rewrite %s",
+                    "[APCDBG/SWAP] tp_rank=%s dp_rank=%s stage=%s group_idx=%d layer_name=%s after_rewrite %s",
                     getattr(_oc, "tp_rank", None),
                     getattr(_oc, "dp_local_rank", None),
                     getattr(_oc, "stage_record", None),
@@ -728,14 +710,14 @@ class PrepareInputsPlugin:
         _oc._restore_real_block_tables_per_group = per_group_restore_real
         _oc._volatile_real_to_fake_per_group = per_group_maps
 
+
 def _register_kv_connectors() -> None:
     """Call connector package to register KV connectors into vLLM."""
     try:
         from omni_cache.connector import register_connectors
     except Exception as e:
         logger.warning(
-            "omni_cache: failed to import connector.register_connectors, "
-            "skip KV connector registration: %s",
+            "omni_cache: failed to import connector.register_connectors, skip KV connector registration: %s",
             e,
         )
         return
@@ -763,25 +745,29 @@ def register() -> None:
     _init_diagnostics()
     logger.info("omni_cache: unified registration finished")
 
+
 def _init_diagnostics() -> None:
     """Initialize KV diagnostics (gear resolver + step dumper)."""
     try:
         from tools.diagnostics.dump_controller import install as _diag_install
+
         _diag_install()
     except Exception:
         pass
 
     # Import and install mock_schedule monkey-patch
     try:
-        from tools.diagnostics import mock_schedule  # noqa: F811
-        mock_schedule.install_in_worker()
+        from tools.diagnostics import mock_schedule as mock_schedule_module
+
+        mock_schedule_module.install_in_worker()
     except Exception:
         pass
 
     # Import and install input_swap monkey-patch (OMNI_MOCK_SCHEDULE=2)
     try:
-        from tools.diagnostics import input_swap  # noqa: F811
-        input_swap.install()
+        from tools.diagnostics import input_swap as input_swap_module
+
+        input_swap_module.install()
     except Exception:
         pass
 
@@ -800,12 +786,14 @@ def _register_attn_plugins() -> None:
     """
     try:
         from omni_cache.attn_plugins import register_omni_cache_plugins
+
         register_omni_cache_plugins()
     except Exception as e:
         logger.warning(
             "omni_cache: failed to register attention plugins: %s",
             e,
         )
+
 
 def get_decorators():
     """Return all available attention decorators and register plugins.
@@ -817,18 +805,11 @@ def get_decorators():
     Returns:
         dict: Mapping of decorator names to decorator functions
 
-    Example:
-        decorators = get_decorators()
-        # Returns:
-        # {
-        #     "compressed_mqa_attn_decorator": <decorator>,
-        #     "mqa_attn_decorator": <decorator>,
-        #     "mla_attn_decorator": <decorator>,
-        # }
     """
     try:
         # First, register plugins to ensure decorators can find them
         from .attn_plugins import register_omni_cache_plugins
+
         register_omni_cache_plugins()
         logger.info("omni_cache: plugins registered via get_decorators()")
 

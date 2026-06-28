@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple, Optional
 
 from vllm.logger import init_logger
+
 logger = init_logger(__name__)
 
 
@@ -21,12 +22,12 @@ def sync_h2d_event(omni_cache: Any) -> None:
         return
 
     # Synchronize the H2D stream first (ensures all H2D ops complete)
-    h2d_stream = getattr(omni_cache, 'h2d_stream', None)
+    h2d_stream = getattr(omni_cache, "h2d_stream", None)
     if h2d_stream is not None:
         h2d_stream.synchronize()
 
     # Then synchronize the event (belt-and-braces)
-    h2d_event = getattr(omni_cache, 'h2d_event', None)
+    h2d_event = getattr(omni_cache, "h2d_event", None)
     if h2d_event is not None:
         h2d_event.synchronize()
 
@@ -37,6 +38,7 @@ class BlockHashType(NamedTuple):
     hash collisions when the hash value is the same. By using SHA256 however,
     hash collisions are practically impossible.
     """
+
     # Hash value of the block in an integer.
     hash_value: int
     # Token IDs in the block.
@@ -52,8 +54,11 @@ except Exception:
     sha256 = None
 
 if sha256 is not None:
-    NONE_HASH = int.from_bytes(os.urandom(32), byteorder="big") if os.getenv(
-        'PYTHONHASHSEED') is None else sha256(os.getenv('PYTHONHASHSEED'))
+    NONE_HASH = (
+        int.from_bytes(os.urandom(32), byteorder="big")
+        if os.getenv("PYTHONHASHSEED") is None
+        else sha256(os.getenv("PYTHONHASHSEED"))
+    )
 else:
     NONE_HASH = 0
 
@@ -120,8 +125,7 @@ def resolve_num_spec_token(vllm_config) -> int:
 
 
 def _is_pangu_v2_model(vllm_config) -> bool:
-    """Detect Pangu V2 from hf_config.model_type.
-    """
+    """Detect Pangu V2 from hf_config.model_type."""
     if vllm_config is None:
         return False
     model_config = getattr(vllm_config, "model_config", None)
@@ -141,11 +145,7 @@ def _detect_hybrid_attention(vllm_config) -> bool:
     hf_config = getattr(model_config, "hf_config", None)
     model_type = getattr(hf_config, "model_type", "")
     compress_ratios = getattr(hf_config, "compress_ratios", None)
-    return (
-        "deepseek" in model_type
-        and compress_ratios is not None
-        and len(set(compress_ratios)) > 1
-    )
+    return "deepseek" in model_type and compress_ratios is not None and len(set(compress_ratios)) > 1
 
 
 def _pangu_kv_head_dims_from_hf(hf_config):
@@ -161,11 +161,7 @@ def _pangu_kv_head_dims_from_hf(hf_config):
     """
     kv_lora = getattr(hf_config, "kv_lora_rank", 0) or 512
     rope = getattr(hf_config, "qk_rope_head_dim", 0) or 64
-    indexer = (
-        getattr(hf_config, "index_head_dim", 0)
-        or getattr(hf_config, "indexer_head_dim", 0)
-        or 128
-    )
+    indexer = getattr(hf_config, "index_head_dim", 0) or getattr(hf_config, "indexer_head_dim", 0) or 128
     return kv_lora, rope, indexer
 
 
@@ -193,8 +189,11 @@ def resolve_kv_spec_state(
         # (its block_size is the mamba kernel window, not the attention
         # block_size, and its bytes-per-block differ).
         from vllm.v1.kv_cache_interface import (
-            FullAttentionSpec, MLAAttentionSpec, AttentionSpec,
+            FullAttentionSpec,
+            MLAAttentionSpec,
+            AttentionSpec,
         )
+
         attn_spec = None
         # Prefer any attention-family spec (DSA/MLA/SWA) over MambaSpec.
         for group in kv_cache_config.kv_cache_groups:
@@ -226,14 +225,13 @@ def resolve_kv_spec_state(
             # then page_size_bytes (which has the 2× factor and only works
             # for the fake FullAttentionSpec used during pre_load).
             from vllm.utils.torch_utils import get_dtype_size
-            if hasattr(attn_spec, 'page_size_bytes'):
+
+            if hasattr(attn_spec, "page_size_bytes"):
                 page_size = attn_spec.page_size_bytes
             else:
                 psp = getattr(attn_spec, "page_size_padded", None)
                 page_size = psp if psp is not None else attn_spec.page_size_bytes
-            effective_head_size = page_size // (
-                attn_spec.block_size * get_dtype_size(attn_spec.dtype)
-            )
+            effective_head_size = page_size // (attn_spec.block_size * get_dtype_size(attn_spec.dtype))
             base_head_sizes = [effective_head_size]
         elif not enable_c8_indexer:
             base_head_sizes = [attn_spec.head_size]
@@ -258,8 +256,7 @@ def resolve_kv_spec_state(
     if is_pangu and vllm_config is not None:
         force_block_size = vllm_config.cache_config.block_size
         logger.warning(
-            "[PANGU-V2-BLOCK-SIZE] attn_spec.block_size=%d, "
-            "cache_config.block_size=%d, forcing=%d",
+            "[PANGU-V2-BLOCK-SIZE] attn_spec.block_size=%d, cache_config.block_size=%d, forcing=%d",
             attn_spec.block_size,
             vllm_config.cache_config.block_size,
             force_block_size,
@@ -275,8 +272,8 @@ def resolve_kv_spec_state(
         head_sizes=head_sizes,
         head_size=sum(head_sizes),
         dtype=attn_spec.dtype,
-        block_num = block_num,
-        block_bytes = block_bytes
+        block_num=block_num,
+        block_bytes=block_bytes,
     )
 
 
@@ -305,6 +302,7 @@ def resolve_layer_name(kv_cache_config, layer_idx: int):
         Layer name string or None.
     """
     from vllm.model_executor.models.utils import extract_layer_index
+
     for group in kv_cache_config.kv_cache_groups:
         logger.warning(f"<<< {group.layer_names=}")
         for name in group.layer_names:
@@ -350,9 +348,8 @@ def should_compute_prefix_meta(vllm_config, metadata) -> bool:
     """
     if metadata is None:
         return False
-    num_prefills = getattr(metadata, 'num_prefills', 0)
-    if (not vllm_config.cache_config.enable_prefix_caching and \
-        not vllm_config.scheduler_config.enable_chunked_prefill):
+    num_prefills = getattr(metadata, "num_prefills", 0)
+    if not vllm_config.cache_config.enable_prefix_caching and not vllm_config.scheduler_config.enable_chunked_prefill:
         return False
     if num_prefills <= 0 and vllm_config.cache_config.enable_prefix_caching:
         # NOTE: currently does not support decode-side APC w/ omnicache
@@ -378,9 +375,7 @@ def attach_prefix_meta_to_metadata(vllm_config, metadata, common_attn_metadata) 
     if cache is None:
         return False
 
-    prefix_meta = cache.compute_prefix_meta_from_metadata(
-        vllm_config, metadata, common_attn_metadata
-    )
+    prefix_meta = cache.compute_prefix_meta_from_metadata(vllm_config, metadata, common_attn_metadata)
     metadata.prefix_meta = prefix_meta
     return prefix_meta is not None
 

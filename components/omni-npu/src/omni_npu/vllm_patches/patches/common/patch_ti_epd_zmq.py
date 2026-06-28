@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
-#
-# EPD ZMQ: merges ``ec_connector_metadata`` into ``EngineCoreOutput.kv_transfer_params``
-# after ``Scheduler.update_from_output``, propagates ``ec_transfer_params`` on API responses,
-# and threads params through the engine/output path.
-#
-# This file must load *after* ``patch_routed_experts.py`` (``patch_ti_epd_zmq`` sorts later)
-# so relay registrations overwrite the same ``register_patch`` names and call upstream.
-#
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 from __future__ import annotations
 

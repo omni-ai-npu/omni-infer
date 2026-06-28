@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Base Plugin Interface
 # ============================================================================
 
+
 class AttentionPlugin:
     """Base class for attention plugins.
 
@@ -67,6 +68,7 @@ class AttentionPlugin:
 # Plugin Registry
 # ============================================================================
 
+
 class AttentionPluginRegistry:
     """Simple registry for attention plugins.
 
@@ -106,6 +108,7 @@ class AttentionPluginRegistry:
 # Decorator Factory
 # ============================================================================
 
+
 def create_attn_decorator(attn_type: str) -> Callable:
     """Create a decorator that wraps attention with pre/post hooks.
 
@@ -122,13 +125,14 @@ def create_attn_decorator(attn_type: str) -> Callable:
         def _apply_attention(self, ...):
             ...
     """
+
     def decorator(orig_func: Callable) -> Callable:
         @functools.wraps(orig_func)
         def wrapper(*args, **kwargs):
             # Get instance and ensure layer_name is in kwargs for plugins
             instance = args[0] if args else None
-            if 'layer_name' not in kwargs and instance is not None:
-                kwargs['layer_name'] = getattr(instance, 'prefix', 'default_layer_name')
+            if "layer_name" not in kwargs and instance is not None:
+                kwargs["layer_name"] = getattr(instance, "prefix", "default_layer_name")
 
             # Get plugin
             plugin = AttentionPluginRegistry.get(attn_type)
@@ -175,6 +179,7 @@ dsa_attn_decorator = create_attn_decorator("dsa")
 
 # MOME decorator
 mome_attn_decorator = create_attn_decorator("mome")
+
 
 def _drain_d2h_stage(oc, s):
     """Wait for all D2H futures + d2h_stream events on stage `s`, then clear."""
@@ -248,6 +253,7 @@ def _moe_post_sync():
         free.
     """
     import os
+
     if not int(os.environ.get("ENABLE_OMNI_CACHE", "0")):
         return
     try:
@@ -290,6 +296,7 @@ def _create_moe_decorator():
     into the wrapped function (FusedMoE.forward has a strict signature).
     """
     import functools as _ft
+
     def decorator(orig_func):
         @_ft.wraps(orig_func)
         def wrapper(*args, **kwargs):
@@ -299,7 +306,9 @@ def _create_moe_decorator():
             except Exception as e:
                 logger.warning(f"moe post-sync failed: {e}")
             return result
+
         return wrapper
+
     return decorator
 
 

@@ -60,6 +60,7 @@ def setup_vllm(is_prefill, port_list, log_file_prefix=None):
         log_file_prefix = LOG_FILE_PREFIX
     env = os.environ.copy()
     env["VLLM_USE_V1"] = "1"
+    env["VLLM_CPU_KVCACHE_SPACE"] = "48"
     env['RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES'] = "1"
     env['PYTHONHASHSEED'] = '123'
     env["COVERAGE_PROCESS_START"] = f"{COVRC_DIR}/.coveragerc"

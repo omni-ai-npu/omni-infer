@@ -44,7 +44,7 @@ void omni_health_send_response(omni_health_check_job_t *job) {
     ngx_str_t health_json = omni_health_status_export_json(omni_get_global_state(), r->pool);
 
     r->headers_out.status = NGX_HTTP_OK;
-    r->headers_out.content_length_n = health_json.len;
+    r->headers_out.content_length_n = (off_t)health_json.len;
     r->headers_out.content_type.len = sizeof("application/json") - 1;
     r->headers_out.content_type.data = (u_char *)"application/json";
     r->headers_out.content_type_len = r->headers_out.content_type.len;

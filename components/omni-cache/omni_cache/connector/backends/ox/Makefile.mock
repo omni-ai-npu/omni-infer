@@ -1,0 +1,50 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Makefile for mock_ox — a mock OX binary for ZMQ stress testing
+#
+# Usage:
+#   make -f Makefile.mock          # build mock_ox
+#   make -f Makefile.mock clean    # remove build artifacts
+
+# Compiler and language standard
+CXX      := g++
+CXXSTD   := -std=c++20
+
+# Preprocessor macros, warnings, and optimisation flags
+# NOTE: Do NOT define NDEBUG so that LOG_DEBUG/LOG_INFO are active
+CXXFLAGS := $(CXXSTD) -fcoroutines -I./ -Icpp_packages/msgpack-cxx-7.0.0/include -g -march=native \
+            -Wall -Wextra
+
+# Libraries to link against
+LIBS     := -lzmq -lpthread
+
+# Final executable name
+TARGET   := mock_ox
+
+# Source files
+SRCS     := mock_ox.cpp
+
+# Derive object file names automatically
+OBJS     := $(SRCS:.cpp=.o)
+
+# Default target
+all: $(TARGET)
+
+# Link object files into the executable
+$(TARGET): $(OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LIBS)
+	@echo "Removing object files..."
+	@rm -f $(OBJS)
+
+# Pattern rule to compile .cpp -> .o
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Remove build artefacts
+clean:
+	rm -f $(OBJS) $(TARGET)
+
+# Clean and rebuild everything from scratch
+rebuild: clean all
+
+# Declare phony targets
+.PHONY: all clean rebuild

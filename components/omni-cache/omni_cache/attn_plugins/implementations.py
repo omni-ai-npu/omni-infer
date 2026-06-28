@@ -25,6 +25,7 @@ from omni_cache.cache.utils.support import sync_h2d_event
 
 logger = logging.getLogger(__name__)
 
+
 class CompressMQAAttnPlugin(AttentionPlugin):
     """Plugin for compressed multi-query attention (DeepSeek-V3 style).
 
@@ -41,6 +42,7 @@ class CompressMQAAttnPlugin(AttentionPlugin):
         """Lazy load and cache omni_cache instance."""
         if self._omni_cache is None:
             from omni_cache.cache import omni_cache
+
             self._omni_cache = omni_cache
         return self._omni_cache
 
@@ -51,7 +53,7 @@ class CompressMQAAttnPlugin(AttentionPlugin):
             return True
         if self.omni_cache is None:
             return False
-        if hasattr(self.omni_cache, 'enable'):
+        if hasattr(self.omni_cache, "enable"):
             self._enabled = self.omni_cache.enable
         else:
             self._enabled = True
@@ -68,17 +70,15 @@ class CompressMQAAttnPlugin(AttentionPlugin):
             *args: Positional arguments (instance typically at args[0])
             **kwargs: Keyword arguments including attn_metadata and layer info
         """
-        import os
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
         # Extract instance from args (first positional argument)
-        instance = args[0] if args else kwargs.get('instance')
+        instance = args[0] if args else kwargs.get("instance")
 
         if instance is None:
             raise ValueError("instance is required in pre_attn")
 
         # Get forward context for full metadata dictionary
-        from vllm.forward_context import get_forward_context
         forward_ctx = get_forward_context()
         if forward_ctx is None:
             raise RuntimeError("forward_context is None")
@@ -86,24 +86,14 @@ class CompressMQAAttnPlugin(AttentionPlugin):
         if attn_metadata is None:
             return
 
-        # # Try to get stage_record from omni_cache
-        # stage_record = getattr(self.omni_cache, 'stage_record', None)
-        # if stage_record is None:
-        #     raise ValueError("omni_cache.stage_record is None")
-
-        # # Get device_cache
-        # device_cache = getattr(self.omni_cache, 'device_cache', None)
-        # if device_cache is None:
-        #     raise ValueError("omni_cache.device_cache is None")
-
         # Get metadata from kwargs (passed from _apply_attention)
-        win_metadata = kwargs.get('win_metadata')
-        cmp_metadata = kwargs.get('cmp_metadata')
+        win_metadata = kwargs.get("win_metadata")
+        cmp_metadata = kwargs.get("cmp_metadata")
 
         if win_metadata is None:
             raise ValueError("win_metadata is required for prefill phase")
 
-        num_prefills = getattr(win_metadata, 'num_prefills', None)
+        num_prefills = getattr(win_metadata, "num_prefills", None)
         if num_prefills is None or num_prefills == 0:
             return
 
@@ -134,6 +124,7 @@ class CompressMQAAttnPlugin(AttentionPlugin):
         except Exception as e:
             # Fallback to torch.npu.current_stream if omni_cache import fails
             from torch import npu
+
             current_stream = npu.current_stream
             logger.warning(
                 f"Failed to import current_stream from omni_cache.cache.utils: {e}, "
@@ -151,23 +142,23 @@ class CompressMQAAttnPlugin(AttentionPlugin):
         attn_names = []
 
         # Always include window attention prefix
-        win_prefix = getattr(instance.attn, 'win_prefix', None)
+        win_prefix = getattr(instance.attn, "win_prefix", None)
         if win_prefix is not None:
             attn_names.append(win_prefix)
 
         # Include compressed attention prefix if compress_ratio > 1
-        compress_ratio = getattr(instance, 'compress_ratio', 1)
+        compress_ratio = getattr(instance, "compress_ratio", 1)
         if compress_ratio > 1:
-            cmp_prefix = getattr(instance.attn, 'cmp_prefix', None)
+            cmp_prefix = getattr(instance.attn, "cmp_prefix", None)
             if cmp_prefix is not None:
                 attn_names.append(cmp_prefix)
 
         # Include indexer prefix if indexer exists
-        indexer = getattr(instance, 'indexer', None)
+        indexer = getattr(instance, "indexer", None)
         if indexer is not None:
-            k_cache = getattr(indexer, 'k_cache', None)
+            k_cache = getattr(indexer, "k_cache", None)
             if k_cache is not None:
-                k_cache_prefix = getattr(k_cache, 'prefix', None)
+                k_cache_prefix = getattr(k_cache, "prefix", None)
                 if k_cache_prefix is not None:
                     attn_names.append(k_cache_prefix)
 
@@ -179,23 +170,19 @@ class CompressMQAAttnPlugin(AttentionPlugin):
         for prefix in attn_names:
             if prefix == win_prefix:
                 attn_metadatas.append(win_metadata)
-            elif prefix == (getattr(instance.attn, 'cmp_prefix', None) if compress_ratio > 1 else None):
+            elif prefix == (getattr(instance.attn, "cmp_prefix", None) if compress_ratio > 1 else None):
                 attn_metadatas.append(cmp_metadata)
-            elif indexer is not None and prefix == (getattr(k_cache, 'prefix', None) if k_cache else None):
+            elif indexer is not None and prefix == (getattr(k_cache, "prefix", None) if k_cache else None):
                 # Get indexer metadata from attn_metadata dictionary
                 if prefix not in attn_metadata:
                     raise KeyError(f"Prefix {prefix} not found in attn_metadata")
                 attn_metadatas.append(attn_metadata[prefix])
 
         # Call omni_cache's D2H function
-        if not hasattr(self.omni_cache, 'synchronize_d2h_hybrid'):
+        if not hasattr(self.omni_cache, "synchronize_d2h_hybrid"):
             raise AttributeError("omni_cache does not have synchronize_d2h_hybrid method")
-        self.omni_cache.synchronize_d2h_hybrid(
-            attn_names,
-            attn_metadatas,
-            kv_event
-        )
-        logger.info(f"D2H transfer triggered for layers: {attn_names}")
+        self.omni_cache.synchronize_d2h_hybrid(attn_names, attn_metadatas, kv_event)
+        logger.info("D2H transfer triggered for layers: %s", attn_names)
 
     def post_attn(self, *args, **kwargs) -> None:
         """Post-attention hook: D2H done in pre_attn."""
@@ -217,6 +204,7 @@ class MLAAttnPlugin(AttentionPlugin):
     def omni_cache(self) -> Any:
         if self._omni_cache is None:
             from omni_cache.cache import omni_cache
+
             self._omni_cache = omni_cache
         return self._omni_cache
 
@@ -226,7 +214,7 @@ class MLAAttnPlugin(AttentionPlugin):
             return True
         if self.omni_cache is None:
             return False
-        if hasattr(self.omni_cache, 'enable'):
+        if hasattr(self.omni_cache, "enable"):
             self._enabled = self.omni_cache.enable
         else:
             self._enabled = True
@@ -238,7 +226,6 @@ class MLAAttnPlugin(AttentionPlugin):
         1. Wait for H2D from previous layer's post_attn to complete
         2. D2H for current layer (MLA KV written to HBM before attention)
         """
-        import os
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
 
@@ -247,39 +234,39 @@ class MLAAttnPlugin(AttentionPlugin):
         self._do_mla_d2h(*args, **kwargs)
 
     def _do_mla_d2h(self, *args, **kwargs) -> None:
-        import os
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
 
         # h2d_event.synchronize() is called in pre_attn before this method.
 
         # Extract instance from args
-        if type(self.omni_cache).__name__ != 'PrefillOmniCache':
+        if type(self.omni_cache).__name__ != "PrefillOmniCache":
             return
-        instance = args[0] if args else kwargs.get('instance')
-        attn_metadata = kwargs.get('attn_metadata')
+        instance = args[0] if args else kwargs.get("instance")
+        attn_metadata = kwargs.get("attn_metadata")
         if attn_metadata is None:
             forward_context = get_forward_context()
             attn_metadata = forward_context.attn_metadata
 
-        if attn_metadata is None or type(attn_metadata).__name__ == 'NPUMLADecodeMetadata':
+        if attn_metadata is None or type(attn_metadata).__name__ == "NPUMLADecodeMetadata":
             return
-        if hasattr(attn_metadata, 'prefill') and attn_metadata.prefill is not None:
+        if hasattr(attn_metadata, "prefill") and attn_metadata.prefill is not None:
             metadata = attn_metadata.prefill
-            if getattr(attn_metadata, 'num_prefills', 0) == 0:
+            if getattr(attn_metadata, "num_prefills", 0) == 0:
                 return
-        elif hasattr(attn_metadata, 'decode'):
+        elif hasattr(attn_metadata, "decode"):
             return
         else:
             metadata = attn_metadata
         from omni_cache.cache.utils.ops import current_stream
+
         main_stream = current_stream()
         kv_event = torch.npu.Event(blocking=False, enable_timing=False)
         kv_event.record(main_stream)
         mla_layer_name = None
-        if instance is not None and hasattr(instance, 'attn') and hasattr(instance.attn, 'prefix'):
+        if instance is not None and hasattr(instance, "attn") and hasattr(instance.attn, "prefix"):
             mla_layer_name = instance.attn.prefix
-        elif instance is not None and hasattr(instance, 'prefix'):
+        elif instance is not None and hasattr(instance, "prefix"):
             mla_layer_name = f"{instance.prefix}.attn"
         if mla_layer_name is None:
             return
@@ -289,7 +276,7 @@ class MLAAttnPlugin(AttentionPlugin):
             kv_event=kv_event,
         )
 
-        logger.debug(f"MLA D2H transfer completed for layer {mla_layer_name}")
+        logger.debug("MLA D2H transfer completed for layer %s", mla_layer_name)
 
     def post_attn(self, *args, **kwargs) -> None:
         """Post-attention hook: H2D for next layer's APC prefix cache.
@@ -297,23 +284,21 @@ class MLAAttnPlugin(AttentionPlugin):
         After current layer's attention is computed, copy next layer's
         prefix cache from host to device.
         """
-        import os
-
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
 
         # Extract instance from args
-        instance = args[0] if args else kwargs.get('instance')
+        instance = args[0] if args else kwargs.get("instance")
 
         # Get attn_metadata from kwargs
         # NOTE: attn_metadata here is NPUMLAPrefillMetadata (child object), not NPUMLAMetadata (parent)
         # This is because npu_mla_forward passes attn_metadata.prefill to _forward_prefill
-        attn_metadata = kwargs.get('attn_metadata')
+        attn_metadata = kwargs.get("attn_metadata")
         if attn_metadata is None:
             return
 
         # Get prefix_meta - it's set on the prefill metadata object
-        if hasattr(attn_metadata, 'prefix_meta'):
+        if hasattr(attn_metadata, "prefix_meta"):
             prefix_meta = attn_metadata.prefix_meta
         else:
             return
@@ -322,9 +307,9 @@ class MLAAttnPlugin(AttentionPlugin):
 
         # Get layer name and trigger H2D for NEXT layer
         mla_layer_name = None
-        if instance is not None and hasattr(instance, 'attn') and hasattr(instance.attn, 'prefix'):
+        if instance is not None and hasattr(instance, "attn") and hasattr(instance.attn, "prefix"):
             mla_layer_name = instance.attn.prefix
-        elif instance is not None and hasattr(instance, 'prefix'):
+        elif instance is not None and hasattr(instance, "prefix"):
             mla_layer_name = f"{instance.prefix}.attn"
 
         if mla_layer_name is not None:
@@ -352,6 +337,7 @@ class GeneralMQAAttnPlugin(AttentionPlugin):
     def omni_cache(self) -> Any:
         if self._omni_cache is None:
             from omni_cache.cache import omni_cache
+
             self._omni_cache = omni_cache
         return self._omni_cache
 
@@ -361,7 +347,7 @@ class GeneralMQAAttnPlugin(AttentionPlugin):
             return True
         if self.omni_cache is None:
             return False
-        if hasattr(self.omni_cache, 'enable'):
+        if hasattr(self.omni_cache, "enable"):
             self._enabled = self.omni_cache.enable
         else:
             self._enabled = True
@@ -398,10 +384,6 @@ class DSAAttnPlugin(AttentionPlugin):
                 self.layer_idx,
                 kv_event
             )
-            # omni_cache.synchronize_h2d(
-            #     prefix_meta=attn_metadata.prefill.prefix_meta,
-            #     layer_idx=self.layer_idx + 1,
-            # )
     """
 
     def __init__(self):
@@ -413,6 +395,7 @@ class DSAAttnPlugin(AttentionPlugin):
     def omni_cache(self) -> Any:
         if self._omni_cache is None:
             from omni_cache.cache import omni_cache
+
             self._omni_cache = omni_cache
         return self._omni_cache
 
@@ -422,7 +405,7 @@ class DSAAttnPlugin(AttentionPlugin):
             return True
         if self.omni_cache is None:
             return False
-        if hasattr(self.omni_cache, 'enable'):
+        if hasattr(self.omni_cache, "enable"):
             self._enabled = self.omni_cache.enable
         else:
             self._enabled = True
@@ -434,55 +417,54 @@ class DSAAttnPlugin(AttentionPlugin):
         1. Wait for H2D from previous layer's post_attn to complete
         2. D2H for current layer (KV written by previous layer's forward)
         """
-        import os
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
 
-        if type(self.omni_cache).__name__ == 'PrefillOmniCache':
+        if type(self.omni_cache).__name__ == "PrefillOmniCache":
             sync_h2d_event(self.omni_cache)
 
         return self._do_d2h_common(*args, **kwargs)
 
     def _do_d2h_common(self, *args, **kwargs):
         """Shared D2H body — called from pre_attn."""
-        import os
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
 
         # h2d_event.synchronize() is called in pre_attn before this method.
 
         # Extract instance from args
-        instance = args[0] if args else kwargs.get('instance')
+        instance = args[0] if args else kwargs.get("instance")
 
         layer_name = kwargs.get("layer_name")
         if layer_name is None and instance is not None:
-            layer_name = getattr(instance, 'prefix', None)
+            layer_name = getattr(instance, "prefix", None)
 
-        attn_metadata = kwargs.get('attn_metadata')
+        attn_metadata = kwargs.get("attn_metadata")
         if attn_metadata is None:
             return
-        if hasattr(attn_metadata, 'prefill') and attn_metadata.prefill is not None:
+        if hasattr(attn_metadata, "prefill") and attn_metadata.prefill is not None:
             metadata = attn_metadata.prefill
-            num_prefills = getattr(attn_metadata, 'num_prefills', 0)
+            num_prefills = getattr(attn_metadata, "num_prefills", 0)
             if num_prefills == 0:
                 raise ValueError("Expected prefill phase but num_prefills is 0")
-        elif attn_metadata.__class__.__name__ == "NPUDSADecodeMetadata" or \
-                (hasattr(attn_metadata, 'decode') and attn_metadata.decode is not None):
-            decode = getattr(attn_metadata, 'decode', None)
+        elif attn_metadata.__class__.__name__ == "NPUDSADecodeMetadata" or (
+            hasattr(attn_metadata, "decode") and attn_metadata.decode is not None
+        ):
+            decode = getattr(attn_metadata, "decode", None)
 
-            topk_idx = kwargs.get('topk_idx')
-            topk_key = 'topk_idx'
+            topk_idx = kwargs.get("topk_idx")
+            topk_key = "topk_idx"
             if topk_idx is None:
-                topk_idx = kwargs.get('topk_indices')
-                topk_key = 'topk_indices'
+                topk_idx = kwargs.get("topk_indices")
+                topk_key = "topk_indices"
 
-            kv_lens = kwargs.get('kv_lens') or (decode.seq_lens if decode else None)
-            block_table = kwargs.get('block_table') or (decode.block_table if decode else None)
-            query_cumlens = kwargs.get('q_cumlens') or (decode.query_cumlens if decode else None)
+            kv_lens = kwargs.get("kv_lens") or (decode.seq_lens if decode else None)
+            block_table = kwargs.get("block_table") or (decode.block_table if decode else None)
+            query_cumlens = kwargs.get("q_cumlens") or (decode.query_cumlens if decode else None)
 
             if not self.omni_cache.enable_gs:
                 return
-            kv_cache = kwargs.get('kv_cache')
+            kv_cache = kwargs.get("kv_cache")
             attn_kwargs = {
                 "sparse_indices": topk_idx,
                 "actual_seq_lengths_kv": kv_lens,
@@ -490,30 +472,35 @@ class DSAAttnPlugin(AttentionPlugin):
                 "value": kv_cache[0].unsqueeze(-2),
                 "actual_seq_lengths_query": query_cumlens,
             }
-            self.omni_cache.gather_selection(attn_kwargs, self.omni_cache._layer_name_to_group_and_layer_idx(f"{layer_name}.attn")[1], attn_type="DSA")
-            kv_cache = (attn_kwargs['value'].squeeze(-2),) + kv_cache[1:]
+            self.omni_cache.gather_selection(
+                attn_kwargs,
+                self.omni_cache._layer_name_to_group_and_layer_idx(f"{layer_name}.attn")[1],
+                attn_type="DSA",
+            )
+            kv_cache = (attn_kwargs["value"].squeeze(-2),) + kv_cache[1:]
             result = {
-                'kv_cache': kv_cache,
-                topk_key: attn_kwargs['sparse_indices'],
+                "kv_cache": kv_cache,
+                topk_key: attn_kwargs["sparse_indices"],
             }
             if decode is not None:
-                decode.block_table = attn_kwargs['block_table']
+                decode.block_table = attn_kwargs["block_table"]
             else:
-                result['block_table'] = attn_kwargs['block_table']
+                result["block_table"] = attn_kwargs["block_table"]
             return result
 
         else:
             metadata = attn_metadata
-        if type(self.omni_cache).__name__ != 'PrefillOmniCache':
+        if type(self.omni_cache).__name__ != "PrefillOmniCache":
             return
         from omni_cache.cache.utils.ops import current_stream
+
         main_stream = current_stream()
         kv_event = torch.npu.Event(blocking=False, enable_timing=False)
         kv_event.record(main_stream)
         dsa_layer_name = None
-        if instance is not None and hasattr(instance, 'attn') and hasattr(instance.attn, 'prefix'):
+        if instance is not None and hasattr(instance, "attn") and hasattr(instance.attn, "prefix"):
             dsa_layer_name = instance.attn.prefix
-        elif instance is not None and hasattr(instance, 'prefix'):
+        elif instance is not None and hasattr(instance, "prefix"):
             dsa_layer_name = f"{instance.prefix}.attn"
         if dsa_layer_name is None:
             raise ValueError("Cannot determine DSA layer_name")
@@ -530,24 +517,22 @@ class DSAAttnPlugin(AttentionPlugin):
         After current layer's attention is computed, copy next layer's
         prefix cache from host to device.
         """
-        import os
-
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
 
-        if type(self.omni_cache).__name__ != 'PrefillOmniCache':
+        if type(self.omni_cache).__name__ != "PrefillOmniCache":
             return
-        instance = args[0] if args else kwargs.get('instance')
+        instance = args[0] if args else kwargs.get("instance")
 
         # Get attn_metadata from kwargs
         # NOTE: attn_metadata here is NPUDSAPrefillMetadata (child object), not NPUDSAMetadata (parent)
         # This is because npu_dsa_forward passes attn_metadata.prefill to _forward_prefill
-        attn_metadata = kwargs.get('attn_metadata')
+        attn_metadata = kwargs.get("attn_metadata")
         if attn_metadata is None:
             return
 
         # Get prefix_meta - it's set on the prefill metadata object
-        if hasattr(attn_metadata, 'prefix_meta'):
+        if hasattr(attn_metadata, "prefix_meta"):
             prefix_meta = attn_metadata.prefix_meta
         else:
             return
@@ -557,9 +542,9 @@ class DSAAttnPlugin(AttentionPlugin):
 
         # Get layer name and trigger H2D for NEXT layer
         dsa_layer_name = None
-        if instance is not None and hasattr(instance, 'attn') and hasattr(instance.attn, 'prefix'):
+        if instance is not None and hasattr(instance, "attn") and hasattr(instance.attn, "prefix"):
             dsa_layer_name = instance.attn.prefix
-        elif instance is not None and hasattr(instance, 'prefix'):
+        elif instance is not None and hasattr(instance, "prefix"):
             dsa_layer_name = f"{instance.prefix}.attn"
 
         if dsa_layer_name is not None:
@@ -573,9 +558,7 @@ class DSAAttnPlugin(AttentionPlugin):
 
 
 class MOMEAttnPlugin(AttentionPlugin):
-    """Plugin for standard multi-query attention without compression.
-
-    """
+    """Plugin for standard multi-query attention without compression."""
 
     def __init__(self):
         super().__init__()
@@ -586,6 +569,7 @@ class MOMEAttnPlugin(AttentionPlugin):
     def omni_cache(self) -> Any:
         if self._omni_cache is None:
             from omni_cache.cache import omni_cache
+
             self._omni_cache = omni_cache
         return self._omni_cache
 
@@ -595,7 +579,7 @@ class MOMEAttnPlugin(AttentionPlugin):
             return True
         if self.omni_cache is None:
             return False
-        if hasattr(self.omni_cache, 'enable'):
+        if hasattr(self.omni_cache, "enable"):
             self._enabled = self.omni_cache.enable
         else:
             self._enabled = True
@@ -607,17 +591,15 @@ class MOMEAttnPlugin(AttentionPlugin):
         Sync once per layer at qa_conv (first conv) to ensure H2D from
         previous layer's post_attn has completed before this layer reads.
         """
-        import os
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
 
         sync_h2d_event(self.omni_cache)
 
     def post_attn(self, *args, **kwargs) -> None:
-        import os
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
-        if type(self.omni_cache).__name__ != 'PrefillOmniCache':
+        if type(self.omni_cache).__name__ != "PrefillOmniCache":
             return
 
         # apply_mome_conv() is invoked three times per MoMe layer in
@@ -628,10 +610,10 @@ class MOMEAttnPlugin(AttentionPlugin):
         # done). Gate on the o_conv identity so the qa/compresskv
         # invocations are no-ops here. (See pre_attn for the
         # corresponding qa_conv-gated h2d_event.synchronize.)
-        instance = args[0] if args else kwargs.get('instance')
-        conv_layer = kwargs.get('conv_layer')
+        instance = args[0] if args else kwargs.get("instance")
+        conv_layer = kwargs.get("conv_layer")
         if not conv_layer:
-            conv_layer = kwargs.get('layer')
+            conv_layer = kwargs.get("layer")
         if not conv_layer:
             conv_layer = args[2] if len(args) > 2 else None
 
@@ -639,22 +621,22 @@ class MOMEAttnPlugin(AttentionPlugin):
             return
         do_d2h = True
         do_h2d = True
-        if conv_layer is not getattr(instance, 'o_conv', None):
+        if conv_layer is not getattr(instance, "o_conv", None):
             do_d2h = False
             do_h2d = False
 
         # Get attn_metadata from kwargs
-        attn_metadata = kwargs.get('mome_metadata')
+        attn_metadata = kwargs.get("mome_metadata")
         if attn_metadata is None:
             return
 
         # Check if this is prefill phase
-        if hasattr(attn_metadata, 'prefill') and attn_metadata.prefill is not None:
+        if hasattr(attn_metadata, "prefill") and attn_metadata.prefill is not None:
             metadata = attn_metadata.prefill
-            num_prefills = getattr(attn_metadata, 'num_prefills', 0)
+            num_prefills = getattr(attn_metadata, "num_prefills", 0)
             if num_prefills == 0:
                 raise ValueError("Expected prefill phase but num_prefills is 0")
-        elif hasattr(attn_metadata, 'decode'):
+        elif hasattr(attn_metadata, "decode"):
             return
         else:
             # already get prefill_metadata from attn_metadata
@@ -669,7 +651,7 @@ class MOMEAttnPlugin(AttentionPlugin):
 
         # Get MOME layer name
         mome_layer_name = None
-        if instance is not None and hasattr(instance, 'prefix'):
+        if instance is not None and hasattr(instance, "prefix"):
             mome_layer_name = f"{instance.prefix}.mome"
 
         if mome_layer_name is None:
@@ -678,18 +660,14 @@ class MOMEAttnPlugin(AttentionPlugin):
         # Offload AFTER apply_mome_conv finished updating the device conv_state
         # for this layer.
         if do_d2h:
-            self.omni_cache.synchronize_d2h(
-                attn_names=[mome_layer_name],
-                attn_metadatas=[metadata],
-                kv_event=kv_event
-            )
+            self.omni_cache.synchronize_d2h(attn_names=[mome_layer_name], attn_metadatas=[metadata], kv_event=kv_event)
 
-        logger.debug(f"MOME D2H transfer completed for layer {mome_layer_name}")
+        logger.debug("MOME D2H transfer completed for layer %s", mome_layer_name)
 
         # H2D prefetch the next layer's prefix cache so the next attention
         # kernel can read it when it runs. Mirrors what MLAAttnPlugin /
         # DSAAttnPlugin do for their layers.
-        prefix_meta = getattr(attn_metadata, 'prefix_meta', None)
+        prefix_meta = getattr(attn_metadata, "prefix_meta", None)
         if do_h2d and prefix_meta is not None:
             self.omni_cache.synchronize_h2d(
                 prefix_meta=prefix_meta,
@@ -722,15 +700,16 @@ class ModelForwardPlugin:
         return
 
     def post_model_forward(self, *args, **kwargs) -> None:  # noqa: D401
-        import os
         # E3 diagnostic: dump prefill KV before ENABLE_OMNI_CACHE check
         if int(os.getenv("OMNI_DUMP_PREFILL_KV", "0")):
             from omni_cache.attn_plugins.implementations import _dump_prefill_kv
             import omni_cache.cache as _cache_mod_e3
+
             _dump_prefill_kv(getattr(_cache_mod_e3, "omni_cache", None))
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
         import omni_cache.cache as _cache_mod
+
         oc = getattr(_cache_mod, "omni_cache", None)
         # Diagnostic dump: OMNI_CACHE_DUMP_HOST_POOL=<path_prefix> writes
         # the full host-pool kvi_tensors to disk exactly once per process.
@@ -761,6 +740,7 @@ class ModelForwardPlugin:
         # KV diagnostics: probe prefill host pool after all D2H threads
         # have completed (flush_pending_d2h ensures stream synchronization).
         from tools.diagnostics.probes import probe_prefill_host, clear_accumulators
+
         probe_prefill_host(oc, kvi_tensors=oc.host_cache.kvi_tensors, dp_rank=oc.dp_local_rank)
         clear_accumulators()
 
@@ -779,6 +759,7 @@ class ModelForwardPlugin:
         # only after unifying the pool shapes or implementing a
         # separate MoMe transfer channel.
         import os as _os_snap
+
         if not int(_os_snap.getenv("OMNI_CACHE_MOME_SNAPSHOT", "0")):
             return
         snap = getattr(oc, "snapshot_mome_states", None)
@@ -794,7 +775,6 @@ class ModelForwardPlugin:
 
         Enabled by `OMNI_CACHE_DUMP_HOST_POOL=<path_prefix>`.
         Writes `<prefix>.tp<rank>.req<N>.pt` each call."""
-        import os
         prefix = os.getenv("OMNI_CACHE_DUMP_HOST_POOL")
         if not prefix:
             return
@@ -805,19 +785,20 @@ class ModelForwardPlugin:
         if req_idx >= max_dumps:
             return
         try:
-            import torch
             host_cache = getattr(oc, "host_cache", None)
             kvi = getattr(host_cache, "kvi_tensors", None) if host_cache else None
             if not kvi:
                 return
             tp_rank = getattr(oc, "tp_rank", 0)
             path = f"{prefix}.tp{tp_rank}.req{req_idx}.pt"
+
             def _flat(obj, out):
-                if hasattr(obj, 'shape') and hasattr(obj, 'detach'):
+                if hasattr(obj, "shape") and hasattr(obj, "detach"):
                     out.append(obj)
                 elif isinstance(obj, (list, tuple)):
                     for x in obj:
                         _flat(x, out)
+
             flat = []
             for entry in kvi:
                 _flat(entry, flat)
@@ -825,6 +806,7 @@ class ModelForwardPlugin:
             stash = None
             try:
                 from vllm.platforms import current_platform as _cp
+
                 ib = _cp.get_input_batch() if hasattr(_cp, "get_input_batch") else None
                 if ib is not None:
                     stash = getattr(ib, "_real_block_tables_per_group", None)
@@ -835,6 +817,7 @@ class ModelForwardPlugin:
             # Per-block CRC32. Host pool shape is (dp_or_1, blocks, block_size, hidden).
             # Blocks live on axis 1 (env overridable). We only hash blocks 0..N-1 (env).
             import zlib
+
             n_raw = int(os.getenv("OMNI_CACHE_DUMP_NBLOCKS", "0"))
             block_axis = int(os.getenv("OMNI_CACHE_DUMP_BLOCK_AXIS", "1"))
             max_blocks = int(os.getenv("OMNI_CACHE_DUMP_MAXBLK", "32"))
@@ -876,7 +859,9 @@ class ModelForwardPlugin:
 def _dump_prefill_kv(oc) -> None:
     """Dump SHA-256 of prefill HBM KV for each decoder layer. E3 diagnostic.
     Works with oc=None for baseline mode (uses vllm forward context)."""
-    import hashlib, json
+    import hashlib
+    import json
+
     out_dir = os.environ.get("OMNI_DUMP_PREFILL_KV_DIR", "/tmp/kv_dumps_prefill")
     os.makedirs(out_dir, exist_ok=True)
     tp_rank = getattr(oc, "tp_rank", 0) if oc else 0
@@ -887,7 +872,6 @@ def _dump_prefill_kv(oc) -> None:
     if model is None:
         # Fallback: try vllm forward context
         try:
-            from vllm.forward_context import get_forward_context
             ctx = get_forward_context()
             model = getattr(ctx, "model", None)
         except Exception:
@@ -912,7 +896,9 @@ def _dump_prefill_kv(oc) -> None:
                 if hasattr(t, "shape") and t.numel() > 0:
                     h = hashlib.sha256(t.detach().cpu().numpy().tobytes()).hexdigest()[:16]
                     with open(f"{out_dir}/prefill_L{li:03d}_c{ci}_tp{tp_rank}.json", "w") as f:
-                        json.dump({"layer": li, "component": ci, "tp_rank": tp_rank, "hash": h, "shape": list(t.shape)}, f)
+                        json.dump(
+                            {"layer": li, "component": ci, "tp_rank": tp_rank, "hash": h, "shape": list(t.shape)}, f
+                        )
         elif hasattr(kv, "shape") and kv.numel() > 0:
             h = hashlib.sha256(kv.detach().cpu().numpy().tobytes()).hexdigest()[:16]
             with open(f"{out_dir}/prefill_L{li:03d}_tp{tp_rank}.json", "w") as f:
@@ -935,6 +921,7 @@ class MoEFFNPlugin(AttentionPlugin):
 
     def post_attn(self, *args, **kwargs):
         from omni_cache.attn_plugins.base import _moe_post_sync
+
         try:
             _moe_post_sync()
         except Exception:
@@ -948,15 +935,16 @@ class UpdateFromOutputPlugin:
     def post_update_from_output(self, *args, result=None, **kwargs) -> None:
         if result is None:
             return
-        
+
         from vllm.v1.outputs import ModelRunnerOutput
+
         model_runner_output = kwargs.get("model_runner_output") or (args[2] if len(args) > 2 else None)
         if model_runner_output is None or not isinstance(model_runner_output, ModelRunnerOutput):
             return
-        
-        reuse_rate = getattr(model_runner_output, 'reuse_rate', None)
+
+        reuse_rate = getattr(model_runner_output, "reuse_rate", None)
         eco = result.get(0)
-        if eco is not None and hasattr(eco, 'scheduler_stats') and eco.scheduler_stats is not None:
+        if eco is not None and hasattr(eco, "scheduler_stats") and eco.scheduler_stats is not None:
             eco.scheduler_stats.reuse_rate = reuse_rate
 
 
@@ -967,12 +955,13 @@ class ModelOutputPlugin:
     def post_model_output(self, *args, result=None, **kwargs) -> None:
         if result is None:
             return
-        result = getattr(result, '_model_runner_output', result)
-        
+        result = getattr(result, "_model_runner_output", result)
+
         try:
             import omni_cache.cache as cache_module
+
             oc = getattr(cache_module, "omni_cache", None)
-            if oc is not None and hasattr(oc, 'reuse_rate'):
+            if oc is not None and hasattr(oc, "reuse_rate"):
                 result.reuse_rate = oc.reuse_rate.tolist()
             else:
                 result.reuse_rate = None
@@ -987,7 +976,6 @@ __all__ = [
     "DSAAttnPlugin",
     "MOMEAttnPlugin",
     "MoEFFNPlugin",
-
     "ModelForwardPlugin",
     "UpdateFromOutputPlugin",
     "ExecuteModelPlugin",

@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """YaRN (Yet another RoPE extensioN) scaling rotary embedding implementation.
 

@@ -21,6 +21,7 @@ Per-type sizing:
 Each group also gets a metadata dict with:
     {"kind", "block_size", "req_offset", "block_table", "block_table_ts"}
 """
+
 import dataclasses
 
 import torch
@@ -55,13 +56,6 @@ def _is_sliding_window_spec(spec) -> bool:
 def _req_offset_for_spec(spec: KVCacheSpec, max_model_len: int) -> int:
     """Number of HBM block slots reserved per request in this attention group."""
     if _is_sliding_window_spec(spec):
-        # The slot_mapping formula in mla_ext._recompute_decode_slot_mapping is
-        #   slot = (num_computed - num_leading*block_size) + block_size + lane_base
-        # which hovers near sliding_window + block_size (up to 2*block_size-1
-        # extra from the block_size addition). We need at least
-        # ceil(sliding_window/block_size) + 1 blocks for the window, plus one
-        # more for the leading null/rotating block so the addressed slot stays
-        # inside this request lane instead of spilling into the next lane.
         return max(1, (spec.sliding_window + spec.block_size - 1) // spec.block_size + 1)
     # DSA / MLA / full attention: cover the full sequence.
     return max(1, (max_model_len + spec.block_size - 1) // spec.block_size + 1)
@@ -86,12 +80,10 @@ def _alloc_attention(cache_obj, spec: AttentionSpec, num_blocks: int, device):
         so HBM buffer layout matches the host-side view.
         """
         if isinstance(spec, DSAAttentionSpec):
-            indexer_dim = (
-                getattr(hf_config, "index_head_dim", None)
-                or getattr(hf_config, "indexer_head_dim", None)
-            )
+            indexer_dim = getattr(hf_config, "index_head_dim", None) or getattr(hf_config, "indexer_head_dim", None)
             if not indexer_dim:
                 from omni_cache.cache.memory.constants import INDEXER_HEAD_DIM
+
                 indexer_dim = INDEXER_HEAD_DIM
             return [indexer_dim]
 
@@ -106,9 +98,9 @@ def _alloc_attention(cache_obj, spec: AttentionSpec, num_blocks: int, device):
         return [spec.head_size]
 
     head_sizes = _derive_attention_head_sizes(spec, hf_cfg)
-    # FIXME(runze): using unpadded page_size_bytes here causes accuracy bugs, which should be fixed
-    page_size_bytes = block_size * head_sizes[0] * spec.dtype.itemsize \
-        if isinstance(spec, DSAAttentionSpec) else spec.page_size_bytes
+    page_size_bytes = (
+        block_size * head_sizes[0] * spec.dtype.itemsize if isinstance(spec, DSAAttentionSpec) else spec.page_size_bytes
+    )
     tensor_raw = torch.zeros(num_blocks * page_size_bytes, dtype=torch.int8, device=device)
     if spec.num_kv_heads == 1:
         shapes = tuple([(hs,) for hs in head_sizes])
@@ -137,8 +129,9 @@ def _alloc_mome(cache_obj, spec, num_blocks, device):
     if not isinstance(spec, MomeSpec):
         raise ValueError(f"{type(spec)} is not a subclass of MomeSpec.")
 
-    assert len(set(spec.dtypes)) == 1, f"MomeSpec with different dtypes {spec.dtypes} for sub-components is not supported yet."
-    # FIXME(runze): using unpadded page_size_bytes here causes accuracy bugs, which should be fixed
+    assert len(set(spec.dtypes)) == 1, (
+        f"MomeSpec with different dtypes {spec.dtypes} for sub-components is not supported yet."
+    )
     page_size_bytes = spec.page_size_bytes
     tensor_raw = torch.zeros(num_blocks * page_size_bytes, dtype=torch.int8, device=device)
 
@@ -174,45 +167,52 @@ def construct_hbm_buffer(decode_cache) -> tuple:
 
         if _is_mome_spec(spec):
             req_offset = 1
-            num_blocks = max_num_reqs * req_offset + 1  # FIXME(runze): think of a better way to adjust number of device blocks
+            num_blocks = (
+                max_num_reqs * req_offset + 1
+            )
             for layer_name in group_config.layer_names:
-                group_cache[layer_name], group_cache_raw[layer_name] = _alloc_mome(decode_cache, spec, num_blocks, device)
+                group_cache[layer_name], group_cache_raw[layer_name] = _alloc_mome(
+                    decode_cache, spec, num_blocks, device
+                )
             block_pool = {
                 "kind": "mamba",
                 "req_offset": 1,
                 "hbm_buffer_pool_raw": group_cache_raw,
                 "block_size": spec.num_total_tokens,
-                "block_table": list(range(max_num_reqs)),  # FIXME: should start from 1
+                "block_table": list(range(max_num_reqs)),
             }
         elif _is_attention_spec(spec):
             req_offset = _req_offset_for_spec(spec, max_model_len=max_model_len)
-            num_blocks = max_num_reqs * req_offset + 1  # FIXME(runze): think of a better way to adjust number of device blocks
+            num_blocks = (
+                max_num_reqs * req_offset + 1
+            )
             # for dsa, indexer cache and kv cache share the same kv group, need make them the same block number
             if isinstance(spec, DSAAttentionSpec):
                 num_blocks = decode_cache.num_blocks
             for layer_name in group_config.layer_names:
-                group_cache[layer_name], group_cache_raw[layer_name] = _alloc_attention(decode_cache, spec, num_blocks, device)
+                group_cache[layer_name], group_cache_raw[layer_name] = _alloc_attention(
+                    decode_cache, spec, num_blocks, device
+                )
             block_pool = {
                 "kind": "attention",
                 "req_offset": req_offset,
                 "hbm_buffer_pool_raw": group_cache_raw,
                 "block_size": spec.block_size,
-                "block_table": list(range(1, num_blocks)),  # FIXME: should be `num_blocks+1`
+                "block_table": list(range(1, num_blocks)),
             }
         else:
             raise NotImplementedError(f"Spec {spec} is not supported yet.")
 
         logger.debug(
             "[HBM-BUFFER] spec=%s len(group_cache_raw)=%d layer_shapes=%s raw_shape=%s",
-            spec, len(group_cache_raw),
+            spec,
+            len(group_cache_raw),
             [_t.shape for _t in group_cache[layer_name]],
             group_cache_raw[layer_name].shape,
         )
 
         # NOTE: block_table_ts is only for DSV4 compress attn metadata build
-        block_pool["block_table_ts"] = torch.tensor(
-            block_pool["block_table"], dtype=torch.int32, device=device
-        )
+        block_pool["block_table_ts"] = torch.tensor(block_pool["block_table"], dtype=torch.int32, device=device)
         hbm_buffer_pool.append(group_cache)
         hbm_buffer_block_table_pool.append(block_pool)
 

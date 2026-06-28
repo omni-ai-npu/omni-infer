@@ -10,6 +10,7 @@ import argparse
 
 app = FastAPI()
 
+
 @app.api_route("/v1/chat/completions", methods=["POST", "GET"])
 async def generate(request: Request):
     response_data = {
@@ -38,7 +39,7 @@ async def generate(request: Request):
         "kv_transfer_params": {
             "remote_block_ids": [1],
             "remote_cluster_id": 0,
-            "remote_host_ip": "tcp://127.0.0.1:5568",
+            "remote_host_ip": "tcp://localhost:5568",
             "spec_token_ids": [],
             "remote_dp_rank": 0,
             "remote_request_id": f"chatcmpl-{uuid.uuid4().hex}",

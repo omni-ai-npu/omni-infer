@@ -234,36 +234,6 @@
         "n_shared_experts": 2,
         "moe_intermediate_size": 1280
     },
-    "pangu_v2_moe_34B":{
-        "model_type": "pangu_v2_moe",
-        "hidden_size": 2560,
-        "num_attention_heads": 32,
-        "vocab_size": 151552,
-        "intermediate_size": 6144,
-        "n_routed_experts": 192,
-        "n_shared_experts": 2,
-        "moe_intermediate_size": 512
-    },
-    "pangu_v2_moe_92B":{
-        "model_type": "pangu_v2_moe",
-        "hidden_size": 2560,
-        "num_attention_heads": 48,
-        "vocab_size": 151552,
-        "intermediate_size": 9216,
-        "n_routed_experts": 256,
-        "n_shared_experts": 1,
-        "moe_intermediate_size": 1024
-    },
-    "pangu_v2_moe_505B":{
-        "model_type": "pangu_v2_moe",
-        "hidden_size": 5120,
-        "num_attention_heads": 64,
-        "vocab_size": 151552,
-        "intermediate_size": 16128,
-        "n_routed_experts": 384,
-        "n_shared_experts": 1,
-        "moe_intermediate_size": 1792
-    },
     "openpangu_v2_35B":{
         "model_type": "openpangu_v2",
         "hidden_size": 2560,

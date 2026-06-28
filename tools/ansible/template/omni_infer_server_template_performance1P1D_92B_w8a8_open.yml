@@ -1,17 +1,4 @@
-# Copyright 2025 Huawei Technologies Co., Ltd
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ============================================================================
+# Copyright (c) 2026, Huawei Technologies Co., Ltd. All rights reserved.
 
 - name: run omniai
   hosts: all
@@ -21,12 +8,12 @@
 
   environment:
     # Global Configuration
-    LOG_PATH: "/home/perf/1p1d/server.log"
+    LOG_PATH: "/data/xxx/log"
     MODEL_PATH: "/data/weights/pangu_v2/92B/iter_0011840-W8A8-0509-skip_shared_experts"
     MODEL_LEN_MAX_PREFILL: "524288"
     MODEL_LEN_MAX_DECODE: "524288"
-    LOG_PATH_IN_EXECUTOR: "/home/perf/1p1d/log_path_in_executor"
-    CODE_PATH: "/home/perf/codes"
+    LOG_PATH_IN_EXECUTOR: "/data/xxx/log_path_in_executor"
+    CODE_PATH: "/data/xxx/codes"
     KV_CONNECTOR: "LLMDataDistConnector"
 
     # Configuration for containers
@@ -93,13 +80,14 @@
       export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
 
       # patch
-      export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
+      export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
       export HYBRID_ATTN_GROUP_SIZE=17
       export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
       export OMNI_NPU_VLLM_PATCHES="ALL"
       export CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_92B_xp1d_p_open.json"
 
       export PANGU_TOOL_CALL_ENDS_THINKING=1
+      export TORCH_COMPILE_DISABLE=1
 
       prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
@@ -183,7 +171,7 @@
       export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
 
       # patch
-      export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
+      export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
       export HYBRID_ATTN_GROUP_SIZE=17
       export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
       export OMNI_NPU_VLLM_PATCHES="ALL"
@@ -192,6 +180,7 @@
       export CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_92B_xp1d_d_open.json"
 
       export PANGU_TOOL_CALL_ENDS_THINKING=1
+      export TORCH_COMPILE_DISABLE=1
       
       # profling
       # export VLLM_TORCH_PROFILER_DIR=/home/perf/profiling/

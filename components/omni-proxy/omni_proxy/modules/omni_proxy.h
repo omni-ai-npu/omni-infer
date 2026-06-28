@@ -106,3 +106,5 @@ typedef struct omni_worker_local_state_s
 
 omni_global_state_t *omni_get_global_state();
 omni_worker_local_state_t *omni_get_local_state();
+
+extern ngx_module_t ngx_http_omni_proxy_module;

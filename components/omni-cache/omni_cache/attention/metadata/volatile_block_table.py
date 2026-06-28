@@ -72,8 +72,7 @@ def apply_volatile_block_table(
 
 
 def block_tables_copy(t: torch.Tensor) -> torch.Tensor:
-    """Defensive clone so the caller can stash a reference that won't
-    change if the framework mutates the original."""
+    """Clone a block table before the framework can mutate the original."""
     return t.detach().clone() if t is not None else t
 
 

@@ -1,21 +1,21 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-import hashlib
-import os
-import json
 import base64
+import hashlib
+import json
+import os
 import pickle
 import sys
 import traceback
 from typing import Dict, List, Tuple, Optional, Any, Union
 from dataclasses import dataclass
-import os
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 os.environ["VLLM_PLUGINS"] = ""
 os.environ["RAYON_NUM_THREADS"] = os.environ.get("RAYON_NUM_THREADS", "4")
 os.environ["TOKENIZERS_PARALLELISM"] = os.environ.get("TOKENIZERS_PARALLELISM", "true")
 os.environ["RAYON_MIN_CHUNK_SIZE"] = os.environ.get("RAYON_MIN_CHUNK_SIZE", "1024")
 
-if os.getenv("PYTHONHASHSEED") == None:
+if os.getenv("PYTHONHASHSEED") is None:
     raise ValueError("PYTHONHASHSEED must be set to use APC")
 
 print(f"Using {os.environ['PYTHONHASHSEED']} for block hash seed")
@@ -35,6 +35,7 @@ except ImportError:
 
 tokenizer: PreTrainedTokenizer = None
 
+
 @dataclass
 class PreprocessResult:
     """Container for preprocessing results matching vLLM format"""
@@ -52,6 +53,7 @@ def _normalize_model_path(model_path: str) -> str:
     model_path = os.path.expandvars(os.path.expanduser(str(model_path).strip()))
     return os.path.abspath(model_path) if os.path.exists(model_path) else model_path
 
+
 def load_tokenizer(model_path: str) -> PreTrainedTokenizer:
     """
     Load tokenizer identical to vLLM's implementation
@@ -63,7 +65,7 @@ def load_tokenizer(model_path: str) -> PreTrainedTokenizer:
         PreTrainedTokenizer: Loaded tokenizer instance
     """
     model_path = _normalize_model_path(model_path)
-    tokenizer = AutoTokenizer.from_pretrained(
+    loaded_tokenizer = AutoTokenizer.from_pretrained(
        model_path, 
        trust_remote_code=True,
        local_files_only=True
@@ -71,13 +73,14 @@ def load_tokenizer(model_path: str) -> PreTrainedTokenizer:
     
     
     # Set padding token identical to vLLM
-    if tokenizer.pad_token is None:
-        if tokenizer.eos_token is not None:
-            tokenizer.pad_token = tokenizer.eos_token
+    if loaded_tokenizer.pad_token is None:
+        if loaded_tokenizer.eos_token is not None:
+            loaded_tokenizer.pad_token = loaded_tokenizer.eos_token
         else:
-            tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+            loaded_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     
-    return tokenizer
+    return loaded_tokenizer
+
 
 def parse_tools_and_tool_choice(
     request: Dict[str, Any]
@@ -135,6 +138,7 @@ def parse_tools_and_tool_choice(
     
     return tools, tool_choice
 
+
 def extract_multi_modal_data(
     messages: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], Optional[Any]]:
@@ -180,8 +184,12 @@ def extract_multi_modal_data(
                                         "data": base64.b64decode(data),
                                         "format": header.split(";")[0].split("/")[1]
                                     })
-                                except:
-                                    # Fallback: keep as URL
+                                except (ValueError, IndexError) as e:
+                                    print(
+                                        f"extract_multi_modal_data: failed to decode "
+                                        f"data:image URI ({type(e).__name__}: {e}); "
+                                        f"falling back to URL form"
+                                    )
                                     mm_data_parts.append({
                                         "type": "image_url",
                                         "url": url
@@ -210,8 +218,9 @@ def extract_multi_modal_data(
     
     return processed_messages, multi_modal_data
 
+
 def _apply_chat_template(
-    tokenizer: PreTrainedTokenizer,
+    tokenizer_obj: PreTrainedTokenizer,
     messages: List[Dict[str, Any]],
     add_generation_prompt: bool = False,
     tools: Optional[List[Dict]] = None,
@@ -222,7 +231,7 @@ def _apply_chat_template(
     Exact replica of vLLM's _apply_chat_template function with mm_data support
     
     Args:
-        tokenizer: Loaded tokenizer instance
+        tokenizer_obj: Loaded tokenizer instance
         messages: List of messages in conversation
         add_generation_prompt: Whether to add generation prompt
         tools: List of available tools
@@ -233,7 +242,7 @@ def _apply_chat_template(
         str: Formatted prompt text
     """
     # vLLM's implementation: try tokenizer.apply_chat_template first
-    if hasattr(tokenizer, 'apply_chat_template'):
+    if hasattr(tokenizer_obj, 'apply_chat_template'):
         try:
             # vLLM passes tools parameter if available
             apply_kwargs = {
@@ -246,14 +255,20 @@ def _apply_chat_template(
                 apply_kwargs["tools"] = tools
             
             # Some tokenizers support multi_modal_data parameter
-            if multi_modal_data is not None and hasattr(tokenizer, 'handle_multi_modal_data'):
+            if multi_modal_data is not None and hasattr(tokenizer_obj, 'handle_multi_modal_data'):
                 apply_kwargs["multi_modal_data"] = multi_modal_data
             
-            prompt = tokenizer.apply_chat_template(**apply_kwargs)
+            prompt = tokenizer_obj.apply_chat_template(**apply_kwargs)
             return prompt
-        except (TypeError, AttributeError):
-            # Fallback if tokenizer doesn't support these parameters
-            pass
+        except (TypeError, AttributeError) as e:
+            # Expected control-flow exception: this tokenizer does not accept
+            # one of the optional kwargs we tried to pass (e.g. tools=,
+            # multi_modal_data=). Fall through to the manual-handling path
+            # below; log so reproducible fallbacks are still observable.
+            print(
+                f"_apply_chat_template: tokenizer rejected optional kwargs "
+                f"({type(e).__name__}: {e}); falling back to manual handling"
+            )
         except Exception as e:
             # vLLM logs this but continues with fallback
             print(f"Tokenizer apply_chat_template failed: {e}")
@@ -308,9 +323,9 @@ def _apply_chat_template(
                 )
     
     # Final fallback: use tokenizer's chat template without special parameters
-    if hasattr(tokenizer, 'apply_chat_template'):
+    if hasattr(tokenizer_obj, 'apply_chat_template'):
         try:
-            return tokenizer.apply_chat_template(
+            return tokenizer_obj.apply_chat_template(
                 processed_messages,
                 add_generation_prompt=add_generation_prompt,
                 tokenize=False
@@ -319,10 +334,11 @@ def _apply_chat_template(
             print(f"Fallback apply_chat_template failed: {e}")
     
     # Ultimate fallback: manual template application
-    return _apply_chat_template_fallback(tokenizer, processed_messages, add_generation_prompt)
+    return _apply_chat_template_fallback(tokenizer_obj, processed_messages, add_generation_prompt)
+
 
 def _apply_chat_template_fallback(
-    tokenizer: PreTrainedTokenizer,
+    tokenizer_obj: PreTrainedTokenizer,
     messages: List[Dict[str, Any]],
     add_generation_prompt: bool
 ) -> str:
@@ -330,16 +346,24 @@ def _apply_chat_template_fallback(
     vLLM's ultimate fallback template application
     """
     # Try to get template from config
-    chat_template = getattr(tokenizer, 'chat_template', None)
+    chat_template = getattr(tokenizer_obj, 'chat_template', None)
     if chat_template is None:
+        config_path = os.path.join(tokenizer_obj.name_or_path, 'tokenizer_config.json')
         try:
-            config_path = os.path.join(tokenizer.name_or_path, 'tokenizer_config.json')
             if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                     chat_template = config.get('chat_template')
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            # IO error reading the config file or its contents are not valid
+            # UTF-8 / JSON. Leave chat_template as None so the caller falls
+            # through to the hard-coded model templates, but make it visible
+            # why the configured template was skipped.
+            print(
+                f"_apply_chat_template_fallback: failed to load chat_template "
+                f"from {config_path} ({type(e).__name__}: {e}); using built-in "
+                f"templates"
+            )
     
     # If template exists, try to render it (vLLM uses jinja2)
     if chat_template:
@@ -350,11 +374,27 @@ def _apply_chat_template_fallback(
                 messages=messages,
                 add_generation_prompt=add_generation_prompt
             )
-        except Exception:
-            pass
+        except ImportError as e:
+            # jinja2 is not installed in this environment. Falling back to the
+            # hard-coded templates below is the only option.
+            print(
+                f"_apply_chat_template_fallback: jinja2 is not available "
+                f"({e}); cannot render the configured chat_template, falling "
+                f"back to built-in model templates"
+            )
+        except Exception as e:
+            # jinja2's rendering exceptions (TemplateSyntaxError /
+            # UndefinedError / TemplateRuntimeError) are not imported here, so
+            # we catch broadly and surface the type+message instead of silently
+            # falling through.
+            print(
+                f"_apply_chat_template_fallback: jinja2 render failed "
+                f"({type(e).__name__}: {e}); falling back to built-in model "
+                f"templates"
+            )
     
     # Final manual templates (vLLM's last resort)
-    model_name = tokenizer.name_or_path.lower()
+    model_name = tokenizer_obj.name_or_path.lower()
     
     if any(x in model_name for x in ['llama', 'mistral', 'codellama']):
         return _render_llama_template(messages, add_generation_prompt)
@@ -362,6 +402,7 @@ def _apply_chat_template_fallback(
         return _render_chatml_template(messages, add_generation_prompt)
     else:
         return _render_generic_template(messages, add_generation_prompt)
+
 
 def _render_llama_template(messages: List[Dict[str, Any]], add_generation_prompt: bool) -> str:
     """vLLM's exact Llama template rendering"""
@@ -400,6 +441,7 @@ def _render_llama_template(messages: List[Dict[str, Any]], add_generation_prompt
     
     return prompt
 
+
 def _render_chatml_template(messages: List[Dict[str, Any]], add_generation_prompt: bool) -> str:
     """vLLM's exact ChatML template rendering"""
     prompt = ""
@@ -413,10 +455,14 @@ def _render_chatml_template(messages: List[Dict[str, Any]], add_generation_promp
     
     return prompt
 
+
 def _message_to_text(message: Dict[str, Any]) -> str:
     # 1) normal content
-    if "content" in message and message["content"] is not None:
-        return message["content"] if isinstance(message["content"], str) else json.dumps(message["content"], ensure_ascii=False)
+    content = message.get("content")
+    if content is not None:
+        if isinstance(content, str):
+            return content
+        return json.dumps(content, ensure_ascii=False)
 
     # 2) tool_calls (OpenAI new)
     if "tool_calls" in message and message["tool_calls"] is not None:
@@ -428,6 +474,7 @@ def _message_to_text(message: Dict[str, Any]) -> str:
 
     # 4) fallback
     return ""
+
 
 def _render_generic_template(messages: List[Dict[str, Any]], add_generation_prompt: bool) -> str:
     prompt = ""
@@ -441,8 +488,9 @@ def _render_generic_template(messages: List[Dict[str, Any]], add_generation_prom
 
     return prompt
 
+
 def _tokenize_batch_optimized(
-    tokenizer: PreTrainedTokenizer,
+    tokenizer_obj: PreTrainedTokenizer,
     texts: List[str],
     multi_modal_data_list: Optional[List[Any]] = None,
     **kwargs
@@ -451,7 +499,7 @@ def _tokenize_batch_optimized(
     Optimized batch tokenization using Rust backend with multi-modal support
     
     Args:
-        tokenizer: Loaded tokenizer instance
+        tokenizer_obj: Loaded tokenizer instance
         texts: List of texts to tokenize
         multi_modal_data_list: List of multi-modal data for each text
         **kwargs: Additional arguments for tokenization
@@ -460,11 +508,11 @@ def _tokenize_batch_optimized(
         List[List[int]]: Tokenized sequences
     """
     # Use the most efficient batch method available
-    if hasattr(tokenizer, '__call__'):  
+    if callable(tokenizer_obj):  
         # Direct call method (most common in modern tokenizers)
-        if multi_modal_data_list and hasattr(tokenizer, 'encode_with_images'):
+        if multi_modal_data_list and hasattr(tokenizer_obj, 'encode_with_images'):
             # Special handling for multi-modal data
-            return tokenizer(
+            return tokenizer_obj(
                 texts, 
                 images=multi_modal_data_list,
                 add_special_tokens=True, 
@@ -473,18 +521,18 @@ def _tokenize_batch_optimized(
             )['input_ids']
         else:
             # Standard text-only encoding
-            return tokenizer(
+            return tokenizer_obj(
                 texts, 
                 add_special_tokens=True, 
                 return_tensors=None, 
                 **kwargs
             )['input_ids']
-    elif hasattr(tokenizer, 'encode_batch'):
+    elif hasattr(tokenizer_obj, 'encode_batch'):
         # encode_batch is often optimized for Rust parallelism
         # Handle multi-modal data if needed
-        if multi_modal_data_list and hasattr(tokenizer, 'encode_batch_with_images'):
+        if multi_modal_data_list and hasattr(tokenizer_obj, 'encode_batch_with_images'):
             # Special handling for multi-modal data
-            return tokenizer.encode_batch_with_images(
+            return tokenizer_obj.encode_batch_with_images(
                 texts, 
                 images=multi_modal_data_list,
                 add_special_tokens=True, 
@@ -492,10 +540,10 @@ def _tokenize_batch_optimized(
             )
         else:
             # Standard text-only batch encoding
-            return tokenizer.encode_batch(texts, add_special_tokens=True, **kwargs)
-    elif hasattr(tokenizer, 'batch_encode_plus'):
+            return tokenizer_obj.encode_batch(texts, add_special_tokens=True, **kwargs)
+    elif hasattr(tokenizer_obj, 'batch_encode_plus'):
         # Fallback to batch_encode_plus
-        encoding = tokenizer.batch_encode_plus(
+        encoding = tokenizer_obj.batch_encode_plus(
             texts,
             padding=False,
             truncation=False,
@@ -511,8 +559,8 @@ def _tokenize_batch_optimized(
         for i, text in enumerate(texts):
             if multi_modal_data_list and i < len(multi_modal_data_list) and multi_modal_data_list[i]:
                 # Handle multi-modal data individually
-                if hasattr(tokenizer, 'encode_with_images'):
-                    results.append(tokenizer.encode_with_images(
+                if hasattr(tokenizer_obj, 'encode_with_images'):
+                    results.append(tokenizer_obj.encode_with_images(
                         text, 
                         images=multi_modal_data_list[i],
                         add_special_tokens=True, 
@@ -520,21 +568,22 @@ def _tokenize_batch_optimized(
                     ))
                 else:
                     # Fallback: just encode text
-                    results.append(tokenizer.encode(text, add_special_tokens=True, **kwargs))
+                    results.append(tokenizer_obj.encode(text, add_special_tokens=True, **kwargs))
             else:
                 # Standard text encoding
-                results.append(tokenizer.encode(text, add_special_tokens=True, **kwargs))
+                results.append(tokenizer_obj.encode(text, add_special_tokens=True, **kwargs))
         return results
 
+
 def _preprocess_chat_batch(
-    tokenizer: PreTrainedTokenizer,
+    tokenizer_obj: PreTrainedTokenizer,
     requests: List[Dict[str, Any]]
 ) -> List[PreprocessResult]:
     """
     Batch version of vLLM's _preprocess_chat function with 100% identical functionality
     
     Args:
-        tokenizer: Loaded tokenizer instance
+        tokenizer_obj: Loaded tokenizer instance
         requests: List of request dictionaries
         
     Returns:
@@ -557,7 +606,7 @@ def _preprocess_chat_batch(
             
             # Apply chat template to generate the final prompt string
             prompt = _apply_chat_template(
-                tokenizer, processed_messages, add_generation_prompt, tools, tool_choice, multi_modal_data
+                tokenizer_obj, processed_messages, add_generation_prompt, tools, tool_choice, multi_modal_data
             )        
             
             formatted_prompts.append(prompt)
@@ -596,7 +645,7 @@ def _preprocess_chat_batch(
             )
         
     # Phase 2: Batch Tokenization    
-    can_fast = getattr(tokenizer, "is_fast", False)
+    can_fast = getattr(tokenizer_obj, "is_fast", False)
     has_mm = any(mm is not None for mm in multi_modal_data_list)
     use_chunk_path = (
         OMNI_CHUNK_TOKENIZE and ChunkTokenizer and ct is not None and can_fast and not has_mm
@@ -606,7 +655,7 @@ def _preprocess_chat_batch(
         try:
             # Use optimized batch tokenization with multi-modal support
             all_input_ids = _tokenize_batch_optimized(
-                tokenizer, 
+                tokenizer_obj, 
                 formatted_prompts, 
                 multi_modal_data_list
             )
@@ -626,26 +675,27 @@ def _preprocess_chat_batch(
             # Fallback to individual tokenization if batch fails
             print(f"Batch tokenization failed, falling back to individual: {e}")
             for i, (prompt, mm_data) in enumerate(zip(formatted_prompts, multi_modal_data_list)):
-                if mm_data and hasattr(tokenizer, 'encode_with_images'):
-                    results[i].input_ids = tokenizer.encode_with_images(
+                if mm_data and hasattr(tokenizer_obj, 'encode_with_images'):
+                    results[i].input_ids = tokenizer_obj.encode_with_images(
                         prompt, 
                         images=mm_data,
                         add_special_tokens=True
                     )
                 else:
-                    results[i].input_ids = tokenizer.encode(prompt, add_special_tokens=True)
+                    results[i].input_ids = tokenizer_obj.encode(prompt, add_special_tokens=True)
         return results
 
-    ids_no_sp_list, _ = ct.encode_batch_interleaved_with_stats(formatted_prompts, bytes_per_segment=32768, parallel=True)
+    ids_no_sp_list, _ = ct.encode_batch_interleaved_with_stats(
+        formatted_prompts, bytes_per_segment=32768, parallel=True)
     all_input_ids = []
-    for i, ids in enumerate(ids_no_sp_list):
-        ids = tokenizer.build_inputs_with_special_tokens(ids)
+    for _, ids in enumerate(ids_no_sp_list):
+        ids = tokenizer_obj.build_inputs_with_special_tokens(ids)
         model_name = "deepseek"  
         if "deepseek" in model_name.lower() and ids:
             ids = ids[1:]
         all_input_ids.append(ids)
-    for i in range(len(results)):
-        results[i].input_ids = all_input_ids[i]
+    for result, input_ids in zip(results, all_input_ids):
+        result.input_ids = input_ids
 
     return results
 
@@ -686,6 +736,7 @@ def init_tokenizer(model_path: str) -> int:
         )
         return -1
 
+
 def batch_chat_encode(texts: List[str]) -> Tuple[List[str], List[List[int]], List[int]]:
     """
     Public batch encoding function
@@ -702,20 +753,21 @@ def batch_chat_encode(texts: List[str]) -> Tuple[List[str], List[List[int]], Lis
     requests = [json.loads(text) for text in texts]
     results = _preprocess_chat_batch(tokenizer, requests)
 
-    # conversations = [result.conversation for result in results]
     prompts = [result.prompt for result in results]
     input_ids = [result.input_ids for result in results]
     multi_modal_size = [0 if result.multi_modal_data is None else len(result.multi_modal_data) for result in results]
     
     return prompts, input_ids, multi_modal_size
 
-def sha256(input) -> bytes:
-    input_bytes = pickle.dumps(input, protocol=pickle.HIGHEST_PROTOCOL)
+
+def pickled_sha256(value) -> bytes:
+    input_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
     return hashlib.sha256(input_bytes).digest()
 
+
 def hash_block_tokens(token_ids: List[int], block_size: int = 128) -> List[int]:
-    block_hashes= []
-    NONE_HASH = sha256(os.environ.get("PYTHONHASHSEED"))
+    block_hashes = []
+    NONE_HASH = pickled_sha256(os.environ.get("PYTHONHASHSEED"))
     parent_block_hash_value = NONE_HASH
 
     for start in range(0, len(token_ids), block_size):
@@ -725,11 +777,12 @@ def hash_block_tokens(token_ids: List[int], block_size: int = 128) -> List[int]:
         if len(block_token_ids) < block_size:
             break
 
-        block_hash = sha256((parent_block_hash_value, tuple(block_token_ids), None))
+        block_hash = pickled_sha256((parent_block_hash_value, tuple(block_token_ids), None))
         block_hashes.append((int.from_bytes(block_hash, byteorder="big")) & ((1 << 64) - 1))
         parent_block_hash_value = block_hash 
 
     return block_hashes
+
 
 def batch_chat_encode_bytes(texts_bytes: List[bytes]) -> Tuple[List[bytes], List[List[int]], List[int]]:
     global tokenizer
@@ -760,7 +813,10 @@ def batch_chat_encode_bytes(texts_bytes: List[bytes]) -> Tuple[List[bytes], List
         input_ids = [result.input_ids for result in results]
         block_hashes = [hash_block_tokens(token_ids, block_size=128) for token_ids in input_ids]
 
-        multi_modal_sizes = [0 if result.multi_modal_data is None else len(result.multi_modal_data) for result in results]
+        multi_modal_sizes = [
+            0 if result.multi_modal_data is None else len(result.multi_modal_data)
+            for result in results
+        ]
         
         return prompts, input_ids, block_hashes, multi_modal_sizes
         
@@ -768,24 +824,69 @@ def batch_chat_encode_bytes(texts_bytes: List[bytes]) -> Tuple[List[bytes], List
         print(f"Error in batch_chat_encode_bytes: {e}")
         raise
 
+
 # C interface functions
 def c_init_tokenizer(model_path: str) -> int:
     """C-friendly wrapper for init_tokenizer"""
     return init_tokenizer(model_path)
 
+
 def c_batch_chat_encode(texts: List[str]) -> tuple:
     """C-friendly wrapper for batch_chat_encode"""
     return batch_chat_encode(texts)
 
+
 def c_batch_chat_encode_bytes(texts_bytes: List[bytes]) -> tuple:
     return batch_chat_encode_bytes(texts_bytes)
 
-if __name__ == "__main__":    
+if __name__ == "__main__":
     try:
         model_path = "/root/nginx-1.26.0/omni_proxy/deepseek"
+        prompt_1 = (
+            "赵女士买了一些水果和小食品准备去看望一个朋友，"
+            "士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他"
+            "士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他"
+            "士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他"
+            "士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他"
+            "士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他"
+            "士买了一些水果和小食品准备去看望一个朋友，谁知品被他"
+            "士买了一些水果和小食品准备去看谁知品被他"
+            "士买了一些水果和小食品准备去看谁知品被他"
+            "士买了一些水果和小食品准备去看谁知品被他"
+            "士买士买了一些水果和小食品准备去看谁知品被他"
+            "士买士买了一些水果和小食品准备去看谁知品被他"
+            "士买士买了一些水果和小食品准备去看谁知品被他"
+            "士买士买了一些水果和小食品准备去看谁知品被他"
+            "士买了一些水果和小食品准备去看谁知品被他"
+            "士买了一些水果和小食品准备去看望一个朋友，谁知品被他"
+            "士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他"
+            "谁知，这些水果和小食品被他的儿子们偷吃了，"
+            "二说道：“是老四偷吃的。”老三人说了实话，其他的3个都在撒谎。"
+            "那么，到底是谁偷吃了这些水果和小食 品？"
+        )
+        prompt_2 = (
+            "老四说道：“老二在说谎。”这4个儿子中只有一个人说了实话，"
+            "其他的3个都在撒谎。那么，到底是谁偷吃了这些水果和小食 品？"
+        )
+        common_opts = {
+            "model": "deepseek",
+            "temperature": 0,
+            "max_tokens": 20,
+            "stream": True,
+            "stream_options": {
+                "include_usage": True,
+                "continuous_usage_stats": True,
+            },
+        }
         msgs = [
-            '{"messages":[{"role":"user","content":"赵女士买了一些水果和小食品准备去看望一个朋友，士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他士买了一些水果和小食品准备去看望一个朋友，谁知品被他士买了一些水果和小食品准备去看谁知品被他士买了一些水果和小食品准备去看谁知品被他士买了一些水果和小食品准备去看谁知品被他士买士买了一些水果和小食品准备去看谁知品被他士买士买了一些水果和小食品准备去看谁知品被他士买士买了一些水果和小食品准备去看谁知品被他士买士买了一些水果和小食品准备去看谁知品被他士买了一些水果和小食品准备去看谁知品被他士买了一些水果和小食品准备去看望一个朋友，谁知品被他士买了一些水果和小食品准备去看望一个朋友，谁知，这些水果和小食品被他谁知，这些水果和小食品被他的儿子们偷吃了，二说道：“是老四偷吃的。”老三人说了实话，其他的3个都在撒谎。那么，到底是谁偷吃了这些水果和小食 品？"}],"model":"deepseek","temperature":0,"max_tokens":20, "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}',
-            '{"messages":[{"role":"user","content":"老四说道：“老二在说谎。”这4个儿子中只有一个人说了实话，其他的3个都在撒谎。那么，到底是谁偷吃了这些水果和小食 品？"}],"model":"deepseek","temperature":0,"max_tokens":20, "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}',
+            json.dumps(
+                {"messages": [{"role": "user", "content": prompt_1}], **common_opts},
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {"messages": [{"role": "user", "content": prompt_2}], **common_opts},
+                ensure_ascii=False,
+            ),
         ]
 
         msgs = [s.encode('utf-8') for s in msgs]

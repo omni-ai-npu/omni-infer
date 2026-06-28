@@ -84,7 +84,11 @@ class PrefillConnectorWorker:
             block_len_dtype: Block length in data type units
             omni_cache: OmniCache instance with cache configuration
         """
-        logger.warning(f" ======= OX parameters for P server: {kv_pool_mmap_path=}, {data_type=}, {block_len_dtype=}; {omni_cache.head_sizes=}")
+        logger.warning(
+            " ======= OX parameters for P server: "
+            f"{kv_pool_mmap_path=}, {data_type=}, {block_len_dtype=}; "
+            f"{omni_cache.head_sizes=}"
+        )
         self._start_p_server_kv_transfer(kv_pool_mmap_path, data_type, block_len_dtype, omni_cache)
 
     def _start_p_server_kv_transfer(self, kv_pool_mmap_path, data_type, block_len_dtype, omni_cache):
@@ -102,20 +106,22 @@ class PrefillConnectorWorker:
         if self.tp_rank_local == 0 and self.dp_rank == 0:
             cmd = [
                 str(OX_PATH),
-                "--addr", f"0.0.0.0:{BASE_PORT}",
-                "--block-table-shm", str(kv_pool_mmap_path),
-                "--num-blocks", str(omni_cache.num_blocks),
-                "--num-layers", str(omni_cache.num_layers),
-                "--tokens-per-block", str(omni_cache.node_block_size),
-                "--dims", ",".join(map(str, omni_cache.head_sizes)),
+                "--addr",
+                f"0.0.0.0:{BASE_PORT}",
+                "--block-table-shm",
+                str(kv_pool_mmap_path),
+                "--num-blocks",
+                str(omni_cache.num_blocks),
+                "--num-layers",
+                str(omni_cache.num_layers),
+                "--tokens-per-block",
+                str(omni_cache.node_block_size),
+                "--dims",
+                ",".join(map(str, omni_cache.head_sizes)),
             ]
             logger.warning(f"<<<Executing {cmd}")
 
-            proc = subprocess.Popen(cmd,
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT,
-                                    text=True,
-                                    bufsize=1)
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             q = queue.Queue()
 
             t_read = threading.Thread(target=stdout_reader, args=(proc.stdout, q))
@@ -168,7 +174,9 @@ class PrefillConnectorWorker:
                         out_date_reqs.append(req_id)
                 for req_id in out_date_reqs:
                     logger.warning(
-                        f"Request {req_id} is out of date, finish time: {self.requests_finish_time[req_id]}. Freeing blocks now."
+                        "Request %s is out of date, finish time: %s. Freeing blocks now.",
+                        req_id,
+                        self.requests_finish_time[req_id],
                     )
                     all_done_sending.add(req_id)
                     self.done_sending_req_ids[req_id] = current_time

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 # This patch is used for enable_eplb fix in ParallelConfig and FusedMoE
 # Please use this patch by adding VLLM_PLUGINS="omni-npu,omni_npu_patches" OMNI_NPU_VLLM_PATCHES="EPLBEngineConfig,EPLBSharedFusedMoE" before vllm serve
@@ -17,6 +18,7 @@ try:
 except ImportError:
     logger.warning("OmniPlanner is not installed, please install it when use vllm and set --enable_eplb True")
     OmniPlanner = None
+
 
 @register_patch("EPLBState", EplbState)
 class EPLBStatePatch(VLLMPatch):

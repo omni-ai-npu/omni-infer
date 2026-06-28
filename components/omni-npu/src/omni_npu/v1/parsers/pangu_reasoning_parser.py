@@ -1,6 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright contributors to the vLLM project.
 
 # NOTE: This parser is coupled to :class:`PanguToolParser` via the
 # per-asyncio-task relay in ``_streaming_relay.py``. The streaming method
@@ -19,6 +19,7 @@ from vllm.entrypoints.openai.protocol import ChatCompletionRequest
 from vllm.logger import logger
 
 from omni_npu.v1.parsers._streaming_relay import stash_reasoning_from
+
 
 class PanguReasoningParser(DeepSeekR1ReasoningParser):
     """

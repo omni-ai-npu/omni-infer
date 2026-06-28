@@ -1,12 +1,14 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright contributors to the vLLM project.
+
 from itertools import product
 
 from vllm.config import CUDAGraphMode
 from vllm.forward_context import BatchDescriptor
 
 from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
+
 
 class NPUGraphDispatcher(CudagraphDispatcher):
 

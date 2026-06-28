@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 import torch
 import torch_npu
@@ -22,6 +23,7 @@ _dp_sync_copy_stream: torch.npu.Stream | None = None
 _dp_sync_event: torch.Event | None = None
 _dp_sync_device_group: dist.ProcessGroup | None = None
 _dp_sync_device: torch.device | None = None
+
 
 def _get_dp_sync_primitives() -> tuple[torch.npu.Stream, torch.Event, dist.ProcessGroup, torch.device]:
     global _dp_sync_copy_stream, _dp_sync_event, _dp_sync_device_group, _dp_sync_device

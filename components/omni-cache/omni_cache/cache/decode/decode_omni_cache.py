@@ -89,12 +89,7 @@ except ImportError:
 class DecodeOmniCache(BaseOmniCache):
     """Decode cache implementation for OmniCache."""
 
-    def __init__(
-            self,
-            kv_cache_config: KVCacheConfig,
-            runner: NPUModelRunner,
-            vllm_config: VllmConfig = None
-    ):
+    def __init__(self, kv_cache_config: KVCacheConfig, runner: NPUModelRunner, vllm_config: VllmConfig = None):
         super().__init__(kv_cache_config, runner, vllm_config)
 
         # Initialize TransferManager for H2D/D2H operations
@@ -102,19 +97,18 @@ class DecodeOmniCache(BaseOmniCache):
         self.transfer_manager.initialize_decode()
 
         if self.is_hybrid_attn:
-           self.sorted_layer_names = [str(i) for i in range(self.num_layers)]
+            self.sorted_layer_names = [str(i) for i in range(self.num_layers)]
         else:
             layer_name_list = []
             for kv_cache_group in kv_cache_config.kv_cache_groups:
                 layer_name_list.extend(kv_cache_group.layer_names)
-            self.layer_indices = {
-                layer_name: extract_layer_index(layer_name)
-                for layer_name in layer_name_list
-            }
-            self.sorted_layer_names = list(sorted(
-                layer_name_list,
-                key=lambda k: self.layer_indices[k],
-            ))
+            self.layer_indices = {layer_name: extract_layer_index(layer_name) for layer_name in layer_name_list}
+            self.sorted_layer_names = list(
+                sorted(
+                    layer_name_list,
+                    key=lambda k: self.layer_indices[k],
+                )
+            )
 
         # Store model config and DSA flag for later use
         self.vllm_config = vllm_config
@@ -155,7 +149,6 @@ class DecodeOmniCache(BaseOmniCache):
             self.gather_selec_updater = GatherSelectionUpdater(self)
 
         if self.is_hybrid_attn:
-            # self.swa_copy_stream = torch.npu.Stream()
             self.last_num_non_zeros = {}
             self.record_req_sched_times = {}
 
@@ -165,7 +158,7 @@ class DecodeOmniCache(BaseOmniCache):
 
             # Pre-allocate buffers for vectorized fake metadata processing
             # These are reused on every call to avoid allocation overhead
-            max_num_reqs = self.vllm_config.scheduler_config.max_num_seqs * 2 # for two swa groups
+            max_num_reqs = self.vllm_config.scheduler_config.max_num_seqs * 2  # for two swa groups
 
             # Map from (req_id, group_id) -> buffer index
             self._sk_to_state_idx = {}
@@ -189,9 +182,17 @@ class DecodeOmniCache(BaseOmniCache):
             self._L_currs_buffer = np.zeros(max_num_reqs, dtype=np.int64)
             self._batch_state_indices_buffer = np.zeros(max_num_reqs, dtype=np.int32)
 
-    def _post_process_fake_metadata(self, num_reqs, slot_mapping, block_table,
-                                    common_attn_metadata, cur_metadata_grp_id,
-                                    query_start_loc, seq_lens_cpu, draft_index):
+    def _post_process_fake_metadata(
+        self,
+        num_reqs,
+        slot_mapping,
+        block_table,
+        common_attn_metadata,
+        cur_metadata_grp_id,
+        query_start_loc,
+        seq_lens_cpu,
+        draft_index,
+    ):
         """Post-process fake metadata - delegates to attn_metadata module.
 
         Args:
@@ -208,9 +209,15 @@ class DecodeOmniCache(BaseOmniCache):
             Tuple of (block_table, slot_mapping) after processing
         """
         return post_process_fake_metadata(
-            self, num_reqs, slot_mapping, block_table,
-            common_attn_metadata, cur_metadata_grp_id,
-            query_start_loc, seq_lens_cpu, draft_index
+            self,
+            num_reqs,
+            slot_mapping,
+            block_table,
+            common_attn_metadata,
+            cur_metadata_grp_id,
+            query_start_loc,
+            seq_lens_cpu,
+            draft_index,
         )
 
     def _compute_slot_mapping_vectorized(self, slot_mapping, slot_infos):
@@ -224,6 +231,7 @@ class DecodeOmniCache(BaseOmniCache):
             slot_infos: List of _SlotInfo objects
         """
         from omni_cache.attention.metadata.sliding_window_attention import _compute_slot_mapping_vectorized
+
         return _compute_slot_mapping_vectorized(self, slot_mapping, slot_infos)
 
     def _fake_build_compress(self, builder, common_attn_metadata):
@@ -238,14 +246,12 @@ class DecodeOmniCache(BaseOmniCache):
         """
         return fake_build_compress(self, builder, common_attn_metadata)
 
-
     def get_fake_kv_cache(self, prefix):
         for grp_idx, _ in enumerate(self.kv_cache_config.kv_cache_groups):
             layer_name_list = self.kv_cache_config.kv_cache_groups[grp_idx].layer_names
             if prefix in layer_name_list:
                 kv_cache = self.hbm_buffer_pool[grp_idx][prefix]
                 return kv_cache
-
 
     def calc_cache_shape(self) -> Tuple[Tuple[int, ...], int]:
         """Calculate cache shape using utility function."""
@@ -256,7 +262,6 @@ class DecodeOmniCache(BaseOmniCache):
             dtype=self.dtype,
         )
 
-
     def calculate_kv_xsfer_params(self) -> Tuple[int, int]:
         """Calculate KV transfer parameters using utility function."""
         return calculate_kv_xsfer_params(
@@ -266,9 +271,7 @@ class DecodeOmniCache(BaseOmniCache):
         )
 
     def initialize_device_cache(
-            self,
-            kv_cache_config: KVCacheConfig,
-            runner: NPUModelRunner
+        self, kv_cache_config: KVCacheConfig, runner: NPUModelRunner
     ) -> Optional[Dict[str, Tuple[torch.Tensor]]]:
         """Initialize device cache and selection buffers.
 
@@ -290,7 +293,9 @@ class DecodeOmniCache(BaseOmniCache):
 
         if not ENABLE_HOST_MAPPING:
             kv_cache_raw_tensors = runner._allocate_kv_cache_tensors(kv_cache_config)
-            kv_caches = runner._reshape_kv_cache_tensors(kv_cache_config, kv_cache_raw_tensors, runner._prepare_kernel_block_sizes(kv_cache_config))
+            kv_caches = runner._reshape_kv_cache_tensors(
+                kv_cache_config, kv_cache_raw_tensors, runner._prepare_kernel_block_sizes(kv_cache_config)
+            )
 
             # Per-row raw tensor pointers for opaque device-side H2D.
             # Each entry in kv_cache_config.kv_cache_tensors is shared across all
@@ -310,31 +315,23 @@ class DecodeOmniCache(BaseOmniCache):
             # Read from any non-Mamba group's spec (all attention groups share
             # the same padded page size).
             from vllm.v1.kv_cache_interface import MambaSpec
+
             self.page_size_padded = None
             for grp in kv_cache_config.kv_cache_groups:
                 if not isinstance(grp.kv_cache_spec, MambaSpec):
                     self.page_size_padded = int(grp.kv_cache_spec.page_size_bytes)
                     break
             if self.page_size_padded is None:
-                self.page_size_padded = int(
-                    kv_cache_config.kv_cache_groups[0].kv_cache_spec.page_size_bytes
-                )
-            # for layer_name in kv_caches.keys():
-            #     print(f"<<<<<<<<<<<<< {layer_name=} {len(kv_caches[layer_name])=} >>>>>>>>>>>>")
-            #     for kvi_idx, kv_tensor in enumerate(kv_caches[layer_name]):
-            #         print(f"<<<<<<<<<<<<< {kvi_idx=}: {kv_tensor.shape=} >>>>>>>>>>>")
-            # print(f"+=+=+=+=+ {len(self.host_cache.kvi_tensors)=} +=+=+=+=+=")
-            # for kvi_idx, kv_tensor in enumerate(self.host_cache.kvi_tensors):
-            #     print(f"<<<<<<<<<<<<< {kvi_idx=}: {kv_tensor.shape=} >>>>>>>>>>>")
+                self.page_size_padded = int(kv_cache_config.kv_cache_groups[0].kv_cache_spec.page_size_bytes)
         else:
             try:
-                import os
                 if _is_pangu_v2_model(self.vllm_config):
                     # Identify the DSA group dynamically instead of hardcoding
                     # group index 3.
                     dsa_layer_names = set()
                     try:
                         from vllm.v1.kv_cache_interface import DSAAttentionSpec
+
                         for group_config in self.kv_cache_config.kv_cache_groups:
                             if isinstance(group_config.kv_cache_spec, DSAAttentionSpec):
                                 dsa_layer_names.update(group_config.layer_names)
@@ -344,7 +341,7 @@ class DecodeOmniCache(BaseOmniCache):
 
                     kv_caches = {}
                     for group_idx, group_config in enumerate(self.kv_cache_config.kv_cache_groups):
-                        for layer_idx, layer_name in enumerate(group_config.layer_names):
+                        for _layer_idx, layer_name in enumerate(group_config.layer_names):
                             kv_caches[layer_name] = self.hbm_buffer_pool[group_idx][layer_name]
                     for layer_name, kv_cache_tmp in kv_caches.items():
                         if layer_name in dsa_layer_names:
@@ -397,7 +394,8 @@ class DecodeOmniCache(BaseOmniCache):
             if lane is not None:
                 logger.info(
                     "HBM lane already reserved for request %s: lane=%s",
-                    req_id, lane,
+                    req_id,
+                    lane,
                 )
                 return lane
 
@@ -431,7 +429,6 @@ class DecodeOmniCache(BaseOmniCache):
                 return None
             return lane
 
-
     def build_h2d_ops(self, local_block_ids: List[List[int]], request_id: Optional[str]):
         """Build H2D operations for decode.
 
@@ -444,7 +441,9 @@ class DecodeOmniCache(BaseOmniCache):
 
         Delegates to TransferManager for unified H2D handling.
         """
-        return self.transfer_manager.sync_h2d_decode(batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes)
+        return self.transfer_manager.sync_h2d_decode(
+            batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes
+        )
 
     def synchronize_d2h(self, attn_names: list[str], attn_metadatas: list[str], kv_event: torch.npu.Event) -> None:
         return
@@ -464,7 +463,6 @@ class DecodeOmniCache(BaseOmniCache):
         block_size = vllm_config.cache_config.block_size
 
         if _detect_enable_dsa_from_config(vllm_config):
-            # head_size = vllm_config.model_config.hf_config.index_head_dim
             # DSA without Pangu V2: indexer-only head_size for the fake
             # spec.  Pangu V2 overrides this below with 352 to match the
             # unified pool layout.
@@ -486,11 +484,7 @@ class DecodeOmniCache(BaseOmniCache):
             # qk_nope_head_dim, which is on the Q path only.
             kv_lora = getattr(hf, "kv_lora_rank", 0) or 0
             rope = getattr(hf, "qk_rope_head_dim", 0) or 0
-            indexer = (
-                getattr(hf, "index_head_dim", 0)
-                or getattr(hf, "indexer_head_dim", 0)
-                or 0
-            )
+            indexer = getattr(hf, "index_head_dim", 0) or getattr(hf, "indexer_head_dim", 0) or 0
             concat = kv_lora + rope + indexer
             if concat > 0:
                 head_size = (concat + 1) // 2  # FullAttentionSpec 2x K+V factor
@@ -500,17 +494,14 @@ class DecodeOmniCache(BaseOmniCache):
             num_hidden_layer = attn_group_size
         else:
             num_hidden_layer = vllm_config.model_config.hf_config.num_hidden_layers
-        layer_names = [
-            f"model.layers.{i}.self_attn.attn"
-            for i in range(num_hidden_layer)
-        ]
+        layer_names = [f"model.layers.{i}.self_attn.attn" for i in range(num_hidden_layer)]
 
         def create_fake_kv_cache_config(
             layer_names: list[str] = None,
             block_size: int = 128,
             head_size: int = 128,
             dtype: torch.dtype = torch.bfloat16,
-            vllm_config: VllmConfig = None
+            vllm_config: VllmConfig = None,
         ) -> dict[str, FullAttentionSpec]:
 
             fake_spec = {}
@@ -521,17 +512,11 @@ class DecodeOmniCache(BaseOmniCache):
                     head_size=head_size,
                     dtype=dtype,
                 )
-            # TODO: a correct layer name is required to construct actual spec
-            # fake_spec = get_kv_cache_spec(vllm_config)
-            from vllm.logger import init_logger
-            logger = init_logger("vllm.v1.omni")
             logger.debug(f"<<< in initialize_decode_omni_cache: {fake_spec=}")
             _, total_gpu_memory = torch.npu.mem_get_info()
             available_mem = vllm_config.cache_config.gpu_memory_utilization * total_gpu_memory
             available_mem_list = [available_mem] * len(fake_spec)
-            fake_kv_cache_configs = get_kv_cache_configs(
-                vllm_config, [fake_spec], available_mem_list
-            )[0]
+            fake_kv_cache_configs = get_kv_cache_configs(vllm_config, [fake_spec], available_mem_list)[0]
 
             return fake_kv_cache_configs
 
@@ -540,10 +525,11 @@ class DecodeOmniCache(BaseOmniCache):
             block_size=block_size,
             head_size=head_size,
             dtype=vllm_config.model_config.dtype,
-            vllm_config=vllm_config
+            vllm_config=vllm_config,
         )
 
         from omni_cache.cache.core.base import create_omni_cache
+
         omni_cache = create_omni_cache(
             kv_cache_config=fake_kv_cache_config,
             vllm_config=vllm_config,
@@ -571,10 +557,7 @@ class DecodeOmniCache(BaseOmniCache):
 
     @staticmethod
     def _reorder_block_table_only(
-        omni_cache,
-        reshaped_table: torch.Tensor,
-        old_req_ids: List[str],
-        new_req_ids: List[str]
+        omni_cache, reshaped_table: torch.Tensor, old_req_ids: List[str], new_req_ids: List[str]
     ) -> None:
         """Reorder block table - delegates to GatherSelectionUpdater."""
         GatherSelectionUpdater._reorder_block_table_only(

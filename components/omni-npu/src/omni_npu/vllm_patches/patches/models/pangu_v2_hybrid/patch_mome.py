@@ -1,4 +1,7 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
+
 import sys
 import types
 
@@ -24,11 +27,13 @@ dynamic_module = types.ModuleType("mome")
 sys.modules[layers.__name__ + ".mome"] = dynamic_module
 layers.mome = dynamic_module
 
+
 @register_patch("MoMEPatch", layers)
 class MoMEPatch(VLLMPatch):
     _attr_names_to_apply = ['AggregateConv']
     # patch start
     # TODO: move cache_states to kv manager; remove dependancy of omni backend.
+    
     @CustomOp.register("AggregateConv")
     class AggregateConv(CustomOp):
         def __init__(

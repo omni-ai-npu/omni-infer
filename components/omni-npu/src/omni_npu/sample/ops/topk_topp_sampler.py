@@ -1,7 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
+# Copyright contributors to the vLLM project.
 
 from typing import Optional
 
@@ -23,6 +22,7 @@ from omni_npu.v1.utils import on_ascend950
 
 logger = init_logger(__name__)
 
+
 def apply_top_k_top_p_npu(
     logits: torch.Tensor,
     k: torch.Tensor | None,
@@ -41,6 +41,7 @@ def apply_top_k_top_p_npu(
         k = torch.ones((logits.shape[0],), dtype=torch.int32, device=logits.device) * logits.shape[1]
     _, logits = torch_npu.npu_top_k_top_p_sample(logits, k, p, q=None, is_need_logits=True)
     return logits
+
 
 # edit from vllm.v1.sample.ops.topk_topp_sampler.random_sample
 def generate_coins(
@@ -65,6 +66,7 @@ def generate_coins(
             for i, generator in generators.items():
                 q[i].exponential_(generator=generator)
     return q
+
 
 def apply_top_k_top_p(
     logits: torch.Tensor,

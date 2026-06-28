@@ -164,11 +164,6 @@ class DsaSecondaryHostPool:
     def open(self) -> None:
         if self.shared_tensor is not None:
             return
-        from .hugepage_ops import (
-            open_hugepage_file,
-            create_memory_mapping,
-            create_shared_tensor,
-        )
         logger.warning(
             "[DSA-SPLIT] open %s total=%.2f MiB shape=(%d,%d,%d,%d)",
             self.hugepage_path, self.total_bytes / (1 << 20),

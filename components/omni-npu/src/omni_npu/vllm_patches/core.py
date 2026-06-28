@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
-# vllm_patches Reference: https://blog.vllm.ai/2025/11/20/vllm-plugin-system.html
-
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 import logging
 from packaging import version
@@ -11,6 +10,7 @@ import vllm
 from omni_npu.vllm_patches import PatchManager
 
 logger = logging.getLogger(__name__)
+
 
 class VLLMPatch:
     """
@@ -60,6 +60,7 @@ class VLLMPatch:
             setattr(target, name, attr)
 
             logger.info(f"patch applied: {cls.__name__} => {target.__name__}.{name}")
+
 
 def register_patch(name: str, target: Union[Type, ModuleType]):
     if not isinstance(target, (type, ModuleType)):

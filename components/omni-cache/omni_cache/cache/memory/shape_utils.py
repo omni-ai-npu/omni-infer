@@ -68,13 +68,11 @@ def extract_dimensions(shape: tuple) -> Tuple[int, int, int, int]:
         ValueError: If shape is unsupported.
     """
     if len(shape) == SHAPE_RANK_PREFILL:
-        # (layer_num, block_num, block_size, head_dim) - prefill
         num_ranks = 1
         num_layers = shape[0]
         num_blocks = shape[1]
         block_size = shape[2]
     elif len(shape) == SHAPE_RANK_DECODE:
-        # (die_num, layer_num, block_num, block_size, head_dim) - decode
         num_ranks = shape[0]
         num_layers = shape[1]
         num_blocks = shape[2]

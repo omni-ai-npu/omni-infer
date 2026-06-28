@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 #
-# launch_pd.sh — launch prefill + decode from outside containers.
+# launch_pd.sh — launch prefill + decode + proxy from outside containers.
+#
+# Topology (1 node, 16 NPU cards):
+#   P (prefill)  cards 0-7   TP=8  port=8000
+#   D (decode)   cards 8-15  DP=8  TP=1  ports=8082-8089
+#   Proxy        runs in P container, port=7150
 #
 # Usage:
 #     bash examples/pangu_v2_pd/launch_pd.sh
 #     ENABLE_OMNI_CACHE=0 bash .../launch_pd.sh                           # baseline
 #     CONFIG_PROFILE=high-throughput bash .../launch_pd.sh                 # profile
+#     LAUNCH_MODE=all bash .../launch_pd.sh                               # prefill + decode + proxy
 #     OMNI_KV_DUMP_GEAR=step OMNI_MOCK_SCHEDULE=1 bash .../launch_pd.sh   # debug
 #
 # Containers (auto-discovered or overridable):
-#   PREFILL_CONTAINER   default yyx-container-p
-#   DECODE_CONTAINER    default yyx-container-d
+#   PREFILL_CONTAINER   default omnicache_pangu_p0
+#   DECODE_CONTAINER    default omnicache_pangu_d0
+#   PROXY_CONTAINER     default omnicache_pangu_p0  (reuses prefill container)
+#
+# Launch modes:
+#   both    = prefill + decode (default)
+#   all     = prefill + decode + proxy
+#   prefill = prefill only
+#   decode  = decode only
+#   proxy   = proxy only
 
 set -euo pipefail
 
@@ -29,15 +43,14 @@ if [[ -n "${CONFIG_PROFILE:-}" ]]; then
 fi
 
 # ─── Container names, model, repo paths ───────────────────────────────────
-: "${PREFILL_CONTAINER:=ldy-92B-prefill}"
-: "${DECODE_CONTAINER:=ldy-92B-decode}"
+: "${PREFILL_CONTAINER:=omnicache_pangu_p0}"
+: "${DECODE_CONTAINER:=omnicache_pangu_d0}"
+: "${PROXY_CONTAINER:=omnicache_pangu_p0}"
 : "${MODEL_PATH:=/data/models/iter_0011840}"
 : "${SERVED_MODEL_NAME:=pangu_ultra_moe}"
 # Auto-detect: this script lives at examples/pangu_v2_pd/ inside the repo.
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 : "${SCRIPT_DIR_CONTAINER:=$REPO_ROOT/examples/pangu_v2_pd}"
-
-# : "${SCRIPT_DIR_CONTAINER:=/data/ldy/92B_service/pangu_v2_pd}"
 
 DOCKER="sudo -n docker"
 
@@ -69,7 +82,9 @@ _detect_ip() {
 : "${VLLM_LOGGING_LEVEL:=INFO}"
 : "${VLLM_WORKER_MULTIPROC_METHOD:=fork}"
 
-# ─── Launch mode: both | prefill | decode ────────────────────────────────
+# ─── Launch mode: both | prefill | decode | proxy | all ──────────────────
+# "both" = prefill + decode (original behavior)
+# "all"  = prefill + decode + proxy
 : "${LAUNCH_MODE:=both}"
 
 # Verify all required config vars are set (base.sh must define them).
@@ -115,7 +130,7 @@ done
 _DOCKER_ENV_ARGS+=("-e" "SCRIPT_DIR_CONTAINER=${SCRIPT_DIR_CONTAINER}")
 
 # ─── Launch prefill ───────────────────────────────────────────────────────
-if [[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "prefill" ]]; then
+if [[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "all" || "$LAUNCH_MODE" == "prefill" ]]; then
     echo "[launch_pd] starting prefill..."
     sudo -n docker exec -d \
         "${_DOCKER_ENV_ARGS[@]}" \
@@ -133,7 +148,7 @@ else
 fi
 
 # ─── Launch decode ────────────────────────────────────────────────────────
-if [[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "decode" ]]; then
+if [[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "all" || "$LAUNCH_MODE" == "decode" ]]; then
     echo "[launch_pd] starting decode..."
     sudo -n docker exec -d \
         "${_DOCKER_ENV_ARGS[@]}" \
@@ -148,6 +163,34 @@ else
     echo "[launch_pd] skipping decode (LAUNCH_MODE=$LAUNCH_MODE)"
 fi
 
+# ─── Launch proxy ─────────────────────────────────────────────────────────
+if [[ "$LAUNCH_MODE" == "all" || "$LAUNCH_MODE" == "proxy" ]]; then
+    # Build prefill endpoint: PREFILL_IP:PORT
+    _prefill_eps="${PREFILL_IP}:${PORT}"
+
+    # Build decode endpoint list: PREFILL_IP:PORT_BASE .. PORT_BASE+DP-1
+    _decode_eps=""
+    for ((i=0; i<DECODE_DP_SIZE; i++)); do
+        _port=$((PORT_BASE + i))
+        [[ -n "$_decode_eps" ]] && _decode_eps+=","
+        _decode_eps+="${PREFILL_IP}:${_port}"
+    done
+
+    echo "[launch_pd] starting proxy in $PROXY_CONTAINER..."
+    sudo -n docker exec -d "$PROXY_CONTAINER" bash -c "
+        source ~/.bashrc
+        export PYTHONHASHSEED=123
+        export $_PASSTHROUGH_ENV
+        export PREFILL_ENDPOINTS='$_prefill_eps'
+        export DECODE_ENDPOINTS='$_decode_eps'
+        mkdir -p $SCRIPT_DIR_CONTAINER/logs/proxy
+        nohup bash $SCRIPT_DIR_CONTAINER/launch_proxy.sh &>$SCRIPT_DIR_CONTAINER/logs/proxy/proxy_launch.log &
+    "
+else
+    echo "[launch_pd] skipping proxy (LAUNCH_MODE=$LAUNCH_MODE)"
+fi
+
 echo "[launch_pd] Done. Check ports:"
-[[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "prefill" ]] && echo "    curl http://127.0.0.1:8000/health   (prefill)"
-[[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "decode" ]]  && echo "    curl http://127.0.0.1:8082/health   (decode)"
+[[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "all" || "$LAUNCH_MODE" == "prefill" ]] && echo "    curl http://127.0.0.1:8000/health   (prefill)"
+[[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "all" || "$LAUNCH_MODE" == "decode" ]]  && echo "    curl http://127.0.0.1:8082/health   (decode)"
+[[ "$LAUNCH_MODE" == "all" || "$LAUNCH_MODE" == "proxy" ]]  && echo "    curl http://127.0.0.1:7150/omni_proxy/health   (proxy)"

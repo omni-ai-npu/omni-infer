@@ -1,4 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 from collections.abc import Callable
 from typing import Any
 
@@ -11,6 +13,7 @@ from vllm.compilation.compiler_interface import CompilerInterface
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
+
 
 def graph_output_is_tuple(graph: fx.GraphModule) -> bool:
     """Return whether the FX graph output is already a tuple."""
@@ -26,6 +29,7 @@ def graph_output_is_tuple(graph: fx.GraphModule) -> bool:
         and return_value.op == "call_function"
         and return_value.target is tuple
     )
+
 
 class NpuGraphExAdaptor(CompilerInterface):
     name = "npugraph_ex"
@@ -63,7 +67,7 @@ class NpuGraphExAdaptor(CompilerInterface):
             config.static_kernel_compile = True
             # Control whether to enable super kernel optimize
             if npugraph_ex_config.get("super_kernel_optimize", False):
-                config.super_kernel_optimize= True
+                config.super_kernel_optimize = True
                 config.super_kernel_optimize_options = {
                     "dcci_before_kernel_start": [
                         ".*GroupedMatmul.*",

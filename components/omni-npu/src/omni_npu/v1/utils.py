@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import functools
 from contextlib import contextmanager, nullcontext
@@ -13,24 +13,30 @@ _current_stream = None
 _OMNI_STREAM = {}
 _OMNI_EVENT = {}
 
+
 @functools.lru_cache(maxsize=1)
 def _npu_device_name() -> str:
     return torch_npu.npu.get_device_name(0)
 
+
 def _is_ascend(prefix: str) -> bool:
     return _npu_device_name().startswith(prefix)
+
 
 def on_ascend910b() -> bool:
     """Check if the device is an Ascend910b (A2) device."""
     return _is_ascend("Ascend910B")
 
+
 def on_ascend910() -> bool:
     """Check if the device is an Ascend910 (A3) device."""
     return _is_ascend("Ascend910")
 
+
 def on_ascend950() -> bool:
     """Check if the device is an Ascend950 (A5) device."""
     return _is_ascend("Ascend950")
+
 
 def get_nth_last_sep_pos(s: str, sep: str = '.', n: int = 2) -> int:
     if n < 1 or not sep:

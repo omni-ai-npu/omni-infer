@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 """OMNI-CONF runtime collector/emitter.
 
 Emits a startup configuration snapshot as atomic single-line records:
@@ -56,6 +57,7 @@ def is_enabled() -> bool:
 # --------------------------------------------------------------------------
 # value walker (no deepcopy, projection boundary enforced by callers)
 # --------------------------------------------------------------------------
+
 
 def _adapt_config_object(obj):
     """Adapter chain for known config-carrier objects (and only those)."""
@@ -167,6 +169,7 @@ def _walk(out: dict, segments: list, value, depth: int = 0, seen: set | None = N
 # --------------------------------------------------------------------------
 # section collectors
 # --------------------------------------------------------------------------
+
 
 def _project_subconfig(out: dict, ns_segments: list, sub) -> None:
     """Declared-field projection with the rev6 three-state init=False rule."""
@@ -299,6 +302,7 @@ def _detect_role() -> str:
 # --------------------------------------------------------------------------
 # canonicalisation / hash / emit
 # --------------------------------------------------------------------------
+
 
 def _render_value(path: str, value) -> str:
     if cls.is_sensitive(path):

@@ -111,3 +111,12 @@ bash omni_proxy.sh \
   --omni-proxy-prefill-groups "0:2,1:1,1:1" \
   --omni-proxy-decode-groups "0:2,1:4,2:2"
 ```
+
+## Service Listen Address and Port Configuration
+
+Omni Proxy supports specifying the server-side IP address and port number for inbound traffic through the following two approaches:
+
+1. **Configure via the startup script**: Pass the `--listen-port <IP:PORT>` parameter to the `omni_proxy.sh` startup script to explicitly declare the listen address at script invocation time.
+2. **Specify directly in the Nginx configuration**: Edit the `nginx.conf` file actually used in the deployment and customize the IP address and port number through the `listen` directive in the corresponding `server { ... }` block.
+
+**Default listen behavior**: If the IP address is not explicitly specified, Omni Proxy falls back to listening on `0.0.0.0`, which accepts inbound traffic on all network interfaces. Please select the appropriate configuration method based on the network planning and port allocation of your actual deployment environment.

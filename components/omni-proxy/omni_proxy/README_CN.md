@@ -187,3 +187,12 @@ bash omni_proxy.sh \
   --omni-proxy-prefill-groups "0:2,1:1,1:1" \
   --omni-proxy-decode-groups "0:2,1:4,2:2"
 ```
+
+## 服务监听地址与端口配置
+
+Omni Proxy 所监听的服务端 IP 地址与端口号支持通过以下两种方式进行指定：
+
+1. **通过启动脚本配置**：使用 `omni_proxy.sh` 启动脚本的 `--listen-port <IP:PORT>` 参数，在脚本调用时显式声明监听地址。
+2. **通过 Nginx 配置直接指定**：直接编辑实际部署所使用的 `nginx.conf` 文件，在对应的 `server { ... }` 块中通过 `listen` 指令自定义 IP 地址与端口号。
+
+**默认监听行为**：若未显式指定 IP 地址，Omni Proxy 将默认以 `0.0.0.0` 监听全部网络接口；用户可根据实际部署环境的网络规划与端口分配情况选择合适的方式完成配置。

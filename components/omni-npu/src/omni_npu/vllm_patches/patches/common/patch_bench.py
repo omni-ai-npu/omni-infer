@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 import os
 import re
@@ -26,7 +27,6 @@ except ImportError:
 from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
 
-# import vllm.benchmarks.serve
 import vllm
 from vllm.benchmarks.datasets import CustomDataset
 from vllm.tokenizers import get_tokenizer

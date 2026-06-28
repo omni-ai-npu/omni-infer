@@ -196,7 +196,7 @@ def get_current_rank_host_data(
 
     kvi_tensors = []
     host_data = []
-    for i, tensor in enumerate(cache.host_cache.kvi_tensors):
+    for _i, tensor in enumerate(cache.host_cache.kvi_tensors):
         host_data.append([])
         kvi_tensors.append(tensor.view(cache.num_layers, -1, tensor.shape[-1]))
 

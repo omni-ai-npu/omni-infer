@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 from dataclasses import dataclass, field, fields, asdict
 from typing import Any, Literal
@@ -9,7 +9,6 @@ import os
 import torch
 import torch_npu
 
-# import logging
 from vllm.logger import init_logger
 
 from .features import (
@@ -24,16 +23,17 @@ default_config_path = os.path.normpath(os.path.join(os.path.abspath(__file__), '
 
 MoECommStrategyType = Literal["allreduce", "allgather_reducescatter", "dispatch_combine", "all2allv"]
 
+
 def load_model_extra_config(model_config, vllm_config, scheduler_config):
-    model_name, quant_type= parse_hf_config(model_config.hf_config)
+    model_name, quant_type = parse_hf_config(model_config.hf_config)
     is_pd_disaggregation = False
     is_prefill_node = None
     if os.getenv('ROLE', None):
         is_pd_disaggregation = True
-        is_prefill_node = True if os.getenv('ROLE', None)=='prefill' else False
+        is_prefill_node = True if os.getenv('ROLE', None) == 'prefill' else False
     if vllm_config.additional_config is not None:
         enable_pd_elastic_scaling = vllm_config.additional_config.get("enable_pd_elastic_scaling", False)
-        enable_low_latency=vllm_config.additional_config.get("enable_low_latency", False)
+        enable_low_latency = vllm_config.additional_config.get("enable_low_latency", False)
         enable_omni_cache = vllm_config.additional_config.get("enable_omni_cache", False)
     else:
         enable_pd_elastic_scaling = False
@@ -48,7 +48,7 @@ def load_model_extra_config(model_config, vllm_config, scheduler_config):
         graph_mode = 'acl_graph'
 
     enable_chunked_prefill = scheduler_config.enable_chunked_prefill
-    enable_eplb=vllm_config.parallel_config.enable_eplb
+    enable_eplb = vllm_config.parallel_config.enable_eplb
     
     device_name = torch_npu.npu.get_device_name(0)
 
@@ -62,19 +62,19 @@ def load_model_extra_config(model_config, vllm_config, scheduler_config):
         raise ValueError(f"Unsupported device: {device_name}. Only Ascend910/Ascend910B/Ascend950 are supported.")
     
     update_task_config(
-        model_name = model_name,
-        hardware_platform = hardware_platform,
-        is_pd_disaggregation = is_pd_disaggregation,
-        is_prefill_node = is_prefill_node,
-        quant_type = quant_type,
-        prefill_node_num = int(os.getenv("PREFILL_POD_NUM", 1)),
-        decode_node_num = int(os.getenv("DECODE_POD_NUM", 1)),
-        enable_eplb = enable_eplb,
-        enable_chunked_prefill = enable_chunked_prefill,
-        enable_low_latency = enable_low_latency,
-        graph_mode = graph_mode,
-        enable_pd_elastic_scaling = enable_pd_elastic_scaling,
-        enable_omni_cache = enable_omni_cache
+    model_name = model_name,
+    hardware_platform = hardware_platform,
+    is_pd_disaggregation = is_pd_disaggregation,
+    is_prefill_node = is_prefill_node,
+    quant_type = quant_type,
+    prefill_node_num = int(os.getenv("PREFILL_POD_NUM", 1)),
+    decode_node_num = int(os.getenv("DECODE_POD_NUM", 1)),
+    enable_eplb = enable_eplb,
+    enable_chunked_prefill = enable_chunked_prefill,
+    enable_low_latency = enable_low_latency,
+    graph_mode = graph_mode,
+    enable_pd_elastic_scaling = enable_pd_elastic_scaling,
+    enable_omni_cache = enable_omni_cache
     )
     _validate_config(vllm_config.additional_config)
     _print_model_config()
@@ -109,6 +109,7 @@ class ModelParallelConfig:
     ena_dp_lmhead_parallel: bool = False  # lm_head 按 DP 维度切 vocab，显存降到 1/dp_size
     ena_local_lmhead_parallel: bool = False  # lm_head 按单机 local_world_group 切 vocab
     enable_aicpu_dp_sync: bool = False # dp coordination 是否使用aicpu, 需要HCCL_OP_EXPANSION_MODE=AI_CPU
+
 
 @dataclass
 class ModelOperatorOptConfig:

@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-#
-# This file is based on vLLM implementation:
-# Copyright 2023 The vLLM team.
-# https://github.com/vllm-project/vllm/blob/v0.14.0/vllm/model_executor/models/openpangu_mtp.py
-#
-# The upstream vLLM implementation retains attribution to vllm-ascend and is
-# adapted from:
-# https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/model_executor/models/deepseek_mtp.py
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 from collections.abc import Iterable
 
@@ -37,7 +30,8 @@ from omni_npu.v1.distributed.parallel_state_ext import get_local_world_group
 from omni_npu.v1.layers.logits_processor import NPULogitsProcessor
 from omni_npu.v1.layers.vocab_parallel_embedding import NPUParallelLMHead, NPUVocabParallelEmbedding
 
-from .pangu_v2_moe import PanguV2DecoderLayer, _maybe_gather_and_unpadding, _maybe_padding_and_slice
+from .pangu_v2_moe import OpenPanguV2DecoderLayer, _maybe_gather_and_unpadding, _maybe_padding_and_slice
+
 
 class SharedHead(nn.Module):
     def __init__(
@@ -72,7 +66,7 @@ class SharedHead(nn.Module):
 
 
 @support_torch_compile
-class PanguV2MultiTokenPredictorLayer(nn.Module):
+class OpenPanguV2MultiTokenPredictorLayer(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str) -> None:
         super().__init__()
 
@@ -94,7 +88,7 @@ class PanguV2MultiTokenPredictorLayer(nn.Module):
             quant_config=self.quant_config,
             prefix=maybe_prefix(prefix, "shared_head"),
         )
-        self.mtp_block = PanguV2DecoderLayer(config, prefix, vllm_config)
+        self.mtp_block = OpenPanguV2DecoderLayer(config, prefix, vllm_config)
         self.mtp_block._tail_refs = (
             None,            # tail_mhc_pre — unused when tail_use_mhc is False
             nn.Identity(),   # tail_layernorm — no-op
@@ -141,7 +135,7 @@ class PanguV2MultiTokenPredictorLayer(nn.Module):
         return hidden_states
 
 
-class PanguV2MultiTokenPredictor(nn.Module):
+class OpenPanguV2MultiTokenPredictor(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
         config = vllm_config.model_config.hf_config
@@ -150,7 +144,7 @@ class PanguV2MultiTokenPredictor(nn.Module):
         # to map the exact layer index from weights
         self.layers = torch.nn.ModuleDict(
             {
-                str(idx): PanguV2MultiTokenPredictorLayer(
+                str(idx): OpenPanguV2MultiTokenPredictorLayer(
                     vllm_config=vllm_config, 
                     prefix=f"{prefix}.layers.{idx}",
                 )
@@ -213,11 +207,11 @@ class PanguV2MultiTokenPredictor(nn.Module):
         return logits
 
 
-class PanguV2MTP(nn.Module, SupportsPP):
+class OpenPanguV2MTP(nn.Module, SupportsPP):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
         self.config = vllm_config.model_config.hf_config
-        self.model = PanguV2MultiTokenPredictor(
+        self.model = OpenPanguV2MultiTokenPredictor(
             vllm_config=vllm_config, prefix=maybe_prefix(prefix, "model")
         )
 

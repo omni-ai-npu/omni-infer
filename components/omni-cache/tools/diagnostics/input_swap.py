@@ -45,8 +45,8 @@ def _swap_input_batch_rows(input_batch, i: int, j: int) -> None:
 
     # ---- per-row scalar arrays (mirrors condense lines 698-729) ------------
     def _swap1(arr, a, b):
-        if arr is not None and hasattr(arr, '__getitem__'):
-            copy_a = arr[a].copy() if hasattr(arr[a], 'copy') else arr[a]
+        if arr is not None and hasattr(arr, "__getitem__"):
+            copy_a = arr[a].copy() if hasattr(arr[a], "copy") else arr[a]
             arr[a], arr[b] = arr[b], copy_a
 
     _swap1(input_batch.num_tokens_no_spec, i, j)
@@ -122,17 +122,21 @@ def _patched_prepare_inputs(self, scheduler_output, num_tokens_after_padding):
                 num_reqs = getattr(self.input_batch, "num_reqs", 0)
                 if num_reqs >= 2:
                     from vllm.logger import init_logger
+
                     _log = init_logger("vllm.v1.omni")
                     _swap_done[pid] = True
 
                     req_ids = getattr(self.input_batch, "_req_ids", [])[:num_reqs]
+
                     def _short_id(rid: str) -> str:
                         parts = rid.split("-")
                         if rid.startswith("chatcmpl-"):
                             return "-".join(parts[1:3])
                         return rid
+
                     short_ids = tuple(sorted(_short_id(r) for r in req_ids))
                     import hashlib
+
                     seed = int(hashlib.md5(str(short_ids).encode()).hexdigest()[:8], 16)
                     rng = __import__("random").Random(seed)
                     i = rng.randint(0, num_reqs - 1)
@@ -141,9 +145,14 @@ def _patched_prepare_inputs(self, scheduler_output, num_tokens_after_padding):
                         j = rng.randint(0, num_reqs - 1)
 
                     _log.warning(
-                        "[MOCK-SWAP] step=%d: swapping req[%d]=%s <-> req[%d]=%s "
-                        "seed=%d num_reqs=%d",
-                        step, i, req_ids[i], j, req_ids[j], seed, num_reqs,
+                        "[MOCK-SWAP] step=%d: swapping req[%d]=%s <-> req[%d]=%s seed=%d num_reqs=%d",
+                        step,
+                        i,
+                        req_ids[i],
+                        j,
+                        req_ids[j],
+                        seed,
+                        num_reqs,
                     )
 
                     _swap_input_batch_rows(self.input_batch, i, j)
@@ -175,10 +184,12 @@ def install() -> None:
 def _try_patch() -> bool:
     global _orig_prepare_inputs
     import sys as _sys
+
     mod = _sys.modules.get("omni_npu.worker.npu_model_runner")
     if mod is None:
         try:
             import importlib
+
             mod = importlib.import_module("omni_npu.worker.npu_model_runner")
         except Exception:
             return False

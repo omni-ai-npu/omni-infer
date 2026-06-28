@@ -1,8 +1,11 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
+
 
 class AclGraphConfig:
     """
@@ -16,6 +19,7 @@ class AclGraphConfig:
         
 _ACLGRAPH_CONFIG: AclGraphConfig | None = None  
 
+
 def init_aclgraph_config(vllm_config):
 
     global _ACLGRAPH_CONFIG
@@ -23,6 +27,7 @@ def init_aclgraph_config(vllm_config):
         return _ACLGRAPH_CONFIG
     _ACLGRAPH_CONFIG = AclGraphConfig(vllm_config)
     return _ACLGRAPH_CONFIG
+
 
 def get_aclgraph_config():
     global _ACLGRAPH_CONFIG

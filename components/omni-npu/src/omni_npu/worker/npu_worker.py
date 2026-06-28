@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 import os
 import gc
@@ -50,6 +51,7 @@ from omni_npu.plugin_decorators import load_model_decorator
 from omni_npu.compilation.acl_graph import set_aclgraph_recapture
 
 logger = init_logger(__name__)
+
 
 class NPUWorker(WorkerBase):
     """An NPU worker class using torch_npu and HCCL backend."""
@@ -331,10 +333,6 @@ class NPUWorker(WorkerBase):
         return res
 
     def _init_profiler(self):
-        # Torch profiler. Enabled and configured through env vars:
-        # VLLM_TORCH_PROFILER_DIR=/path/to/save/trace
-        # PROFILER_TOKEN_THRESHOLD=1
-        # PROFILER_STOP_STEP=5
         self.profile_already_start = False
         self.profile_step = 0
         self.profile_finished = False
@@ -450,6 +448,7 @@ class NPUWorker(WorkerBase):
         use_bytes = free_bytes_before - free_bytes_after
         logger.info(f"wake_up {tags=} use %.2f GiB memory.", GiB(use_bytes))
 
+
 def init_worker_distributed_environment(
     vllm_config,
     rank,
@@ -478,6 +477,7 @@ def init_worker_distributed_environment(
     # Init ec connector here before KV caches caches init
     # NOTE: We do not init KV caches for Encoder-only instance in EPD disagg mode
     ensure_ec_transfer_initialized(vllm_config)
+
     
 def init_world_group(ranks: list[int], local_rank: int, backend: str):
     """Initialize world group for RL scenarios where ranks are externally provided."""

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """Custom op wrappers for NPUPanguSparseAttention sub-paths.
 
@@ -165,6 +165,7 @@ def _indexer_cache_tuple(
 # npu_pangu_swa_decode: wraps _apply_SWA_attention_decode
 # ---------------------------------------------------------------------------
 
+
 def npu_pangu_swa_decode(
     q_nope: torch.Tensor,
     q_pe: torch.Tensor,
@@ -221,6 +222,7 @@ direct_register_custom_op(
 # refactor that swaps in a 2D slot mapping internally.
 # ---------------------------------------------------------------------------
 
+
 def npu_pangu_indexer_cache_update(
     k: torch.Tensor,
     kv_cache_0: torch.Tensor,
@@ -257,6 +259,7 @@ direct_register_custom_op(
 # npu_pangu_lightning_indexer: wraps Indexer._apply_lightning_indexer
 # (pure compute over kv_cache; returns topk_indices)
 # ---------------------------------------------------------------------------
+
 
 def npu_pangu_lightning_indexer(
     q: torch.Tensor,
@@ -305,6 +308,7 @@ direct_register_custom_op(
 # kept on the original direct call.
 # ---------------------------------------------------------------------------
 
+
 def npu_pangu_kv_cache_update(
     kv: torch.Tensor,
     kv_cache_0: torch.Tensor,
@@ -343,6 +347,7 @@ direct_register_custom_op(
 # ---------------------------------------------------------------------------
 # npu_pangu_mome_fc2_scatter_and_return: wraps the FC2 mome scatter step
 # ---------------------------------------------------------------------------
+
 
 def npu_pangu_mome_fc2_scatter_and_return(
     gathered_results: torch.Tensor,
@@ -384,6 +389,7 @@ direct_register_custom_op(
 # Replaces direct conv1d calls inside _apply_MOME's SP branch and the
 # layer.forward call on non-Ascend950 path.
 # ---------------------------------------------------------------------------
+
 
 def npu_pangu_mome_conv(
     x: torch.Tensor,
@@ -475,6 +481,7 @@ direct_register_custom_op(
 # takes the WHOLE kv (a leaf tensor from kv_a_proj) so mutates_args=["kv"]
 # is safe — kv is not a view. Slice + inplace happen inside the opaque op.
 # ---------------------------------------------------------------------------
+
 
 def npu_pangu_kv_down_mome_inplace(
     kv: torch.Tensor,

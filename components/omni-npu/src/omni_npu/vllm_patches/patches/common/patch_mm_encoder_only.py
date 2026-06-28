@@ -1,4 +1,7 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
+
 from collections.abc import Iterable
 from typing import Any, TypeVar
 
@@ -11,6 +14,7 @@ from vllm.config import VllmConfig
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 _T = TypeVar("_T", bound=type[nn.Module])
+
 
 @register_patch("AdaptersPatch", adapters)
 class AdaptersPatch(VLLMPatch):

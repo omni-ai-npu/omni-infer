@@ -210,7 +210,7 @@ def prepare_h2d_copy_args_hybrid(cache, local_block_ids: List[List[int]], tp_nno
     # local_block_ids[1] per kv_cache_group, positionally. Walk groups in
     # order and consume consecutive entries from flat_host_ids.
     flat_idx = 0
-    for idx_grp, block_id_grp in enumerate(local_block_ids[1]):
+    for _idx_grp, block_id_grp in enumerate(local_block_ids[1]):
         if not block_id_grp:
             continue
         for dst_block in block_id_grp:
@@ -365,8 +365,6 @@ def prepare_h2d_copy_args_hbm_buffer(cache, local_block_ids: List[List[int]], re
             # requests even at temperature=0.
             block_id_grp = [b for b in block_id_grp if b != 0]
             block_id_grp = block_id_grp[-swa_num:]
-            # Keep the last (req_offset - 1) blocks: reserve 1 for rotation.
-            # block_id_grp = block_id_grp[-(req_offset - 1):] if req_offset > 1 else block_id_grp[-1:]
             local_req_ids_swa_block.append(copy.copy(block_id_grp))
 
         req_offset = cache.hbm_buffer_block_table_pool[idx_grp]["req_offset"]

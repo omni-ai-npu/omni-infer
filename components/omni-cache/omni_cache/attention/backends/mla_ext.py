@@ -31,11 +31,7 @@ import os
 from vllm.logger import init_logger
 from vllm.v1.attention.backends.utils import PAD_SLOT_ID
 
-from omni_npu.attention.backends.mla import (
-    NPUMLABackend,
-    NPUMLAMetadataBuilder,
-    NPUMLA
-)
+from omni_npu.attention.backends.mla import NPUMLABackend, NPUMLAMetadataBuilder, NPUMLA
 from omni_npu.attention.backends.utils import register_attention_backend
 from omni_cache.cache.utils.support import (
     get_active_prefill_cache,
@@ -59,9 +55,7 @@ def _leading_zero_blocks(num_computed: int, sliding_window, block_size: int) -> 
 def _lane_req_offset(spec, vllm_config) -> int:
     from omni_cache.cache.decode.hbm_buffer_utils import _req_offset_for_spec
 
-    return _req_offset_for_spec(
-        spec, max_model_len=vllm_config.model_config.max_model_len
-    )
+    return _req_offset_for_spec(spec, max_model_len=vllm_config.model_config.max_model_len)
 
 
 if ENABLE_OMNI_CACHE and not USE_OMNI_INPUT_BATCH:
@@ -95,9 +89,6 @@ if ENABLE_OMNI_CACHE and not USE_OMNI_INPUT_BATCH:
 
         # --- decode ---
         def build(self, common_prefix_len, common_attn_metadata, fast_build=False):
-            import sys as _sys, os as _os
-            if _os.environ.get('MLA_SLOT_DEBUG','0') == '1':
-                print('[MLABUILD] enter', file=_sys.stderr, flush=True)
 
             cm = common_attn_metadata
             block_table_tensor, slot_mapping = self._rewrite_decode_block_table(
@@ -113,15 +104,11 @@ if ENABLE_OMNI_CACHE and not USE_OMNI_INPUT_BATCH:
                     slot_mapping=slot_mapping,
                 )
             # Prefill-side: Force prefill only construct prefill metadata
-            if get_active_prefill_cache() is not None and getattr(self, 'reorder_batch_threshold', 1) != 0:
+            if get_active_prefill_cache() is not None and getattr(self, "reorder_batch_threshold", 1) != 0:
                 self.reorder_batch_threshold = 0
 
-            metadata = super().build(
-                common_prefix_len, cm, fast_build
-            )
-            import sys as _sys, os as _os
-            if _os.environ.get('MLA_SLOT_DEBUG','0') == '1':
-                print('[MLABLD] decode=%s prefill=%s' % (metadata.decode is not None, metadata.prefill is not None), file=_sys.stderr, flush=True)
+            metadata = super().build(common_prefix_len, cm, fast_build)
+
             if metadata.prefill is not None:
                 # APC: compute prefix_meta for H2D
                 # IMPORTANT: prefix_meta must be set on metadata.prefill (not parent metadata)
@@ -143,8 +130,7 @@ if ENABLE_OMNI_CACHE and not USE_OMNI_INPUT_BATCH:
             Also triggers H2D for Layer 0 - since post_attn prefetches the NEXT layer,
             Layer 0's data must be loaded during build before any forward pass.
             """
-            from vllm.model_executor.models.utils import extract_layer_index
-            omni_cache = get_active_prefill_cache()
+            active_cache = get_active_prefill_cache()
 
             attach_prefix_meta_to_metadata(self.vllm_config, metadata, common_attn_metadata)
 
@@ -153,15 +139,14 @@ if ENABLE_OMNI_CACHE and not USE_OMNI_INPUT_BATCH:
             # H2D for Layer 0: Load current layer's KV cache from host to device
             # This is needed because post_attn prefetches NEXT layer, so Layer 0
             # would never get loaded otherwise
-            if prefix_meta is not None and omni_cache is not None:
+            if prefix_meta is not None and active_cache is not None:
                 if self.layer_names:
                     first_layer_name = self.layer_names[0]
                     from omni_cache.cache.transfer_engine.synchronize import (
                         synchronize_h2d_prefill,
                     )
-                    synchronize_h2d_prefill(
-                        omni_cache, prefix_meta, first_layer_name, load_next_layer=False
-                    )
+
+                    synchronize_h2d_prefill(active_cache, prefix_meta, first_layer_name, load_next_layer=False)
 
             return prefix_meta
 
@@ -195,15 +180,6 @@ if ENABLE_OMNI_CACHE and not USE_OMNI_INPUT_BATCH:
             # rebuilt each step, so zero+write per step is also correct.
             fake = block_table_tensor
             fake.zero_()
-            # For SWA, lane behaves as a ring buffer of win_blocks physical
-            # blocks (slots 1..win_blocks of the lane), preceded by block 0
-            # as the null sentinel. Position P is stored at slot
-            #   (P % sliding_window) + block_size + lane_base
-            # so logical block lb maps to physical block
-            #   (lb % win_blocks) + 1
-            # within the lane. This avoids the collision that happens when
-            # num_leading rolls and two in-window positions end up at the
-            # same physical slot.
             if sliding_window is not None and sliding_window > 0 and block_size > 0:
                 win_blocks = max(1, sliding_window // block_size)
             else:
@@ -219,9 +195,7 @@ if ENABLE_OMNI_CACHE and not USE_OMNI_INPUT_BATCH:
                 query_end = query_start_loc_cpu[i + 1]
                 query_len = max(0, query_end - query_start)
                 num_computed = max(0, seq_lens_cpu[i] - query_len)
-                num_leading = _leading_zero_blocks(
-                    num_computed, sliding_window, block_size
-                )
+                num_leading = _leading_zero_blocks(num_computed, sliding_window, block_size)
                 # Cap valid to this request lane so block IDs do not spill
                 # into the next request lane.
                 valid = max_blocks - num_leading
@@ -237,9 +211,7 @@ if ENABLE_OMNI_CACHE and not USE_OMNI_INPUT_BATCH:
                         dtype=block_table_tensor.dtype,
                         device=block_table_tensor.device,
                     )
-                    fake[i, num_leading:num_leading + valid] = (
-                        (lb_idx % win_blocks) + 1 + base
-                    )
+                    fake[i, num_leading:num_leading + valid] = (lb_idx % win_blocks) + 1 + base
                 else:
                     window = torch.arange(
                         base + 1,
@@ -261,29 +233,20 @@ if ENABLE_OMNI_CACHE and not USE_OMNI_INPUT_BATCH:
                         continue
                     row_slots.append(block_id * block_size + (pos % block_size))
                 if row_slots:
-                    remapped_slots[query_start:query_end] = torch.tensor(
-                        row_slots, dtype=remapped_slots.dtype
-                    )
+                    remapped_slots[query_start:query_end] = torch.tensor(row_slots, dtype=remapped_slots.dtype)
             slot_mapping.copy_(
-                remapped_slots[:slot_mapping.numel()],
+                remapped_slots[: slot_mapping.numel()],
                 non_blocking=True,
             )
-            import os as _os, sys as _sys, torch as _torch
-            if _os.environ.get("MLA_BT_DEBUG", "0") == "1":
-                print("[MLABT] dp=%s num_reqs=%d max_blocks=%d dptr=0x%x seq_lens=%s fake[0,:6]=%s fake[1,:6]=%s idx_reqs=%s" % (
-                    getattr(self, "_tp_rank", "?"), num_reqs, max_blocks, fake.data_ptr(),
-                    seq_lens_cpu[:4], fake[0,:6].tolist(), fake[1,:6].tolist(), idx_reqs[:8]
-                ), file=_sys.stderr, flush=True)
             return fake, slot_mapping
 
         def _get_slot_mapping_buffer(self, slot_mapping):
             slots = self._slot_map_pinned
             if slot_mapping.numel() > slots.numel():
                 raise RuntimeError(
-                    f"slot_mapping has {slot_mapping.numel()} tokens, "
-                    f"but persistent buffer only holds {slots.numel()}."
+                    f"slot_mapping has {slot_mapping.numel()} tokens, but persistent buffer only holds {slots.numel()}."
                 )
-            return slots[:slot_mapping.numel()]
+            return slots[: slot_mapping.numel()]
 
     @register_attention_backend(NPUMLA)
     class NPUMLABackendExt(NPUMLABackend):

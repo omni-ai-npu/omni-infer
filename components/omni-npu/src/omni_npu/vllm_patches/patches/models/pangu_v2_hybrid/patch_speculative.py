@@ -1,6 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright contributors to the vLLM project.
 
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -27,6 +27,7 @@ from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 logger = init_logger(__name__)
 
+
 @register_patch("SpeculativePatch", speculative)
 class SpeculativePatch(VLLMPatch):
     _attr_names_to_apply = ['MTPModelTypes']
@@ -46,6 +47,7 @@ class SpeculativePatch(VLLMPatch):
 
 _origin_hf_config_override = SpeculativeConfig.hf_config_override
 
+
 @register_patch("OpenPanguV2SpeculativeConfigPatch", SpeculativeConfig)
 @config
 @dataclass
@@ -57,8 +59,7 @@ class PanguV2MoeSpeculativeConfigPatch(VLLMPatch):
     @staticmethod
     def hf_config_override(hf_config: PretrainedConfig) -> PretrainedConfig:
 
-        #####patch start: for openpangu_v2_mtp
-        if hf_config.model_type in ("openpangu_v2", "openpangu_v2_vl_moe", "openpangu_v2_omni_moe"):
+        if hf_config.model_type in ("openpangu_v2_vl_moe", "openpangu_v2_omni_moe"):
             hf_config.model_type = "openpangu_mtp"
         if hf_config.model_type == "openpangu_mtp":
             n_predict = getattr(hf_config, "num_nextn_predict_layers", None)
@@ -67,13 +68,13 @@ class PanguV2MoeSpeculativeConfigPatch(VLLMPatch):
             )
             return hf_config
 
-        #####patch start: for pangu_v2_moe_mtp
-        if hf_config.model_type == "pangu_v2_moe":
+        #####patch start: for openpangu_v2_mtp
+        if hf_config.model_type == "openpangu_v2":
             hf_config.model_type = "mtp"
         if hf_config.model_type == "mtp":
             n_predict = getattr(hf_config, "num_nextn_predict_layers", None)
             hf_config.update(
-                {"n_predict": n_predict, "architectures": ["PanguV2MTPModel"]}
+                {"n_predict": n_predict, "architectures": ["OpenPanguV2MTPModel"]}
             )
             return hf_config
 

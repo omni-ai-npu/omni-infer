@@ -90,18 +90,12 @@ def _resolve_attention_head_sizes(spec, host_cache, hf_config=None) -> list[int]
     actual_head_dim = host_cache[0].shape[-1]
     spec_head_size = getattr(spec, "head_size", actual_head_dim)
 
-    # DSAAttentionSpec: [nope_and_rope, indexer]
     if DSAAttentionSpec is not None and isinstance(spec, DSAAttentionSpec):
         # For Pangu V2 DSA: indexer head_size is 128.
         # Try to read from spec.head_sizes (future-proof), else derive.
         head_sizes_attr = getattr(spec, "head_sizes", None)
         if head_sizes_attr is not None:
             return list(head_sizes_attr)
-        # DSAAttentionSpec.real_page_size_bytes = block_size * head_size * dtype_size
-        # (no 2x factor). head_size = kv_lora_rank + qk_rope_head_dim
-        # + index_head_dim. Read indexer dim from hf_config when the
-        # caller supplied it; otherwise fall back to the historical
-        # constant.
         indexer_dim = None
         if hf_config is not None:
             indexer_dim = (
@@ -323,7 +317,7 @@ def parse_pa_kv_cache(decode_cache, host_cache) -> Dict[str, tuple]:
     AttentionSpec = types["AttentionSpec"]
 
     group_cache: Dict[str, tuple] = {}
-    for group_idx, group_config in enumerate(decode_cache.kv_cache_config.kv_cache_groups):
+    for _group_idx, group_config in enumerate(decode_cache.kv_cache_config.kv_cache_groups):
         spec = group_config.kv_cache_spec
 
         if isinstance(spec, MambaSpec):

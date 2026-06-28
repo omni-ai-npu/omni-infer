@@ -23,7 +23,7 @@ NODE_IP_SPECS = [
 BASE_PORT = int(os.environ.get("BASE_PORT", "15077"))
 ZMQ_BASE_PORT = int(os.environ.get("ZMQ_BASE_PORT", "17555"))
 
-P_NODE_PORT_LIST = ';'.join(
+P_NODE_PORT_LIST = os.environ.get("P_NODE_PORT_LIST") or ';'.join(
     ','.join(f"{host.strip()}:{BASE_PORT}" for host in group.split(',') if host.strip())
     for group in P_NODE_LIST.split(';') if group.strip()
 )

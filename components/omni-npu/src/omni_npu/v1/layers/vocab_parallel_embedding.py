@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-#
-# This file is based on vLLM implementation:
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-# https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/vocab_parallel_embedding.py
+# Copyright contributors to the vLLM project.
 
 from typing import Tuple
 

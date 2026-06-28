@@ -74,9 +74,7 @@ class DSAPolicy(OmniCacheSpecPolicy):
         omni_cache = input_batch.omni_cache
         if omni_cache is None or not omni_cache.enable_gs:
             return block_table
-        return DSAGatherSelectionBlockTable.from_block_table(
-            block_table, input_batch, self
-        )
+        return DSAGatherSelectionBlockTable.from_block_table(block_table, input_batch, self)
 
 
 class MomePolicy(OmniCacheSpecPolicy):
@@ -115,14 +113,9 @@ class ShareKVSlidingWindowPolicy(OmniCacheSpecPolicy):
     def initialize_group_block_table(self, input_batch: "OmniCacheInputBatch") -> None:
         from omni_cache.cache.decode.hbm_buffer_utils import _req_offset_for_spec
 
-        self.req_offset = int(
-            _req_offset_for_spec(self.spec, max_model_len=input_batch.max_model_len)
-        )
+        self.req_offset = int(_req_offset_for_spec(self.spec, max_model_len=input_batch.max_model_len))
         if self.req_offset <= 0:
-            raise RuntimeError(
-                f"Invalid SWA req_offset {self.req_offset} "
-                f"for {type(self.spec).__name__}"
-            )
+            raise RuntimeError(f"Invalid SWA req_offset {self.req_offset} for {type(self.spec).__name__}")
 
     def uses_omni_block_table(self) -> bool:
         return True
@@ -208,9 +201,7 @@ class OmniCacheBlockTable(BlockTable):
     def move_row(self, src: int, tgt: int) -> None:
         num_blocks = self.num_blocks_per_row[src]
         self.block_table.np[tgt] = self.block_table.np[src]
-        self.vllm_block_table.np[tgt, :num_blocks] = (
-            self.vllm_block_table.np[src, :num_blocks]
-        )
+        self.vllm_block_table.np[tgt, :num_blocks] = self.vllm_block_table.np[src, :num_blocks]
         self.num_blocks_per_row[tgt] = num_blocks
 
     def swap_row(self, src: int, tgt: int) -> None:
@@ -239,9 +230,7 @@ class OmniCacheBlockTable(BlockTable):
         num_blocks = len(normalized_block_ids)
         start = self.num_blocks_per_row[row_idx]
         self.num_blocks_per_row[row_idx] += num_blocks
-        self.vllm_block_table.np[row_idx, start : start + num_blocks] = (
-            normalized_block_ids
-        )
+        self.vllm_block_table.np[row_idx, start:start + num_blocks] = normalized_block_ids
 
 
 class DSAGatherSelectionBlockTable(BlockTable):
@@ -267,22 +256,17 @@ class DSAGatherSelectionBlockTable(BlockTable):
     def _initialize_gs_buffers(self) -> None:
         omni_cache: "DecodeOmniCache" = self.input_batch.omni_cache
         if omni_cache is None:
-            raise RuntimeError(
-                "Cannot initialize GatherSelection buffers without omni_cache"
-            )
+            raise RuntimeError("Cannot initialize GatherSelection buffers without omni_cache")
 
         required_attrs = (
             "num_layers",
             "selection_state_size",
             "s_max_block_num",
         )
-        missing_attrs = [
-            attr for attr in required_attrs if not hasattr(omni_cache, attr)
-        ]
+        missing_attrs = [attr for attr in required_attrs if not hasattr(omni_cache, attr)]
         if missing_attrs:
             raise RuntimeError(
-                "Cannot initialize GatherSelection buffers: missing "
-                f"omni_cache attributes {missing_attrs}"
+                f"Cannot initialize GatherSelection buffers: missing omni_cache attributes {missing_attrs}"
             )
 
         num_layers = omni_cache.num_layers
@@ -424,13 +408,9 @@ class OmniCacheInputBatch(InputBatch):
         self.kernel_block_sizes = kernel_block_sizes
         self.omni_cache = omni_cache
         self._gs_block_table: DSAGatherSelectionBlockTable | None = None
-        self.spec_policies = [
-            _make_policy(group_idx, spec)
-            for group_idx, spec in enumerate(kv_cache_specs)
-        ]
+        self.spec_policies = [_make_policy(group_idx, spec) for group_idx, spec in enumerate(kv_cache_specs)]
         self.has_hbm_lane_policy = any(
-            isinstance(policy, (MomePolicy, ShareKVSlidingWindowPolicy))
-            for policy in self.spec_policies
+            isinstance(policy, (MomePolicy, ShareKVSlidingWindowPolicy)) for policy in self.spec_policies
         )
 
         super().__init__(
@@ -450,21 +430,14 @@ class OmniCacheInputBatch(InputBatch):
             cp_kv_cache_interleave_size=cp_kv_cache_interleave_size,
         )
 
-        self.block_table = OmniCacheMultiGroupBlockTable(
-            self, self.block_table, self.spec_policies
-        )
+        self.block_table = OmniCacheMultiGroupBlockTable(self, self.block_table, self.spec_policies)
 
         for policy in self.spec_policies:
             policy.initialize_group_block_table(self)
 
-        if (
-            self.omni_cache is not None
-            and self.omni_cache.enable_gs
-            and self._gs_block_table is None
-        ):
+        if self.omni_cache is not None and self.omni_cache.enable_gs and self._gs_block_table is None:
             raise RuntimeError(
-                "GatherSelection is enabled, but no DSA block table was "
-                "installed on OmniCacheInputBatch"
+                "GatherSelection is enabled, but no DSA block table was installed on OmniCacheInputBatch"
             )
 
         logger.warning(
@@ -473,18 +446,13 @@ class OmniCacheInputBatch(InputBatch):
             "has_hbm_lane_policy=%s",
             max_num_reqs,
             max_model_len,
-            [
-                f"{policy.group_idx}:{type(policy).__name__}"
-                for policy in self.spec_policies
-            ],
+            [f"{policy.group_idx}:{type(policy).__name__}" for policy in self.spec_policies],
             self.has_hbm_lane_policy,
         )
 
     def _set_gs_block_table(self, block_table: DSAGatherSelectionBlockTable) -> None:
         if self._gs_block_table is not None:
-            raise RuntimeError(
-                "Multiple DSA GatherSelection block tables are not supported"
-            )
+            raise RuntimeError("Multiple DSA GatherSelection block tables are not supported")
         self._gs_block_table = block_table
 
     def _require_gs_block_table(self) -> DSAGatherSelectionBlockTable:
@@ -493,10 +461,7 @@ class OmniCacheInputBatch(InputBatch):
         return self._gs_block_table
 
     def has_gs_buffers(self) -> bool:
-        return (
-            self._gs_block_table is not None
-            and self._gs_block_table.has_gs_buffers()
-        )
+        return self._gs_block_table is not None and self._gs_block_table.has_gs_buffers()
 
     def commit_gs_buffers(self, num_reqs: int) -> None:
         if self._gs_block_table is not None:
@@ -506,9 +471,7 @@ class OmniCacheInputBatch(InputBatch):
         return self._require_gs_block_table().get_gs_table_tensor(num_reqs)
 
     def get_gs_status_tensor(self, layer_idx: int, num_reqs: int) -> torch.Tensor:
-        return self._require_gs_block_table().get_gs_status_tensor(
-            layer_idx, num_reqs
-        )
+        return self._require_gs_block_table().get_gs_status_tensor(layer_idx, num_reqs)
 
     def _register_add_request(self, request: CachedRequestState) -> int:
         req_index = super()._register_add_request(request)
@@ -532,12 +495,8 @@ class OmniCacheInputBatch(InputBatch):
         return req_index
 
     def get_hbm_lane(self, req_id: str) -> int:
-        if self.omni_cache is None or not hasattr(
-            self.omni_cache, "get_hbm_lane_for_request"
-        ):
-            raise RuntimeError(
-                f"No global HBM lane map available for request {req_id}"
-            )
+        if self.omni_cache is None or not hasattr(self.omni_cache, "get_hbm_lane_for_request"):
+            raise RuntimeError(f"No global HBM lane map available for request {req_id}")
         lane = self.omni_cache.get_hbm_lane_for_request(req_id)
         if lane is None:
             raise RuntimeError(f"No HBM lane reserved for request {req_id}")
@@ -552,11 +511,10 @@ class OmniCacheInputBatch(InputBatch):
         return self.get_hbm_lane(req_id)
 
     def release_hbm_lane(self, req_id: str) -> int | None:
-        if self.omni_cache is None or not hasattr(
-            self.omni_cache, "release_hbm_lane_for_request"
-        ):
+        if self.omni_cache is None or not hasattr(self.omni_cache, "release_hbm_lane_for_request"):
             return None
         return self.omni_cache.release_hbm_lane_for_request(req_id)
+
 
 __all__ = [
     "DSAGatherSelectionBlockTable",

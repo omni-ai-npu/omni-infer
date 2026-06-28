@@ -1,6 +1,10 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
+
 import torch
 from vllm.v1.worker.gpu_input_batch import InputBatch
+
 
 class NPUInputBatch(InputBatch):
     def init_npu_tensors(self, vocab_size: int):
@@ -12,9 +16,6 @@ class NPUInputBatch(InputBatch):
         self.output_mask = torch.zeros((self.max_num_reqs, vocab_size), dtype=torch.bool, device=self.npu_device)
         self.output_bin_counts = torch.zeros((self.max_num_reqs, vocab_size), dtype=torch.int32, device=self.npu_device)
         
-        # self.ones_cpu = torch.ones(vocab_size, dtype=torch.bool, device="cpu")
-        
-        # Instantly attach to the existing metadata created by super().__init__
         self.sampling_metadata.npu_input_batch = self
 
     def _make_sampling_metadata(self):

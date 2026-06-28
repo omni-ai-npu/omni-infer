@@ -85,8 +85,11 @@ def _max_steps() -> int:
 
 
 def install() -> None:
-    """Monkey-patch NPUModelRunner.execute_model. Idempotent. No-op when
-    OMNI_KV_STEP_DUMP isn't set."""
+    """Install the NPUModelRunner.execute_model monkey patch.
+
+    This operation is idempotent and is a no-op when OMNI_KV_STEP_DUMP
+    is not set.
+    """
     global _installed
     if not _enabled():
         return

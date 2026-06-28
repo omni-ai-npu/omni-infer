@@ -1,6 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# NPU attention backend shims for vLLM
+# Copyright contributors to the vLLM project.
 
 import sys
 from omni_npu.attention.backends.attention import (

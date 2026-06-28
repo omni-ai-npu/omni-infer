@@ -1,4 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 def plugin() -> str | None:
     """
     Entry point for vLLM to discover the NPU platform plugin.

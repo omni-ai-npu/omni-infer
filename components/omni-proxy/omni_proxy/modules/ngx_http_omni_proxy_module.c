@@ -226,50 +226,30 @@ static inline omni_req_t *omni_get_req(ngx_http_request_t *r)
 
 static void omni_proxy_post_tokenized(omni_req_t *req)
 {
-    /* 1) snapshot pointers under lock */
     ngx_shmtx_lock(&g_state->shmtx);
-    /* snapshot radix_tree pointers */
     uint16_t num_prefill = g_state->num_prefill_endpoints;
-    omni_radix_tree_t *local_prefill_trees[MAX_PREFILL_UPSTREAMS];
-    ngx_memzero(local_prefill_trees, sizeof(omni_radix_tree_t *) * MAX_PREFILL_UPSTREAMS);
-    uint16_t prefill_cnt = 0;
-    for (int i = 0; i < MAX_PREFILL_UPSTREAMS && prefill_cnt < num_prefill; i++) {
-        omni_upstream_prefill_t *prefill = &g_state->prefill_states[i];
-        if (prefill->comm.status != STATUS_ENABLE) {
-            continue;
-        }
-        prefill_cnt++;
-        local_prefill_trees[i] = prefill->radix_tree;
-    }
-
     uint16_t num_decode = g_state->num_decode_endpoints;
-    omni_radix_tree_t *local_decode_trees[MAX_DECODE_UPSTREAMS];
-    ngx_memzero(local_decode_trees, sizeof(omni_radix_tree_t *) * MAX_DECODE_UPSTREAMS);
-    uint16_t decode_cnt = 0;
-    for (int i = 0; i < MAX_DECODE_UPSTREAMS && decode_cnt < num_decode; i++) {
-        omni_upstream_decode_t *decode = &g_state->decode_states[i];
-        if (decode->comm.status != STATUS_ENABLE) {
-            continue;
-        }
-        decode_cnt++;
-        local_decode_trees[i] = decode->radix_tree;
-    }
     ngx_shmtx_unlock(&g_state->shmtx);
 
-    /* 2) Compute matches without holding g_state lock */
     // Prefill Matching
     uint32_t local_prefill_match_depths[MAX_PREFILL_UPSTREAMS];
     ngx_uint_t computed_max_prefill = 0;
 
     for (uint16_t i = 0, cnt = 0; i < MAX_PREFILL_UPSTREAMS && cnt < num_prefill; i++) {
-        omni_radix_tree_t *tree = local_prefill_trees[i];
         ngx_uint_t match_depth = 0;
-        if (tree != NULL) {
+        ngx_shmtx_lock(&g_state->shmtx);
+        omni_upstream_prefill_t *prefill = &g_state->prefill_states[i];
+        if (prefill->comm.status == STATUS_ENABLE) {
+            omni_radix_tree_t *tree = prefill->radix_tree;
             cnt++;
-            match_depth = omni_radix_tree_match_optimistic(tree,
-                                                            (uint64_t *)req->tokenizer_req.block_hashes,
-                                                            req->tokenizer_req.block_hashes_len);
+            if (tree != NULL) {
+                match_depth = omni_radix_tree_match_optimistic(tree,
+                                                                (uint64_t *)req->tokenizer_req.block_hashes,
+                                                                req->tokenizer_req.block_hashes_len);
+            }
         }
+        ngx_shmtx_unlock(&g_state->shmtx);
+
         local_prefill_match_depths[i] = (uint32_t)match_depth;
         if (match_depth > 0) {
             ngx_log_error(NGX_LOG_INFO,
@@ -297,14 +277,20 @@ static void omni_proxy_post_tokenized(omni_req_t *req)
     uint32_t local_decode_match_depths[MAX_DECODE_UPSTREAMS];
     ngx_uint_t computed_max_decode = 0;
     for (uint16_t i = 0, cnt = 0; i < MAX_DECODE_UPSTREAMS && cnt < num_decode; i++) {
-        omni_radix_tree_t *tree = local_decode_trees[i];
         ngx_uint_t match_depth = 0;
-        if (tree != NULL) {
+        ngx_shmtx_lock(&g_state->shmtx);
+        omni_upstream_decode_t *decode = &g_state->decode_states[i];
+        if (decode->comm.status == STATUS_ENABLE) {
+            omni_radix_tree_t *tree = decode->radix_tree;
             cnt++;
-            match_depth = omni_radix_tree_match_optimistic(tree,
-                                                            (uint64_t *)req->tokenizer_req.block_hashes,
-                                                            req->tokenizer_req.block_hashes_len);
+            if (tree != NULL) {
+                match_depth = omni_radix_tree_match_optimistic(tree,
+                                                                (uint64_t *)req->tokenizer_req.block_hashes,
+                                                                req->tokenizer_req.block_hashes_len);
+            }
         }
+        ngx_shmtx_unlock(&g_state->shmtx);
+
         local_decode_match_depths[i] = (uint32_t)match_depth;
         if (match_depth > 0) {
             ngx_log_error(NGX_LOG_INFO,
@@ -355,7 +341,7 @@ static void omni_proxy_post_tokenized(omni_req_t *req)
 
 static void omni_proxy_begin_tokenization(ngx_http_request_t *r, omni_req_t *req, omni_req_context_t *ctx)
 {
-    req->metrics.prompt_num_tokens = r->request_length / 8; // will be updated after tokenization
+    req->metrics.prompt_num_tokens = (uint32_t)(r->request_length / 8); // will be updated after tokenization
 
     if (!g_state->has_tokenizer)
     {
@@ -373,16 +359,14 @@ static void omni_proxy_begin_tokenization(ngx_http_request_t *r, omni_req_t *req
     req->tokenizer_req.input_ids_buf_size = req->tokenizer_req.prompt_buf_size;
     req->tokenizer_req.input_ids = ngx_palloc(r->pool, sizeof(int64_t) * req->tokenizer_req.input_ids_buf_size);
 
-    req->tokenizer_req.block_hashes_buf_size = req->tokenizer_req.input_ids_buf_size / local_state.loc_conf->kv_block_size;
+    req->tokenizer_req.block_hashes_buf_size =
+        req->tokenizer_req.input_ids_buf_size / (size_t)local_state.loc_conf->kv_block_size;
     req->tokenizer_req.block_hashes = ngx_palloc(r->pool, sizeof(int64_t) * req->tokenizer_req.block_hashes_buf_size);
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                  "buf sizes: prompt %zu, input_ids %zu, block_hashes %zu, %p, %p, %p\n",
+                  "buf sizes: prompt %zu, input_ids %zu, block_hashes %zu\n",
                   req->tokenizer_req.prompt_buf_size,
                   req->tokenizer_req.input_ids_buf_size,
-                  req->tokenizer_req.block_hashes_buf_size,
-                  req->tokenizer_req.prompt,
-                  req->tokenizer_req.input_ids,
-                  req->tokenizer_req.block_hashes);
+                  req->tokenizer_req.block_hashes_buf_size);
     omni_tokenizer_worker_submit(&local_state.tokenize_worker, req->slot_index);
 }
 
@@ -410,7 +394,7 @@ static ngx_int_t ngx_http_encoder_post_subrequest(ngx_http_request_t *subr, void
     omni_req_context_t *ctx = omni_get_req_ctx(r);
     ngx_uint_t encode_items = (req->encode_item_count > 0) ? req->encode_item_count : ctx->encoder_item_count;
     ngx_chain_t *cl;
-    size_t total = 0;
+    off_t total = 0;
     u_char *p;
 
     if (rc != NGX_OK)
@@ -442,10 +426,18 @@ static ngx_int_t ngx_http_encoder_post_subrequest(ngx_http_request_t *subr, void
 
     for (cl = subr->out; cl; cl = cl->next)
     {
-        total += ngx_buf_size(cl->buf);
+        off_t buf_size = ngx_buf_size(cl->buf);
+        if (buf_size < 0)
+        {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "done encoder subrequest, negative buffer size");
+            ngx_http_finalize_request(r->main, NGX_HTTP_INTERNAL_SERVER_ERROR);
+            return NGX_ERROR;
+        }
+        total += buf_size;
     }
 
-    ctx->encoder_response_body = ngx_palloc(r->main->pool, total + 1);
+    ctx->encoder_response_body = ngx_palloc(r->main->pool, (size_t) (total + 1));
     if (ctx->encoder_response_body == NULL)
     {
         ngx_http_finalize_request(r, NGX_ERROR);
@@ -458,14 +450,14 @@ static ngx_int_t ngx_http_encoder_post_subrequest(ngx_http_request_t *subr, void
     p = ctx->encoder_response_body;
     for (cl = subr->out; cl; cl = cl->next)
     {
-        size_t buf_size = ngx_buf_size(cl->buf);
+        off_t buf_size = ngx_buf_size(cl->buf);
         if (buf_size > 0)
         {
-            p = ngx_cpymem(p, cl->buf->pos, buf_size);
+            p = ngx_cpymem(p, cl->buf->pos, (size_t) buf_size);
         }
     }
     *p = '\0';
-    ctx->encoder_response_body_size = total;
+    ctx->encoder_response_body_size = (ngx_uint_t) total;
 
     omni_proxy_begin_tokenization(r, req, ctx);
     return NGX_OK;
@@ -714,7 +706,7 @@ static void omni_proxy_main_req_cleanup(void *data)
     {
         struct timeval time_diff;
         timersub(&req->metrics.time_last_reponse, &req->metrics.time_received, &time_diff);
-        ngx_msec_t e2e_ms = TIMEVAL_TO_MSEC(time_diff);
+        ngx_msec_t e2e_ms = (ngx_msec_t)TIMEVAL_TO_MSEC(time_diff);
         omni_metrics_record_e2e(omni_get_global_state(), e2e_ms);
     }
     ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
@@ -837,6 +829,24 @@ static void omni_proxy_broadcast_send_response(omni_broadcast_ctx_t *ctx)
     ngx_uint_t safe_total = (results == NULL) ? 0 : ngx_min(ctx->total, ctx->results->nelts);
 
     p = ngx_snprintf(p, end - p, "{\"uri\":\"");
+
+    /* Ensure enough space for URI escape (worst case: 2x length) */
+    size_t uri_escaped_len = r->uri.len * 2;
+    if ((size_t)(end - p) < uri_escaped_len + 1) {
+        size_t needed = uri_escaped_len + 1;
+        size_t offset = p - out;
+        out_cap += needed - (end - p);
+        u_char *new_out = ngx_pnalloc(r->pool, out_cap);
+        if (new_out == NULL) {
+            ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+            return;
+        }
+        ngx_memcpy(new_out, out, offset);
+        p = new_out + offset;
+        out = new_out;
+        end = out + out_cap;
+    }
+
     p = omni_json_escape(p, r->uri.data, r->uri.len);
     p = ngx_snprintf(p, end - p, "\",\"results\":[");
     for (ngx_uint_t i = 0; i < safe_total; i++) {
@@ -939,7 +949,10 @@ static ngx_int_t omni_proxy_broadcast_post_subrequest(ngx_http_request_t *subr, 
         size_t body_total = 0;
         ngx_chain_t *cl;
         for (cl = subr->out; cl; cl = cl->next) {
-            body_total += ngx_buf_size(cl->buf);
+            off_t buf_size = ngx_buf_size(cl->buf);
+            if (buf_size > 0) {
+                body_total += (size_t)buf_size;
+            }
         }
 
         ngx_str_t *content_type = &subr->headers_out.content_type;
@@ -957,9 +970,9 @@ static ngx_int_t omni_proxy_broadcast_post_subrequest(ngx_http_request_t *subr, 
             if (result->body.data != NULL) {
                 u_char *p = result->body.data;
                 for (cl = subr->out; cl; cl = cl->next) {
-                    size_t buf_size = ngx_buf_size(cl->buf);
+                    off_t buf_size = ngx_buf_size(cl->buf);
                     if (buf_size > 0) {
-                        p = ngx_cpymem(p, cl->buf->pos, buf_size);
+                        p = ngx_cpymem(p, cl->buf->pos, (size_t) buf_size);
                     }
                 }
                 *p = '\0';
@@ -994,7 +1007,7 @@ static ngx_int_t omni_proxy_broadcast_schedule_subrequest(ngx_http_request_t *r,
     }
     ngx_memcpy(result->address.data, addr->text, addr->text_len);
     result->address.data[addr->text_len] = '\0';
-    result->address.len = addr->text_len;
+    result->address.len = (size_t)addr->text_len;
 
     ngx_str_t sub_uri = ngx_string("/omni_proxy_broadcast_sub");
     
@@ -1224,22 +1237,30 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
             /*update Traceparent from P node*/
             if (header[i].key.len == sizeof(x_trace_headers)-1 &&
             ngx_strncasecmp(header[i].key.data, x_trace_headers, sizeof(x_trace_headers)-1) == 0){
-                ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "****Find Traceparent return from P****; Traceparent:%s", header[i].value.data);
+                ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "****Find Traceparent return from P****; Traceparent:%V", &header[i].value);
                 u_char *trace_value = header[i].value.data;
                 size_t trace_value_len = header[i].value.len;
                 u_char *saved = ngx_pnalloc(r->pool, trace_value_len);
-                if (saved) {ngx_memcpy(saved, trace_value, trace_value_len);}
-                update_traceparent_header(r, x_trace_headers, saved, trace_value_len);
+                if (saved == NULL) {
+                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Failed to allocate memory for Traceparent");
+                } else {
+                    ngx_memcpy(saved, trace_value, trace_value_len);
+                    update_traceparent_header(r, x_trace_headers, saved, trace_value_len);
+                }
             }
             /*update Start_time_ns from P node*/
             if (header[i].key.len == sizeof(x_start_time_ns)-1 &&
             ngx_strncasecmp(header[i].key.data, x_start_time_ns, sizeof(x_start_time_ns)-1) == 0){
-                ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "****Find Start_time_ns return from P****; Start_time_ns:%s", header[i].value.data);
+                ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "****Find Start_time_ns return from P****; Start_time_ns:%V", &header[i].value);
                 u_char *trace_value = header[i].value.data;
                 size_t trace_value_len = header[i].value.len;
                 u_char *saved = ngx_pnalloc(r->pool, trace_value_len);
-                if (saved) {ngx_memcpy(saved, trace_value, trace_value_len);}
-                update_traceparent_header(r, x_start_time_ns, saved, trace_value_len);
+                if (saved == NULL) {
+                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "Failed to allocate memory for Start_time_ns");
+                } else {
+                    ngx_memcpy(saved, trace_value, trace_value_len);
+                    update_traceparent_header(r, x_start_time_ns, saved, trace_value_len);
+                }
             }
         }
     }
@@ -1257,7 +1278,11 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
 
     for (cl = subr->out; cl; cl = cl->next)
     {
-        total += ngx_buf_size(cl->buf);
+        off_t buf_size = ngx_buf_size(cl->buf);
+        if (buf_size > 0)
+        {
+            total += (size_t)buf_size;
+        }
     }
 
     ctx->prefill_response_body = ngx_palloc(r->main->pool, total + 1);
@@ -1273,10 +1298,10 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     p = ctx->prefill_response_body;
     for (cl = subr->out; cl; cl = cl->next)
     {
-        size_t buf_size = ngx_buf_size(cl->buf);
+        off_t buf_size = ngx_buf_size(cl->buf);
         if (buf_size > 0)
         {
-            p = ngx_cpymem(p, cl->buf->pos, buf_size);
+            p = ngx_cpymem(p, cl->buf->pos, (size_t) buf_size);
         }
     }
     *p = '\0';
@@ -1295,7 +1320,7 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
                       subr->headers_out.status);
 
         r->headers_out.status = subr->headers_out.status;
-        r->headers_out.content_length_n = ctx->prefill_response_body_size;
+        r->headers_out.content_length_n = (off_t)ctx->prefill_response_body_size;
         r->headers_out.content_type = subr->headers_out.content_type;
         r->headers_out.content_type_len = subr->headers_out.content_type_len;
 
@@ -1358,7 +1383,7 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
         }
 
         r->headers_out.status = NGX_HTTP_OK;
-        r->headers_out.content_length_n = response_body_size;
+        r->headers_out.content_length_n = (off_t)response_body_size;
         r->headers_out.content_type = subr->headers_out.content_type;
         r->headers_out.content_type_len = subr->headers_out.content_type_len;
 
@@ -1393,7 +1418,7 @@ static ngx_int_t ngx_http_prefill_post_subrequest(ngx_http_request_t *subr, void
     omni_batch_metrics_t *current_batch = &us->his.his[us->his.head];
     omni_batch_metrics_t *request_batch = current_batch;
     ngx_msec_t response_time = ngx_current_msec;
-    ngx_msec_t schedule_time = TIMEVAL_TO_MSEC(req->metrics.time_to_prefill);
+    ngx_msec_t schedule_time = (ngx_msec_t) TIMEVAL_TO_MSEC(req->metrics.time_to_prefill);
     ngx_msec_t delta = (current_batch->last_response_receive_time > 0) ?
                          (response_time - current_batch->last_response_receive_time) :
                          (21); // If first，force delta > 20 to get a new batch
@@ -1762,7 +1787,12 @@ static ngx_int_t omni_proxy_get_peer(ngx_peer_connection_t *pc,
     ngx_http_upstream_rr_peers_t *peers = rrp->peers;
     ngx_http_upstream_rr_peer_t *peer;
 
-    assert(omni_req_is_in_phase(req, PHASE_PREFILLING));
+    if (!omni_req_is_in_phase(req, PHASE_PREFILLING))
+    {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "omni_proxy_get_peer: req %d not in PREFILLING phase", req->slot_index);
+        return NGX_ERROR;
+    }
 
     ngx_http_upstream_rr_peers_rlock(peers);
 
@@ -1921,10 +1951,17 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
         {
             struct timeval tv;
             omni_get_current_time(&tv);
-            int64_t total_usec = (((req->metrics.tpot.tv_sec * 1000000 + req->metrics.tpot.tv_usec) * (req->metrics.decoded_tokens - 1)) + (tv.tv_sec * 1000000 + tv.tv_usec) - (req->metrics.time_last_reponse.tv_sec * 1000000 + req->metrics.time_last_reponse.tv_usec)) /
-            req->metrics.decoded_tokens;
-            req->metrics.tpot.tv_sec = total_usec / 1000000;
-            req->metrics.tpot.tv_usec = total_usec % 1000000;
+            int64_t decoded_tokens = (int64_t) req->metrics.decoded_tokens;
+            int64_t usec_per_sec = (int64_t) 1000000;
+            int64_t total_usec =
+                ((((int64_t) req->metrics.tpot.tv_sec * usec_per_sec + (int64_t) req->metrics.tpot.tv_usec) *
+                  (decoded_tokens - 1)) +
+                 ((int64_t) tv.tv_sec * usec_per_sec + (int64_t) tv.tv_usec) -
+                 ((int64_t) req->metrics.time_last_reponse.tv_sec * usec_per_sec +
+                  (int64_t) req->metrics.time_last_reponse.tv_usec)) /
+                decoded_tokens;
+            req->metrics.tpot.tv_sec = total_usec / usec_per_sec;
+            req->metrics.tpot.tv_usec = total_usec % usec_per_sec;
 
         }
         if (req->metrics.decoded_tokens == 2){
@@ -2010,7 +2047,7 @@ static void omni_proxy_update_decode_stats(ngx_http_request_t *r, ngx_buf_t *buf
 static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r)
 {
     ngx_chain_t *cl;
-    size_t body_len = 0;
+    off_t body_len = 0;
     omni_req_context_t *ctx = ngx_http_get_module_ctx(r, ngx_http_omni_proxy_module);
 
     omni_proxy_prepare_decode_request_body(r, ctx);
@@ -2033,7 +2070,7 @@ static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r)
     ngx_table_elt_t *h = part->elts;
     ngx_uint_t i;
 
-    for (;;)
+    while (part != NULL)
     {
         for (i = 0; i < part->nelts; i++)
         {
@@ -2048,12 +2085,11 @@ static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r)
             header_len += h[i].key.len + sizeof(": ") - 1 + h[i].value.len + sizeof("\r\n") - 1;
         }
 
-        if (part->next == NULL)
-        {
-            break;
-        }
         part = part->next;
-        h = part->elts;
+        if (part != NULL)
+        {
+            h = part->elts;
+        }
     }
 
     header_len += sizeof("Content-Length: ") - 1 + NGX_OFF_T_LEN + sizeof("\r\n\r\n") - 1;
@@ -2072,7 +2108,7 @@ static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r)
     part = &r->headers_in.headers.part;
     h = part->elts;
 
-    for (;;)
+    while (part != NULL)
     {
         for (i = 0; i < part->nelts; i++)
         {
@@ -2088,12 +2124,11 @@ static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r)
                                      "%V: %V\r\n", &h[i].key, &h[i].value);
         }
 
-        if (part->next == NULL)
-        {
-            break;
-        }
         part = part->next;
-        h = part->elts;
+        if (part != NULL)
+        {
+            h = part->elts;
+        }
     }
 
     hdr->last = ngx_snprintf(hdr->last, hdr->end - hdr->last,
@@ -2348,7 +2383,7 @@ static ngx_int_t ngx_http_omni_start_decode_upstream(ngx_http_request_t *r)
     u->resolved->socklen = addr->socklen;
     u->resolved->naddrs = 1;
 
-    u->resolved->host.len = addr->text_len;
+    u->resolved->host.len = (size_t)addr->text_len;
     u->resolved->host.data = addr->text;
 
     ngx_http_upstream_init(r);
@@ -2396,7 +2431,7 @@ static void omni_proxy_run_group(int phase_from, omni_run_handle_t handle)
             omni_req_t *req = omni_info_to_req(info);
             ngx_http_request_t *r = omni_get_http_request(req);
             ngx_int_t rc = handle(req);
-            if (!(rc == NGX_OK || rc == NGX_DONE))
+            if (rc != NGX_OK && rc != NGX_DONE)
             {
                 ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "[Wakeup-%d] Failed: %d",
                               req->slot_index, rc);
@@ -2423,7 +2458,7 @@ void print_summary()
                   g_state->groups[PHASE_DECODING].num_requests,
                   ngx_pid);
 }
-static void omni_update_local_waiting(omni_worker_local_state_t *local_state,
+static void omni_update_local_waiting(omni_worker_local_state_t *lstate,
                                       omni_req_group_t *group,
                                       omni_proxy_request_phase_t to)
 {
@@ -2443,7 +2478,7 @@ static void omni_update_local_waiting(omni_worker_local_state_t *local_state,
         {
             omni_remove_from_group_by_req_info(info, group);
             omni_add_req_to_group(req->slot_index,
-                                  &local_state->groups[to]);
+                                  &lstate->groups[to]);
         }
     }
 
@@ -2452,15 +2487,15 @@ static void omni_update_local_waiting(omni_worker_local_state_t *local_state,
 
 // Global scheduler has changed the req->phase to PHASE_PREFILL_SCHEDULED, here to update local state
 // to make sure local state is consistent with global state
-static inline void omni_update_local_prefill_waiting(omni_worker_local_state_t *local_state)
+static inline void omni_update_local_prefill_waiting(omni_worker_local_state_t *lstate)
 {
-    omni_update_local_waiting(local_state, &local_state->groups[PHASE_PREFILL_WAITING_SCHEDULE],
+    omni_update_local_waiting(lstate, &lstate->groups[PHASE_PREFILL_WAITING_SCHEDULE],
                               PHASE_PREFILL_SCHEDULED);
 }
 
-static inline void omni_update_local_decode_waiting(omni_worker_local_state_t *local_state)
+static inline void omni_update_local_decode_waiting(omni_worker_local_state_t *lstate)
 {
-    omni_update_local_waiting(local_state, &local_state->groups[PHASE_DECODE_WAITING_SCHEDULE],
+    omni_update_local_waiting(lstate, &lstate->groups[PHASE_DECODE_WAITING_SCHEDULE],
                               PHASE_DECODE_SCHEDULED);
 }
 
@@ -2612,9 +2647,8 @@ static ngx_int_t omni_proxy_global_state_init(ngx_shm_zone_t *zone, void *data)
     // Calculate total memory size
     size_t groups_size = PHASE_MAX * (size_t)max_slots * sizeof(omni_req_info_t);
     size_t total_size = GLOBAL_STATE_SIZE + bitmap_size + slots_size + groups_size;
-    printf("shared memory initialed: %p, total size: %zuKB (static:%ldKB, bitmap:%zuKB, slots:%zuKB, groups:%zuKB)\n",
-           zone->shm.addr, total_size / 1024,
-           GLOBAL_STATE_SIZE / 1024, bitmap_size / 1024, slots_size / 1024, groups_size / 1024);
+    printf("shared memory initialed: total size: %zuKB (static:%zuKB, bitmap:%zuKB, slots:%zuKB, groups:%zuKB)\n",
+           total_size / 1024, GLOBAL_STATE_SIZE / 1024, bitmap_size / 1024, slots_size / 1024, groups_size / 1024);
 
     return NGX_OK;
 }
@@ -2647,7 +2681,7 @@ static char *ngx_http_omni_merge_main_conf(ngx_conf_t *cf, void *conf)
 ngx_int_t omni_proxy_init_global_state(ngx_conf_t *cf)
 {
     ngx_str_t name = ngx_string("omni_proxy_state");
-    printf("Init global state with size:%ldK\n", GLOBAL_STATE_SIZE / 1024);
+    printf("Init global state with size:%zuK\n", GLOBAL_STATE_SIZE / 1024);
 
     ngx_shm_zone_t *zone = ngx_shared_memory_add(
         cf,
@@ -2889,8 +2923,8 @@ static void omni_upstream_addr_set(omni_upstream_address_t *addr, ngx_http_upstr
     addr->socklen = peer->socklen;
     ngx_memcpy(&addr->sockaddr, peer->sockaddr, peer->socklen);
 
-    addr->text_len = peer->name.len;
-    if (addr->text_len < UPSTREAM_ADDR_NAME_MAX - 1) {
+    if (peer->name.len < (size_t)(UPSTREAM_ADDR_NAME_MAX - 1)) {
+        addr->text_len = (int) peer->name.len;
         ngx_memcpy(addr->text, peer->name.data, peer->name.len);
         addr->text[addr->text_len] = '\0';
     } else {
@@ -2993,7 +3027,7 @@ static ngx_int_t omni_upstream_add(bool is_prefill, ngx_cycle_t *cycle, ngx_http
             comm = is_prefill ? &g_state->prefill_states[j].comm : &g_state->decode_states[j].comm;
             if (comm->status == STATUS_ABANDON) {
                 if (comm->ref == 0 && abandon_idx == -1) {
-                    abandon_idx = j;
+                    abandon_idx = (ngx_int_t)j;
                 }
                 continue;
             }
@@ -3035,7 +3069,7 @@ static ngx_int_t omni_upstream_add(bool is_prefill, ngx_cycle_t *cycle, ngx_http
                 omni_upstream_reuse(is_prefill, peer, abandon_idx);
                 ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "%s peer %ui reuse endpoint[%ui]",
                     is_prefill ? "Prefill" : "Decode", cnt, abandon_idx);
-                j = abandon_idx;
+                j = (ngx_uint_t)abandon_idx;
                 comm = is_prefill ? &g_state->prefill_states[j].comm : &g_state->decode_states[j].comm;
             } else {
                 ngx_http_upstream_rr_peer_unlock(peers, peer);
@@ -3094,7 +3128,7 @@ static ngx_int_t omni_upstream_add_encode(ngx_cycle_t *cycle, ngx_http_upstream_
             comm = &g_state->encode_states[j].comm;
             if (comm->status == STATUS_ABANDON) {
                 if (comm->ref == 0 && abandon_idx == -1) {
-                    abandon_idx = j;
+                    abandon_idx = (ngx_int_t)j;
                 }
                 continue;
             }
@@ -3116,7 +3150,7 @@ static ngx_int_t omni_upstream_add_encode(ngx_cycle_t *cycle, ngx_http_upstream_
                 omni_upstream_reuse_encode(peer, abandon_idx);
                 ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "Encode peer %ui reuse endpoint[%ui]",
                               cnt, abandon_idx);
-                j = abandon_idx;
+                j = (ngx_uint_t)abandon_idx;
                 comm = &g_state->encode_states[j].comm;
             } else {
                 ngx_http_upstream_rr_peer_unlock(peers, peer);
@@ -3240,7 +3274,7 @@ static ngx_int_t ngx_http_omni_proxy_metrics_handler(ngx_http_request_t *r)
     ngx_str_t metrics = omni_metrics_export(g_state);
 
     r->headers_out.status = NGX_HTTP_OK;
-    r->headers_out.content_length_n = metrics.len;
+    r->headers_out.content_length_n = (off_t)metrics.len;
 
     r->headers_out.content_type.len = sizeof("text/plain") - 1;
     r->headers_out.content_type.data = (u_char *)"text/plain";
@@ -3488,7 +3522,10 @@ static void ngx_omni_tokenizer_pipe_handler(ngx_event_t *ev)
             struct timeval tv;
             omni_get_current_time(&tv);
             req->metrics.time_tokenized = tv;
-            printf("Tokenize %ld, time(us) taken:%lu\n", req->tokenizer_req.input_len, (tv.tv_sec - req->metrics.time_contents_received.tv_sec) * 1000000 + tv.tv_usec - req->metrics.time_contents_received.tv_usec);
+            int64_t elapsed_us =
+                ((int64_t)tv.tv_sec - (int64_t)req->metrics.time_contents_received.tv_sec) * 1000000LL
+                + ((int64_t)tv.tv_usec - (int64_t)req->metrics.time_contents_received.tv_usec);
+            printf("Tokenize %zu, time(us) taken:%" PRId64 "\n", req->tokenizer_req.input_len, elapsed_us);
             print_tokenize_result(&req->tokenizer_req);
             req->metrics.prompt_num_tokens = req->tokenizer_req.input_ids_len;
             ngx_log_error(NGX_LOG_INFO,
@@ -3597,6 +3634,8 @@ static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
 
     omni_radix_tree_t *target_radix_tree = NULL;
 
+    ngx_shmtx_lock(&g_state->shmtx);
+
     if (handler->index < MAX_PREFILL_UPSTREAMS){
         omni_upstream_prefill_t *prefill = &g_state->prefill_states[handler->index];
         target_radix_tree = prefill->radix_tree;
@@ -3619,13 +3658,8 @@ static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
 
         free_kv_event_batch(batch);
 
-        /* Best-effort unlock if global mutex held elsewhere; unlocking here reduces chance of leaving a mutex locked.
-           Note: if g_state itself is corrupted this may be a no-op or unsafe, but we attempt to be tidy. */
         ngx_shmtx_unlock(&g_state->shmtx);
 
-        /* Ensure failure is loud in both debug and release builds */
-        assert(target_radix_tree != NULL && "omni_proxy_kv_event_handler: radix_tree not initialized");
-        abort();
         return;
     }
 
@@ -3708,6 +3742,8 @@ static void omni_proxy_kv_event_handler(struct omni_zmq_handler_s *handler,
         }
     }
 
+    ngx_shmtx_unlock(&g_state->shmtx);
+
     free_kv_event_batch(batch);
 }
 
@@ -3728,7 +3764,7 @@ static ngx_int_t omni_proxy_init_kv_listener(ngx_cycle_t *cycle)
         }
         prefill_cnt++;
 
-        if (prefill_cnt % ccf->worker_processes == ngx_worker)
+        if (((ngx_int_t)prefill_cnt % ccf->worker_processes) == (ngx_int_t)ngx_worker)
         {
             if (prefill->radix_tree == NULL)
             {
@@ -3773,7 +3809,7 @@ static ngx_int_t omni_proxy_init_kv_listener(ngx_cycle_t *cycle)
         }
         decode_cnt++;
 
-        if (decode_cnt % ccf->worker_processes == ngx_worker)
+        if (((ngx_int_t)decode_cnt % ccf->worker_processes) == (ngx_int_t)ngx_worker)
         {
             if (decode->radix_tree == NULL)
             {

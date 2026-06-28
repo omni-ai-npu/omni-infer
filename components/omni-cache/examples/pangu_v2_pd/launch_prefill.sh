@@ -68,9 +68,6 @@ SETUP_HUGETLBFS_SH="$REPO_ROOT/tools/setup/setup_hugetlbfs_2MB.sh"
 export BASE_PORT=16077
 export ZMQ_BASE_PORT=16555
 
-export OMNI_CACHE_APC_DEBUG=1
-export ASCEND_LAUNCH_BLOCKING=1
-
 # ─── Export environment for vLLM child ────────────────────────────────────
 export \
     ENABLE_OMNI_CACHE HYBRID_ATTN_GROUP_SIZE OMNI_CACHE_LOCAL_DP_SIZE \
@@ -207,8 +204,12 @@ VLLM_CMD=(
     --tensor-parallel-size "$TP_SIZE"
     --data-parallel-size "$DP_SIZE"
     --no-disable-hybrid-kv-cache-manager
+    --reasoning-parser pangu
+    --enable-auto-tool-choice
+    --tool-call-parser pangu
     --kv-transfer-config "$KV_TRANSFER_CONF"
     --additional-config '{"enable_low_latency": true, "npugraph_ex_config" :{"enable": true, "super_kernel_optimze": false, "static_kernel_compile": true}}'
+    --reasoning-config '{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
 )
 if [[ "${ENABLE_PREFIX_CACHING}" == "1" ]]; then
     VLLM_CMD+=(--enable-prefix-caching)

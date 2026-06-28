@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright contributors to the vLLM project.
+
 from dataclasses import replace
 from typing import Optional
 
@@ -29,6 +30,7 @@ from omni_npu.v1.utils import on_ascend950
 logger = init_logger(__name__)
 
 NEW_GREEDY_TEMPERATURE = 1e-6 # convert greedy cases into random cases
+
 
 class NPURejectionSampler(RejectionSampler):
     def __init__(self, sampler: Sampler):
@@ -170,6 +172,7 @@ class NPURejectionSampler(RejectionSampler):
             sampled_token_ids=output_token_ids,
             logprobs_tensors=logprobs_tensors,
         )
+
 
 def rejection_sample(
     # [num_tokens]
@@ -345,6 +348,7 @@ def compute_probs(
         logits = apply_top_k_top_p_npu(logits, top_k, top_p)
     return logits
 
+
 def expand_batch_to_tokens(
     x: torch.Tensor,  # [batch_size]
     cu_num_tokens: torch.Tensor,  # [batch_size]
@@ -383,6 +387,7 @@ def expand_batch_to_tokens(
         output_size=num_tokens,
     )
     return expanded_x
+
 
 def sample_recovered_tokens(
     max_spec_len: int,
@@ -441,6 +446,7 @@ def sample_recovered_tokens(
     )
     return recovered_token_ids
 
+
 def sample_recovered_tokens_native(
     recovered_token_ids, # [num_tokens]
     cu_num_draft_tokens, # [batch_size]
@@ -470,6 +476,7 @@ def sample_recovered_tokens_native(
     )
     recovered_token_ids[:] = (sample_probs / q).argmax(dim=-1).to(torch.int32)
 
+
 def rejection_greedy_sample_native(
     output_token_ids,  # [batch_size, max_spec_len + 1]
     cu_num_draft_tokens,  # [batch_size]
@@ -491,6 +498,7 @@ def rejection_greedy_sample_native(
         is_greedy,
         max_spec_len,
     )
+
 
 def rejection_random_sample_native(
     output_token_ids,  # [batch_size, max_spec_len + 1]
@@ -530,6 +538,7 @@ def rejection_random_sample_native(
         ~is_greedy,
         max_spec_len,
     )
+
 
 def select_tokens_by_accepted(
     output_token_ids,  # [batch_size, max_spec_len + 1]
@@ -591,6 +600,7 @@ def select_tokens_by_accepted(
         output_token_ids[:] = torch.where(fill_this_time[:, None], output, output_token_ids)
     else:
         output_token_ids[:] = output
+
 
 def compute_probs_and_sample(
     logits: torch.Tensor,  # [num_tokens, vocab_size]
@@ -667,6 +677,7 @@ def compute_probs_and_sample(
     )
     return res[0].to(torch.int32), res[1]
 
+
 def simple_verify(
     # [num_tokens]
     draft_token_ids: torch.Tensor,
@@ -706,6 +717,7 @@ def simple_verify(
         max_spec_len,
     )
     return output_token_ids
+
 
 def generate_random_sequence(
     probs: torch.Tensor,

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
 
 # export OMNI_NPU_VLLM_PATCHES="ProfilerDynamicPatch,RequestStatusPatch,OpenAIServingChatTokenLoggerPatch"
 
@@ -24,6 +25,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 namelist_path = os.getenv("PROFILING_NAMELIST")
+
 
 @register_patch("ProfilerDynamicPatch", EngineCore)
 class ProfilerDynamicPatch(VLLMPatch):
@@ -205,6 +207,8 @@ class RequestStatusPatch(VLLMPatch):
 
 
 _ORIGINAL_CHAT_COMPLETION_STREAM_GENERATOR = OpenAIServingChat.chat_completion_stream_generator
+
+
 @register_patch("OpenAIServingChatTokenLoggerPatch", OpenAIServingChat)
 class OpenAIServingChatTokenLoggerPatch(VLLMPatch):
     if not namelist_path:

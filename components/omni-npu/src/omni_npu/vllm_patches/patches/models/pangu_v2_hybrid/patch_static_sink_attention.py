@@ -1,4 +1,7 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
+
 import functools
 from typing import cast
 from omni_npu.attention.backends.mla import NPUMLABackend
@@ -52,6 +55,7 @@ class create_static_sink_attention_backendPatch(VLLMPatch):
     ) -> type[AttentionBackend]:
         prefix = "StaticSink_"
         underlying_builder = underlying_attn_backend.get_builder_cls()
+
         class StaticSinkAttentionBuilder(underlying_builder):  # type: ignore
             def __init__(
                 self,
@@ -85,6 +89,7 @@ class create_static_sink_attention_backendPatch(VLLMPatch):
                     device=device,
                     dtype=torch.int32,
                 )
+
             def reinit_block_table_with_sink(self):
                 self.block_table_with_sink[:, :] = torch.zeros(
                     (
@@ -100,6 +105,7 @@ class create_static_sink_attention_backendPatch(VLLMPatch):
                     device=self.device,
                     dtype=torch.int32,
                 )
+                
             def build(
                 self,
                 common_prefix_len: int,

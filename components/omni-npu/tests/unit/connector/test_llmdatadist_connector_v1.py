@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from omni_npu.connector.llmdatadist_connector_v1 import LLMDataDistConnector, ReqMeta, ReqMetaPrefill, \
     DatadistConnectorMetadata, DatadistConnectorMetadataPrefill, PrefillConnectorScheduler, DecodeConnectorScheduler, \
     PrefillConnectorWorker, DecodeConnectorWorker, CLUSTER_HEARTBEAT_TIMEOUT, BLOCK_RELEASE_DELAY, handle_exception, \
-    get_local_ip, dump_thread_to_file
+    get_local_ip
 from .utils import create_vllm_config, create_request, create_scheduler, create_model_runner_output, run_in_process
 from vllm.distributed.kv_transfer.kv_connector.v1 import KVConnectorRole, KVConnectorBase_V1
 import torch
@@ -1000,51 +1000,6 @@ class TestHelper:
         # Basic check for IPv4 format (not perfect, but a start)
         assert len(ip.split('.')) == 4
 
-
-    def test_dump_thread_to_file(self, mock_socket, mock_threading_thread):
-        # Create a mock thread with a native_id attribute
-        mock_thread = MagicMock()
-        mock_thread.native_id = 12345
-        mock_threading_thread[0].return_value = mock_thread # Ensure the fixture returns our mock with native_id
-
-        thread_dump_path = "/tmp/test_vllm_thread_info"
-
-        try:
-            dump_thread_to_file(mock_thread, "test_thread", thread_dump_path)
-
-            file_path = os.path.join(thread_dump_path, "test_thread")
-            # Check if file was created and contains the native_id
-            assert os.path.exists(file_path)
-            with open(file_path, "r") as f:
-                content = f.read()
-                assert content == "12345"
-        finally:
-            # Cleanup
-            if os.path.exists(thread_dump_path):
-                import shutil
-                shutil.rmtree(thread_dump_path, ignore_errors=True)
-            # No need to join a mocked thread
-
-        delattr(mock_thread, "native_id")
-        with patch(f"{PATH_PREFIX}.time.time") as mock_time, \
-             patch(f"{PATH_PREFIX}.logger"):
-            mock_time.side_effect = [0, 0, int(1e9)]
-
-            dump_thread_to_file(mock_thread, "test_thread", thread_dump_path)
-            assert not os.path.exists(file_path)
-        mock_thread.native_id = 12345
-
-        with patch(f"{PATH_PREFIX}.os.makedirs") as mock_makedirs:
-            mock_makedirs.side_effect = [StopIteration]
-
-            dump_thread_to_file(mock_thread, "test_thread", thread_dump_path)
-            assert not os.path.exists(file_path)
-
-        with patch(f"{PATH_PREFIX}.open") as mock_open:
-            mock_open.side_effect = [StopIteration]
-
-            dump_thread_to_file(mock_thread, "test_thread", thread_dump_path)
-            assert not os.path.exists(file_path)
 
 class TestLLMDataDistConnectorUnregisterKvCaches:
     """Tests for LLMDataDistConnector.unregister_kv_caches method."""

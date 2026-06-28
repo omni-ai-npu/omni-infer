@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # SPDX-License-Identifier: MIT
 """Unified KV dump comparator for omni-cache PD diagnostics.
@@ -83,6 +83,7 @@ from collections import defaultdict
 # Progress bar support
 try:
     from tqdm import tqdm
+
     HAS_TQDM = True
 except ImportError:
     HAS_TQDM = False
@@ -93,14 +94,11 @@ def safe_torch_load(path):
         return torch.load(path, map_location="cpu", weights_only=True)
     except TypeError as exc:
         raise RuntimeError(
-            "This PyTorch version does not support weights_only=True; "
-            "refusing unsafe pickle-backed torch.load"
+            "This PyTorch version does not support weights_only=True; refusing unsafe pickle-backed torch.load"
         ) from exc
 
 
-_FILE_RE = re.compile(
-    r".*_g(\d+)_model_layers_(\d+)_self_attn_(attn|conv)\.pt$"
-)
+_FILE_RE = re.compile(r".*_g(\d+)_model_layers_(\d+)_self_attn_(attn|conv)\.pt$")
 # Match both old format (with hash suffix) and new format (no hash).
 # Old: req-chatcmpl-<uuid>-<hash>_g*_*.pt
 # New: req-chatcmpl-<id>_g*_*.pt
@@ -131,12 +129,9 @@ def step_root(dump_dir: str) -> str:
 def detect_mode(dump_dir: str) -> str:
     root = step_root(dump_dir)
     has_step = os.path.isdir(root) and any(
-        os.path.isdir(os.path.join(root, b))
-        for b in os.listdir(root)
-        if not b.startswith("_")
+        os.path.isdir(os.path.join(root, b)) for b in os.listdir(root) if not b.startswith("_")
     )
-    has_transfer = os.path.isdir(os.path.join(dump_dir, "prefill")) or \
-                   os.path.isdir(os.path.join(dump_dir, "decode"))
+    has_transfer = os.path.isdir(os.path.join(dump_dir, "prefill")) or os.path.isdir(os.path.join(dump_dir, "decode"))
     if has_step:
         return "step"
     if has_transfer:
@@ -254,7 +249,6 @@ def _compare_one_request(base_dir, omni_dir, base_id, omni_id, atol, mismatch_fi
     If mismatch_file is provided, writes mismatch info to file.
     If quick_peek=True, skips aggregation and only writes mismatches.
     """
-    import torch  # type: ignore
     base_idx = index_branch(base_dir, base_id)
     omni_idx = index_branch(omni_dir, omni_id)
 
@@ -279,13 +273,17 @@ def _compare_one_request(base_dir, omni_dir, base_id, omni_id, atol, mismatch_fi
                 vb = bkv.get(sk)
                 if vb is None or va.shape != vb.shape or va.dtype != vb.dtype:
                     fname = os.path.basename(base_idx[k])
-                    mismatch_file.write(f"{base_id}\t{rel}\t{g}\t{layer}\t{kind}\t{sk}\t{va.shape}\t{fname}\tshape_mismatch\n")
+                    mismatch_file.write(
+                        f"{base_id}\t{rel}\t{g}\t{layer}\t{kind}\t{sk}\t{va.shape}\t{fname}\tshape_mismatch\n"
+                    )
                     mismatch_count += 1
                     continue
                 if torch.equal(va, vb):
                     continue
                 fname = os.path.basename(base_idx[k])
-                mismatch_file.write(f"{base_id}\t{rel}\t{g}\t{layer}\t{kind}\t{sk}\t{va.shape}\t{fname}\tvalue_mismatch\n")
+                mismatch_file.write(
+                    f"{base_id}\t{rel}\t{g}\t{layer}\t{kind}\t{sk}\t{va.shape}\t{fname}\tvalue_mismatch\n"
+                )
                 mismatch_count += 1
         return None, None, len(base_idx), len(omni_idx), len(common), mismatch_count
 
@@ -314,7 +312,9 @@ def _compare_one_request(base_dir, omni_dir, base_id, omni_id, atol, mismatch_fi
             # Log mismatch before computing diff
             fname = os.path.basename(base_idx[k])
             if mismatch_file:
-                mismatch_file.write(f"{base_id}\t{rel}\t{g}\t{layer}\t{kind}\t{sk}\t{va.shape}\t{fname}\tvalue_mismatch\n")
+                mismatch_file.write(
+                    f"{base_id}\t{rel}\t{g}\t{layer}\t{kind}\t{sk}\t{va.shape}\t{fname}\tvalue_mismatch\n"
+                )
                 mismatch_count += 1
             d = (va.float() - vb.float()).abs().max().item()
             if d > max_d:
@@ -329,13 +329,11 @@ def _compare_one_request(base_dir, omni_dir, base_id, omni_id, atol, mismatch_fi
             if max_d > bucket["max"]:
                 bucket["max"] = max_d
             if len(sample) < 4:
-                sample.append({"step": rel, "g": g, "layer": layer,
-                               "kind": kind, "max_abs": round(max_d, 5)})
+                sample.append({"step": rel, "g": g, "layer": layer, "kind": kind, "max_abs": round(max_d, 5)})
     return per_g, sample, len(base_idx), len(omni_idx), len(common), mismatch_count
 
 
 def step_compare(args):
-    import torch  # type: ignore
     root = step_root(args.dump_dir)
     base_dir = os.path.join(root, args.baseline_branch)
     omni_dir = os.path.join(root, args.omni_branch)
@@ -358,7 +356,7 @@ def step_compare(args):
             sys.exit("No matching request IDs between branches.")
 
         # Limit to first N requests for quick testing
-        compare_ids = common_ids[:args.max_requests] if args.max_requests else common_ids
+        compare_ids = common_ids[: args.max_requests] if args.max_requests else common_ids
 
         # Determine output file for mismatches
         mismatch_file_path = None if args.no_mismatch_file else args.mismatch_file
@@ -367,13 +365,14 @@ def step_compare(args):
         # Quick peek mode: only write mismatches, no summary
         if is_quick_peek and mismatch_file_path:
             print(f"# Quick peek mode, writing to: {mismatch_file_path}")
-            with open(mismatch_file_path, 'w') as f:
+            with open(mismatch_file_path, "w") as f:
                 f.write("request_id\tstep\tgroup\tlayer\tkind\tsubkey\tshape\tfile\ttype\n")
                 total_mismatches = 0
                 req_iter = tqdm(compare_ids, desc="Quick peek", unit="req") if HAS_TQDM else compare_ids
                 for rid in req_iter:
                     _, _, _, _, _, mismatch_count = _compare_one_request(
-                        base_dir, omni_dir, rid, rid, args.atol, mismatch_file=f, quick_peek=True)
+                        base_dir, omni_dir, rid, rid, args.atol, mismatch_file=f, quick_peek=True
+                    )
                     total_mismatches += mismatch_count
             print(f"# Done. Total mismatches: {total_mismatches}")
             print(f"# Output: {mismatch_file_path}")
@@ -385,7 +384,7 @@ def step_compare(args):
         total_mismatches = 0
 
         # Open mismatch file if provided
-        mismatch_file_ctx = open(mismatch_file_path, 'w') if mismatch_file_path else None
+        mismatch_file_ctx = open(mismatch_file_path, "w") if mismatch_file_path else None
         if mismatch_file_ctx:
             mismatch_file_ctx.write("request_id\tstep\tgroup\tlayer\tkind\tsubkey\tshape\tfile\ttype\n")
 
@@ -393,8 +392,8 @@ def step_compare(args):
         try:
             for rid in req_iter:
                 per_g, sample, n_base, n_omni, n_common, mismatch_count = _compare_one_request(
-                    base_dir, omni_dir, rid, rid, args.atol,
-                    mismatch_file=mismatch_file_ctx, quick_peek=False)
+                    base_dir, omni_dir, rid, rid, args.atol, mismatch_file=mismatch_file_ctx, quick_peek=False
+                )
                 total_mismatches += mismatch_count
                 total_match = sum(v["match"] for v in per_g.values())
                 total_diff = sum(v["diff"] for v in per_g.values())
@@ -437,24 +436,24 @@ def step_compare(args):
     # Quick peek mode: only write mismatches, no summary
     if is_quick_peek and mismatch_file_path:
         print(f"# Quick peek mode, writing to: {mismatch_file_path}")
-        with open(mismatch_file_path, 'w') as f:
+        with open(mismatch_file_path, "w") as f:
             f.write("request_id\tstep\tgroup\tlayer\tkind\tsubkey\tshape\tfile\ttype\n")
             _, _, n_base, n_omni, n_common, mismatch_count = _compare_one_request(
-                base_dir, omni_dir, base_id, omni_id, args.atol,
-                mismatch_file=f, quick_peek=True)
+                base_dir, omni_dir, base_id, omni_id, args.atol, mismatch_file=f, quick_peek=True
+            )
         print(f"# Done. Mismatches: {mismatch_count}")
         print(f"# Output: {mismatch_file_path}")
         return
 
     # Normal mode with optional mismatch file
-    mismatch_file_ctx = open(mismatch_file_path, 'w') if mismatch_file_path else None
+    mismatch_file_ctx = open(mismatch_file_path, "w") if mismatch_file_path else None
     if mismatch_file_ctx:
         mismatch_file_ctx.write("request_id\tstep\tgroup\tlayer\tkind\tsubkey\tshape\tfile\ttype\n")
 
     try:
         per_g, sample, n_base, n_omni, n_common, mismatch_count = _compare_one_request(
-            base_dir, omni_dir, base_id, omni_id, args.atol,
-            mismatch_file=mismatch_file_ctx, quick_peek=False)
+            base_dir, omni_dir, base_id, omni_id, args.atol, mismatch_file=mismatch_file_ctx, quick_peek=False
+        )
     finally:
         if mismatch_file_ctx:
             mismatch_file_ctx.close()
@@ -480,11 +479,12 @@ _FILE_RE_SELF = re.compile(
     r"req-(chatcmpl-[\w-]+?)(?:-[a-f0-9]{6,8})?_g(\d+)_model_layers_(\d+)_self_attn_(attn|conv)\.pt$"
 )
 
+
 def self_consistency_compare(args):
     """Single-branch KV self-consistency check."""
     branch_dir = args.dump_dir
-    exclude_last = not getattr(args, 'include_last_block', False)
-    
+    exclude_last = not getattr(args, "include_last_block", False)
+
     if not os.path.isdir(branch_dir):
         sys.exit(f"Not a directory: {branch_dir}")
 
@@ -550,13 +550,21 @@ def self_consistency_compare(args):
                     total_corrupted += 1
                     req_stats[rid]["corrupted"] += 1
                     if len(corruption_samples) < 10:
-                        corruption_samples.append({
-                            "req": rid[:20], "g": g, "layer": layer, "kind": kind,
-                            "comp": comp_name, "prev_step": prev_step, "cur_step": step,
-                            "n_common_blocks": n_common, "max_abs_diff": round(diff, 4),
-                            "prev_blocks": prev_data.get("hbm_block_ids"),
-                            "cur_blocks": cur_data.get("hbm_block_ids"),
-                        })
+                        corruption_samples.append(
+                            {
+                                "req": rid[:20],
+                                "g": g,
+                                "layer": layer,
+                                "kind": kind,
+                                "comp": comp_name,
+                                "prev_step": prev_step,
+                                "cur_step": step,
+                                "n_common_blocks": n_common,
+                                "max_abs_diff": round(diff, 4),
+                                "prev_blocks": prev_data.get("hbm_block_ids"),
+                                "cur_blocks": cur_data.get("hbm_block_ids"),
+                            }
+                        )
             prev_step = step
             prev_data = cur_data
             prev_kv = cur_kv
@@ -571,7 +579,11 @@ def self_consistency_compare(args):
     if corruption_samples:
         print(f"\nSample corruptions:")
         for c in corruption_samples:
-            print(f"  req={c['req']} g={c['g']} layer={c['layer']} {c['kind']}.{c['comp']} steps={c['prev_step']}->{c['cur_step']}")
+            print(
+                f"  req={c['req']} g={c['g']} layer={c['layer']} "
+                f"{c['kind']}.{c['comp']} "
+                f"steps={c['prev_step']}->{c['cur_step']}"
+            )
     else:
         print("No corruption detected.")
 
@@ -579,10 +591,11 @@ def self_consistency_compare(args):
 def transfer_compare(args):
     cmd = [
         sys.executable,
-        os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                     "kv_consistency_check.py"),
-        "--dump-dir", args.dump_dir,
-        "--request-id", args.request_id,
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "kv_consistency_check.py"),
+        "--dump-dir",
+        args.dump_dir,
+        "--request-id",
+        args.request_id,
         "--compare-pairs",
         "prefill_hbm:prefill_host",
         "prefill_host:decode_host",
@@ -594,9 +607,7 @@ def transfer_compare(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dump-dir", default="/tmp/kv_dumps")
     ap.add_argument("--mode", choices=["auto", "transfer", "step", "self-consistency"], default="auto")
     ap.add_argument("--request-id", default=None)
@@ -604,19 +615,24 @@ def main():
     ap.add_argument("--omni-branch", default="omnicache")
     ap.add_argument("--baseline-id", default=None)
     ap.add_argument("--omni-id", default=None)
-    ap.add_argument("--all-requests", action="store_true",
-                    help="Compare ALL requests with matching IDs across branches")
-    ap.add_argument("--max-requests", type=int, default=None,
-                    help="Limit to first N requests (use with --all-requests for quick testing)")
+    ap.add_argument(
+        "--all-requests", action="store_true", help="Compare ALL requests with matching IDs across branches"
+    )
+    ap.add_argument(
+        "--max-requests",
+        type=int,
+        default=None,
+        help="Limit to first N requests (use with --all-requests for quick testing)",
+    )
     ap.add_argument("--atol", type=float, default=0.0)
-    ap.add_argument("--include-last-block", action="store_true",
-                     help="Include last block in self-consistency check")
-    ap.add_argument("--quick-peek", action="store_true",
-                    help="Quick peek mode: only export mismatches to TSV, skip summary")
-    ap.add_argument("--mismatch-file", default="mismatches.tsv",
-                    help="Export mismatches to TSV file (default: mismatches.tsv)")
-    ap.add_argument("--no-mismatch-file", action="store_true",
-                    help="Disable mismatch file output")
+    ap.add_argument("--include-last-block", action="store_true", help="Include last block in self-consistency check")
+    ap.add_argument(
+        "--quick-peek", action="store_true", help="Quick peek mode: only export mismatches to TSV, skip summary"
+    )
+    ap.add_argument(
+        "--mismatch-file", default="mismatches.tsv", help="Export mismatches to TSV file (default: mismatches.tsv)"
+    )
+    ap.add_argument("--no-mismatch-file", action="store_true", help="Disable mismatch file output")
     args = ap.parse_args()
 
     mode = args.mode if args.mode != "auto" else detect_mode(args.dump_dir)
@@ -630,4 +646,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 
 logger = init_logger("vllm.v1.omni")
 
+
 # ---------------------------------------------------------------------------
 # Block ID registry: tracks block IDs for linkage across stages
 #
@@ -159,6 +160,7 @@ def _capture_snap(
 def _save_remote_to_local_mapping(dump_dir: str, request_id: str, mapping: Dict[int, int]) -> None:
     """Save remote_block_id -> local_block_id mapping for comparison tool."""
     import json
+
     decode_dir = os.path.join(dump_dir, "decode")
     os.makedirs(decode_dir, exist_ok=True)
     mapping_path = os.path.join(decode_dir, f"mapping_{request_id}.json")
@@ -182,7 +184,13 @@ def _quick_verify(
     sha = compute_sha256(arr)
     logger.warning(
         "[KV-VERIFY/%s] req=%s grp=%d vl=%d blk=%d comp=%s sha=%s",
-        stage, request_id, group_idx, vl_idx, block_id, comp_name, sha,
+        stage,
+        request_id,
+        group_idx,
+        vl_idx,
+        block_id,
+        comp_name,
+        sha,
     )
 
 
@@ -258,11 +266,15 @@ def probe_prefill_hbm(
 
             fake_blocks = _resolve_volatile_block_ids(metadata)
 
-            for i, (real_id, fake_id) in enumerate(zip(real_blocks, fake_blocks)):
+            for _i, (real_id, fake_id) in enumerate(zip(real_blocks, fake_blocks)):
                 if real_id == 0:
                     continue
                 arr = extract_block_prefill_hbm(
-                    cache, layer_name, fake_id, group_idx, 0,
+                    cache,
+                    layer_name,
+                    fake_id,
+                    group_idx,
+                    0,
                 )
                 if arr.size <= 1:
                     continue
@@ -284,8 +296,13 @@ def probe_prefill_hbm(
 
                 if cfg.verify and not cfg.dump_enabled:
                     _quick_verify(
-                        "prefill_hbm", session_id, group_idx, layer_idx,
-                        real_id, "raw", arr,
+                        "prefill_hbm",
+                        session_id,
+                        group_idx,
+                        layer_idx,
+                        real_id,
+                        "raw",
+                        arr,
                     )
 
         # Save accumulated snapshot if we have tensors
@@ -310,6 +327,7 @@ def _resolve_prefill_block_ids(metadata, spec=None) -> List[int]:
       - APC:     slice between ``cache_indices_start_sched`` and
                  ``cache_indices_end_sched`` per request.
     """
+
     # ── helpers ──────────────────────────────────────────────────────────
     def _to_1d(t):
         if t is None:
@@ -370,8 +388,7 @@ def _resolve_prefill_block_ids(metadata, spec=None) -> List[int]:
 
     if seq_lens is None or block_size is None:
         raise RuntimeError(
-            "seq_lens or block_size missing from attention metadata "
-            "-- cannot compute per-request block count."
+            "seq_lens or block_size missing from attention metadata -- cannot compute per-request block count."
         )
 
     if hasattr(metadata, "block_tables"):
@@ -387,7 +404,7 @@ def _resolve_prefill_block_ids(metadata, spec=None) -> List[int]:
 
     # Merge DSA-specific tables as extra columns.
     extra = []
-    for attr in ('score_states_block_table', 'kv_states_block_table'):
+    for attr in ("score_states_block_table", "kv_states_block_table"):
         t = getattr(metadata, attr, None)
         if t is not None:
             if t.dim() == 1:
@@ -473,12 +490,16 @@ def probe_prefill_host(
             if isinstance(block_ids, set):
                 block_ids = sorted(block_ids)
 
-            for vl_idx, layer_name in enumerate(layer_names):
+            for vl_idx, _layer_name in enumerate(layer_names):
                 for block_id in block_ids:
                     if block_id == 0:
                         continue
                     arr = extract_block_prefill_host(
-                        cache, group_idx, vl_idx, block_id, 0,
+                        cache,
+                        group_idx,
+                        vl_idx,
+                        block_id,
+                        0,
                     )
                     if arr.size <= 1:
                         continue
@@ -500,8 +521,13 @@ def probe_prefill_host(
 
                     if cfg.verify and not cfg.dump_enabled:
                         _quick_verify(
-                            "prefill_host", session_id, group_idx, vl_idx,
-                            block_id, "raw", arr,
+                            "prefill_host",
+                            session_id,
+                            group_idx,
+                            vl_idx,
+                            block_id,
+                            "raw",
+                            arr,
                         )
 
         if snap.tensors:
@@ -551,12 +577,15 @@ def probe_decode_host(
             flat_remote = remote_block_ids[0] if isinstance(remote_block_ids[0], list) else remote_block_ids
             flat_local = local_block_ids[0] if isinstance(local_block_ids[0], list) else local_block_ids
             if isinstance(flat_remote, list) and isinstance(flat_local, list):
-                for r, l in zip(flat_remote, flat_local):
-                    if r != 0 and l != 0:
-                        remote_to_local[int(r)] = int(l)
+                for remote_id, local_id in zip(flat_remote, flat_local):
+                    if remote_id != 0 and local_id != 0:
+                        remote_to_local[int(remote_id)] = int(local_id)
 
             BlockIdRegistry.register_decode(
-                request_id, local_block_ids, remote_block_ids, per_group,
+                request_id,
+                local_block_ids,
+                remote_block_ids,
+                per_group,
             )
 
             snap = KVSnap(
@@ -588,7 +617,11 @@ def probe_decode_host(
                             if block_id == 0:
                                 continue
                             arr = extract_block_decode_host(
-                                cache, group_idx, vl_idx, block_id, 0,
+                                cache,
+                                group_idx,
+                                vl_idx,
+                                block_id,
+                                0,
                             )
                             if arr.size <= 1:
                                 continue
@@ -609,8 +642,13 @@ def probe_decode_host(
 
                             if cfg.verify and not cfg.dump_enabled:
                                 _quick_verify(
-                                    "decode_host", request_id, group_idx,
-                                    vl_idx, block_id, "raw", arr,
+                                    "decode_host",
+                                    request_id,
+                                    group_idx,
+                                    vl_idx,
+                                    block_id,
+                                    "raw",
+                                    arr,
                                 )
             else:
                 # Flat block list — dump all groups
@@ -625,7 +663,11 @@ def probe_decode_host(
                             if int(block_id) == 0:
                                 continue
                             arr = extract_block_decode_host(
-                                cache, group_idx, vl_idx, int(block_id), 0,
+                                cache,
+                                group_idx,
+                                vl_idx,
+                                int(block_id),
+                                0,
                             )
                             if arr.size <= 1:
                                 continue
@@ -729,12 +771,20 @@ def probe_decode_hbm(
                     for vl_idx, layer_name in enumerate(layer_names):
                         for blc_idx, block_id in enumerate(effective_block_ids):
                             hbm_slot = _resolve_hbm_slot(
-                                cache, group_idx, block_id, blc_idx,
-                                idx_req, group_kind,
+                                cache,
+                                group_idx,
+                                block_id,
+                                blc_idx,
+                                idx_req,
+                                group_kind,
                             )
                             arr = extract_block_decode_hbm(
-                                cache, group_idx, layer_name,
-                                block_id, hbm_slot, 0,
+                                cache,
+                                group_idx,
+                                layer_name,
+                                block_id,
+                                hbm_slot,
+                                0,
                             )
                             if arr.size <= 1:
                                 continue
@@ -756,8 +806,13 @@ def probe_decode_hbm(
 
                             if cfg.verify and not cfg.dump_enabled:
                                 _quick_verify(
-                                    "decode_hbm", request_id, group_idx,
-                                    vl_idx, block_id, "raw", arr,
+                                    "decode_hbm",
+                                    request_id,
+                                    group_idx,
+                                    vl_idx,
+                                    block_id,
+                                    "raw",
+                                    arr,
                                 )
 
             if snap.tensors:

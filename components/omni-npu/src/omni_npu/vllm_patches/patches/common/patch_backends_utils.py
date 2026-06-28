@@ -1,4 +1,7 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright contributors to the vLLM project.
+
 from vllm.v1.attention.backends.utils import CommonAttentionMetadata
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch

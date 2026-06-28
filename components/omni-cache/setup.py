@@ -18,9 +18,12 @@ class PathManagerBase:
         self.torch_lib = os.path.join(torch_root, "lib")
 
         # ascend
-        ascend_root = os.getenv('ASCEND_TOOLKIT_HOME', None)
+        ascend_root = os.getenv("ASCEND_TOOLKIT_HOME", None)
         if ascend_root is None:
-            raise EnvironmentError("Environment variable 'ASCEND_TOOLKIT_HOME' is not set. Please set this environment variable before running the program.")
+            raise EnvironmentError(
+                "Environment variable 'ASCEND_TOOLKIT_HOME' is not set. "
+                "Please set this environment variable before running the program."
+            )
         self.ascend_inc = os.path.join(ascend_root, "include")
         self.ascend_lib = os.path.join(ascend_root, "lib64")
 
@@ -86,19 +89,15 @@ class build_py(_build_py):
 
 # Define the extension module of omni-cache
 setup(
-    name='omni-cache',
-    version='0.1.0',
-    description='PD-separated KV cache connectors for vLLM',
-    packages=find_packages(
-        exclude=(
-            "build",
-        )
-    ),
+    name="omni-cache",
+    version="0.1.0",
+    description="PD-separated KV cache connectors for vLLM",
+    packages=find_packages(exclude=("build",)),
     install_requires=[
-        'torch',
-        'torch_npu',
-        'pybind11',
-        'msgpack',
+        "torch",
+        "torch_npu",
+        "pybind11",
+        "msgpack",
     ],
     include_package_data=True,
     cmdclass={"build_py": build_py},

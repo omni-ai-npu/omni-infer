@@ -1,6 +1,5 @@
-# omni_npu/decorators.py
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """Plugin-based decorators for extending omni-npu functionality."""
 
@@ -10,6 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 _cached_eps = {}
+
 
 def create_plugin_decorator(entry_point_group: str, pre_method: str, post_method: str):
     """
@@ -166,6 +166,7 @@ reinitialize_input_batch_decorator = create_plugin_decorator(
     pre_method="pre_reinitialize_input_batch",
     post_method="post_reinitialize_input_batch"
 )
+
 
 def attn_decorator(type: str):
     """

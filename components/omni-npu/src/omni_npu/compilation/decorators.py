@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import functools
 from typing import TypeVar, Union
@@ -17,6 +17,7 @@ logger = init_logger(__name__)
 
 
 _T = TypeVar('_T', bound=type[nn.Module])
+
 
 def support_ge_compile(
         cls: _T,
@@ -46,6 +47,7 @@ def support_ge_compile(
 
     return cls
 
+
 def _bypass_prefill(self, *args, **kwargs):
     """
     patch vllm's _support_torch_compile's __call__
@@ -61,14 +63,15 @@ def _bypass_prefill(self, *args, **kwargs):
         return True, self.forward(*args, **kwargs)
     return False, None
 
+
 def _wrap_call(original_call):
     @functools.wraps(original_call)
     def _new_call(self, *args, **kwargs):
         hit, retval = _bypass_prefill(self, *args, **kwargs)
-        logger.debug(f"<<< {hit=}, {retval=}")
+        logger.debug(f"<<< hit={hit}, retval is Tensor, shape={retval.shape if hasattr(retval, 'shape') else 'N/A'}")
         if hit:
             return retval
-        logger.debug(f"<<< {hit=}, {retval=}, use original_call")
+        logger.debug(f"<<< hit={hit}, use original_call")
         model_output = original_call(self, *args, **kwargs)
         if isinstance(model_output, (tuple, list)) and len(model_output) == 1:
             hidden_states = model_output[0]
@@ -80,6 +83,7 @@ def _wrap_call(original_call):
         else:
             return model_output
     return _new_call
+
 
 def _patched_mark_dynamic():
     import inspect
@@ -149,6 +153,7 @@ def _patch_piecewise_backend():
     _piecewise_module.PiecewiseBackend._omni_npu_patched = True
     logger.debug("<<< PiecewiseBackend.__call__ patched!")
 
+
 def patch_compile_decorators():
     import os
     use_gegraph = os.getenv("TORCH_COMPILE_GE", "False").lower() == "true"
@@ -159,6 +164,7 @@ def patch_compile_decorators():
         _patch_piecewise_backend()
         _patched_mark_dynamic()
         _original_decorator = _dec_mododule._support_torch_compile
+        
         def _patched_support_torch_compile(cls, *args, **kwargs):
             cls = _original_decorator(cls, *args, **kwargs)
 

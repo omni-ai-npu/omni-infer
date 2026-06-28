@@ -1,6 +1,6 @@
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright contributors to the vLLM project.
 
 from copy import copy
 
@@ -21,6 +21,7 @@ from vllm.v1.utils import CpuGpuBuffer
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 from omni_npu.attention.backends.mome import NPUMomeAttentionMetadataBuilder
+
 
 @register_patch("PanguV2HybridGPUModelRunnerPatch", GPUModelRunner)
 class PanguV2HybridGPUModelRunnerPatch(VLLMPatch):
