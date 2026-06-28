@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 """Unit tests for ``omni_npu.layers.quantization.mxfp8``.
 
 MXFP8 kernels live on A5 hardware, but CI runs on A2. Every ``torch_npu.*``

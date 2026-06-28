@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+// Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 // mock_ox.cpp - A mock version of ox that skips all TCP/P-side communication.
 // Requests received via ZMQ ROUTER are immediately completed (success=true)
