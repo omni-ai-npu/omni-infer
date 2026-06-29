@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright contributors to the vLLM project.
 
@@ -159,7 +159,6 @@ class SinkFullAttentionManager(FullAttentionManager):
             pcp_world_size,
         )
         sink_len = kv_cache_spec.sink_len
-        # assert sink_len is not None and sink_len > 0 and sink_len % self.block_size == 0
         num_sink_block = sink_len // self.block_size
         self.sink_blocks = self.block_pool.free_block_queue.popleft_n(num_sink_block)
 

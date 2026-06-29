@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # test_fused_mlp_npu_mock.py
 import math
 

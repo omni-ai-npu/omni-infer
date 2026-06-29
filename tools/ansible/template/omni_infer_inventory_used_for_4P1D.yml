@@ -66,7 +66,7 @@ all:
               node_rank: 0
               node_port: "{{ global_port_base + port_offset.D }}"
               api_port: "{{ base_api_port + port_offset.D + node_rank }}"
-              host_ip:  127.0.0.5
+              host_ip: "127.0.0.5"
               ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 
     C:

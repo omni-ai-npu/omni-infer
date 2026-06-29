@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright contributors to the vLLM project.
 
@@ -36,7 +36,6 @@ class NPUInputBatch(InputBatch):
         prompt_mask_cpu = torch.zeros(self.vocab_size, dtype=torch.bool, device='cpu')
         if request.prompt_token_ids is not None:
             prompt_token_ids_tensor = torch.tensor(request.prompt_token_ids, dtype=torch.int64)
-            # prompt_mask_cpu.scatter_(dim=0, index=prompt_token_ids_tensor, src=self.ones_cpu)
             prompt_mask_cpu[prompt_token_ids_tensor] = True
         self.prompt_mask[req_index].copy_(prompt_mask_cpu, non_blocking=True)
 

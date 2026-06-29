@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright contributors to the vLLM project.
 
@@ -496,8 +496,8 @@ class BenchServePatch(VLLMPatch):
         ramp_up_start_rps: int | None = None,
         ramp_up_end_rps: int | None = None,
         process_id: int = -1,
-        tqdm_bar_q = None,
-        bench_start_barrier = None,
+        tqdm_bar_q=None,
+        bench_start_barrier=None,
     ):
         get_http_session_func = sys.modules['vllm.benchmarks.serve'].get_http_session
         session = get_http_session_func(max_concurrency, api_url)
@@ -1338,7 +1338,7 @@ class BenchServePatch(VLLMPatch):
         # ramp_up_end_rps that each benchmark process should have.
         chunk_size = len(input_requests) // args.num_processes
         sub_input_requests_list = [
-            input_requests[i*chunk_size : (i+1)*chunk_size]
+            input_requests[i * chunk_size : (i + 1) * chunk_size]
             for i in range(args.num_processes)
         ]
         if len(input_requests) % args.num_processes != 0:

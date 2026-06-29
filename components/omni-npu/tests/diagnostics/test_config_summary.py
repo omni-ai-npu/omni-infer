@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for the OMNI-CONF runtime collector (synthetic configs, no NPU).
 
 Class names below intentionally mirror real vLLM config class names so the

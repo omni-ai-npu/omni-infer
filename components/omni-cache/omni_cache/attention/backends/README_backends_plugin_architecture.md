@@ -71,7 +71,7 @@ omni-npu/attention/backends/          omni_cache/attention/backends/
 
 **原有代码：**
 ```python
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 from vllm.logger import init_logger
@@ -94,7 +94,7 @@ def register_attention_backend(backend: str):
 
 **修改后代码（保持原有变量名和日志格式，仅做最小改动）：**
 ```python
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 from importlib.metadata import entry_points
@@ -762,7 +762,7 @@ def build_for_drafting(
 ##### 2. 修改 `utils.py` 添加插件加载函数
 
 ```python
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 from importlib.metadata import entry_points

@@ -9,11 +9,11 @@ description = "vLLM NPU platform plugin and worker/modelrunner integration"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Omni NPU"}]
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 keywords = ["npu", "vllm", "plugin", "torch_npu"]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache-2.0",
   "Operating System :: OS Independent",
 ]
 dependencies = []

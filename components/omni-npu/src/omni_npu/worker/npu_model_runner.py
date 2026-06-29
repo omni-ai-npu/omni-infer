@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright contributors to the vLLM project.
 
@@ -161,7 +161,7 @@ class NPUModelRunner(GPUModelRunner):
         num_tokens_per_reqs_decode = 1 if not self.use_spec_decode else (1 + self.speculative_config.num_speculative_tokens)
         self.block_size = vllm_config.cache_config.block_size
         self.max_num_blocks_per_req = cdiv(self.model_config.max_model_len,
-                                           self.block_size*self.combine_block)*self.combine_block
+                                           self.block_size * self.combine_block) * self.combine_block
         self.graph_block_tables = np.zeros(
             (self.max_num_reqs * num_tokens_per_reqs_decode,
              self.max_num_blocks_per_req),
@@ -178,7 +178,7 @@ class NPUModelRunner(GPUModelRunner):
 
         hf_config = vllm_config.model_config.hf_config
         if getattr(hf_config, "use_mhc", False) and hasattr(hf_config, "vision_config"):
-            self.inputs_embeds.gpu=self.inputs_embeds.gpu.repeat(1,hf_config.mhc_num_stream)
+            self.inputs_embeds.gpu = self.inputs_embeds.gpu.repeat(1, hf_config.mhc_num_stream)
         
         self.batch_execution_and_padding_state: tuple[
             CUDAGraphMode,

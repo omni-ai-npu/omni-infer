@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright contributors to the vLLM project.
 
@@ -105,7 +105,7 @@ class MoMEPatch(VLLMPatch):
                     self.cache_states[i + 1 + cache_idx_offset] = conv_input[-self.cache_length:, :]
                 if e < hidden_states.shape[0]:
                     conv_output_list.append(hidden_states[e:])
-                conv_output =  torch.cat(conv_output_list, dim=0)
+                conv_output = torch.cat(conv_output_list, dim=0)
             else:
                 num_tokens = hidden_states.shape[0]
                 conv_input = torch.cat([self.cache_states[cache_slot_id[:num_tokens], ...], hidden_states.unsqueeze(1)], dim=1)

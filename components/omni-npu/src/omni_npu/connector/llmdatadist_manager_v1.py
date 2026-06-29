@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import os
@@ -661,7 +661,7 @@ def unzip_kv_cache_list(kv_caches: list[torch.Tensor], ):
     else:
         cache_num = 1
 
-    flatten_kv_caches = [[] for _ in  range(cache_num)]
+    flatten_kv_caches = [[] for _ in range(cache_num)]
 
     for kv_cache in kv_caches:
         if isinstance(kv_cache, tuple):

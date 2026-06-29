@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 #include <set>
@@ -532,7 +532,11 @@ int main(int argc, char *argv[])
 {
     try {
         Config config = parse_arguments(argc, argv);
+        std::cout << "[OX] ready for creating bt." << std::endl;
+        auto t1 = std::chrono::steady_clock::now();
         BlockTable bt(config);
+        auto t2 = std::chrono::steady_clock::now();
+        std::cout << "[OX] bt constructed, costing " << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count() << " ms" << std::endl;
 
         block_list_t blocks = {0, 5, 11};
         bt.get_buffers_layerwise(0, blocks, 1);

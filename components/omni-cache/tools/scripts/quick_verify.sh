@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Quick KV verification: send requests + compare baseline vs omnicache.
 #
 # Usage:

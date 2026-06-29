@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Reload consistency for RL weights after sleep/wake: within a single test case, sequentially
 exercise high-performance ``PanguUltraMoEForCausalLM`` and baselayer ``OpenPanguModel``.
 

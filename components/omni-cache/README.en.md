@@ -1,6 +1,5 @@
 # OmniCache
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.5.1%2B-orange)](https://pytorch.org/)
 [![Ascend NPU](https://img.shields.io/badge/Ascend-NPU-red)](https://www.hiascend.com/)
@@ -84,7 +83,3 @@ done
 - [Configuration Reference](docs/CONFIG_REFERENCE.en.md) — complete environment variables and kv-transfer-config parameters
 
 ---
-
-## License
-
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.

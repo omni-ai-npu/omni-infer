@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import os
@@ -441,8 +441,7 @@ class OpenPanguV2MOE(nn.Module):
         shared_input = hidden_states
         use_side_stream = self.side_stream is not None
 
-        # torch.npu.super_kernel_scope_begin(f"moe_{self.layer_idx}")
-        with torch.npu.npugraph_ex.scope.limit_core_num(16,16):
+        with torch.npu.npugraph_ex.scope.limit_core_num(16, 16):
             ENABLE_GMM_FR = hidden_states.shape[0] <= self.gmm_fr_token_threshold
 
             # Step 1: gating_topk - Select top-k experts
@@ -462,7 +461,7 @@ class OpenPanguV2MOE(nn.Module):
             # forced load balance
             if self.use_moe_force_load_balance: 
                 force_k = (topk_ids.shape[0] * self.experts.top_k) // self.n_routed_experts
-                topk_ids = self.aux_load_balance_tensor.repeat(force_k+1, 1) \
+                topk_ids = self.aux_load_balance_tensor.repeat(force_k + 1, 1) \
                             .view(-1, self.experts.top_k)[:topk_ids.shape[0]]
 
 
@@ -601,7 +600,7 @@ class OpenPanguV2MOE(nn.Module):
             else:
                 # Original BF16 path
                 # Step 2: init_routing - Initialize routing and get sorted tokens
-                with torch.npu.npugraph_ex.scope.limit_core_num(1,1):
+                with torch.npu.npugraph_ex.scope.limit_core_num(1, 1):
                     sorted_tokens, expanded_x_idx, expert_tokens, _ = torch_npu.npu_moe_init_routing_v2(
                         hidden_states,
                         topk_ids,
@@ -666,7 +665,7 @@ class OpenPanguV2MOE(nn.Module):
         # Step 8: Compute shared experts (triggered after init_routing, executed here)
         # This code structure keeps shared expert computation separate from the main stream
         # (gating_topk -> allgather -> init_routing -> GMM -> finalize) for super kernel fusion
-        with torch.npu.npugraph_ex.scope.limit_core_num(8,8):
+        with torch.npu.npugraph_ex.scope.limit_core_num(8, 8):
             if use_side_stream:
                 with torch.npu.stream(self.side_stream):
                     shared_input.record_stream(self.side_stream)
@@ -769,7 +768,7 @@ class OpenPanguV2MOE(nn.Module):
         # forced load balance
         if self.use_moe_force_load_balance:
             force_k = (topk_ids.shape[0] * self.experts.top_k) // self.n_routed_experts
-            topk_ids = self.aux_load_balance_tensor.repeat(force_k+1, 1) \
+            topk_ids = self.aux_load_balance_tensor.repeat(force_k + 1, 1) \
                         .view(-1, self.experts.top_k)[:topk_ids.shape[0]]
 
         elif self.enable_eplb:
@@ -870,7 +869,7 @@ class OpenPanguV2MOE(nn.Module):
             ep_world_size=self.ep_size,
             ep_rank_id=self.ep_rank,
             x_active_mask=x_active_mask, # (MC2 mask, set None for now)
-            comm_alg = "fullmesh_v2",
+            comm_alg="fullmesh_v2",
         )
  
         # Unpack dispatch output
@@ -1041,7 +1040,7 @@ class OpenPanguV2MOE(nn.Module):
         # forced load balance
         if self.use_moe_force_load_balance: 
             force_k = (topk_ids.shape[0] * self.experts.top_k) // self.n_routed_experts
-            topk_ids = self.aux_load_balance_tensor.repeat(force_k+1, 1) \
+            topk_ids = self.aux_load_balance_tensor.repeat(force_k + 1, 1) \
                         .view(-1, self.experts.top_k)[:topk_ids.shape[0]]
 
         # Step 2: npu_moe_init_routing_v2 - Local routing initialization
@@ -1527,7 +1526,7 @@ class OpenPanguV2DecoderLayer(nn.Module):
         return_h_in_f32: Optional[bool] = False,
         sk_event: Optional[torch.npu.Event] = None,
         defer_side_launch: bool = False,
-    )-> tuple[
+    ) -> tuple[
         torch.Tensor,
         torch.Tensor | None,
         torch.Tensor | None,

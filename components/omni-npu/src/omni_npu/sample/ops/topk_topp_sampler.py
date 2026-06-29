@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright contributors to the vLLM project.
 
@@ -182,7 +182,7 @@ def random_sample(
 
 
 class NPUTopKTopPSampler(V1TopKTopPSampler):
-    def __init__(self, logprobs_mode: LogprobsMode = "raw_logprobs", dsa_stream = None) -> None:
+    def __init__(self, logprobs_mode: LogprobsMode = "raw_logprobs", dsa_stream=None) -> None:
         super().__init__(logprobs_mode)
         if on_ascend950():
             self.forward = self.forward_native

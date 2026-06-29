@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright contributors to the vLLM project.
 
@@ -36,7 +36,7 @@ class NewGroupHCCLPatch(VLLMPatch):
             import torch_npu
             options = torch_npu._C._distributed_c10d.ProcessGroupHCCL.Options()
             options.hccl_config = {"group_name": "GroupCoordinator_new_group"}
-            group= _original_new_group(
+            group = _original_new_group(
                 ranks=ranks,
                 timeout=timeout,
                 backend=backend,
@@ -47,7 +47,7 @@ class NewGroupHCCLPatch(VLLMPatch):
             )
         #####patch end
         else:
-            group= _original_new_group(
+            group = _original_new_group(
                 ranks=ranks,
                 timeout=timeout,
                 backend=backend,

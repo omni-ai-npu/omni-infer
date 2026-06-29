@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright contributors to the vLLM project.
 
@@ -25,7 +25,7 @@ _original_is_deepseek_mla = ModelArchConfigConvertorBase.is_deepseek_mla
 
 def _patched_is_deepseek_mla(self) -> bool:
     if hasattr(self.hf_text_config, "model_type"):
-        if self.hf_text_config.model_type in ("openpangu_v2", "openpangu_mtp", "openpangu_v2_vl_moe","openpangu_v2_omni_moe"):
+        if self.hf_text_config.model_type in ("openpangu_v2", "openpangu_mtp", "openpangu_v2_vl_moe", "openpangu_v2_omni_moe"):
             return getattr(self.hf_text_config, "kv_lora_rank", None) is not None
     return _original_is_deepseek_mla(self)
 

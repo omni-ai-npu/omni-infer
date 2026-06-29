@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Covers NPUMomeAttentionMetadataBuilder.build non-prefix-cache path (seq diff + masked_fill).
 import unittest
 from types import SimpleNamespace

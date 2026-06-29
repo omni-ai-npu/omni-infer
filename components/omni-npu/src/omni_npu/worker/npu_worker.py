@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright contributors to the vLLM project.
 
@@ -340,10 +340,10 @@ class NPUWorker(WorkerBase):
         self._use_token_for_profile = os.getenv("PROFILER_TOKEN_THRESHOLD") is not None
 
         if envs.VLLM_TORCH_PROFILER_DIR:
-            self.profiler_token_threshold = int(os.environ.get('PROFILER_TOKEN_THRESHOLD',"1"))
-            self.profiler_stop_step = int(os.environ.get('PROFILER_STOP_STEP',"5"))
+            self.profiler_token_threshold = int(os.environ.get('PROFILER_TOKEN_THRESHOLD', "1"))
+            self.profiler_stop_step = int(os.environ.get('PROFILER_STOP_STEP', "5"))
             self.enable_prefill_profiler = (os.environ.get('ENABLE_PREFILL_PROFILER', 'FALSE').lower() == 'true')
-            self.profiler_skip_requests = int(os.environ.get('PROFILER_SKIP_REQUESTS',"0"))
+            self.profiler_skip_requests = int(os.environ.get('PROFILER_SKIP_REQUESTS', "0"))
             torch_profiler_trace_dir = envs.VLLM_TORCH_PROFILER_DIR
             logger.info("Profiling enabled. Traces will be saved to: %s",
                         torch_profiler_trace_dir)

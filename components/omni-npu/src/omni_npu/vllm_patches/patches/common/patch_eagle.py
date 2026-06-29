@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright contributors to the vLLM project.
 
@@ -195,7 +195,7 @@ class EagleProposerPatch(VLLMPatch):
         # End Adapt
 
         actual_num_reqs = len(num_draft_tokens_gpu)
-        token_indices_to_sample = common_attn_metadata.query_start_loc[1:actual_num_reqs+1] - 1 \
+        token_indices_to_sample = common_attn_metadata.query_start_loc[1:actual_num_reqs + 1] - 1 \
             - num_rejected_tokens_gpu
 
         return (
@@ -664,7 +664,7 @@ class EagleProposerPatch(VLLMPatch):
 
         # Adapt: handle the padding of query_start_loc
         if last_token_indices is None:
-            last_token_indices = common_attn_metadata.query_start_loc[1:batch_size+1] - 1
+            last_token_indices = common_attn_metadata.query_start_loc[1:batch_size + 1] - 1
         # End Adapt
 
         if self.method == "eagle3":
@@ -941,7 +941,7 @@ class EagleProposerPatch(VLLMPatch):
         num_tokens = target_token_ids.shape[0]
         batch_size = next_token_ids.shape[0]
         if last_token_indices is None:
-            last_token_indices = common_attn_metadata.query_start_loc[1:batch_size+1] - 1
+            last_token_indices = common_attn_metadata.query_start_loc[1:batch_size + 1] - 1
 
         assert self.runner is not None
 

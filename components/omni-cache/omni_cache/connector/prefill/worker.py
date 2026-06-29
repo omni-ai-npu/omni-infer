@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """Prefill connector worker implementation for KV transfer operations.
@@ -34,6 +34,7 @@ from omni_cache.connector.utils.settings import (
     BLOCK_RELEASE_DELAY,
     CLUSTER_SIZE,
     OX_PATH,
+    P_SERVER_WAIT_TIMEOUT,
 )
 
 
@@ -131,7 +132,7 @@ class PrefillConnectorWorker:
             t_read.start()
             t_print.start()
 
-            ok, not_ready = wait_ports(host_ports=[("127.0.0.1", BASE_PORT)], timeout_sec=60)
+            ok, not_ready = wait_ports(host_ports=[("127.0.0.1", BASE_PORT)], timeout_sec=P_SERVER_WAIT_TIMEOUT)
             if not ok:
                 stop_logged_process(proc)
                 raise RuntimeError(f"[ERROR] P not ready: {sorted(list(not_ready))}")

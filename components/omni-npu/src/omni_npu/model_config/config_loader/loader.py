@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 from dataclasses import dataclass, field, fields, asdict
@@ -62,19 +62,19 @@ def load_model_extra_config(model_config, vllm_config, scheduler_config):
         raise ValueError(f"Unsupported device: {device_name}. Only Ascend910/Ascend910B/Ascend950 are supported.")
     
     update_task_config(
-    model_name = model_name,
-    hardware_platform = hardware_platform,
-    is_pd_disaggregation = is_pd_disaggregation,
-    is_prefill_node = is_prefill_node,
-    quant_type = quant_type,
-    prefill_node_num = int(os.getenv("PREFILL_POD_NUM", 1)),
-    decode_node_num = int(os.getenv("DECODE_POD_NUM", 1)),
-    enable_eplb = enable_eplb,
-    enable_chunked_prefill = enable_chunked_prefill,
-    enable_low_latency = enable_low_latency,
-    graph_mode = graph_mode,
-    enable_pd_elastic_scaling = enable_pd_elastic_scaling,
-    enable_omni_cache = enable_omni_cache
+    model_name=model_name,
+    hardware_platform=hardware_platform,
+    is_pd_disaggregation=is_pd_disaggregation,
+    is_prefill_node=is_prefill_node,
+    quant_type=quant_type,
+    prefill_node_num=int(os.getenv("PREFILL_POD_NUM", 1)),
+    decode_node_num=int(os.getenv("DECODE_POD_NUM", 1)),
+    enable_eplb=enable_eplb,
+    enable_chunked_prefill=enable_chunked_prefill,
+    enable_low_latency=enable_low_latency,
+    graph_mode=graph_mode,
+    enable_pd_elastic_scaling=enable_pd_elastic_scaling,
+    enable_omni_cache=enable_omni_cache
     )
     _validate_config(vllm_config.additional_config)
     _print_model_config()
@@ -214,9 +214,9 @@ class ModelOperatorOptConfig:
 
 @dataclass 
 class ModelExtraConfig:
-    parall_config: ModelParallelConfig = field(default_factory = ModelParallelConfig)
-    operator_opt_config: ModelOperatorOptConfig = field(default_factory = ModelOperatorOptConfig)
-    task_config: TaskConfig = field(default_factory = TaskConfig)
+    parall_config: ModelParallelConfig = field(default_factory=ModelParallelConfig)
+    operator_opt_config: ModelOperatorOptConfig = field(default_factory=ModelOperatorOptConfig)
+    task_config: TaskConfig = field(default_factory=TaskConfig)
 
 
 model_extra_config = ModelExtraConfig()
@@ -245,7 +245,7 @@ def parse_hf_config(hf_config):
     vars_hf_config = vars(hf_config)
 
     matches = []
-    match_hf_configs_path = os.path.join(default_config_path,'match_hf_configs.json')
+    match_hf_configs_path = os.path.join(default_config_path, 'match_hf_configs.json')
 
     match_hf_configs_data = _loader_configs_data(match_hf_configs_path)
 
@@ -295,7 +295,7 @@ def parse_hf_config(hf_config):
         kv_cache_scheme_type = quantization_config["kv_cache_scheme"]
         quant_type = f"w{weights_type}a{input_activations_type}"
         if kv_cache_scheme_type == "Opti-C8":
-            quant_type = quant_type+"_fa_c8"
+            quant_type = quant_type + "_fa_c8"
         elif isinstance(kv_cache_scheme_type, dict):
             num_bits_values = kv_cache_scheme_type["num_bits"]
             quant_type = f"{quant_type}c{num_bits_values}"
@@ -326,7 +326,7 @@ def _init_model_extra_config(task_config):
 
     if config_data:
 
-        parall_config = ModelParallelConfig(**filter_dict_by_dataclass(ModelParallelConfig,config_data['model_parallel_config']))
+        parall_config = ModelParallelConfig(**filter_dict_by_dataclass(ModelParallelConfig, config_data['model_parallel_config']))
         operator_opt_config = ModelOperatorOptConfig(**filter_dict_by_dataclass(ModelOperatorOptConfig, config_data['operator_optimization_config']))
 
         setattr(model_extra_config, 'parall_config', parall_config)
@@ -358,7 +358,7 @@ def _get_best_practice_config(task_config):
     
     performance_mode = "low_latency" if task_config.enable_low_latency else "high_throughout"
 
-    configs_data = _loader_configs_data(os.path.join(default_config_path,f'{performance_mode}/best_practice_configs.json'))
+    configs_data = _loader_configs_data(os.path.join(default_config_path, f'{performance_mode}/best_practice_configs.json'))
 
     configs_list = None
     for data in configs_data:

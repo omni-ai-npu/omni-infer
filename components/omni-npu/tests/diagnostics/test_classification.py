@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 """Unit tests for omni_npu.diagnostics.classification (stdlib-only, no NPU)."""
 
 import pytest

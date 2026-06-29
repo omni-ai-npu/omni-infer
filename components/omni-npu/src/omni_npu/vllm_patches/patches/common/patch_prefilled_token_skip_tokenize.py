@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright contributors to the vLLM project.
 
@@ -415,7 +415,7 @@ class AsyncLLMPatch(VLLMPatch):
         trace_headers: Mapping[str, str] | None = None,
         priority: int = 0,
         data_parallel_rank: int | None = None,
-    )-> AsyncGenerator[RequestOutput, None]:
+    ) -> AsyncGenerator[RequestOutput, None]:
         import os
         from collections import namedtuple
         from typing import List, Dict, Any
@@ -500,7 +500,7 @@ class AsyncLLMPatch(VLLMPatch):
                     yield synthetic_res
                 else:
                     pending_prefilled_output = synthetic_res
-        async for res in _original_generate(self, prompt, sampling_params, request_id, prompt_text = prompt_text, lora_request=lora_request,
+        async for res in _original_generate(self, prompt, sampling_params, request_id, prompt_text=prompt_text, lora_request=lora_request,
                                  tokenization_kwargs=tokenization_kwargs, trace_headers=trace_headers, priority=priority, data_parallel_rank=data_parallel_rank):
             if pending_prefilled_output is not None:
                 by_index = {

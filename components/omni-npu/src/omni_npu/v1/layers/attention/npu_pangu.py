@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 from typing import Callable, Optional, Union, Tuple
@@ -374,10 +374,6 @@ class NPUPanguIndexer(torch.nn.Module):
     ) -> bool:
 
         if self.on_ascend950 and self.cache_config.cache_dtype in ["hif8_ds_mla"]:
-            # k_scale = torch.ones(
-            #     (k.shape[0], 1), dtype=torch.float32, device=k.device,
-            # )
-            # k_hif8 = torch_npu.npu_dtype_cast(k, torch_npu.hifloat8)
             k_hif8, k_scale = torch_npu.npu_dynamic_quant(
                 k, dst_type=torch_npu.hifloat8,
                 dst_type_max=15.0
@@ -725,7 +721,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         if self.is_cp_layer:
             max_num_reqs = vllm_config.scheduler_config.max_num_seqs
             self.num_computed_for_cp = torch.zeros(
-                (max_num_reqs*2, ), 
+                (max_num_reqs * 2,),
                 device="npu", 
                 dtype=torch.int32, 
             )
@@ -902,7 +898,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 dtype=torch.bfloat16,
             )
         )
-        # assert self.cache_config.block_size == self.param_sink_number
         self.block_size = self.cache_config.block_size
         self.sink_slot_mapping = torch.arange(
             self.param_sink_number, device='npu', dtype=torch.int32,
@@ -1382,7 +1377,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             # to get the last few tokens from the previous rank
             gathered_states = tp_group.all_gather(cache_for_sp[0], dim=0) # (tp_size * state_len, dim)
             gathered_states = gathered_states.view(self.tp_size, state_len, dim)
-            cache_for_sp[0].copy_(gathered_states[(tp_rank-1) % self.tp_size])
+            cache_for_sp[0].copy_(gathered_states[(tp_rank - 1) % self.tp_size])
 
             if local_size > 0:
                 num_local_reqs = fc2_metadata.req_idx_end[tp_rank] - fc2_metadata.req_idx_start[tp_rank]
@@ -1460,7 +1455,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         elif mome_metadata.num_prefills > 0:
             x = layer.forward_prefill(
                 x, 
-                kv_cache[kv_index][:, -(width-1):], 
+                kv_cache[kv_index][:, -(width - 1):], 
                 mome_metadata.cache_indices, 
                 mome_metadata.query_start_loc, 
             )
@@ -1499,7 +1494,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             "input_layout": "TND_NTD",
             "atten_mask": self.attn.impl.SHARE_MASK_TRIL_SPARSE,
             "sparse_mode": 4,
-            "pre_tokens": self.sliding_window-1,
+            "pre_tokens": self.sliding_window - 1,
             "next_tokens": 0,
             "block_table": attn_metadata.decode.block_table,
             "block_size": self.block_size,
@@ -1685,8 +1680,8 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 block_table=block_table,
                 actual_seq_lengths_query=actual_seq_lengths_query,
                 actual_seq_lengths_kv=actual_seq_lengths_kv,
-                pre_tokens=(1<<63)-1,
-                next_tokens=(1<<63)-1,
+                pre_tokens=(1 << 63) - 1,
+                next_tokens=(1 << 63) - 1,
                 attention_mode=2,
                 layout_query="TND",
                 layout_kv="PA_BSND",
@@ -2153,7 +2148,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 )
             if need_all_gather:
                 tp_rank = tp_group.rank_in_group
-                attn_output = attn_output[tp_rank * local_tokens: min((tp_rank+1) * local_tokens, num_actual_tokens)]
+                attn_output = attn_output[tp_rank * local_tokens: min((tp_rank + 1) * local_tokens, num_actual_tokens)]
                 if attn_output.size(0) < local_tokens:
                     attn_output = F.pad(attn_output, (0, 0, 0, local_tokens - attn_output.size(0)))
             # NOTE: if not self.use_mome, one could in theory use all-to-all 
@@ -2178,8 +2173,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 enable_sequence_parallel=True, 
                 gather_tokens=False,
             )
-
-        # attn_output: (local_tokens, num_heads * v_head_dim)
 
         return self.o_proj(attn_output)[0]
 
@@ -2341,7 +2334,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                     "input_layout": "TND",
                     "softmax_scale": self.scaling,
                     "sparse_mode": 4,
-                    "pre_tokens": self.sliding_window-1,
+                    "pre_tokens": self.sliding_window - 1,
                     "next_tokens": 0,
                     "atten_mask": self.attn.impl.SHARE_MASK_TRIL_SPARSE,
                     "softmax_lse_flag": False,
@@ -2364,7 +2357,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                     "input_layout": "TND",
                     "scale": self.scaling,
                     "sparse_mode": 4,
-                    "pre_tokens": self.sliding_window-1,
+                    "pre_tokens": self.sliding_window - 1,
                     "next_tokens": 0,
                     "atten_mask": self.attn.impl.SHARE_MASK_TRIL_SPARSE,
                     "softmax_lse_flag": False,
@@ -2385,7 +2378,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 "atten_mask": self.attn.impl.SHARE_MASK_TRIL_SPARSE,
                 "sparse_mode": 4,
                 "softmax_scale": self.scaling,
-                "pre_tokens": self.sliding_window-1,
+                "pre_tokens": self.sliding_window - 1,
                 "next_tokens": 0,
                 "actual_seq_qlen": attn_metadata.prefill.query_cumlens,
                 "actual_seq_kvlen": attn_metadata.prefill.query_cumlens,
@@ -2514,8 +2507,8 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 block_table=metadata.block_table,
                 actual_seq_lengths_query=metadata.query_cumlens,
                 actual_seq_lengths_kv=metadata.seq_lens,
-                pre_tokens=(1<<63)-1,
-                next_tokens=(1<<63)-1,
+                pre_tokens=(1 << 63) - 1,
+                next_tokens=(1 << 63) - 1,
                 attention_mode=2,
                 layout_query="TND",
                 layout_kv="PA_BSND",
@@ -2915,7 +2908,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         hidden_states_event.record()
         hidden_states.record_stream(self.side_stream)
 
-        with torch.npu.npugraph_ex.scope.limit_core_num(16,24):
+        with torch.npu.npugraph_ex.scope.limit_core_num(16, 24):
             # Main stream: q_lora
             q_lora = self.q_a_proj(hidden_states)
             if self.use_mome:
@@ -2954,7 +2947,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         # Side stream: KV + q_pe rope (runs in parallel with main stream absorb)
         with torch.npu.stream(self.side_stream):
             hidden_states_event.wait(self.side_stream)
-            with torch.npu.npugraph_ex.scope.limit_core_num(8,24):
+            with torch.npu.npugraph_ex.scope.limit_core_num(8, 24):
                 kv = self._kv_down_mome(hidden_states, attn_metadata, mome_metadata)
                 new_kv_cache = torch.ops.vllm.npu_pangu_kv_cache_update(
                     kv, kv_cache[0], kv_cache[1], cos, sin, self.prefix,
@@ -2999,7 +2992,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         hidden_states_event.record()
         hidden_states.record_stream(self.side_stream)
 
-        with torch.npu.npugraph_ex.scope.limit_core_num(16,24):
+        with torch.npu.npugraph_ex.scope.limit_core_num(16, 24):
             # Main stream: q_lora
             q_lora = self.q_a_proj(hidden_states)
             if self.use_mome:
@@ -3040,7 +3033,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         with torch.npu.stream(self.side_stream):
             hidden_states_event.wait(self.side_stream)
 
-            with torch.npu.npugraph_ex.scope.limit_core_num(8,24):
+            with torch.npu.npugraph_ex.scope.limit_core_num(8, 24):
                 # KV down (independent of q_lora)
                 kv = self._kv_down_mome(hidden_states, attn_metadata, mome_metadata)
 
@@ -3108,7 +3101,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             side_done_event = torch.npu.Event()
             side_done_event.record()
 
-        with torch.npu.npugraph_ex.scope.limit_core_num(12,24):
+        with torch.npu.npugraph_ex.scope.limit_core_num(12, 24):
             # Main stream: full Q path
             if self.split_q_up_in_multistream:
                 q_nope = self.q_b_nope_proj(q_lora).view(
