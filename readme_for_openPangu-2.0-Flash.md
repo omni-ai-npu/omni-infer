@@ -10,12 +10,6 @@
 docker pull image_name:image_tag
 ```
 
-示例
-
-```bash
-docker pull registry-cbu.huawei.com/omniai_omniinfer/ai-infra-infer-1.2.1-arm-openeuler-py311-a3-cann.9.1.t2.b020-pta_v2.9.0-op-1.2.1-omni_release_1.2.1-vllm-202606051040:0.0.1
-```
-
 ## 配置ssh
 
 首次配对的P和D节点需要配置ssh，若使用的机器拉过PD分离则无需重新配置。在P节点执行下述命令
@@ -32,10 +26,9 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub root@xxx.xxx.xx.xx
 
 ## 推理代码依赖的packages
 
-适配推理代码的部分packages及版本：
+适配推理代码的部分 packages 及版本（镜像内已预装）：
 
 * `omni-npu`, Version `0.2.0`
-* `omni-models`, Version `0.1.0`
 * `vllm`, Version `0.14.0+empty`
 * `tiktoken`, Version `0.13.0`
 * `tokenizers`, Version `0.22.2`
@@ -48,11 +41,15 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub root@xxx.xxx.xx.xx
 
 ## 修改脚本
 
-拉起PD分离服务的脚本在``omniinfer/tools/ansible/template``路径下。
+拉起 PD 分离服务的脚本在 `omniinfer/tools/ansible/template` 路径下。以 **1P1D** 为例，对应文件为：
 
-* 在**omni_infer_inventory_used_for_xPyD.yml**文件中依次填写**P节点**和**D节点**的机器ip地址。**proxy节点**设为P节点ip。端口可用当前默认。注意ansible_host和host_ip都要修改为部署的ip地址。
+* `omni_infer_inventory_used_for_1P1D.yml` — 节点 inventory
+* `omni_infer_server_template_performance1P1D_92B_bf16_open.yml` — BF16 权重服务模板
+* `omni_infer_server_template_performance1P1D_92B_w8a8_open.yml` — W8A8 INT8 权重服务模板
 
-```
+* 在 **omni_infer_inventory_used_for_xPxD.yml** 中填写 **P 节点**、**D 节点** 和 **C（proxy）节点** 的机器 IP。**proxy 节点** 设为 P 节点 IP。注意 `ansible_host` 和 `host_ip` 都要修改为部署的 IP 地址。
+
+```yaml
 P:
       children:
         P0:
@@ -78,7 +75,7 @@ environment:
     MODEL_LEN_MAX_PREFILL: "524288"
     MODEL_LEN_MAX_DECODE: "524288"
     LOG_PATH_IN_EXECUTOR: "/path/to/server/log_path_in_executor"
-    CODE_PATH: "/path/to/model/codes/" # 本机代码路径
+    CODE_PATH: "/path/dir/" # omniinfer 源码的父目录，其下需有 omniinfer 子目录（如设为 /data/pangu-v2，则代码位于 /data/pangu-v2/omniinfer）
     KV_CONNECTOR: "LLMDataDistConnector"
 
     # Configuration for containers
@@ -87,11 +84,6 @@ environment:
     DOCKER_NAME_D: "docker_name_d" 	# PD分离在D节点创建的容器名，需提前设置
     DOCKER_NAME_C: "docker_name_c" 	# PD分离在proxy节点创建的容器名，需提前设置
     SCRIPTS_PATH: "/tmp/scripts_path"
-
-    # Configuration for lb_sdk in global proxy
-    PREFILL_LB_SDK: "pd_score_balance"
-    DECODE_LB_SDK: "pd_score_balance"
-    USE_OMNI_PROXY: "1"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1" # 当前脚本默认prefill TP部署，decode DP部署
@@ -111,14 +103,27 @@ ansible-playbook -i omni_infer_inventory_used_for_xPyD.yml omni_infer_server_tem
 
 ## 推理代码适配
 
-可直接使用镜像自带的代码，通过下述命令查看`omni-npu`和`omni-models`在docker内的安装路径。docker创建好后即可通过`ansible-book`直接拉起推理服务。
+可直接使用镜像自带的代码，通过下述命令查看`omni-npu`在docker内的安装路径。docker创建好后即可通过`ansible-book`直接拉起推理服务。
 
 ```bash
 pip list | grep omni-npu
-pip list | grep omni-models
 ```
 
-也可以从代码仓中拉取最新代码替换镜像内置的`omni-npu`和`omni-models`。
+
+### 同步本地代码到容器（sync_code）
+
+如果想用本地修改过的代码覆盖镜像自带代码，可使用 `sync_code` 一键同步，无需手动进容器安装。
+
+1. 在 `environment` 中设置 `CODE_PATH`，其下需有 `omniinfer` 子目录（如 `CODE_PATH=/data/pangu-v2`，则源码位于 `/data/pangu-v2/omniinfer`）。
+2. 在执行机执行：
+
+```bash
+ansible-playbook -i omni_infer_inventory_used_for_xPyD.yml omni_infer_server_template_performancexPyD_92B_xxx.yml --tags sync_code
+```
+
+该命令会先把执行机 `$CODE_PATH/omniinfer` 同步到各 P/D/C 机器，再叠加拷贝进容器的 `/workspace/omniinfer`。
+
+> 说明：拷贝为叠加覆盖（只覆盖同名文件，不删除容器中本地没有的文件），因此会保留容器内已编译的产物（如 `omni-eplb`、`omni-cache` 的 `.so` 等）。如果你在本地删除或重命名了文件，容器内的旧文件不会被自动清除。
 
 ### 替换镜像内置代码
 
@@ -134,16 +139,12 @@ docker exec -itu root docker_name /bin/bash
 # 安装omni-npu
 cd /path/to/your/local/omni-npu
 pip install -e . -v 
-
-# 安装omni-models
-cd /path/to/your/local/omni-models
-pip install -e . -v
 ```
 
 若上述命令无法安装本地代码，可以在代码路径内尝试下述命令。
 
 ```
-pip install -e . -v --index-url https://mirrors.tools.huawei.com/pypi/simple --trusted-host mirrors.tools.huawei.com --no-build-isolation
+pip install -e . -v --no-build-isolation
 ```
 
 ### INT8量化
@@ -292,4 +293,26 @@ curl -X POST http://${MASTER_NODE_IP}:7000/v1/chat/completions \
     }'
 ```
 
+## 开启omni-cache 特性
+
+在 Playbook 中将对应server yml 替换即可
+
+92B: omni_infer_server_template_performance4P1D_92B_w8a8_open_omni_cache.yml 推荐inventory 形态: 4P1D
+
+```bash
+ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template_performance4P1D_92B_w8a8_open_omni_cache.yml --tags run_docker,run_server,run_proxy
+```
+
+### 从OmniCache服务切换到其他配置前的处理
+
+> **注意：** 如果当前容器运行过OmniCache版本的服务，之后需要使用同一容器运行其他配置的服务，必须先释放OmniCache占用和预留的大页内存，否则可能导致后续服务可用内存不足或启动失败。
+
+请在所有运行过OmniCache服务的相关容器上依次执行以下操作：
+
+1. 重启容器，释放OmniCache服务占用的大页内存。
+2. 容器重启后，在代码根目录执行以下命令，将大页内存分配上限恢复为默认值并释放多余的预留内存：
+
+```bash
+bash omni-cache/tools/setup/set_hugepage_limit.sh --target-pages 262144
+```
 

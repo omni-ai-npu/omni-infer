@@ -10,12 +10,6 @@ Pull the corresponding image for your machine.
 docker pull image_name:image_tag
 ```
 
-Example
-
-```bash
-docker pull registry-cbu.huawei.com/omniai_omniinfer/ai-infra-infer-1.2.1-arm-openeuler-py311-a3-cann.9.1.t2.b020-pta_v2.9.0-op-1.2.1-omni_release_1.2.1-vllm-202606051040:0.0.1
-```
-
 ## Configure SSH
 
 SSH must be configured between P and D nodes that are paired for the first time. If the machines have already been used for PD disaggregation, no re-configuration is needed. Run the following commands on the P node:
@@ -32,10 +26,9 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub root@xxx.xxx.xx.xx
 
 ## Inference Code Dependencies
 
-Packages and versions required by the inference code:
+Packages and versions required by the inference code (pre-installed in the image):
 
 * `omni-npu`, Version `0.2.0`
-* `omni-models`, Version `0.1.0`
 * `vllm`, Version `0.14.0+empty`
 * `tiktoken`, Version `0.13.0`
 * `tokenizers`, Version `0.22.2`
@@ -48,9 +41,13 @@ Packages and versions required by the inference code:
 
 ## Modify Scripts
 
-The scripts for launching the PD disaggregation service are located at ``omniinfer/tools/ansible/template``.
+The scripts for launching the PD disaggregation service are located at `omniinfer/tools/ansible/template`. For **1P1D**, the corresponding files are:
 
-* In the **omni_infer_inventory_used_for_xPyD.yml** file, fill in the IP addresses of the **P node** and **D node** machines. Set the **proxy node** to the P node IP. The default ports can be used. Note that both `ansible_host` and `host_ip` must be changed to the deployment IP addresses.
+* `omni_infer_inventory_used_for_1P1D.yml` — node inventory
+* `omni_infer_server_template_performance1P1D_92B_bf16_open.yml` — BF16 weight service template
+* `omni_infer_server_template_performance1P1D_92B_w8a8_open.yml` — W8A8 INT8 weight service template
+
+* In **omni_infer_inventory_used_for_xPxD.yml**, fill in the IP addresses of the **P node**, **D node**, and **C (proxy) node** machines. Set the **proxy node** to the P node IP. Note that both `ansible_host` and `host_ip` must be changed to the deployment IP addresses.
 
 ```
 P:
@@ -78,7 +75,7 @@ environment:
     MODEL_LEN_MAX_PREFILL: "524288"
     MODEL_LEN_MAX_DECODE: "524288"
     LOG_PATH_IN_EXECUTOR: "/path/to/server/log_path_in_executor"
-    CODE_PATH: "/path/to/model/codes/" # Local code path
+    CODE_PATH: "/path/dir/" # Parent directory of the omniinfer source code; must contain an omniinfer subdirectory (e.g. set to /data/pangu-v2, then code is at /data/pangu-v2/omniinfer)
     KV_CONNECTOR: "LLMDataDistConnector"
 
     # Configuration for containers
@@ -87,11 +84,6 @@ environment:
     DOCKER_NAME_D: "docker_name_d" 	# Container name created by PD disaggregation on the D node, must be set in advance
     DOCKER_NAME_C: "docker_name_c" 	# Container name created by PD disaggregation on the proxy node, must be set in advance
     SCRIPTS_PATH: "/tmp/scripts_path"
-
-    # Configuration for lb_sdk in global proxy
-    PREFILL_LB_SDK: "pd_score_balance"
-    DECODE_LB_SDK: "pd_score_balance"
-    USE_OMNI_PROXY: "1"
 
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1" # The current script defaults to prefill TP deployment and decode DP deployment
@@ -111,14 +103,27 @@ Note: Once the docker environment is configured, it can be reused. Do not run th
 
 ## Inference Code Adaptation
 
-You can directly use the code bundled with the image. Run the following commands to check the installation paths of `omni-npu` and `omni-models` inside the docker. Once the docker is created, you can launch the inference service directly via `ansible-playbook`.
+You can directly use the code bundled with the image. Run the following command to check the installation path of `omni-npu` inside the docker. Once the docker is created, you can launch the inference service directly via `ansible-playbook`.
 
 ```bash
 pip list | grep omni-npu
-pip list | grep omni-models
 ```
 
-Alternatively, you can pull the latest code from the repository to replace the built-in `omni-npu` and `omni-models` in the image.
+
+### Sync Local Code into Container (sync_code)
+
+If you want to override the image's built-in code with your locally modified code, use `sync_code` to sync it in one step, without manually entering the container to install.
+
+1. Set `CODE_PATH` in the `environment` section; it must contain an `omniinfer` subdirectory (e.g. `CODE_PATH=/data/pangu-v2`, then the source is at `/data/pangu-v2/omniinfer`).
+2. Run on the host machine:
+
+```bash
+ansible-playbook -i omni_infer_inventory_used_for_xPyD.yml omni_infer_server_template_performancexPyD_92B_xxx.yml --tags sync_code
+```
+
+This command first syncs `$CODE_PATH/omniinfer` from the executor to all P/D/C machines, then overlays it into the container's `/workspace/omniinfer`.
+
+> Note: The copy is an overlay (it only overwrites files with the same name and does not delete files in the container that are absent locally), so compiled artifacts already in the container (e.g. the `.so` files of `omni-eplb` and `omni-cache`) are preserved. If you delete or rename files locally, the old files in the container will not be removed automatically.
 
 ### Replace Built-in Code in Image
 
@@ -133,17 +138,13 @@ Run the following commands inside the docker to install the local inference code
 ```
 # Install omni-npu
 cd /path/to/your/local/omni-npu
-pip install -e . -v
-
-# Install omni-models
-cd /path/to/your/local/omni-models
-pip install -e . -v
+pip install -e . -v 
 ```
 
 If the above commands fail to install the local code, try the following command in the code directory.
 
 ```
-pip install -e . -v --index-url https://mirrors.tools.huawei.com/pypi/simple --trusted-host mirrors.tools.huawei.com --no-build-isolation
+pip install -e . -v --no-build-isolation
 ```
 
 ### INT8 Quantization
@@ -176,7 +177,7 @@ time python3 -u tools/quantize_joint_smooth_int8_iterative.py \
 **Key Parameter Descriptions:**
 
 | Parameter | Recommended Value | Description |
-|-----------|-------------------|-------------|
+|------|--------|------|
 | `--n-samples` | 32 | Number of calibration samples |
 | `--seq-len` | 1024 | Calibration sequence length |
 | `--num-iterations` | 2 | Number of coordinate descent iterations (K=2), alternating optimization between gate/up ↔ down smoothing parameters |
@@ -290,4 +291,19 @@ curl -X POST http://${MASTER_NODE_IP}:7000/v1/chat/completions \
         "vllm_xargs": {"top_n_sigma": 0.05},
 		"stream": false
     }'
+```
+
+## Enable omni-cache Feature
+Replace the corresponding server yml in the Playbook.
+92B: `omni_infer_server_template_performance4P1D_92B_w8a8_open_omni_cache.yml` — recommended inventory: 4P1D
+```bash
+ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template_performance4P1D_92B_w8a8_open_omni_cache.yml --tags run_docker,run_server,run_proxy
+```
+### Handling Before Switching from OmniCache to Other Configurations
+> **Note:** If a container has run an OmniCache version of the service, and you later need to run a different configuration on the same container, you must first release the hugepage memory occupied and reserved by OmniCache; otherwise subsequent services may run out of available memory or fail to start.
+On all containers that have run OmniCache services, perform the following steps in order:
+1. Restart the container to release hugepage memory used by the OmniCache service.
+2. After the container restarts, run the following command in the code root directory to restore the hugepage allocation limit to the default value and release excess reserved memory:
+```bash
+bash omni-cache/tools/setup/set_hugepage_limit.sh --target-pages 262144
 ```
