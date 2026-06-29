@@ -12,7 +12,7 @@ fi
 INSTALL_DIR="$1"
 PYTHON_VERSION="$2"
 PYTHON_TGZ="Python-${PYTHON_VERSION}.tgz"
-PYTHON_URL="https://mirrors.huaweicloud.com/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz"
+PYTHON_URL="https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz"
 
 # Create a temporary download directory
 TMP_DIR="/tmp"
