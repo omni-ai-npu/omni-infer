@@ -2,6 +2,8 @@
 
 以Ascend910C (A3) 为例，openPangu-2.0-Flash的INT8权重版本可通过**1P1D**的配置拉起服务。可以使用一机A3组一个P节点，一机A3组一个D节点，这样的**1P1D**共使用两机A3。
 
+多机部署通过 ansible-playbook 在执行机上统一拉起，执行机需安装 ansible（如 `yum install ansible`）。
+
 ## 拉取镜像
 
 拉取机器对应镜像
@@ -41,10 +43,10 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub root@xxx.xxx.xx.xx
 
 ## 修改脚本
 
-拉起 PD 分离服务的脚本在 `omniinfer/tools/ansible/template` 路径下。以 **1P1D** 为例，对应文件为：
+拉起 PD 分离服务的脚本在代码仓的 `tools/ansible/template` 路径下。以 **1P1D** 为例，对应文件为：
 
 * `omni_infer_inventory_used_for_1P1D.yml` — 节点 inventory
-* `omni_infer_server_template_performance1P1D_92B_open.yml` — INT8 权重服务模板
+* `omni_infer_server_template_performance1P1D_92B_w8a8_open.yml` — INT8 权重服务模板
 
 * 在 **omni_infer_inventory_used_for_1P1D.yml** 中填写 **P 节点**、**D 节点** 和 **C（proxy）节点** 的机器 IP。**proxy 节点** 设为 P 节点 IP。注意 `ansible_host` 和 `host_ip` 都要修改为部署的 IP 地址。
 
@@ -62,7 +64,9 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub root@xxx.xxx.xx.xx
           ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 ```
 
-* 在 **omni_infer_server_template_performance1P1D_92B_open.yml** 文件中写有P、D和C的服务拉起脚本和配置。
+> 上例为 **1P1D** 的单 P 节点写法。多 P 节点（如 **4P1D**）的 `P` 组采用分组结构（`P0`/`P1`/… 各含一个 host），并需相应设置各节点的 `kv_rank`、`host_ip` 等，可参考同目录下的 `omni_infer_inventory_used_for_4P1D.yml`。
+
+* 在 **omni_infer_server_template_performance1P1D_92B_w8a8_open.yml** 文件中写有P、D和C的服务拉起脚本和配置。
   首次拉起服务前需改动`environment`部分，将所有路径相关和容器名都换成自己的信息。
 
 ```
@@ -73,7 +77,6 @@ environment:
     MODEL_LEN_MAX_PREFILL: "524288"
     MODEL_LEN_MAX_DECODE: "524288"
     LOG_PATH_IN_EXECUTOR: "/path/to/server/log_path_in_executor" # 可选：汇总日志时使用，将执行机的日志拉取到控制机
-    CODE_PATH: "/path/dir/" # 可选：同步代码时使用，其下需有 omniinfer 子目录（如设为 /data/pangu-v2，则代码位于 /data/pangu-v2/omniinfer）
     KV_CONNECTOR: "LLMDataDistConnector"
 
     # Configuration for containers
@@ -94,39 +97,21 @@ environment:
 在P节点运行下述命令可启动镜像，在设置的每台服务器上创建docker。注意替换成本机上的对应文件名，以 **1P1D** 为例：
 
 ```bash
-ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_open.yml --tags run_docker
+ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_w8a8_open.yml --tags run_docker
 ```
 
 docker创建好后可跳转到 [推理服务拉起](#推理服务拉起) 章节拉起推理服务。
 
-> **注意**：docker内环境配置好了可以复用docker，不要再运行此命令，因为再次运行会把同名docker覆盖掉。
+> **注意**：镜像没有变化时可复用已有 docker，无需重复运行此命令（重复运行会覆盖同名容器）。
 
 ## 推理代码适配
 
-若需要修改推理代码，有以下两种方式：
-### 1. 容器内直接修改
-通过下述命令查看`omni-npu`等组件在docker内的安装路径，并进入对应的docker内进行修改
+若需要修改推理代码，可通过下述命令查看`omni-npu`等组件在docker内的安装路径，并进入对应的docker内进行修改
 
 ```bash
 # 查看omni-npu
 pip list | grep omni-npu
 ```
-
-
-### 2. 同步本地代码到容器（sync_code）
-
-如果想用本地修改过的代码覆盖镜像自带代码，可使用 `sync_code` 一键同步，无需手动进容器安装。
-
-1. 在 `environment` 中设置 `CODE_PATH`，其下需有 `omniinfer` 子目录（如 `CODE_PATH=/data/pangu-v2`，则源码位于 `/data/pangu-v2/omniinfer`）。
-2. 在执行机执行，以 **1P1D** 为例：
-
-```bash
-ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_open.yml --tags sync_code
-```
-
-该命令会先把执行机 `$CODE_PATH/omniinfer` 同步到各 P/D/C 机器，再叠加拷贝进容器的 `/workspace/omniinfer`。
-
-> 说明：拷贝为叠加覆盖（只覆盖同名文件，不删除容器中本地没有的文件），因此会保留容器内已编译的产物（如 `omni-eplb`、`omni-cache` 的 `.so` 等）。如果你在本地删除或重命名了文件，容器内的旧文件不会被自动清除。
 
 ## INT8量化
 
@@ -137,7 +122,7 @@ ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_tem
 docker在各个部署的A3机器上创建好后，在bash通过下述命令拉取推理服务，以 **1P1D** 为例：
 
 ```bash
-ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_open.yml --tags run_server,run_proxy
+ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_w8a8_open.yml --tags run_server,run_proxy
 ```
 
 C节点会在容器内启动nginx+proxy，在master node上启动nginx将并发的请求分配到各个节点上。可在部署的机器上通过日志追踪服务拉起的进程。
@@ -150,6 +135,8 @@ tail -f /path/to/server/log/server_0.log
 ## 发请求测试
 
 服务启动后，向proxy节点端口（脚本默认为7000）发送测试请求：
+
+> **注意**：请求 body 中的 `model` 为 `openPangu-2.0-Flash`。
 
 ```bash
 # ${MASTER_NODE_IP} 替换为 inventory 中 C 节点的 ansible_host，端口对应 proxy_port（默认 7000）

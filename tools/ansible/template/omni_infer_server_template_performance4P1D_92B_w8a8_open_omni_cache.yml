@@ -13,7 +13,6 @@
     MODEL_LEN_MAX_PREFILL: "524288"
     MODEL_LEN_MAX_DECODE: "524288"
     LOG_PATH_IN_EXECUTOR: "/path/to/server/log_path_in_executor"
-    CODE_PATH: "/path/dir/"
     KV_CONNECTOR: "LLMDataDistConnector"
     ENABLE_OMNI_CACHE: "{{ enable_omni_cache | default('1') }}"
     ENABLE_HOST_MAPPING: "{{ enable_host_mapping | default('0') }}"
@@ -165,7 +164,7 @@
 
 
       cd /workspace/omniinfer/tools/scripts
-      bash /workspace/omniinfer/tools/scripts/pd_run_pangu_ultra_moe.sh \
+      bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --additional-config '{"enable_low_latency": true}' \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
         --global-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -302,7 +301,7 @@
       fi
 
       cd /workspace/omniinfer/tools/scripts
-      bash /workspace/omniinfer/tools/scripts/pd_run_pangu_ultra_moe.sh \
+      bash /workspace/omniinfer/tools/scripts/pd_run.sh \
         --additional-config '{"enable_low_latency": true, "npugraph_ex_config":{"enable": true, "super_kernel_optimize": false, "static_kernel_compile": false}}' \
         --local-decode-server-ip-list "$SERVER_IP_LIST" \
         --global-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -553,12 +552,6 @@
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/reload_proxy_server.sh
 
-    docker_cp_prefill_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer/. $DOCKER_NAME_P:/workspace/omniinfer/"
-
-    docker_cp_decode_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer/. $DOCKER_NAME_D:/workspace/omniinfer/"
-
-    docker_cp_proxy_code_cmd: "docker cp {{ ansible_env.CODE_PATH }}/omniinfer/. $DOCKER_NAME_C:/workspace/omniinfer/"
-
   tasks:
     - name: generate container name.
       set_fact:
@@ -660,51 +653,6 @@
         state: directory
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags: run_docker
-
-    - name: Create a directory to store the code.
-      ansible.builtin.file:
-        path: "{{ ansible_env.CODE_PATH }}"
-        state: directory
-      tags: sync_code
-
-    - name: The executor synchronizes code to all instances.
-      synchronize:
-        src: "{{ ansible_env.CODE_PATH }}/"
-        dest: "{{ ansible_env.CODE_PATH }}/"
-        delete: yes  # 删除目标端多余文件
-        recursive: yes
-      when: >
-        'P' in group_names or
-        'D' in group_names or
-        (
-          'C' in group_names and
-          ansible_host not in
-          (groups.get('P', []) | map('extract', hostvars, 'ansible_host') | list) and
-          ansible_host not in
-          (groups.get('D', []) | map('extract', hostvars, 'ansible_host') | list)
-        )
-      tags: sync_code
-
-    - name: Copy the code from the host machine into the container (prefill).
-      command: bash -c "{{ docker_cp_prefill_code_cmd }}"
-      environment:
-        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
-      when: "'P' in group_names"
-      tags: sync_code
-
-    - name: Copy the code from the host machine into the container (decode).
-      command: bash -c "{{ docker_cp_decode_code_cmd }}"
-      environment:
-        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
-      when: "'D' in group_names"
-      tags: sync_code
-
-    - name: Copy the code from the host machine into the container(proxy).
-      command: bash -c "{{ docker_cp_proxy_code_cmd }}"
-      environment:
-        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
-      when: "'C' in group_names"
-      tags: sync_code
 
     - name: Register all values.
       set_fact:

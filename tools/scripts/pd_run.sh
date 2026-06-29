@@ -35,7 +35,7 @@ VLLM_USE_V1=1
 VLLM_WORKER_MULTIPROC_METHOD="fork"
 MODEL_PATH=""
 TP=4
-SERVED_MODEL_NAME="pangu_ultra_moe"
+SERVED_MODEL_NAME="openPangu-2.0-Flash"
 MAX_MODEL_LEN=4096
 LOG_DIR="apiserverlog"
 # PD separation parameters
