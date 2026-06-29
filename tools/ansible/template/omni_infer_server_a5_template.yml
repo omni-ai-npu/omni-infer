@@ -22,46 +22,25 @@
   # environment:
   environment:
     # Global Configuration
-    LOG_PATH: "/home/l50058542/pangu35B/logs"
-    MODEL_PATH: "/home/A5/models/35B/iter_0001600_fix_mhc"
+    LOG_PATH: "xxx"
+    MODEL_PATH: "xxx"
     MODEL_LEN_MAX_PREFILL: 32000
     MODEL_LEN_MAX_DECODE: 32000
-    LOG_PATH_IN_EXECUTOR: "/home/l50058542/pangu35B/locallog_35b"
-    CODE_PATH: "/home/s00791175/pangu35B/code"
+    LOG_PATH_IN_EXECUTOR: "xxx"
+    CODE_PATH: "xxx"
     KV_CONNECTOR: "LLMDataDistConnector"
-    # ENABLE_OMNI_CACHE: "{{ enable_omni_cache | default('0') }}"
-    # ENABLE_HOST_MAPPING: "{{ enable_host_mapping | default('1') }}"
-    # 1P1D TP16/DP16: layer/map 相对 TP8/DP8 基线 x2
-    # OMNI_CACHE_LAYER_BYTES: "{{ omni_cache_layer_bytes | default('17179869184') }}" # 16GB 17179869184
-    # MAP_SIZE_BYTES: "{{ map_size_bytes | default('549755813888') }}" # 500GB 549755813888
-    # OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE: "{{ omni_cache_prefill_num_gpu_blocks_override | default('47000') }}"
-    # OMNI_CACHE_DECODE_NUM_GPU_BLOCKS_OVERRIDE: "{{ omni_cache_decode_num_gpu_blocks_override | default('5000') }}"
-    # OMNI_CACHE_PREFILL_MMAP_FILE: "{{ omni_cache_prefill_mmap_file | default('omni_cache_p') }}"
-    # OMNI_CACHE_DECODE_MMAP_FILE: "{{ omni_cache_decode_mmap_file | default('omni_cache_d') }}"
-    # DISABLE_GATHER_SELECTION: "{{ disable_gather_selection | default('1') }}"
-    # ENABLE_OMNI_CACHE_DSA_SPLIT: "{{ enable_omni_cache_dsa_split | default('0') }}"
-    # OMNI_CACHE_DSA_MMAP_FILE: "{{ omni_cache_dsa_mmap_file | default('omni_cache_decode_dsa') }}"
     HYBRID_ATTN_GROUP_SIZE: "{{ hybrid_attn_group_size | default('0') }}"
     VLLM_PLUGINS: "{{ vllm_plugins | default('omni-npu,omni_custom_models,omni_npu_patches') }}"
-    NUM_DIE_PER_MACH: "{{ num_die_per_mach | default('1') }}"
+    NUM_DIE_PER_MACH: "{{ num_die_per_mach | default((ascend_rt_visible_devices | default('0')).split(',') | length) }}"
     BASE_PORT: "{{ omni_cache_base_port | default('16077') }}"
     ZMQ_BASE_PORT: "{{ omni_cache_zmq_base_port | default('16555') }}"
-    # OMNI_CACHE_MLA_SWA_DEBUG: "{{ omni_cache_mla_swa_debug | default('1') }}"
 
     # Configuration for containers
-    # DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer/ai-infra-infer-1.1.0-arm-openeuler-py311-a3-cann8.5.1-pta_v2.9.0-op-1.0.1-omni_release_1.1.0.post1-vllm-202604300027:0.0.1"
-    # DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer/ai-infra-infer-1.1.0-arm-openeuler-py311-a3-cann8.5.1-pta_v2.9.0-op-1.0.1-omni_release_1.1.0.post1-vllm-202604280944:0.0.1"
-    # DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer/ai-infra-infer-1.1.0-arm-openeuler-py311-a3-cann8.5.1-pta_v2.9.0-op-1.0.1-omni_release_1.1.0.post1-vllm-202605020030:0.0.1"
-    # DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer/ai-infra-infer-1.0.3-arm-openeuler-py311-a3-cann.9.0.0.b131-pta_ops-master_cann-daily-omni_omniinfer_pg2_perf-vllm-202605151819:0.0.1"
-    # DOCKER_IMAGE_ID: "omniinfer-a5-aarch64:cann9.1.0-custom_ops-20260524-bak"
-    # DOCKER_IMAGE_ID: "omniinfer-a5-aarch64:cann9.1.0-custom_ops-202600605"
-    DOCKER_IMAGE_ID: "omniinfer-a5-aarch64:cann9.1.0-custom_ops-202600605-jq"
-    # DOCKER_IMAGE_ID_P: "437bd3565f4a"
-    # DOCKER_IMAGE_ID_D: "2c6d6c32e9b5"
-    DOCKER_NAME_P: "jq_p"
-    DOCKER_NAME_D: "jq_d"
-    DOCKER_NAME_C: "jq_c"
-    SCRIPTS_PATH: "/home/s00791175/pangu35B/scripts_path"
+    DOCKER_IMAGE_ID: "xxx"
+    DOCKER_NAME_P: "xxx"
+    DOCKER_NAME_D: "xxx"
+    DOCKER_NAME_C: "xxx"
+    SCRIPTS_PATH: "xxx"
 
     #Configuration for lb_sdk in global proxy
     PREFILL_LB_SDK: "pd_score_balance"
@@ -142,7 +121,7 @@
       # export OMNI_NPU_PATCHES_DIR="pangu_ultra_moe"
       # export OMNI_NPU_VLLM_PATCHES="ALL"
       # export HYBRID_ATTN_GROUP_SIZE=18
-      export NUM_DIE_PER_MACH=1
+      export NUM_DIE_PER_MACH="${NUM_DIE_PER_MACH:-2}"
       export VLLM_PLUGINS="omni-npu,omni_custom_models,omni_npu_patches"
       export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid"
       export OMNI_NPU_VLLM_PATCHES="ALL"
@@ -153,7 +132,7 @@
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
       KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
-      EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --max-num-batched-tokens 32000 --enable-expert-parallel --max-num-seqs 1 --no-enable-prefix-caching --no-enable-chunked-prefill --dtype bfloat16 --enforce-eager"
+      EXTRA_ARGS="--enable-prefix-caching --enable-chunked-prefill  --max-num-batched-tokens 16384 --no-disable-hybrid-kv-cache-manager --enable-expert-parallel --max-num-seqs 8 --dtype bfloat16 --enforce-eager"
       GPU_UTIL=0.80
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
@@ -184,41 +163,10 @@
         EXTRA_ARGS="${EXTRA_ARGS} --no-disable-hybrid-kv-cache-manager --distributed-executor-backend mp"
       fi
 
-      # if [[ "${ENABLE_OMNI_CACHE:-1}" == "1" ]]; then
-      #   export ENABLE_OMNI_CACHE=1
-      #   export ENABLE_HOST_MAPPING=0
-      #   export DISABLE_GATHER_SELECTION=1
-      #   export OMNI_CACHE_MMAP_FILE="${OMNI_CACHE_PREFILL_MMAP_FILE:-omni_cache_p}"
-      #   export OMNI_CACHE_MMAP_PATH="/dev/hugepages/${OMNI_CACHE_MMAP_FILE}"
-      #   export OMNI_CACHE_PACKED_HBM=1
-      #   export OMNI_CACHE_LAYER_BYTES="${OMNI_CACHE_LAYER_BYTES:-53687091200}" # 16GB
-      #   export MAP_SIZE_BYTES="${MAP_SIZE_BYTES:-1099511627776}" # 1000GB
-      #   export NUM_DIE_PER_MACH="${NUM_DIE_PER_MACH:-16}"
-      #   export BASE_PORT="${BASE_PORT:-16077}"
-      #   export ZMQ_BASE_PORT="${ZMQ_BASE_PORT:-16555}"
-      #   export OMNI_CACHE_MLA_SWA_DEBUG="${OMNI_CACHE_MLA_SWA_DEBUG:-1}"
-      #   export NUM_GPU_BLOCKS_OVERRIDE="${NUM_GPU_BLOCKS_OVERRIDE:-${OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE:-290000}}"
-      #   export P_NODE_LIST="${P_NODE_LIST:-${HOST_IP}}"
-      #   export ROLE=prefill
-      #   export VLLM_PLUGINS="omni-npu,omni_custom_models,omni_pangu_models,omni_npu_patches,omni_cache_kv_dump"
-
-      #   SETUP_HUGETLBFS_SH="/workspace/omniinfer/components/omni-cache/tools/setup/setup_hugetlbfs_2MB.sh"
-      #   MAP_SIZE_BYTES="${MAP_SIZE_BYTES}" OMNI_FILE="${OMNI_CACHE_MMAP_FILE}" bash "${SETUP_HUGETLBFS_SH}"
-
-      #   python -c "from omni_cache.connector import register_connectors; register_connectors()"
-
-      #   KV_CONNECTOR="OmniCacheConnector"
-      #   KV_PARALLEL_SIZE=1
-      #   EXTRA_ARGS="${EXTRA_ARGS} --num-gpu-blocks-override ${NUM_GPU_BLOCKS_OVERRIDE}"
-      # else
-        
-      # fi
-
       export ENABLE_OMNI_CACHE=0
       export ENABLE_HOST_MAPPING=0
       export HIXL_LOCAL_COMM_RES_ENABLE=1
       KV_CONNECTOR="${KV_CONNECTOR:-LLMDataDistConnector}"
-              # --additional-config '{"enable_low_latency": true}' \
       cd /workspace/omniinfer/tools/scripts
       bash /workspace/omniinfer/tools/scripts/pd_run_pangu_ultra_moe.sh \
         --hcc-intra-roce-enable 0 \
@@ -245,7 +193,7 @@
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
-        --num-speculative-tokens 0 \
+        --num-speculative-tokens 3 \
         --log-dir "${LOG_PATH}/{{ inventory_hostname }}" > ${LOG_PATH}/{{ inventory_hostname }}/run_prefill.log 2>&1 &
 
     run_vllm_server_decode_cmd: |
@@ -268,7 +216,7 @@
       # patch
       # export OMNI_NPU_PATCHES_DIR="pangu_ultra_moe"
       # export OMNI_NPU_VLLM_PATCHES="ALL"
-      export NUM_DIE_PER_MACH=1
+      export NUM_DIE_PER_MACH="${NUM_DIE_PER_MACH:-2}"
       export VLLM_PLUGINS="omni-npu,omni_custom_models,omni_npu_patches"
       export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid"
       export OMNI_NPU_VLLM_PATCHES="ALL"
@@ -311,10 +259,9 @@
           {% endfor %}
       )
 
-      # "cudagraph_mode":"FULL_DECODE_ONLY"
-      EXTRA_ARGS='--no-disable-hybrid-kv-cache-manager --enable-expert-parallel --disable-log-requests --max-num-seqs 8 --no-enable-prefix-caching --no-enable-chunked-prefill --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[12], "backend":"eager", "compile_sizes":[12]}'
-      # EXTRA_ARGS='--no-disable-hybrid-kv-cache-manager --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs 8 --enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16'
-      # EXTRA_ARGS='--enable-expert-parallel --disable-log-requests --max-num-seqs 1 --no-enable-prefix-caching --distributed-executor-backend mp --dtype bfloat16 --no-enable-chunked-prefill --enforce-eager'
+      EXTRA_ARGS='--enable-prefix-caching --enable-chunked-prefill --max-num-batched-tokens 16384  --no-disable-hybrid-kv-cache-manager --enable-expert-parallel --disable-log-requests --max-num-seqs 8 --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[1, 2, 4, 8, 16, 32, 64], "backend":"", "compile_sizes":[64]}'
+      ADDITIONAL_CONFIG='{"npugraph_ex_config":{"enable": true}}'
+      # ADDITIONAL_CONFIG='{"npugraph_ex_config":{"enable": true, static_kernel_compile": true}}'
       GPU_UTIL=0.9
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
@@ -366,10 +313,9 @@
         --extra-args "${EXTRA_ARGS}" \
         --hccl-buffsize "${HCCL_BUFFSIZE}" \
         --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
-        --num-speculative-tokens 0 \
+        --num-speculative-tokens 3 \
+        --additional-config "$ADDITIONAL_CONFIG" \
         --log-dir "${LOG_PATH}/{{ inventory_hostname }}" > ${LOG_PATH}/{{ inventory_hostname }}/run_decode.log 2>&1 &
-
-    # --additional-config "$ADDITIONAL_CONFIG" \
 
     run_proxy_cmd: |
       #!/bin/bash
