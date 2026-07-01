@@ -9,7 +9,7 @@
 拉取机器对应镜像
 
 ```bash
-docker pull image_name:image_tag
+docker pull swr.cn-east-4.myhuaweicloud.com/omni-ci/omniinfer-a3-arm:release_1.2.1.post1-202606292354-vllm
 ```
 
 ## 配置ssh
@@ -151,10 +151,9 @@ curl -X POST http://${MASTER_NODE_IP}:7000/v1/chat/completions \
             }
         ],
         "max_tokens": 512,
-        "temperature": 0.7,
+        "temperature": 1,
         "top_p": 1.0,
         "top_k": -1,
-        "vllm_xargs": {"top_n_sigma": 0.05},
 		"stream": false
     }'
 ```
