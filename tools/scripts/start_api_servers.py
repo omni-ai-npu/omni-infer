@@ -169,6 +169,10 @@ def start_single_node_api_servers(
         servers_api_ports[f"server_{rank}"] = port
         api_port_start = port + 1
 
+        shm_buffer_name = env.get("VLLM_OBJECT_STORAGE_SHM_BUFFER_NAME")
+        if shm_buffer_name:
+            env["VLLM_OBJECT_STORAGE_SHM_BUFFER_NAME"] = f"{shm_buffer_name}_{port}"
+
         # Construct the vllm serve command
         cmd = [
             "vllm", "serve", model_path,
