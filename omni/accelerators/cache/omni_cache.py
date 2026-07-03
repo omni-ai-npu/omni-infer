@@ -386,6 +386,8 @@ class PrefillOmniCache(BaseOmniCache):
         self._real_to_fake_map = {}
         self._fake_to_real_map = {}
         self._packed_slot_mapping = None
+        self._real_to_fake_lut = None
+        self._fake_to_real_lut = None
 
     # def calc_cache_shape(self) -> Tuple[Tuple[int, ...], int]:
     #     self.tp_node_id = self.tp_rank // NUM_DIE_PER_MACH
@@ -610,12 +612,21 @@ class PrefillOmniCache(BaseOmniCache):
             self._real_to_fake_map = real_to_fake
             self._fake_to_real_map = {v: k for k, v in real_to_fake.items()}
 
+            max_real_id = max(real_to_fake.keys())
+            max_fake_id = fake_counter - 1
+            keys = torch.tensor(list(real_to_fake.keys()), dtype=torch.int64)
+            vals = torch.tensor(list(real_to_fake.values()), dtype=torch.int64)
+            real_to_fake_lut = torch.arange(max_real_id + 1, dtype=torch.int64)
+            real_to_fake_lut[keys] = vals
+            self._real_to_fake_lut = real_to_fake_lut.to(device=self.device)
+            fake_to_real_lut = torch.arange(max_fake_id + 1, dtype=torch.int64)
+            fake_to_real_lut[vals] = keys
+            self._fake_to_real_lut = fake_to_real_lut.to(device=self.device)
+
             valid_mask = orig_slot_mapping > 0
             blocks = orig_slot_mapping // self.block_size
             offsets = orig_slot_mapping % self.block_size
-            fake_blocks = blocks.clone()
-            for real_id, fake_id in real_to_fake.items():
-                fake_blocks[blocks == real_id] = fake_id
+            fake_blocks = self._real_to_fake_lut[blocks.clamp(min=0)]
             orig_slot_mapping = torch.where(valid_mask, fake_blocks * self.block_size + offsets, orig_slot_mapping)
             self._packed_slot_mapping = orig_slot_mapping
 
@@ -627,6 +638,8 @@ class PrefillOmniCache(BaseOmniCache):
             self._real_to_fake_map = {}
             self._fake_to_real_map = {}
             self._packed_slot_mapping = None
+            self._real_to_fake_lut = None
+            self._fake_to_real_lut = None
 
         # NOTE: kill all items about updating slot mapping, as we do not use the volatile things
         # if model_extra_config.parall_config.attn_sp_size > 1:
@@ -741,8 +754,8 @@ class PrefillOmniCache(BaseOmniCache):
             block_ids = []
             for start_block_id, end_block_id in block_ranges:
                 block_ids.extend(range(start_block_id, end_block_id))
-            if self._real_to_fake_map:
-                device_block_ids = [self._real_to_fake_map.get(bid, bid) for bid in block_ids]
+            if self._real_to_fake_lut is not None:
+                device_block_ids = self._real_to_fake_lut[torch.tensor(block_ids, dtype=torch.int64, device=self.device)]
             else:
                 device_block_ids = block_ids
             for i in range(len(self.host_cache.kvi_tensors)):
@@ -816,7 +829,7 @@ class PrefillOmniCache(BaseOmniCache):
         # Check that block_ids are within the bounds of kv_cache
         block_ids = torch.unique(slot_mapping[slot_mapping != -1] // self.block_size)
         max_valid_block = kv_cache[0].shape[0]
-        if not self._fake_to_real_map:
+        if self._fake_to_real_lut is None:
             if len(block_ids) > 0 and block_ids.max().item() >= max_valid_block:
                 raise IndexError(
                     f"block_ids {block_ids.tolist()} contain values >= kv_cache size {max_valid_block}. "
@@ -826,9 +839,8 @@ class PrefillOmniCache(BaseOmniCache):
         # When PACKED_HBM is active, block_ids are fake IDs. Map to real IDs
         # for the host pool scatter (decode side indexes by real IDs).
         host_block_ids = block_ids
-        if self._fake_to_real_map:
-            real_list = [self._fake_to_real_map.get(int(fid), int(fid)) for fid in block_ids.tolist()]
-            host_block_ids = torch.tensor(real_list, dtype=block_ids.dtype, device=block_ids.device)
+        if self._fake_to_real_lut is not None:
+            host_block_ids = self._fake_to_real_lut[block_ids.long()]
 
         with torch.npu.stream(self.d2h_stream):
             self.d2h_stream.wait_event(kv_event)

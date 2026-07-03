@@ -593,14 +593,9 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                     block_tables_np=self.block_table.get_numpy_array()[:num_reqs],
                 )
 
-                if omni_cache._packed_slot_mapping is not None:
+                if omni_cache._real_to_fake_lut is not None:
                     slot_mapping = omni_cache._packed_slot_mapping
-                    real_to_fake = omni_cache._real_to_fake_map
-                    if real_to_fake:
-                        bt = block_table.clone()
-                        for real_id, fake_id in real_to_fake.items():
-                            bt[block_table == real_id] = fake_id
-                        block_table = bt
+                    block_table = omni_cache._real_to_fake_lut[block_table.clamp(min=0).long()].to(block_table.dtype)
 
             first_layer_ind = self.runner.model.model.start_layer
             if not model_extra_config.operator_opt_config.enable_dsa:
