@@ -806,7 +806,8 @@ class PrefillOmniCache(BaseOmniCache):
         kv_cache: Tuple[torch.Tensor,...],
         layer_idx: int,
         kv_event: torch.npu.Event,
-        slot_mapping: torch.Tensor
+        slot_mapping: torch.Tensor,
+        tensor_indices: Optional[List[int]] = None
     ) -> None:
         if self.copy_future is not None and not self.copy_future.done():
             self.copy_future.result()
@@ -833,7 +834,8 @@ class PrefillOmniCache(BaseOmniCache):
             self.d2h_stream.wait_event(kv_event)
 
             # Choose a chunk size that balances memory usage and overhead.
-            for i in range(len(kv_cache)):
+            indices_to_copy = list(range(len(kv_cache))) if tensor_indices is None else tensor_indices
+            for i in indices_to_copy:
                 tp_stride = self.node_block_size // NUM_DIE_PER_MACH
                 num_blocks = len(block_ids)
                 
@@ -854,7 +856,7 @@ class PrefillOmniCache(BaseOmniCache):
         
         self.copy_future = self.d2h_thrp.submit(
             self._update_host_cache_thread,
-            host_block_ids, layer_idx, d2h_event
+            host_block_ids, layer_idx, d2h_event, tensor_indices
         )
     
     def _padding_kv_cache(self, tensor):
@@ -883,11 +885,13 @@ class PrefillOmniCache(BaseOmniCache):
 
         return tensor
 
-    def _update_host_cache_thread(self, block_ids, layer_idx, event):
+    def _update_host_cache_thread(self, block_ids, layer_idx, event, tensor_indices=None):
         torch.npu.set_device(self.device)
         event.synchronize()
 
-        for i, tensor in enumerate(self.host_cache.kvi_tensors):
+        indices_to_update = range(len(self.host_cache.kvi_tensors)) if tensor_indices is None else tensor_indices
+        for i in indices_to_update:
+            tensor = self.host_cache.kvi_tensors[i]
             tp_stride = self.node_block_size // NUM_DIE_PER_MACH
             start_col = self.tp_local_rank * tp_stride
             end_col = (self.tp_local_rank + 1) * tp_stride

@@ -79,6 +79,11 @@ class PostDrafter(EagleProposer):
 
         self.n_predictor = self.vllm_config.model_config.hf_config.num_nextn_predict_layers if self.method == 'deepseek_mtp' else 1
         self.is_autogressive = self.speculative_config.num_speculative_tokens > self.n_predictor
+        draft_hf_config = self.vllm_config.speculative_config.draft_model_config.hf_config
+        self._share_mtp_indices = (
+            self.method == "deepseek_mtp"
+            and getattr(draft_hf_config, "index_share_for_mtp_iteration", False)
+        )
 
         self.minus_one = -torch.ones(1, device=device)
         self.device = device
@@ -156,6 +161,7 @@ class PostDrafter(EagleProposer):
                 **kwargs,
     ):
         input_ids = self.input_ids[:num_tokens]
+        input_ids_indices = kwargs.get("input_ids_indices", sample_indices)
         if self.method == 'eagle3':
             previous_hidden_states = self.model.combine_hidden_states(previous_hidden_states)
             if previous_hidden_states.shape[0] < input_ids.shape[0]:
@@ -181,7 +187,7 @@ class PostDrafter(EagleProposer):
         else:
             first_attn_metadate = attn_metadata
             if isinstance(attn_metadata, dict):
-                 first_attn_metadate = attn_metadata[self.attn_layer_names[0]]
+                first_attn_metadate = attn_metadata[self.attn_layer_names[0]]
             attn_state = first_attn_metadate.attn_state
             draft_forward_tokens_list = []
 
@@ -194,89 +200,102 @@ class PostDrafter(EagleProposer):
                 self.mark_static = True
 
             with set_forward_context(attn_metadata, self.vllm_config):
-                is_dummy = (last_accepted_index is None) or (sample_indices is None)
-                if not is_dummy:
-                    batch_size = last_accepted_index.numel()
-                    if self.enable_adaptive and attn_state == AscendAttentionState.DecodeOnly:
-                        drafter_logits_range = torch.empty((
-                            self.speculative_config.num_speculative_tokens, batch_size), device=self.device)
-                        min_acc = self.speculative_config.min_num_speculative_tokens
-                        spec_budget = self.runner.max_batch_size - self.runner.max_num_reqs - batch_size * min_acc
-                for i in range(self.speculative_config.num_speculative_tokens):
-                    if i >= self.n_predictor:
-                        if attn_state == AscendAttentionState.DecodeOnly:
-                            self._simple_advance_step(positions, attn_metadata, self.vllm_config.cache_config.block_size, next(self.model.model.layers.children()))
-                        else:
-                            break
-                    drafter_logits, next_hidden_states = self.model(
-                        input_ids=input_ids,
-                        positions=positions,
-                        kv_caches=kv_caches,
-                        attn_metadata=attn_metadata,
-                        previous_hidden_states=previous_hidden_states,
-                        selected_indices=None if attn_state == AscendAttentionState.DecodeOnly else sample_indices,
-                        mtp_layer_idx=i,
-                    )
-                    # TODO use one eagle/mtp as autoregressive to predict more than one token
+                share_mtp_indices = False
+                try:
+                    is_dummy = (last_accepted_index is None) or (sample_indices is None)
                     if not is_dummy:
-                        if drafter_logits is None:
-                            # keep same with computation in model runner
-                            if next_hidden_states.shape[0] == sample_indices.shape[0]:
-                                drafter_logits = self.model.compute_logits(next_hidden_states, None)
-                            else:
-                                drafter_logits = self.model.compute_logits(next_hidden_states[sample_indices], None)
-
-                        if self.use_rejection_sampler:
-                            output = self.main_sampler.apply_sampling_params(
-                                drafter_logits[last_accepted_index], sampling_metadata, None, input_ids[last_accepted_index])
-                            if isinstance(output, tuple):
-                                mtp_probs, mtp_ids = output
-                            else:
-                                all_sampled_tokens = output.argmax(dim=-1)
-                                mtp_probs = torch.zeros_like(output)
-                                mtp_probs[self.arange[:batch_size], all_sampled_tokens] = 1
-
-                            if self.topk > 0:
-                                mtp_topk_token_probs = mtp_probs[:, -self.topk:]
-                                mtp_topk_token_ids = mtp_ids[:, -self.topk:]
-                                mtp_selected_indices = random_choice(mtp_topk_token_probs, {}, self.dsa_stream)
-                                self.rejection_sampler.main_sampler.prob_cache.update_sparse_rejection_sampler(mtp_topk_token_ids, mtp_topk_token_probs, mtp_selected_indices, i)
-                                draft_forward_tokens = mtp_topk_token_ids[self.arange[:batch_size], mtp_selected_indices].view(-1)
-                            else:
-                                draft_forward_tokens = random_choice(mtp_probs, {}, self.dsa_stream)
-                                self.rejection_sampler.main_sampler.prob_cache.update_sparse_rejection_sampler(None, mtp_probs, None, i)
-                            draft_forward_tokens_list.append(draft_forward_tokens)
-                        else:
-                            draft_forward_tokens = drafter_logits[last_accepted_index].argmax(dim=-1)
-                            draft_forward_tokens_list.append(draft_forward_tokens)
-
-                        # apply adaptive speculative decoding
+                        batch_size = last_accepted_index.numel()
                         if self.enable_adaptive and attn_state == AscendAttentionState.DecodeOnly:
-                            drafter_logits_range_i = (torch.max(drafter_logits[last_accepted_index], dim=-1).values -
-                                torch.min(drafter_logits[last_accepted_index], dim=-1).values)
-                            if i < min_acc:
-                                pass
-                            if i == min_acc:
-                                drafter_logits_range[i] = drafter_logits_range_i
-                            else:
-                                drafter_logits_range[i] = torch.min(drafter_logits_range[i - 1], drafter_logits_range_i)
-                    if i == self.speculative_config.num_speculative_tokens - 1:
-                        break
-                    self.input_ids[:num_tokens] = torch.roll(input_ids, -1, -1)
-                    if not is_dummy:
-                        if attn_state == AscendAttentionState.DecodeOnly:
-                            input_ids[last_accepted_index] = draft_forward_tokens
-                        else: # prefill
-                            input_ids[sample_indices] = draft_forward_tokens
-                    if not model_extra_config.operator_opt_config.skip_mtp_hidden_states:
-                        if i < self.n_predictor - 1 or is_dummy:
-                            previous_hidden_states = next_hidden_states
-                        else:
-                            previous_hidden_states = previous_hidden_states.roll(-1, dims=0)
+                            drafter_logits_range = torch.empty((
+                                self.speculative_config.num_speculative_tokens, batch_size), device=self.device)
+                            min_acc = self.speculative_config.min_num_speculative_tokens
+                            spec_budget = self.runner.max_batch_size - self.runner.max_num_reqs - batch_size * min_acc
+                    share_mtp_indices = (
+                        self._share_mtp_indices
+                        and attn_state == AscendAttentionState.DecodeOnly
+                        and hasattr(self.model, "set_skip_topk")
+                    )
+                    for i in range(self.speculative_config.num_speculative_tokens):
+                        if share_mtp_indices:
+                            self.model.set_skip_topk(i > 0)
+                        if i >= self.n_predictor:
                             if attn_state == AscendAttentionState.DecodeOnly:
-                                previous_hidden_states[last_accepted_index] = next_hidden_states[last_accepted_index]
+                                self._simple_advance_step(positions, attn_metadata, self.vllm_config.cache_config.block_size, next(self.model.model.layers.children()))
+                            else:
+                                break
+                        drafter_logits, next_hidden_states = self.model(
+                            input_ids=input_ids,
+                            positions=positions,
+                            kv_caches=kv_caches,
+                            attn_metadata=attn_metadata,
+                            previous_hidden_states=previous_hidden_states,
+                            selected_indices=None if attn_state == AscendAttentionState.DecodeOnly else sample_indices,
+                            mtp_layer_idx=i,
+                        )
+                        # TODO use one eagle/mtp as autoregressive to predict more than one token
+                        if not is_dummy:
+                            if drafter_logits is None:
+                                # keep same with computation in model runner
+                                if next_hidden_states.shape[0] == sample_indices.shape[0]:
+                                    drafter_logits = self.model.compute_logits(next_hidden_states, None)
+                                else:
+                                    drafter_logits = self.model.compute_logits(next_hidden_states[sample_indices], None)
+
+                            if self.use_rejection_sampler:
+                                output = self.main_sampler.apply_sampling_params(
+                                    drafter_logits[last_accepted_index], sampling_metadata, None, input_ids[last_accepted_index])
+                                if isinstance(output, tuple):
+                                    mtp_probs, mtp_ids = output
+                                else:
+                                    all_sampled_tokens = output.argmax(dim=-1)
+                                    mtp_probs = torch.zeros_like(output)
+                                    mtp_probs[self.arange[:batch_size], all_sampled_tokens] = 1
+
+                                if self.topk > 0:
+                                    mtp_topk_token_probs = mtp_probs[:, -self.topk:]
+                                    mtp_topk_token_ids = mtp_ids[:, -self.topk:]
+                                    mtp_selected_indices = random_choice(mtp_topk_token_probs, {}, self.dsa_stream)
+                                    self.rejection_sampler.main_sampler.prob_cache.update_sparse_rejection_sampler(mtp_topk_token_ids, mtp_topk_token_probs, mtp_selected_indices, i)
+                                    draft_forward_tokens = mtp_topk_token_ids[self.arange[:batch_size], mtp_selected_indices].view(-1)
+                                else:
+                                    draft_forward_tokens = random_choice(mtp_probs, {}, self.dsa_stream)
+                                    self.rejection_sampler.main_sampler.prob_cache.update_sparse_rejection_sampler(None, mtp_probs, None, i)
+                                draft_forward_tokens_list.append(draft_forward_tokens)
+                            else:
+                                draft_forward_tokens = drafter_logits[last_accepted_index].argmax(dim=-1)
+                                draft_forward_tokens_list.append(draft_forward_tokens)
+
+                            # apply adaptive speculative decoding
+                            if self.enable_adaptive and attn_state == AscendAttentionState.DecodeOnly:
+                                drafter_logits_range_i = (torch.max(drafter_logits[last_accepted_index], dim=-1).values -
+                                    torch.min(drafter_logits[last_accepted_index], dim=-1).values)
+                                if i < min_acc:
+                                    pass
+                                if i == min_acc:
+                                    drafter_logits_range[i] = drafter_logits_range_i
+                                else:
+                                    drafter_logits_range[i] = torch.min(drafter_logits_range[i - 1], drafter_logits_range_i)
+                        if i == self.speculative_config.num_speculative_tokens - 1:
+                            break
+                        self.input_ids[:num_tokens] = torch.roll(input_ids, -1, -1)
+                        if not is_dummy:
+                            if attn_state == AscendAttentionState.DecodeOnly:
+                                input_ids[last_accepted_index] = draft_forward_tokens
                             else: # prefill
-                                previous_hidden_states[sample_indices] = next_hidden_states[sample_indices]
+                                input_ids[input_ids_indices] = draft_forward_tokens
+                        if not model_extra_config.operator_opt_config.skip_mtp_hidden_states:
+                            if i < self.n_predictor - 1 or is_dummy:
+                                previous_hidden_states = next_hidden_states
+                            else:
+                                previous_hidden_states = previous_hidden_states.roll(-1, dims=0)
+                                if attn_state == AscendAttentionState.DecodeOnly:
+                                    previous_hidden_states[last_accepted_index] = next_hidden_states[last_accepted_index]
+                                else: # prefill
+                                    previous_hidden_states[sample_indices] = next_hidden_states[sample_indices]
+
+                finally:
+                    if share_mtp_indices:
+                        self.model.set_skip_topk(False)
             if is_dummy:
                 return None
             else:

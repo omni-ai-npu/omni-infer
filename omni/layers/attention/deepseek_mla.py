@@ -95,7 +95,7 @@ class Indexer(nn.Module):
         self.head_dim: int = config.index_head_dim
         self.rope_head_dim: int = config.qk_rope_head_dim
         self.is_rope_interleave = getattr(config, "indexer_rope_interleave", False)
-        self.index_topk: int = 2048     # config.index_topk
+        self.index_topk: int = getattr(config, "index_topk", 2048)
         self.q_lora_rank: int = config.q_lora_rank
 
         self.actual_seq_lengths = {}
@@ -171,7 +171,7 @@ class Indexer(nn.Module):
             "block_table": block_table,
             "layout_key": 'PA_BSND',
             "layout_query": "TND",
-            "sparse_count": 2048,
+            "sparse_count": self.index_topk,
             "sparse_mode": 3
         }
 
@@ -335,6 +335,8 @@ class DeepseekMLA(nn.Module):
             cache_config: Optional[CacheConfig] = None, # type: ignore
             quant_config: Optional[QuantizationConfig] = None,
             prefix: str = "",
+            topk_indices_buffer: Optional[torch.Tensor] = None,
+            topk_indices_buffer_second: Optional[torch.Tensor] = None,
     ) -> None:
         super().__init__()
         self.prefix = prefix
@@ -357,6 +359,13 @@ class DeepseekMLA(nn.Module):
         # FA is fully quantized, KVCache is not quantized, and the function is not enabled.
         self.quant_symbol = quant_config is not None
         self.layer_idx = extract_layer_index(self.prefix)
+        self.num_hidden_layers = config.num_hidden_layers
+        self.index_topk = getattr(config, "index_topk", 2048)
+        self.topk_indices_buffer = topk_indices_buffer
+        self.topk_indices_buffer_second = topk_indices_buffer_second
+        self.base_skip_topk = False
+        self.iteration_skip_topk = False
+        self.skip_topk = False
         if hasattr(config, "rope_interleave"):
             rope_is_neox_style = True
         self.merge_qkv = model_extra_config.operator_opt_config.merge_qkv
@@ -506,9 +515,14 @@ class DeepseekMLA(nn.Module):
             self.kv_scale = torch.nn.Parameter(torch.empty(1, dtype=torch.float32), requires_grad=False)
 
         if model_extra_config.operator_opt_config.enable_dsa:
-            self.indexer = Indexer(config, quant_config=quant_config, prefix=f"{prefix}.indexer")
-            head_size = kv_lora_rank_cache_size + self.qk_rope_head_dim + self.indexer.head_dim + 1
+            self.base_skip_topk = self._get_base_skip_topk(config)
+            self.skip_topk = self.base_skip_topk
+            self.indexer = None if self.base_skip_topk else Indexer(
+                config, quant_config=quant_config, prefix=f"{prefix}.indexer")
+            index_head_dim = getattr(config, "index_head_dim", 128)
+            head_size = kv_lora_rank_cache_size + self.qk_rope_head_dim + index_head_dim + 1
         else:
+            self.indexer = None
             head_size = kv_lora_rank_cache_size + self.qk_rope_head_dim
 
         self.vllm_attn = Attention(
@@ -563,6 +577,43 @@ class DeepseekMLA(nn.Module):
             os.makedirs(model_extra_config.operator_opt_config.c8_calib_path, exist_ok=True)
 
         self.stream1 = torch.npu.Stream() if model_extra_config.operator_opt_config.enable_mla_prefill_multistream else None
+
+    def _get_base_skip_topk(self, config: PretrainedConfig) -> bool:
+        index_topk_pattern = getattr(config, "index_topk_pattern", None)
+        if index_topk_pattern is not None:
+            if 0 <= self.layer_idx < len(index_topk_pattern):
+                return index_topk_pattern[self.layer_idx] == "S"
+            return False
+
+        index_topk_freq = getattr(config, "index_topk_freq", 1)
+        index_skip_topk_offset = getattr(config, "index_skip_topk_offset", 2)
+        return max(self.layer_idx - index_skip_topk_offset + 1, 0) % index_topk_freq != 0
+
+    def set_iteration_skip_topk(self, skip: bool) -> None:
+        self.iteration_skip_topk = skip
+        self.skip_topk = self.base_skip_topk or skip
+
+    def _read_topk_buffer(self, num_tokens: int, is_second: bool = False) -> torch.Tensor:
+        buffer = self.topk_indices_buffer_second if is_second else self.topk_indices_buffer
+        if buffer is None:
+            raise RuntimeError("topk_indices_buffer is required when skip_topk is enabled")
+        return buffer[:num_tokens, :self.index_topk].unsqueeze(1)
+
+    def _write_topk_buffer(
+        self,
+        topk_indices: Optional[torch.Tensor],
+        is_second: bool = False,
+    ) -> Optional[torch.Tensor]:
+        if topk_indices is None:
+            return None
+        buffer = self.topk_indices_buffer_second if is_second else self.topk_indices_buffer
+        if buffer is None:
+            return topk_indices
+        num_tokens = topk_indices.shape[0]
+        topk_indices = topk_indices.reshape(num_tokens, self.index_topk)
+        buffer_slice = buffer[:num_tokens, :self.index_topk]
+        buffer_slice.copy_(topk_indices)
+        return buffer_slice.unsqueeze(1)
 
     def mla_epilog(self,
         batch_size: int,
@@ -815,10 +866,22 @@ class DeepseekMLA(nn.Module):
             k_rope = k_rope.squeeze(2)
             k_nope = None
 
-        topk_indices, topk_indices2 = None, None
+        topk_indices, topk_indices2, k_indexer = None, None, None
         if attn_metadata is not None:
-            topk_indices, topk_indices2, k_indexer = self.indexer(hidden_states, q_lora, attn_metadata,
+            if self.skip_topk:
+                topk_num_tokens = q_nope.shape[0]
+                if model_extra_config.parall_config.attn_sp_size > 1:
+                    topk_num_tokens = topk_num_tokens // 2
+                topk_indices = self._read_topk_buffer(topk_num_tokens)
+                if model_extra_config.parall_config.attn_sp_size > 1:
+                    topk_indices2 = self._read_topk_buffer(topk_num_tokens, is_second=True)
+            else:
+                if self.indexer is None:
+                    raise RuntimeError("indexer is required when skip_topk is disabled")
+                topk_indices, topk_indices2, k_indexer = self.indexer(hidden_states, q_lora, attn_metadata,
                                                        kv_cache=kv_cache, is_prefill=True)
+                topk_indices = self._write_topk_buffer(topk_indices)
+                topk_indices2 = self._write_topk_buffer(topk_indices2, is_second=True)
 
         if model_extra_config.parall_config.attn_sp_size > 1:
             q_nope, q_nope_2 = torch.split(q_nope, q_nope.size(0) // 2, dim=0)
@@ -842,7 +905,8 @@ class DeepseekMLA(nn.Module):
                 kv_cache,
                 self.layer_idx,
                 kv_event,
-                attn_metadata.slot_mapping
+                attn_metadata.slot_mapping,
+                tensor_indices=[0, 1] if self.skip_topk else None
             )
             attn_metadata.omni_cache.synchronize_h2d(
                 prefix_meta=attn_metadata.prefill.prefix_meta,
@@ -1292,8 +1356,14 @@ class DeepseekMLA(nn.Module):
                 dequant_scale_q_norm = dequant_scale_q_norm.view(-1)
                 q_norm = {'x_int8':q_norm, 'pertoken_scale':dequant_scale_q_norm}
             # todo indexer only support bsnd
-            topk_indices, _, _ = self.indexer(hidden_states, q_norm, attn_metadata,
+            if self.skip_topk:
+                topk_indices = self._read_topk_buffer(bsz)
+            else:
+                if self.indexer is None:
+                    raise RuntimeError("indexer is required when skip_topk is disabled")
+                topk_indices, _, _ = self.indexer(hidden_states, q_norm, attn_metadata,
                                         kv_cache=kv_cache, is_prefill=False)
+                topk_indices = self._write_topk_buffer(topk_indices)
 
             if int(os.getenv("ENABLE_HOST_MAPPING", "0")) and model_extra_config.operator_opt_config.use_omni_cache and attn_metadata and attn_metadata.omni_cache:
                 kv_actual_seqlen = torch_npu.npu_gather_selection_kv_cache(

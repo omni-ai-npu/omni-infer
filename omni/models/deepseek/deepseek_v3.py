@@ -128,6 +128,8 @@ class DeepseekDecoderLayer(nn.Module):
             cache_config: Optional[CacheConfig] = None,
             quant_config: Optional[QuantizationConfig] = None,
             is_ffn_die: Optional[bool] = False,
+            topk_indices_buffer: Optional[torch.Tensor] = None,
+            topk_indices_buffer_second: Optional[torch.Tensor] = None,
     ) -> None:
         super().__init__()
         layer_idx = int(prefix.split(sep='.')[-1])
@@ -159,6 +161,8 @@ class DeepseekDecoderLayer(nn.Module):
             cache_config=cache_config,
             quant_config=quant_config,
             prefix=f"{prefix}.self_attn",
+            topk_indices_buffer=topk_indices_buffer,
+            topk_indices_buffer_second=topk_indices_buffer_second,
         )
 
         if not self.is_ffn_die:
@@ -387,6 +391,16 @@ class DeepseekV3Model(nn.Module):
         self.tp_size = get_tensor_model_parallel_world_size()
         self.hidden_size = config.hidden_size
         self.is_ffn_die = self.is_ffn_die_in_afd()
+        self.topk_indices_buffer = None
+        self.topk_indices_buffer_second = None
+        if model_extra_config.operator_opt_config.enable_dsa:
+            self.topk_indices_buffer = torch.empty(
+                vllm_config.scheduler_config.max_num_batched_tokens,
+                getattr(config, "index_topk", 2048),
+                dtype=torch.int32,
+                device=current_platform.device_type,
+            )
+            self.topk_indices_buffer_second = torch.empty_like(self.topk_indices_buffer)
         usr_spec_decode = vllm_config.speculative_config is not None
         if get_pp_group().is_first_rank or (usr_spec_decode and get_pp_group().is_last_rank):
             self.embed_tokens = VocabParallelEmbedding(
@@ -404,6 +418,8 @@ class DeepseekV3Model(nn.Module):
                 cache_config=cache_config,
                 quant_config=quant_config,
                 is_ffn_die=self.is_ffn_die,
+                topk_indices_buffer=self.topk_indices_buffer,
+                topk_indices_buffer_second=self.topk_indices_buffer_second,
             ),
             prefix=f"{prefix}.layers")
 

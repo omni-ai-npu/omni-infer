@@ -331,6 +331,7 @@ class NPUModelRunner(GPUModelRunner):
         cu_num_scheduled_tokens,
     ) -> SpecDecodeMetadata:
         if num_draft_tokens[0] == 0:
+            batch_size = cu_num_scheduled_tokens.size
             logits_indices = cu_num_scheduled_tokens - 1
             self.logits_indices_cpu[:logits_indices.size] = torch.from_numpy(logits_indices)
             self.logits_indices.copy_(self.logits_indices_cpu, non_blocking=True)
@@ -339,8 +340,9 @@ class NPUModelRunner(GPUModelRunner):
                 draft_token_ids=torch.zeros((0,), dtype=self.input_ids.dtype, device=self.input_ids.device),
                 num_draft_tokens=num_draft_tokens.tolist(),
                 cu_num_draft_tokens=torch.zeros((cu_num_scheduled_tokens.size,), dtype=self.cu_num_draft_tokens.dtype, device=self.cu_num_draft_tokens.device),
-                target_logits_indices=logits_indices,
-                bonus_logits_indices=logits_indices,
+                # logits_indices points to input positions; bonus indices are rows in the compact logits tensor.
+                target_logits_indices=self.target_logits_indices[:0],
+                bonus_logits_indices=self.arange_npu_int32[:batch_size],
                 logits_indices=logits_indices,
             )
         else:
@@ -1214,7 +1216,7 @@ class NPUModelRunner(GPUModelRunner):
                     discard_sampled_tokens_req_indices.append(i)
                     if self.use_spec_decode:
                         chunk_next_tokens.append(req_state.get_token_id(seq_len))
-                        chunk_next_indices.append(sample_indices[-num_prefills + i])
+                        chunk_next_indices.append(spec_decode_metadata.logits_indices[-num_prefills + i])
             if self.use_spec_decode and len(chunk_next_tokens) > 0:
                 chunk_next_tokens = torch.tensor(chunk_next_tokens) # CPU
                 chunk_next_tokens_buffer = self.chunk_next_tokens[:chunk_next_tokens.numel()]
@@ -1264,6 +1266,7 @@ class NPUModelRunner(GPUModelRunner):
                     last_accepted_index=last_accepted_index,
                     sample_indices=sample_indices,
                     sampling_metadata=sampling_metadata,
+                    input_ids_indices=spec_decode_metadata.logits_indices[last_accepted_index],
                 )
             start_7 = time.time()
 

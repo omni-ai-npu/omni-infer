@@ -27,6 +27,7 @@ from vllm.distributed.parallel_state import (
 )
 from vllm.model_executor.models.interfaces import SupportsPP
 from vllm.distributed import get_ep_group
+from vllm.platforms import current_platform
 
 from omni.adaptors.vllm.distributed import get_eh_proj_tp_group
 from omni.layers.moe.fused_moe.fused_moe import set_num_speculative_tokens
@@ -69,16 +70,25 @@ class DeepseekMultiTokenPredictorLayer(DeepseekDecoderLayer):
                  prefix: str,
                  kv_ind: int,
                  is_ffn_die: Optional[bool] = False,
+                 topk_indices_buffer: Optional[torch.Tensor] = None,
+                 topk_indices_buffer_second: Optional[torch.Tensor] = None,
     ):
         self.config = vllm_config.model_config.hf_config
         self.cache_config = vllm_config.cache_config
         self.quant_config = vllm_config.quant_config
         self.kv_ind = kv_ind
 
+        decoder_layer_kwargs = {"is_ffn_die": True} if is_ffn_die else {}
+        if model_extra_config.operator_opt_config.enable_dsa:
+            decoder_layer_kwargs.update({
+                "topk_indices_buffer": topk_indices_buffer,
+                "topk_indices_buffer_second": topk_indices_buffer_second,
+            })
+
         super().__init__(self.config, prefix,
                          cache_config=self.cache_config,
                          quant_config=self.quant_config,
-                         **({"is_ffn_die": True} if is_ffn_die else {})
+                         **decoder_layer_kwargs
                         )
 
         self.ignore_share_weight = True # TODO get from config
@@ -248,6 +258,16 @@ class DeepseekMultiTokenPredictor(nn.Module):
         self.mtp_start_layer_idx = self.config.num_hidden_layers
         self.num_mtp_layers = self.config.num_nextn_predict_layers
         self.ignore_share_weight = True # TODO get from config
+        self.topk_indices_buffer = None
+        self.topk_indices_buffer_second = None
+        if model_extra_config.operator_opt_config.enable_dsa:
+            self.topk_indices_buffer = torch.empty(
+                vllm_config.scheduler_config.max_num_batched_tokens,
+                getattr(self.config, "index_topk", 2048),
+                dtype=torch.int32,
+                device=current_platform.device_type,
+            )
+            self.topk_indices_buffer_second = torch.empty_like(self.topk_indices_buffer)
         real_num_mtp = min(self.num_mtp_layers, vllm_config.speculative_config.num_speculative_tokens)
         kwargs = {}
         if model_extra_config.task_config.enable_attn_ffn_disaggregation:
@@ -265,6 +285,8 @@ class DeepseekMultiTokenPredictor(nn.Module):
                 vllm_config=vllm_config,
                 prefix=f"{prefix}.layers.{i + self.mtp_start_layer_idx}",
                 kv_ind=i - real_num_mtp,
+                topk_indices_buffer=self.topk_indices_buffer,
+                topk_indices_buffer_second=self.topk_indices_buffer_second,
                 **kwargs
             )
             for i in range(real_num_mtp)
@@ -277,6 +299,23 @@ class DeepseekMultiTokenPredictor(nn.Module):
             for _, layer in self.layers.items():
                 layer.embed_tokens = target_model.model.embed_tokens
                 layer.shared_head.head = target_model.lm_head
+
+        target_inner = getattr(target_model, "model", None)
+        target_buffer = getattr(target_inner, "topk_indices_buffer", None)
+        if target_buffer is not None:
+            self.topk_indices_buffer = target_buffer
+            self.topk_indices_buffer_second = getattr(target_inner, "topk_indices_buffer_second", None)
+            for _, module in self.named_modules():
+                if hasattr(module, "topk_indices_buffer"):
+                    module.topk_indices_buffer = self.topk_indices_buffer
+                if hasattr(module, "topk_indices_buffer_second"):
+                    module.topk_indices_buffer_second = self.topk_indices_buffer_second
+
+    def set_skip_topk(self, skip: bool):
+        for layer in self.layers.values():
+            self_attn = getattr(layer, "self_attn", None)
+            if self_attn is not None and hasattr(self_attn, "set_iteration_skip_topk"):
+                self_attn.set_iteration_skip_topk(skip)
 
     def forward(
             self,
@@ -310,6 +349,9 @@ class DeepseekV3MTP(nn.Module, SupportsPP):
     
     def set_share_weight(self, target_model):
         self.model.set_share_weight(target_model)
+
+    def set_skip_topk(self, skip: bool):
+        self.model.set_skip_topk(skip)
     
     def forward(
             self,

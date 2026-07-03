@@ -275,6 +275,14 @@ def load_validators_from_json(config_path: str) -> tuple[dict[str, BaseValidator
 VALIDATORS, VALIDATORS_JSON = load_validators_from_json(os.getenv("VALIDATORS_CONFIG_PATH", ""))
 
 
+def force_prefill_sampling_params(json_load: dict[str, Any]) -> None:
+    if ACTION != "prefill":
+        return
+    json_load["max_tokens"] = 1
+    json_load["max_completion_tokens"] = 1
+    json_load["min_tokens"] = 0
+
+
 class ValidateSamplingParams(BaseHTTPMiddleware):
     def create_error_response(self, status_code, error):
         return JSONResponse(
@@ -309,6 +317,7 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
             # guided_decoding_backend is not supported
             if "guided_decoding_backend" in json_load:
                 json_load.pop("guided_decoding_backend")
+            force_prefill_sampling_params(json_load)
             request._body = json.dumps(json_load).encode("utf-8")
 
             if json_load.get("kv_transfer_params"):
@@ -334,8 +343,7 @@ class ValidateSamplingParams(BaseHTTPMiddleware):
                         if error := validator.validate_json(json_load):
                             return self.create_error_response(status_code, error)
             
-            if ACTION == "prefill":
-                json_load["max_tokens"] = 1
+            force_prefill_sampling_params(json_load)
             request._body = json.dumps(json_load).encode("utf-8")
 
             headers = dict(request.headers)
