@@ -579,11 +579,6 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                     slot_mapping=slot_mapping
                 )
 
-                omni_cache.synchronize_h2d(
-                    prefix_meta=prefix_meta,
-                    layer_idx=0,
-                )
-
                 volatile_block_table, volatile_slot_mapping = omni_cache.get_volatile_metadata(
                     query_lens_list,
                     seq_lens_list,
@@ -591,6 +586,11 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                     PAD_SLOT_ID,
                     slot_mapping,
                     block_tables_np=self.block_table.get_numpy_array()[:num_reqs],
+                )
+
+                omni_cache.synchronize_h2d(
+                    prefix_meta=prefix_meta,
+                    layer_idx=0,
                 )
 
                 if omni_cache._real_to_fake_lut is not None:
