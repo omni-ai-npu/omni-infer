@@ -23,21 +23,24 @@ index fc62dbf..c7cace5 100644
                  try:
                      reasoning_parser = self.reasoning_parser(tokenizer)
                  except RuntimeError as e:
-@@ -1383,6 +1382,18 @@ class OpenAIServingChat(OpenAIServing):
+@@ -1383,6 +1382,21 @@ class OpenAIServingChat(OpenAIServing):
  
          return auto_tools_called, delta_message
  
-+    def should_enable_thinking(self, request: ChatCompletionRequest) -> bool:
-+        if self.reasoning_parser is None:
-+            return False
-+        kwargs = request.chat_template_kwargs or {}
-+        flag = getattr(request, "enable_thinking", kwargs.get("enable_thinking", kwargs.get("thinking")))
-+        if flag is not None:
-+            return bool(flag)
-+        is_ds = self.tool_parser_name and (
-+            "deepseek_v31" in self.tool_parser_name or "deepseek_v32" in self.tool_parser_name
-+        )
-+        return not is_ds
++    def should_enable_thinking(self, request: ChatCompletionRequest):
++        enable_thinking = self.reasoning_parser is not None
++        chat_kwargs = request.chat_template_kwargs or {}
++        thinking = chat_kwargs.get("thinking", None)
++        enable_thinking_kw = chat_kwargs.get("enable_thinking", None)
++        has_thinking_kwarg = thinking is not None or enable_thinking_kw is not None
++        should_apply_default_disable_thinking = not has_thinking_kwarg
++        default_disable_thinking = should_apply_default_disable_thinking and self.tool_parser_name is not None and (
++                "deepseek_v31" in self.tool_parser_name or "deepseek_v32" in self.tool_parser_name)
++        kwargs_disable_thinking = has_thinking_kwarg and not (bool(thinking) or bool(enable_thinking_kw))
++        if enable_thinking and (default_disable_thinking or kwargs_disable_thinking):
++            enable_thinking = False
++
++        return enable_thinking
 +
  def get_turn_id(conversation: List[ConversationMessage]):
      turn_id = 0

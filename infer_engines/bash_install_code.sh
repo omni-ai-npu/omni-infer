@@ -5,6 +5,26 @@ PATCH_ROOT=${1:-../../omni/adaptors/vllm/patches/}
 VLLM_PATH=${2:-./vllm}
 
 cd ${VLLM_PATH}
+
+require_patch_marker() {
+    local file="$1"
+    local marker="$2"
+    if ! git grep -q -F "$marker" -- "$file"; then
+        echo "Required vLLM patch marker not found in ${file}: ${marker}" >&2
+        exit 1
+    fi
+}
+
+verify_parser_patches() {
+    require_patch_marker "vllm/entrypoints/openai/serving_chat.py" "self.tool_parser_name = tool_parser"
+    require_patch_marker "vllm/entrypoints/openai/serving_chat.py" "enable_thinking = self.should_enable_thinking(request)"
+    require_patch_marker "vllm/entrypoints/openai/serving_chat.py" "def should_enable_thinking(self, request: ChatCompletionRequest):"
+    require_patch_marker "vllm/entrypoints/openai/serving_chat.py" "self._finish_reasoning_streaming(reasoning_parser)"
+    require_patch_marker "vllm/entrypoints/openai/serving_chat.py" "self._finish_tool_streaming(tool_parser, request)"
+    require_patch_marker "vllm/entrypoints/openai/serving_chat.py" "def _merge_delta_message(cls, delta_message, extra_delta_message):"
+    require_patch_marker "vllm/reasoning/deepseek_r1_reasoning_parser.py" "request: ChatCompletionRequest = None,"
+}
+
 git reset --hard
 git clean -fd
 git checkout v0.9.0
@@ -65,3 +85,5 @@ git apply --whitespace=nowarn $PATCH_ROOT/fix_multimtp.patch
 git apply --whitespace=nowarn $PATCH_ROOT/fix_reasoning_content_to_content.patch
 git apply --whitespace=nowarn $PATCH_ROOT/patch_support_omni_cache.patch
 git apply --whitespace=nowarn $PATCH_ROOT/preserve_reasoning_content_input_passthrough.patch
+git apply --whitespace=nowarn $PATCH_ROOT/glm_parser_finish_streaming.patch
+verify_parser_patches

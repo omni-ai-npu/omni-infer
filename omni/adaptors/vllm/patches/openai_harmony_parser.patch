@@ -761,9 +761,11 @@ index 18f0103d6..7eb0fdaf2 100755
              # if auto tools are not enabled, and a named tool choice using
              #   outlines is not being used
              if (not self.enable_auto_tools or not self.tool_parser) and \
-@@ -1431,6 +1593,36 @@ class OpenAIServingChat(OpenAIServing):
-         )
-         return not is_ds
+@@ -1430,6 +1592,36 @@ class OpenAIServingChat(OpenAIServing):
+         if enable_thinking and (default_disable_thinking or kwargs_disable_thinking):
+             enable_thinking = False
+ 
+         return enable_thinking
  
 +    def _make_request_with_harmony(
 +        self,

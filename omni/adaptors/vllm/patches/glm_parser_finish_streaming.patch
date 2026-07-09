@@ -1,0 +1,155 @@
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -1013,6 +1013,45 @@
+                         else:
+                             continue
+ 
++                    if output.finish_reason is not None:
++                        finish_delta_message = None
++                        if enable_thinking:
++                            finish_delta_message = self._merge_delta_message(
++                                finish_delta_message,
++                                self._finish_reasoning_streaming(reasoning_parser))
++
++                        if tool_parser is not None and tool_choice_auto:
++                            if (enable_thinking
++                                    and reasoning_end_arr is not None
++                                    and added_content_delta_arr is not None
++                                    and reasoning_end_arr[i]
++                                    and not added_content_delta_arr[i]
++                                    and current_text):
++                                added_content_delta_arr[i] = True
++                                pending_tool_delta = (
++                                    tool_parser.extract_tool_calls_streaming(
++                                        previous_text="",
++                                        current_text=current_text,
++                                        delta_text=current_text,
++                                        previous_token_ids=[],
++                                        current_token_ids=current_token_ids,
++                                        delta_token_ids=current_token_ids,
++                                        request=request))
++                                finish_delta_message = self._merge_delta_message(
++                                    finish_delta_message, pending_tool_delta)
++
++                            finish_delta_message = self._merge_delta_message(
++                                finish_delta_message,
++                                self._finish_tool_streaming(tool_parser, request))
++
++                        if finish_delta_message is not None:
++                            if finish_delta_message.tool_calls:
++                                auto_tools_called = True
++                                tools_streamed[i] = True
++                                streamed_remaining_function_call = True
++                            delta_message = self._merge_delta_message(
++                                delta_message, finish_delta_message)
++
+                     last_delta_message = delta_message
+                     if output.finish_reason is None:
+                         # Send token-by-token response for each request.n
+@@ -1540,6 +1579,105 @@
+             and delta_message.tool_calls[0].function.arguments is not None
+         )
+ 
++    @staticmethod
++    def _delta_function_name(function):
++        if function is None:
++            return None
++        if isinstance(function, dict):
++            return function.get("name")
++        return function.name
++
++    @staticmethod
++    def _delta_function_arguments(function):
++        if function is None:
++            return None
++        if isinstance(function, dict):
++            return function.get("arguments")
++        return function.arguments
++
++    @staticmethod
++    def _set_delta_function_name(function, name):
++        if isinstance(function, dict):
++            function["name"] = name
++        else:
++            function.name = name
++
++    @staticmethod
++    def _append_delta_function_arguments(function, arguments):
++        if isinstance(function, dict):
++            function["arguments"] = (function.get("arguments")
++                                        or "") + arguments
++        elif function.arguments is None:
++            function.arguments = arguments
++        else:
++            function.arguments += arguments
++
++    @classmethod
++    def _merge_tool_call_deltas(
++            cls, tool_calls: list[DeltaToolCall]) -> list[DeltaToolCall]:
++        merged: dict[int, DeltaToolCall] = {}
++        for tool_call in tool_calls:
++            existing = merged.get(tool_call.index)
++            if existing is None:
++                merged[tool_call.index] = tool_call
++                continue
++            if tool_call.id is not None and existing.id is None:
++                existing.id = tool_call.id
++            if tool_call.type is not None and existing.type is None:
++                existing.type = tool_call.type
++            if tool_call.function is None:
++                continue
++            if existing.function is None:
++                existing.function = tool_call.function
++                continue
++            name = cls._delta_function_name(tool_call.function)
++            if name is not None and cls._delta_function_name(
++                    existing.function) is None:
++                cls._set_delta_function_name(existing.function, name)
++            arguments = cls._delta_function_arguments(tool_call.function)
++            if arguments is not None:
++                cls._append_delta_function_arguments(existing.function, arguments)
++        return list(merged.values())
++
++    @classmethod
++    def _merge_delta_message(cls, delta_message, extra_delta_message):
++        if extra_delta_message is None:
++            return delta_message
++        if delta_message is None:
++            return extra_delta_message
++        if extra_delta_message.content:
++            delta_message.content = (delta_message.content
++                                     or "") + extra_delta_message.content
++        if extra_delta_message.reasoning_content:
++            delta_message.reasoning_content = (
++                delta_message.reasoning_content
++                or "") + extra_delta_message.reasoning_content
++        if extra_delta_message.tool_calls:
++            if delta_message.tool_calls is None:
++                delta_message.tool_calls = []
++            delta_message.tool_calls.extend(extra_delta_message.tool_calls)
++            if len(delta_message.tool_calls) > 1:
++                delta_message.tool_calls = cls._merge_tool_call_deltas(
++                    delta_message.tool_calls)
++        return delta_message
++
++    @staticmethod
++    def _finish_reasoning_streaming(reasoning_parser):
++        finish_streaming = getattr(reasoning_parser, "finish_streaming", None)
++        if finish_streaming is None:
++            return None
++        return finish_streaming()
++
++    @staticmethod
++    def _finish_tool_streaming(tool_parser, request):
++        finish_streaming = getattr(tool_parser, "finish_streaming", None)
++        if finish_streaming is None:
++            return None
++        try:
++            return finish_streaming(request)
++        except TypeError:
++            return finish_streaming()
++
+     def stream_remaining_function_call(self, tool_parser, delta_message, last_delta_message, output):
+         # check to make sure we haven't "forgotten" to stream
+         #   any tokens that were generated but previously
