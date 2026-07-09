@@ -105,6 +105,7 @@ def start_single_node_api_servers(
     no_enable_prefix_caching=False,
     num_speculative_tokens=1,
     no_enable_chunked_prefill=False,
+    use_inventory_devices=False,
 ):
     """Start multiple VLLM API servers with specified configurations."""
 
@@ -156,7 +157,21 @@ def start_single_node_api_servers(
         env["VLLM_DP_RANK_LOCAL"] = str(rank + server_offset // tp)
         env["VLLM_DP_MASTER_IP"] = master_ip
         env["VLLM_DP_MASTER_PORT"] = str(master_port)
-        env["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(map(str, range(rank*tp*pp, (rank+1)*tp*pp)))
+        if use_inventory_devices:
+            # Use the inherited ASCEND_RT_VISIBLE_DEVICES (which mirrors the
+            # inventory's ascend_rt_visible_devices, e.g. "2,3") so vLLM can
+            # start from arbitrary physical devices instead of always 0,1.
+            # Slice the list per server (rank*tp*pp : (rank+1)*tp*pp) so each
+            # server still owns exactly tp*pp devices. Without slicing, every
+            # server inherits the full list and vLLM picks local device 0 in
+            # each process, so all servers land on the same physical NPU and
+            # the EP/DP HCCL communicator init fails (error code 1).
+            inherited = os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "")
+            all_devices = [d.strip() for d in inherited.split(",") if d.strip()]
+            env["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(
+                all_devices[rank * tp * pp:(rank + 1) * tp * pp])
+        else:
+            env["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(map(str, range(rank*tp*pp, (rank+1)*tp*pp)))
 
         # Find an available port
         try:
@@ -290,6 +305,13 @@ if __name__ == "__main__":
     parser.add_argument("--enable-mtp", default=False, action='store_true')
     parser.add_argument("--no-enable-prefix-caching", default=False, action="store_true")
     parser.add_argument("--no-enable-chunked-prefill", default=False, action="store_true")
+    parser.add_argument(
+        "--use-inventory-devices",
+        default=False,
+        action="store_true",
+        help="Slice the inherited ASCEND_RT_VISIBLE_DEVICES (which mirrors the inventory's "
+                "ascend_rt_visible_devices, e.g. '2,3') per server so vLLM can start from "
+                "arbitrary physical devices instead of always 0,1.")
     parser.add_argument("--num-speculative-tokens", type=int, default=1)
     parser.add_argument("--pp", type=int, default=1, help="Pipeline parallelism size")
     parser.add_argument("--distributed-executor-backend", type=str, default=None, help="Distributed executor backend for vLLM (e.g., 'mp', 'ray')")
@@ -325,7 +347,8 @@ if __name__ == "__main__":
         additional_config=args.additional_config,
         enable_mtp=args.enable_mtp,
         num_speculative_tokens=args.num_speculative_tokens,
-        no_enable_chunked_prefill=args.no_enable_chunked_prefill
+        no_enable_chunked_prefill=args.no_enable_chunked_prefill,
+        use_inventory_devices=args.use_inventory_devices
     )
 
     # Register SIGINT handler for Ctrl+C

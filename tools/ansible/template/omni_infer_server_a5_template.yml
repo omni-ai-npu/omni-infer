@@ -50,10 +50,6 @@
     # Tensor Parallel Size
     DECODE_TENSOR_PARALLEL_SIZE: "1"
 
-    # Extra Args
-    # --max-num-seqs
-    #
-
   vars:
     docker_run_cmd: |
       docker run -it --shm-size=500g \
@@ -105,8 +101,7 @@
       source /usr/local/Ascend/cann-9.1.0/set_env.sh
       source /usr/local/Ascend/vendors/omni_custom_transformer/bin/set_env.bash
       source /usr/local/Ascend/vendors/omni_training_custom_transformer/bin/set_env.bash
-      HCCL_BUFFSIZE=1000
-      # HCCL_BUFFSIZE=300
+      HCCL_BUFFSIZE=500
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_EXEC_TIMEOUT=1800
       export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
@@ -116,6 +111,8 @@
 
       # wjc
       # export ASCEND_LAUNCH_BLOCKING=1
+      export ASCEND_PROCESS_LOG_PATH=xxx
+      export VLLM_SERVER_DEV_MODE=1
 
       # patch
       # export OMNI_NPU_PATCHES_DIR="pangu_ultra_moe"
@@ -184,6 +181,7 @@
         --base-api-port ${API_PORT} \
         --tp ${PREFILL_TENSOR_PARALLEL_SIZE} \
         --ascend-rt-visible-devices "${PREFILL_SERVER_LIST}" \
+        --use-inventory-devices "{{ use_inventory_devices | default('0') }}" \
         --kv-rank ${KV_RANK} \
         --kv-engine-id ${KV_RANK} \
         --kv-parallel-size ${KV_PARALLEL_SIZE} \
@@ -205,7 +203,7 @@
       source /usr/local/Ascend/cann-9.1.0/set_env.sh
       source /usr/local/Ascend/vendors/omni_custom_transformer/bin/set_env.bash
       source /usr/local/Ascend/vendors/omni_training_custom_transformer/bin/set_env.bash
-      HCCL_BUFFSIZE=1000
+      HCCL_BUFFSIZE=500
       export HCCL_CONNECT_TIMEOUT=1800
       export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
       export HCCL_EXEC_TIMEOUT=1800
@@ -220,7 +218,9 @@
       export VLLM_PLUGINS="omni-npu,omni_custom_models,omni_npu_patches"
       export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid"
       export OMNI_NPU_VLLM_PATCHES="ALL"
-      export ASCEND_PROCESS_LOG_PATH=/home/l50058542/plog
+      export ASCEND_PROCESS_LOG_PATH=xxx
+      export VLLM_SERVER_DEV_MODE=1
+      
       # export VLLM_ALL2ALL_BACKEND="naive"
       # export ENABLE_DP_LB=false
       # export VLLM_DATA_PARALLEL_EXTERNAL_LB=false
@@ -259,10 +259,9 @@
           {% endfor %}
       )
 
-      EXTRA_ARGS='--enable-prefix-caching --enable-chunked-prefill --max-num-batched-tokens 16384  --no-disable-hybrid-kv-cache-manager --enable-expert-parallel --disable-log-requests --max-num-seqs 8 --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[1, 2, 4, 8, 16, 32, 64], "backend":"", "compile_sizes":[64]}'
-      ADDITIONAL_CONFIG='{"npugraph_ex_config":{"enable": true}}'
-      # ADDITIONAL_CONFIG='{"npugraph_ex_config":{"enable": true, static_kernel_compile": true}}'
-      GPU_UTIL=0.9
+      EXTRA_ARGS='--enable-prefix-caching --enable-chunked-prefill --max-num-batched-tokens 16384  --no-disable-hybrid-kv-cache-manager --enable-expert-parallel --disable-log-requests --max-num-seqs 8 --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[1, 2, 4, 8, 16, 32], "backend":"", "compile_sizes":[32]}'
+      ADDITIONAL_CONFIG='{"npugraph_ex_config":{"enable": true, "static_kernel_compile": true}}'
+      GPU_UTIL=0.8
       VLLM_ENABLE_MC2=1
       HCCL_OP_EXPANSION_MODE="AIV"
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
@@ -279,9 +278,6 @@
       export ENABLE_HOST_MAPPING=0
       KV_CONNECTOR="${KV_CONNECTOR:-LLMDataDistConnector}"
       
-      # python /workspace/omniinfer//tools/scripts/process_nz_config.py /usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe/config/ascend910_93/aic-ascend910_93-ops-info.json
-
-      # --additional-config '{"enable_low_latency": true}' \
       export GLOO_SOCKET_IFNAME=eth1.100
       export HIXL_LOCAL_COMM_RES_ENABLE=1
       cd /workspace/omniinfer/tools/scripts
@@ -307,6 +303,7 @@
         --kv-engine-id ${PREFILL_POD_NUM} \
         --kv-parallel-size ${KV_PARALLEL_SIZE} \
         --ascend-rt-visible-devices "${DECODE_SERVER_LIST}" \
+        --use-inventory-devices "{{ use_inventory_devices | default('0') }}" \
         --kv-connector ${KV_CONNECTOR} \
         --gpu-util ${GPU_UTIL} \
         --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
