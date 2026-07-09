@@ -4,6 +4,7 @@ import torch_npu
 
 from vllm.v1.outputs import SamplerOutput
 from vllm.v1.sample.rejection_sampler import RejectionSampler as RejectionSamplerV1
+from vllm.v1.sample.sampler import Sampler as SamplerV1
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 
 from omni.layers.sampler import random_choice
@@ -17,6 +18,7 @@ class SimpleValidator(RejectionSamplerV1):
         self.previous_repetition_penalties = []
         self.previous_presence_penalties = []
         self.main_sampler = runner.sampler
+        self.target_sampler = SamplerV1()
         self.runner = runner
         self.minus_one = None
         self.minus_ones = None
@@ -46,9 +48,11 @@ class SimpleValidator(RejectionSamplerV1):
 
         key_tokens = input_ids[metadata.logits_indices]
 
-        all_sampled_tokens = self.main_sampler.apply_sampling_params(
-            logits, sampling_metadata, metadata, key_tokens, do_sample=True,
-        )
+        expanded_sampling_metadata = self.main_sampler.expand_sampling_metadata(
+            sampling_metadata, metadata)
+        sampler_output = self.target_sampler(
+            logits=logits, sampling_metadata=expanded_sampling_metadata)
+        all_sampled_tokens = sampler_output.sampled_token_ids.view(-1)
 
         last_accepted_index = metadata.bonus_logits_indices - metadata.cu_num_draft_tokens
         last_accepted_index[1:] += metadata.cu_num_draft_tokens[:-1]

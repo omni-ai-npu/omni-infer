@@ -70,7 +70,7 @@ def apply_top_k_top_p(
         probs_sort = logits_or_prob_sort.softmax(dim=-1)
     else:
         probs_sort = logits_or_prob_sort / logits_or_prob_sort.sum(dim=-1, keepdim=True)
-    probs_sum = torch.cumsum(probs_sort, dim=-1, out=probs_sort)
+    probs_sum = torch.cumsum(probs_sort, dim=-1)
     top_p_mask = probs_sum <= 1 - p.unsqueeze(dim=1)
     # at least one
     top_p_mask[:, -1] = False

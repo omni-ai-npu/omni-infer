@@ -1,0 +1,36 @@
+diff --git a/vllm/entrypoints/chat_utils.py b/vllm/entrypoints/chat_utils.py
+index 01423ac..bdbd4bd 100644
+--- a/vllm/entrypoints/chat_utils.py
++++ b/vllm/entrypoints/chat_utils.py
+@@ -178,6 +178,12 @@ class ConversationMessage(TypedDict, total=False):
+     prefix: Optional[bool]
+     """The prefix continuation flag."""
+ 
++    reasoning: Optional[str]
++    """The reasoning content for interleaved thinking."""
++
++    reasoning_content: Optional[str]
++    """Deprecated: The reasoning content for interleaved thinking."""
++
+ 
+ # Passed in by user
+ ChatTemplateContentFormatOption = Literal["auto", "string", "openai"]
+@@ -1147,6 +1153,18 @@ def _parse_chat_message_content(
+         if "prefix" in message and isinstance(message["prefix"], bool):
+             result_msg["prefix"] = message["prefix"]
+ 
++        # Preserve reasoning across turns: carry the prior thinking through to
++        # the chat template so models with interleaved thinking (e.g. GLM-5.2
++        # clear_thinking) can reconstruct it. Both keys are set for compat with
++        # templates that read either field.
++        if role == "assistant":
++            reasoning = message.get("reasoning")
++            if reasoning is None:
++                reasoning = message.get("reasoning_content")
++            if reasoning is not None:
++                result_msg["reasoning"] = reasoning
++                result_msg["reasoning_content"] = reasoning
++
+     return result
+ 
+ 

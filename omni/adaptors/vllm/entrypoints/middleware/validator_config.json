@@ -7,8 +7,9 @@
             {
                 "validator_type": "supported",
                 "subfield": ["messages", "messages.name", "messages.role", "messages.tool_call_id", "messages.tool_calls",
-                             "messages.tool_calls.type", "messages.tool_calls.function", "messages.tool_calls.function.arguments", 
-                             "messages.tool_calls.function.name", "messages.tool_calls.id", "messages.content", "messages.prefix"]
+                             "messages.tool_calls.type", "messages.tool_calls.function", "messages.tool_calls.function.arguments",
+                             "messages.tool_calls.function.name", "messages.tool_calls.id", "messages.content", "messages.prefix",
+                             "messages.reasoning", "messages.reasoning_content"]
             },
             {
                 "validator_type": "nested_value",
@@ -50,7 +51,8 @@
         },
         "chat_template_kwargs": {
             "validator_type": "supported",
-            "subfield": ["chat_template_kwargs", "chat_template_kwargs.thinking", "chat_template_kwargs.enable_thinking"]
+            "subfield": ["chat_template_kwargs", "chat_template_kwargs.thinking", "chat_template_kwargs.enable_thinking",
+                         "chat_template_kwargs.clear_thinking"]
         },
         "top_k": {
             "validator_type": "supported"
