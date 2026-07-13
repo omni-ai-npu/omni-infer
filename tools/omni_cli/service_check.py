@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 """
 vLLM C/P/D Instances Status Checker
 Checks proxy, and separated prefill and decode instances via SSH

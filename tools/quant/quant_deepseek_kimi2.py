@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 import optiquant.int8 as qint8
 import optiquant.int4 as qint4
 import optiquant.faquant as faquant

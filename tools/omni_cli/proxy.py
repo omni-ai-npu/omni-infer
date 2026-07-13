@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 import yaml
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional

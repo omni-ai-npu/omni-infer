@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) Huawei Technologies Co., Ltd. 2024-2024. All rights reserved.
+# Copyright (c) 2024-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import logging
 import os

@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 IP_ADDRESSES=$(hostname -I | tr ' ' '\n' | grep -v '^127\.0\.0\.1$' | grep -v '10.244*' | grep -v '172.17*')
 
 export HCCL_IF_BASE_PORT=59000

@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 
 function echo_with_time() {
     echo "[$(date "+%Y-%m-%d %H:%M:%S")] $1"

@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 
 if [ -d "/proc/ascend_ub" ]; then
     cd /proc/ascend_ub

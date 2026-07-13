@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 
 function set_env_from_arg_or_default() {
     local env_key="$1"
