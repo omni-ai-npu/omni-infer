@@ -970,7 +970,10 @@ class AscendAttentionBackendImpl(AttentionImpl):
                         kv_cache[1],
                         slot_mapping
                     )
-  
+
+        # Wait for H2D to finish before attention reads the device cache
+        if use_omni_cache and omni_cache is not None and getattr(attn_metadata, "prefix_meta", None) is not None:
+            torch.npu.current_stream().wait_event(omni_cache.h2d_event)
 
         if attn_metadata.attn_state == AscendAttentionState.PrefillNoCache and model_extra_config.operator_opt_config.enable_c8:
             attn_output = torch_npu.npu_fused_infer_attention_score_v2(
@@ -1164,6 +1167,10 @@ class AscendAttentionBackendImpl(AttentionImpl):
                     cast_value = value.reshape(-1, 1, self.num_kv_heads * self.head_size)
                     torch_npu.scatter_update_(self.key_cache, attn_metadata.slot_indices, cast_key, -2)
                     torch_npu.scatter_update_(self.value_cache, attn_metadata.slot_indices, cast_value, -2)
+
+        # Wait for H2D to finish before attention reads the device cache
+        if use_omni_cache and omni_cache is not None and getattr(attn_metadata, "prefix_meta", None) is not None:
+            torch.npu.current_stream().wait_event(omni_cache.h2d_event)
 
         # V0-Style scheduler situation.
         if attn_metadata.attn_state == AscendAttentionState.PrefillNoCache:             

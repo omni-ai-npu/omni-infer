@@ -587,6 +587,44 @@ class PrefillOmniCache(BaseOmniCache):
                                     #  query_slots=q_slots)
         return prefix_meta
 
+    def build_packed_hbm_lut(self, block_tables_np):
+        packed_hbm = int(os.getenv("OMNI_CACHE_PACKED_HBM", "0"))
+        if not (packed_hbm and model_extra_config.operator_opt_config.enable_dsa
+                and block_tables_np is not None):
+            self._real_to_fake_map = {}
+            self._fake_to_real_map = {}
+            self._real_to_fake_lut = None
+            self._fake_to_real_lut = None
+            return
+
+        real_to_fake = {}
+        fake_counter = 1
+        n_reqs = block_tables_np.shape[0]
+        for row in range(n_reqs):
+            for col in range(block_tables_np.shape[1]):
+                rid = int(block_tables_np[row, col])
+                if rid != 0 and rid not in real_to_fake:
+                    real_to_fake[rid] = fake_counter
+                    fake_counter += 1
+        self._real_to_fake_map = real_to_fake
+        self._fake_to_real_map = {v: k for k, v in real_to_fake.items()}
+
+        max_real_id = max(real_to_fake.keys())
+        max_fake_id = fake_counter - 1
+        keys = torch.tensor(list(real_to_fake.keys()), dtype=torch.int64)
+        vals = torch.tensor(list(real_to_fake.values()), dtype=torch.int64)
+        real_to_fake_lut = torch.arange(max_real_id + 1, dtype=torch.int64)
+        real_to_fake_lut[keys] = vals
+        self._real_to_fake_lut = real_to_fake_lut.to(device=self.device)
+        fake_to_real_lut = torch.arange(max_fake_id + 1, dtype=torch.int64)
+        fake_to_real_lut[vals] = keys
+        self._fake_to_real_lut = fake_to_real_lut.to(device=self.device)
+
+        logger.warning(
+            "[PACKED-HBM] volatile swap: %d real blocks -> %d fake blocks",
+            len(real_to_fake), fake_counter - 1,
+        )
+
     def get_volatile_metadata(
         self,
         query_lens_list: list[int],
@@ -598,48 +636,16 @@ class PrefillOmniCache(BaseOmniCache):
     ):
         orig_shape = orig_slot_mapping.shape
 
-        packed_hbm = int(os.getenv("OMNI_CACHE_PACKED_HBM", "0"))
-        if packed_hbm and model_extra_config.operator_opt_config.enable_dsa and block_tables_np is not None:
-            real_to_fake = {}
-            fake_counter = 1
-            n_reqs = block_tables_np.shape[0]
-            for row in range(n_reqs):
-                for col in range(block_tables_np.shape[1]):
-                    rid = int(block_tables_np[row, col])
-                    if rid != 0 and rid not in real_to_fake:
-                        real_to_fake[rid] = fake_counter
-                        fake_counter += 1
-            self._real_to_fake_map = real_to_fake
-            self._fake_to_real_map = {v: k for k, v in real_to_fake.items()}
-
-            max_real_id = max(real_to_fake.keys())
-            max_fake_id = fake_counter - 1
-            keys = torch.tensor(list(real_to_fake.keys()), dtype=torch.int64)
-            vals = torch.tensor(list(real_to_fake.values()), dtype=torch.int64)
-            real_to_fake_lut = torch.arange(max_real_id + 1, dtype=torch.int64)
-            real_to_fake_lut[keys] = vals
-            self._real_to_fake_lut = real_to_fake_lut.to(device=self.device)
-            fake_to_real_lut = torch.arange(max_fake_id + 1, dtype=torch.int64)
-            fake_to_real_lut[vals] = keys
-            self._fake_to_real_lut = fake_to_real_lut.to(device=self.device)
-
+        if self._real_to_fake_lut is not None:
             valid_mask = orig_slot_mapping > 0
             blocks = orig_slot_mapping // self.block_size
             offsets = orig_slot_mapping % self.block_size
-            fake_blocks = self._real_to_fake_lut[blocks.clamp(min=0)]
+            clamped_blocks = blocks.clamp(min=0, max=self._real_to_fake_lut.shape[0] - 1)
+            fake_blocks = self._real_to_fake_lut[clamped_blocks]
             orig_slot_mapping = torch.where(valid_mask, fake_blocks * self.block_size + offsets, orig_slot_mapping)
             self._packed_slot_mapping = orig_slot_mapping
-
-            logger.warning(
-                "[PACKED-HBM] volatile swap: %d real blocks -> %d fake blocks",
-                len(real_to_fake), fake_counter - 1,
-            )
         else:
-            self._real_to_fake_map = {}
-            self._fake_to_real_map = {}
             self._packed_slot_mapping = None
-            self._real_to_fake_lut = None
-            self._fake_to_real_lut = None
 
         # NOTE: kill all items about updating slot mapping, as we do not use the volatile things
         # if model_extra_config.parall_config.attn_sp_size > 1:
@@ -755,7 +761,8 @@ class PrefillOmniCache(BaseOmniCache):
             for start_block_id, end_block_id in block_ranges:
                 block_ids.extend(range(start_block_id, end_block_id))
             if self._real_to_fake_lut is not None:
-                device_block_ids = self._real_to_fake_lut[torch.tensor(block_ids, dtype=torch.int64, device=self.device)]
+                block_ids_t = torch.tensor(block_ids, dtype=torch.int64, device=self.device)
+                device_block_ids = self._real_to_fake_lut[block_ids_t.clamp(max=self._real_to_fake_lut.shape[0] - 1)]
             else:
                 device_block_ids = block_ids
             for i in range(len(self.host_cache.kvi_tensors)):
@@ -766,6 +773,7 @@ class PrefillOmniCache(BaseOmniCache):
         self,
         prefix_meta: "PrefixCopyMeta",
         layer_idx: int,
+        wait_event: Optional[torch.npu.Event] = None,
     ) -> None:
         """When prefix is hit, load the relevant KV from CPU to device buffer.
         key_states: (Tq, N, Dk)
@@ -775,6 +783,9 @@ class PrefillOmniCache(BaseOmniCache):
             return
 
         with torch.npu.stream(self.h2d_stream):
+            if wait_event is not None:
+                self.h2d_stream.wait_event(wait_event)
+
             # Step0: get the contiguous host data
             host_data = self.get_current_rank_host_data(layer_idx, prefix_meta)
 
@@ -813,7 +824,6 @@ class PrefillOmniCache(BaseOmniCache):
                 logger.warning(f"<<<{self.batch_buffer_cpu[buffer_idx].shape=}, {self.batch_buffer_cpu[buffer_idx][0:offset, ...].shape=}, {src_tensor.shape=}, {tensor_slice.shape=}")
                 self.batch_buffer_cpu[buffer_idx][idx_block*offset : (idx_block+1) * offset, ...].copy_(tensor_slice.squeeze(1), non_blocking=True)  # self.batch_buffer_cpu.shape[1] = 32
 
-    # modified by gpt to improve efficiency
     def synchronize_d2h(
         self,
         kv_cache: Tuple[torch.Tensor,...],
@@ -821,12 +831,9 @@ class PrefillOmniCache(BaseOmniCache):
         kv_event: torch.npu.Event,
         slot_mapping: torch.Tensor,
         tensor_indices: Optional[List[int]] = None
-    ) -> None:
-        if self.copy_future is not None and not self.copy_future.done():
-            self.copy_future.result()
+    ) -> torch.npu.Event:
         d2h_event = torch.npu.Event(blocking=False, enable_timing=False)
 
-        # Check that block_ids are within the bounds of kv_cache
         block_ids = torch.unique(slot_mapping[slot_mapping != -1] // self.block_size)
         max_valid_block = kv_cache[0].shape[0]
         if self._fake_to_real_lut is None:
@@ -836,11 +843,10 @@ class PrefillOmniCache(BaseOmniCache):
                     f"This indicates a mismatch between slot_mapping and kv_cache dimensions."
                     )
 
-        # When PACKED_HBM is active, block_ids are fake IDs. Map to real IDs
-        # for the host pool scatter (decode side indexes by real IDs).
         host_block_ids = block_ids
         if self._fake_to_real_lut is not None:
-            host_block_ids = self._fake_to_real_lut[block_ids.long()]
+            block_ids_long = block_ids.long()
+            host_block_ids = self._fake_to_real_lut[block_ids_long.clamp(max=self._fake_to_real_lut.shape[0] - 1)]
 
         with torch.npu.stream(self.d2h_stream):
             self.d2h_stream.wait_event(kv_event)
@@ -850,10 +856,10 @@ class PrefillOmniCache(BaseOmniCache):
             for i in indices_to_copy:
                 tp_stride = self.node_block_size // NUM_DIE_PER_MACH
                 num_blocks = len(block_ids)
-                
+
                 for start in range(0, num_blocks, D2H_CHUNK_SIZE):
                     end = min(start + D2H_CHUNK_SIZE, num_blocks)
-                    
+
                     # Copy chunk from device to the corresponding rows in the CPU buffer
                     self.batch_buffer_cpu[i][start:end].copy_(
                         kv_cache[i].squeeze(2)[
@@ -865,11 +871,12 @@ class PrefillOmniCache(BaseOmniCache):
                         non_blocking=True
                     )
             d2h_event.record(self.d2h_stream)
-        
+
         self.copy_future = self.d2h_thrp.submit(
             self._update_host_cache_thread,
             host_block_ids, layer_idx, d2h_event, tensor_indices
         )
+        return d2h_event
     
     def _padding_kv_cache(self, tensor):
         result = torch.zeros((self.sum_total_len, *tensor.shape[1:]), dtype=tensor.dtype, device = tensor.device)

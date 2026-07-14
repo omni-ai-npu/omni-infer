@@ -901,7 +901,7 @@ class DeepseekMLA(nn.Module):
             #kv_states = torch.cat([kv_a, k_pe, k_indexer], dim=-1)
             kv_states = [kv_a, k_pe, k_indexer]
             kv_event.record(main_stream)
-            attn_metadata.omni_cache.synchronize_d2h(
+            d2h_event = attn_metadata.omni_cache.synchronize_d2h(
                 kv_cache,
                 self.layer_idx,
                 kv_event,
@@ -911,6 +911,7 @@ class DeepseekMLA(nn.Module):
             attn_metadata.omni_cache.synchronize_h2d(
                 prefix_meta=attn_metadata.prefill.prefix_meta,
                 layer_idx=self.layer_idx + 1,
+                wait_event=d2h_event,
             )
 
         return output
@@ -1147,10 +1148,11 @@ class DeepseekMLA(nn.Module):
             attn_metadata is not None:
             kv_states = [kv_a.unsqueeze(1), k_pe]
             kv_event.record(main_stream)
-            attn_metadata.omni_cache.synchronize_d2h(kv_states, self.layer_idx, kv_event)
+            d2h_event = attn_metadata.omni_cache.synchronize_d2h(kv_states, self.layer_idx, kv_event)
             attn_metadata.omni_cache.synchronize_h2d(
                 prefix_meta=attn_metadata.prefill.prefix_meta,
                 layer_idx=self.layer_idx + 1,
+                wait_event=d2h_event,
             )
         return output
 
