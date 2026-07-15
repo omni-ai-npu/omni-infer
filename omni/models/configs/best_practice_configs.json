@@ -344,6 +344,16 @@
       "decode_config_file": "ds_v3.2_w8a8c16_a2_1p1d_d.json"
    },
    {
+      "model": "deepseek_v32",
+      "hardware": "A2",
+      "precision": "w8a8",
+      "prefill_node_num": 1,
+      "decode_node_num": 8,
+      "pd_disaggregation": true,
+      "prefill_config_file": "ds_v3.2_w8a8c16_a2_1p1d_p.json",
+      "decode_config_file": "ds_v3.2_w8a8c16_a2_1p1d8_d.json"
+   },
+   {
       "model": "glm5",
       "hardware": "A2",
       "precision": "w8a8",

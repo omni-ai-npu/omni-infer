@@ -262,7 +262,7 @@ def initialize_model_parallel(
         initialize_local_comm_group_list(backend)
 
         num_nodes = torch.distributed.get_world_size() // get_npu_device_count()
-        if num_nodes == 4 and model_extra_config.operator_opt_config.enable_round_pipeline_comm:
+        if num_nodes >= 4 and num_nodes % 2 == 0 and model_extra_config.operator_opt_config.enable_round_pipeline_comm:
             initialize_round_cross_comm_group_list(backend)
 
         if model_extra_config.operator_opt_config.enable_pipeline_comm:
@@ -699,54 +699,43 @@ def get_local_group_rank():
 
 def initialize_round_cross_comm_group_list(backend) -> None:
     # Get world size and rank. Ensure some consistencies.
-    assert torch.distributed.is_initialized()
+    if not torch.distributed.is_initialized():
+        raise RuntimeError("torch.distributed must be initialized")
     world_size: int = torch.distributed.get_world_size()
 
     local_size = get_npu_device_count()
-    assert world_size % local_size == 0
+    if not world_size % local_size == 0:
+        raise RuntimeError(
+            f"world_size ({world_size}) must be divisible by local_size ({local_size})"
+        )
 
-    server_size = world_size // local_size
+    num_nodes = world_size // local_size
 
     backend = backend or torch.distributed.get_backend(
         get_world_group().device_group)
 
-    num_cross_groups: int = (world_size // server_size)
     global _CROSS_ROUND_COMM_LIST
-    assert _CROSS_ROUND_COMM_LIST is None, (
-        "pipeline model parallel group is already initialized")
-    _CROSS_ROUND_COMM_LIST = list()
+    if _CROSS_ROUND_COMM_LIST is not None:
+        raise RuntimeError(
+            "pipeline model parallel group is already initialized")
+    _CROSS_ROUND_COMM_LIST = []
 
-    group_ranks_round0 = []
-    group_ranks_round1 = []
-    group_ranks_round2 = []
-    for i in range(num_cross_groups):
-        ranks = [[i + 0 * num_cross_groups, i + 1 * num_cross_groups], \
-                [i + 2 * num_cross_groups, i + 3 * num_cross_groups]]
-        group_ranks_round0.extend(ranks)
+    round_swap_schedule = generate_round_swap_schedule(num_nodes)
+    group_ranks_rounds = []
+    for round_pairs in round_swap_schedule:
+        group_ranks = []
+        for i in range(local_size):
+            for a, b in round_pairs:
+                group_ranks.append([a * local_size + i, b * local_size + i])
+        group_ranks_rounds.append(group_ranks)
 
-        ranks = [[i + 0 * num_cross_groups, i + 2 * num_cross_groups], \
-                [i + 1 * num_cross_groups, i + 3 * num_cross_groups]]
-        group_ranks_round1.extend(ranks)
-
-        ranks = [[i + 0 * num_cross_groups, i + 3 * num_cross_groups], \
-                [i + 1 * num_cross_groups, i + 2 * num_cross_groups]]
-        group_ranks_round2.extend(ranks)
-
-
-    _CROSS_ROUND_COMM_LIST.append(init_model_parallel_group(group_ranks_round0,
-                                    get_world_group().local_rank,
-                                    backend,
-                                    group_name="world_round0_cross"))
-
-    _CROSS_ROUND_COMM_LIST.append(init_model_parallel_group(group_ranks_round1,
-                                    get_world_group().local_rank,
-                                    backend,
-                                    group_name="world_round1_cross"))
-
-    _CROSS_ROUND_COMM_LIST.append(init_model_parallel_group(group_ranks_round2,
-                                    get_world_group().local_rank,
-                                    backend,
-                                    group_name="world_round2_cross"))
+    _CROSS_ROUND_COMM_LIST = [
+        init_model_parallel_group(group_ranks_rounds[i],
+            get_world_group().local_rank,
+            backend,
+            group_name=f"world_round{i}_cross")
+        for i in range(num_nodes - 1)
+    ]
 
 
 def get_round_cross_group_from_list(round: int) -> GroupCoordinator:
@@ -815,3 +804,55 @@ def initialize_near_cross_comm_group_list(backend) -> None:
                                     get_world_group().local_rank,
                                     backend,
                                     group_name="world_near_cross"))
+
+
+def generate_round_swap_schedule(num_nodes: int) -> list[list[list[int]]]:
+    """
+    Generate perfect matching coverings for round-robin swap using the circle method.
+
+    Args:
+        num_nodes: Even number of nodes.
+
+    Returns:
+        One list per round, each containing num_nodes/2 pairs [i, j] that partition all nodes.
+        Total rounds = num_nodes - 1, each node appears exactly once per round.
+        Each pair appears exactly once across all rounds.
+    """
+    if num_nodes % 2 != 0 or num_nodes < 2:
+        raise ValueError(f"num_nodes must be even and >= 2, got {num_nodes}")
+    m = num_nodes // 2
+    rest_nodes = list(range(1, num_nodes))
+    schedule = []
+    for _ in range(num_nodes - 1):
+        round_pairs = [[0, rest_nodes[0]]]
+        for j in range(1, m):
+            sorted_pair = sorted([rest_nodes[j], rest_nodes[num_nodes - 1 - j]])
+            round_pairs.append(sorted_pair)
+        schedule.append(round_pairs)
+        rest_nodes = rest_nodes[1:] + [rest_nodes[0]]
+    return schedule
+
+
+def round_swap_permute(
+        round_ag_tensors: list[torch.Tensor], node_rank: int, num_nodes: int, recov: bool
+):
+    if node_rank == 0:
+        return
+    
+    # perm demonstartes the node id swap with in each round
+    perm = [node_rank]
+    for i in range(num_nodes - 1):
+        swap_idx = (num_nodes + 1 + 2 * i - node_rank - 1) % (num_nodes - 1) + 1
+        if swap_idx == node_rank:
+            swap_idx = 0
+        perm.append(swap_idx)
+
+    ori_tensors = [round_ag_tensors[i] for i in range(num_nodes)]
+    if recov:
+        # in all-gather stage, recover the original order
+        for i, p in enumerate(perm):
+            round_ag_tensors[p] = ori_tensors[i]
+    else:
+        # in reduce-scatter stage, prepare the order
+        for i, p in enumerate(perm):
+            round_ag_tensors[i] = ori_tensors[p]

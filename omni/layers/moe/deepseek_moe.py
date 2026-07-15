@@ -59,9 +59,11 @@ from omni.adaptors.vllm.distributed.communication_op import (
     all_gather_cross
 )
 from omni.adaptors.vllm.distributed.parallel_state import (
+    get_npu_device_count,
     get_round_cross_group_from_list,
     get_mlp_tp_group,
     get_local_world_group,
+    round_swap_permute,
     GroupCoordinator
 )
 from omni.layers.moe.fused_moe.layer import FusedMoE
@@ -1036,12 +1038,18 @@ class DeepseekMoE(nn.Module):
         STREAM_INTERNODE_COMM_2 = 'internode_comm_2'
         MAX_PREFETCH_SIZE = 90000000
         LARGE_BATCH, MEDIUM_BATCH, SMALL_BATCH = False, False, False
-        if hidden_states.shape[0] >= 120:
-            LARGE_BATCH = True
-        elif hidden_states.shape[0] >= 60:
-            MEDIUM_BATCH = True
+        LARGE_GROUP = False
+        _local_size = get_npu_device_count()
+        num_nodes = self.ep_size // _local_size
+        if num_nodes == 4:
+            if hidden_states.shape[0] >= 120:
+                LARGE_BATCH = True
+            elif hidden_states.shape[0] >= 60:
+                MEDIUM_BATCH = True
+            else:
+                SMALL_BATCH = True
         else:
-            SMALL_BATCH = True
+            LARGE_GROUP = True
 
         hidden_states_int8, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
         if model_extra_config.operator_opt_config.moe_multi_stream_tune:
@@ -1162,6 +1170,40 @@ class DeepseekMoE(nn.Module):
                     hidden_states_int8 = tng.scope.npu_wait_tensor(hidden_states_int8, input_ag)
                     hidden_states_dict = {"x_int8": hidden_states_int8, "pertoken_scale":pertoken_scale}
                     shared_output = self.shared_experts(hidden_states_dict)
+            elif LARGE_GROUP:
+                round_ag_res : list[torch.Tensor | None] = [None] * num_nodes
+                round_swap_res : list[torch.Tensor | None] = [None] * num_nodes
+
+                with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
+                    topk_local_all = all_gather_local(topk_cat, idx=1, dim=0)
+
+                round_ag_res[0] = all_gather_local(hidden_states_int8, idx=0, dim=0)
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_0):
+                    round_swap_res[1] = tng.scope.npu_wait_tensor(hidden_states_int8, hidden_states_int8)
+                    round_swap_res[1] = get_round_cross_group_from_list(round=0).swap(round_swap_res[1], method="all2allv")
+                    round_ag_res[1] = all_gather_local(round_swap_res[1], idx=-1, dim=0)
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_1):
+                    round_swap_res[2] = tng.scope.npu_wait_tensor(hidden_states_int8, hidden_states_int8)
+                    round_swap_res[2] = get_round_cross_group_from_list(round=1).swap(round_swap_res[2], method="all2allv")
+                    round_ag_res[2] = all_gather_local(round_swap_res[2], idx=-2, dim=0)
+                
+                for round_idx in range(2, num_nodes - 1):
+                    with tng.scope.npu_stream_switch(f"internode_comm_{round_idx}"):
+                        round_swap_res[round_idx + 1] = tng.scope.npu_wait_tensor(hidden_states_int8, round_ag_res[0])
+                        round_swap_res[round_idx + 1] = get_round_cross_group_from_list(round=round_idx).swap(round_swap_res[round_idx + 1], method="all2allv")
+                        round_ag_res[round_idx + 1] = all_gather_local(round_swap_res[round_idx + 1], idx=-round_idx - 1, dim=0)
+                
+                with tng.scope.npu_stream_switch(STREAM_TOPK_COMM):
+                    topk_local_all_wait = tng.scope.npu_wait_tensor(topk_local_all, topk_local_all)
+                    topk_all = all_gather_cross(topk_local_all_wait, idx=1, dim=0)
+
+                with tng.scope.npu_stream_switch(STREAM_PREFETCH):
+                    torch_npu.npu_prefetch(self.experts.w13_weight, round_ag_res[0], MAX_PREFETCH_SIZE)
+
+                with tng.scope.npu_stream_switch(STREAM_SHARED_EXPERT):
+                    hidden_states_int8 = tng.scope.npu_wait_tensor(hidden_states_int8, round_ag_res[0])
+                    hidden_states_dict = {"x_int8": hidden_states_int8, "pertoken_scale":pertoken_scale}
+                    shared_output = self.shared_experts(hidden_states_dict)
             ###### PIPELINE ALL_GATHER ENDS
 
             with tng.scope.npu_stream_switch(STREAM_TOPK_COMPUTE):
@@ -1201,28 +1243,42 @@ class DeepseekMoE(nn.Module):
         
             topk_local_all = all_gather_local(topk_cat, idx=1, dim=0)
 
-            input_ag = all_gather_local(hidden_states_int8, idx=0, dim=0)
-            round0_swp = get_round_cross_group_from_list(round=0).swap(hidden_states_int8, method="all2allv")
-            round1_swp = get_round_cross_group_from_list(round=1).swap(hidden_states_int8, method="all2allv")
-            round2_swp = get_round_cross_group_from_list(round=2).swap(hidden_states_int8, method="all2allv")
-            topk_all = all_gather_cross(topk_local_all, idx=1, dim=0)
-            round0_ag = all_gather_local(round0_swp, idx=0, dim=0)
-            round1_ag = all_gather_local(round1_swp, idx=0, dim=0)
-            round2_ag = all_gather_local(round2_swp, idx=0, dim=0)
+            if not LARGE_GROUP:
+                input_ag = all_gather_local(hidden_states_int8, idx=0, dim=0)
+                round0_swp = get_round_cross_group_from_list(round=0).swap(hidden_states_int8, method="all2allv")
+                round1_swp = get_round_cross_group_from_list(round=1).swap(hidden_states_int8, method="all2allv")
+                round2_swp = get_round_cross_group_from_list(round=2).swap(hidden_states_int8, method="all2allv")
+                topk_all = all_gather_cross(topk_local_all, idx=1, dim=0)
+                round0_ag = all_gather_local(round0_swp, idx=0, dim=0)
+                round1_ag = all_gather_local(round1_swp, idx=0, dim=0)
+                round2_ag = all_gather_local(round2_swp, idx=0, dim=0)
+            else:
+                round_ag_res : list[torch.Tensor | None] = [None] * num_nodes
+                round_swap_res : list[torch.Tensor | None] = [None] * num_nodes
+
+                round_ag_res[0] = all_gather_local(hidden_states_int8, idx=0, dim=0)
+                topk_all = all_gather_cross(topk_local_all, idx=1, dim=0)
+                for round_idx in range(num_nodes - 1):
+                    round_swap_res[round_idx + 1] = get_round_cross_group_from_list(round=round_idx).swap(hidden_states_int8, method="all2allv")
+                    round_ag_res[round_idx + 1] = all_gather_local(round_swap_res[round_idx + 1], idx=0, dim=0)
             topk_weights, topk_ids, global_pertoken_scale = torch.split(topk_all,
                                                                             [topk_weights.shape[-1], topk_ids.shape[-1], 1],
                                                                             dim=-1)
             topk_ids = torch.round(topk_ids).to(torch.int32)
             global_pertoken_scale = global_pertoken_scale.squeeze(-1)
 
-        if self.node_rank == 0:
-            global_hidden_states = torch.cat([input_ag, round0_ag, round1_ag, round2_ag], dim=0)
-        elif self.node_rank == 1:
-            global_hidden_states = torch.cat([round0_ag, input_ag, round2_ag, round1_ag], dim=0)
-        elif self.node_rank == 2:
-            global_hidden_states = torch.cat([round1_ag, round2_ag, input_ag, round0_ag], dim=0)
-        elif self.node_rank == 3:
-            global_hidden_states = torch.cat([round2_ag, round1_ag, round0_ag, input_ag], dim=0)
+        if not LARGE_GROUP:
+            if self.node_rank == 0:
+                global_hidden_states = torch.cat([input_ag, round0_ag, round1_ag, round2_ag], dim=0)
+            elif self.node_rank == 1:
+                global_hidden_states = torch.cat([round0_ag, input_ag, round2_ag, round1_ag], dim=0)
+            elif self.node_rank == 2:
+                global_hidden_states = torch.cat([round1_ag, round2_ag, input_ag, round0_ag], dim=0)
+            elif self.node_rank == 3:
+                global_hidden_states = torch.cat([round2_ag, round1_ag, round0_ag, input_ag], dim=0)
+        else:
+            round_swap_permute(round_ag_res, self.node_rank, num_nodes, recov=True)
+            global_hidden_states = torch.cat(round_ag_res, dim=0)
 
         final_hidden_states = self.experts(
             hidden_states=global_hidden_states,
@@ -1232,22 +1288,29 @@ class DeepseekMoE(nn.Module):
             attn_metadata=attn_metadata
         )
 
-        if self.node_rank == 0:
-            input_self, round0, round1, round2 = torch.split(final_hidden_states, final_hidden_states.shape[0] // 4, dim=0)
-        elif self.node_rank == 1:
-            round0, input_self, round2, round1 = torch.split(final_hidden_states, final_hidden_states.shape[0] // 4, dim=0)
-        elif self.node_rank == 2:
-            round1, round2, input_self, round0 = torch.split(final_hidden_states, final_hidden_states.shape[0] // 4, dim=0)
-        elif self.node_rank == 3:
-            round2, round1, round0, input_self = torch.split(final_hidden_states, final_hidden_states.shape[0] // 4, dim=0)
+        if not LARGE_GROUP:
+            if self.node_rank == 0:
+                input_self, round0, round1, round2 = torch.split(final_hidden_states, final_hidden_states.shape[0] // 4, dim=0)
+            elif self.node_rank == 1:
+                round0, input_self, round2, round1 = torch.split(final_hidden_states, final_hidden_states.shape[0] // 4, dim=0)
+            elif self.node_rank == 2:
+                round1, round2, input_self, round0 = torch.split(final_hidden_states, final_hidden_states.shape[0] // 4, dim=0)
+            elif self.node_rank == 3:
+                round2, round1, round0, input_self = torch.split(final_hidden_states, final_hidden_states.shape[0] // 4, dim=0)
+        else:
+            final_hidden_states_dist = torch.split(final_hidden_states, final_hidden_states.shape[0] // num_nodes, dim=0)
 
         if model_extra_config.operator_opt_config.moe_multi_stream_tune:
-            ##### PIPELINE REDUCE_SCATTER STARTS
-            round2 = round2.to(torch.bfloat16)
-            with tng.scope.npu_stream_switch(STREAM_TOPK_COMPUTE):
-                round1 = round1.to(torch.bfloat16)
-                round0 = round0.to(torch.bfloat16)
-                input_self = input_self.to(torch.bfloat16)
+            if not LARGE_GROUP:
+                ##### PIPELINE REDUCE_SCATTER STARTS
+                round2 = round2.to(torch.bfloat16)
+                with tng.scope.npu_stream_switch(STREAM_TOPK_COMPUTE):
+                    round1 = round1.to(torch.bfloat16)
+                    round0 = round0.to(torch.bfloat16)
+                    input_self = input_self.to(torch.bfloat16)
+            else:
+                with tng.scope.npu_stream_switch(STREAM_TOPK_COMPUTE):
+                    final_hidden_states_dist = [final_hidden_states_single.to(torch.bfloat16) for final_hidden_states_single in final_hidden_states_dist]
 
             with tng.scope.npu_stream_switch(STREAM_PREFETCH):
                 if self.attn_prefetch is not None:
@@ -1258,25 +1321,43 @@ class DeepseekMoE(nn.Module):
                 if kv_prefetch is not None and isinstance(kv_prefetch, Tuple) and kv_prefetch[0].numel():
                     torch_npu.npu_prefetch(kv_prefetch[0], input_self, MAX_PREFETCH_SIZE)
 
-            round2_rs = reduce_scatter_local(round2, idx=0)
-            round1 = tng.scope.npu_wait_tensor(round1, round2_rs)
-            round1_rs = reduce_scatter_local(round1, idx=0)
-            round0 = tng.scope.npu_wait_tensor(round0, round1_rs)
-            round0_rs = reduce_scatter_local(round0, idx=0)
-            input_self = tng.scope.npu_wait_tensor(input_self, round0_rs)
-            input_rs = reduce_scatter_local(input_self, idx=0)
-            with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_2):
-                round2_swp = get_round_cross_group_from_list(round=2).swap(round2_rs, method="all2allv")
-            with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_1):
-                round1_swp = get_round_cross_group_from_list(round=1).swap(round1_rs, method="all2allv")
-            with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_0):
-                round0_swp = get_round_cross_group_from_list(round=0).swap(round0_rs, method="all2allv")
+            if not LARGE_GROUP:
+                round2_rs = reduce_scatter_local(round2, idx=0)
+                round1 = tng.scope.npu_wait_tensor(round1, round2_rs)
+                round1_rs = reduce_scatter_local(round1, idx=0)
+                round0 = tng.scope.npu_wait_tensor(round0, round1_rs)
+                round0_rs = reduce_scatter_local(round0, idx=0)
+                input_self = tng.scope.npu_wait_tensor(input_self, round0_rs)
+                input_rs = reduce_scatter_local(input_self, idx=0)
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_2):
+                    round2_swp = get_round_cross_group_from_list(round=2).swap(round2_rs, method="all2allv")
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_1):
+                    round1_swp = get_round_cross_group_from_list(round=1).swap(round1_rs, method="all2allv")
+                with tng.scope.npu_stream_switch(STREAM_INTERNODE_COMM_0):
+                    round0_swp = get_round_cross_group_from_list(round=0).swap(round0_rs, method="all2allv")
+            else:
+                final_hidden_states_dist_rs: list[torch.Tensor | None] = [None] * num_nodes
+                final_hidden_states_dist_swap: list[torch.Tensor | None] = [None] * num_nodes
+                for round_idx in range(num_nodes - 1):
+                    final_hidden_states_dist_rs[round_idx] = reduce_scatter_local(final_hidden_states_dist[round_idx], idx=0)
+                    final_hidden_states_dist[round_idx + 1] = tng.scope.npu_wait_tensor(final_hidden_states_dist[round_idx + 1], final_hidden_states_dist_rs[round_idx])
+                final_hidden_states_dist_rs[num_nodes - 1] = reduce_scatter_local(final_hidden_states_dist[num_nodes - 1], idx=0)
+                round_swap_permute(final_hidden_states_dist_rs, self.node_rank, num_nodes, recov=False)
+                final_hidden_states_dist_swap[0] = final_hidden_states_dist_rs[0]
+                for round_idx in range(num_nodes - 1):
+                    with tng.scope.npu_stream_switch(f'internode_comm_{round_idx}'):
+                        final_hidden_states_dist_swap[round_idx + 1] = get_round_cross_group_from_list(round=round_idx).swap(final_hidden_states_dist_rs[round_idx + 1], method="all2allv")
+
             ##### PIPELINE REDUCE_SCATTER ENDS
         else:
-            round2 = round2.to(torch.bfloat16)
-            round1 = round1.to(torch.bfloat16)
-            round0 = round0.to(torch.bfloat16)
-            input_self = input_self.to(torch.bfloat16)
+            if not LARGE_GROUP:
+                round2 = round2.to(torch.bfloat16)
+                round1 = round1.to(torch.bfloat16)
+                round0 = round0.to(torch.bfloat16)
+                input_self = input_self.to(torch.bfloat16)
+            else:
+                final_hidden_states_dist = [final_hidden_states_single.to(torch.bfloat16) for final_hidden_states_single in final_hidden_states_dist]
+
 
             if self.attn_prefetch is not None:
                 torch_npu.npu_prefetch(self.attn_prefetch.q_a_proj.weight, input_self, MAX_PREFETCH_SIZE)
@@ -1285,16 +1366,28 @@ class DeepseekMoE(nn.Module):
                 torch_npu.npu_prefetch(self.attn_prefetch.W_UK, input_self, MAX_PREFETCH_SIZE)
             if kv_prefetch is not None and isinstance(kv_prefetch, Tuple) and kv_prefetch[0].numel():
                 torch_npu.npu_prefetch(kv_prefetch[0], input_self, MAX_PREFETCH_SIZE)
-        
-            round2_rs = reduce_scatter_local(round2, idx=0)
-            round1_rs = reduce_scatter_local(round1, idx=0)   
-            round0_rs = reduce_scatter_local(round0, idx=0)
-            input_rs = reduce_scatter_local(input_self, idx=0)
-            round2_swp = get_round_cross_group_from_list(round=2).swap(round2_rs, method="all2allv")
-            round1_swp = get_round_cross_group_from_list(round=1).swap(round1_rs, method="all2allv")
-            round0_swp = get_round_cross_group_from_list(round=0).swap(round0_rs, method="all2allv")
 
-        final_hidden_states = input_rs + round0_swp + round1_swp + round2_swp + shared_output
+            if not LARGE_GROUP:
+                round2_rs = reduce_scatter_local(round2, idx=0)
+                round1_rs = reduce_scatter_local(round1, idx=0)   
+                round0_rs = reduce_scatter_local(round0, idx=0)
+                input_rs = reduce_scatter_local(input_self, idx=0)
+                round2_swp = get_round_cross_group_from_list(round=2).swap(round2_rs, method="all2allv")
+                round1_swp = get_round_cross_group_from_list(round=1).swap(round1_rs, method="all2allv")
+                round0_swp = get_round_cross_group_from_list(round=0).swap(round0_rs, method="all2allv")
+            else:
+                final_hidden_states_dist_rs: list[torch.Tensor | None] = [None] * num_nodes
+                final_hidden_states_dist_swap: list[torch.Tensor | None] = [None] * num_nodes
+                for round_idx in range(num_nodes):
+                    final_hidden_states_dist_rs[round_idx] = reduce_scatter_local(final_hidden_states_dist[round_idx], idx=0)
+                round_swap_permute(final_hidden_states_dist_rs, self.node_rank, num_nodes, recov=False)
+                final_hidden_states_dist_swap[0] = final_hidden_states_dist_rs[0]
+                for round_idx in range(num_nodes - 1):
+                    final_hidden_states_dist_swap[round_idx + 1] = get_round_cross_group_from_list(round=round_idx).swap(final_hidden_states_dist_rs[round_idx + 1], method="all2allv")
+        if not LARGE_GROUP:
+            final_hidden_states = input_rs + round0_swp + round1_swp + round2_swp + shared_output
+        else:
+            final_hidden_states = sum(final_hidden_states_dist_swap) + shared_output
 
         return final_hidden_states, residual
     
