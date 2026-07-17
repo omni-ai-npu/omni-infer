@@ -19,9 +19,9 @@ all:
             MODEL_PATH: /data1/models/GLM-5.2-w8a8c16
             ACCESS_LOG_FILE: /tmp/logs/nginx/nginx_access.log
             OMNI_PROXY_PD_POLICY: sequential
-            OMNI_PROXY_MAX_BATCH_NUM_TOKEN: 200000
-            OMNI_PROXY_PREFILL_MAX_NUM_SEQS: 12
-            OMNI_PROXY_DECODE_MAX_NUM_SEQS: 2
+            OMNI_PROXY_MAX_BATCH_NUM_TOKEN: 400000
+            OMNI_PROXY_PREFILL_MAX_NUM_SEQS: 10
+            OMNI_PROXY_DECODE_MAX_NUM_SEQS: 4
             PYTHONHASHSEED: 123
     D:
       hosts:
@@ -931,7 +931,7 @@ all:
               enforce-eager: ''
               num-gpu-blocks-override: 140000
               max-num-batched-tokens: 161280
-              max-num-seqs: 12
+              max-num-seqs: 10
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
@@ -992,7 +992,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/logs
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 161280
+            MODEL_LEN_MAX_PREFILL: 262144
             MODEL_PATH: /data1/models/GLM-5.2-w8a8c16
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
@@ -1040,7 +1040,7 @@ all:
               enforce-eager: ''
               num-gpu-blocks-override: 140000
               max-num-batched-tokens: 161280
-              max-num-seqs: 12
+              max-num-seqs: 10
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
@@ -1101,7 +1101,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/logs
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 161280
+            MODEL_LEN_MAX_PREFILL: 262144
             MODEL_PATH: /data1/models/GLM-5.2-w8a8c16
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
@@ -1149,7 +1149,7 @@ all:
               enforce-eager: ''
               num-gpu-blocks-override: 140000
               max-num-batched-tokens: 161280
-              max-num-seqs: 12
+              max-num-seqs: 10
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
@@ -1210,7 +1210,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/logs
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 161280
+            MODEL_LEN_MAX_PREFILL: 262144
             MODEL_PATH: /data1/models/GLM-5.2-w8a8c16
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
@@ -1258,7 +1258,7 @@ all:
               enforce-eager: ''
               num-gpu-blocks-override: 140000
               max-num-batched-tokens: 161280
-              max-num-seqs: 12
+              max-num-seqs: 10
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
@@ -1319,7 +1319,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/logs
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 161280
+            MODEL_LEN_MAX_PREFILL: 262144
             MODEL_PATH: /data1/models/GLM-5.2-w8a8c16
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
@@ -1367,7 +1367,7 @@ all:
               enforce-eager: ''
               num-gpu-blocks-override: 140000
               max-num-batched-tokens: 161280
-              max-num-seqs: 12
+              max-num-seqs: 10
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
@@ -1428,7 +1428,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/logs
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 161280
+            MODEL_LEN_MAX_PREFILL: 262144
             MODEL_PATH: /data1/models/GLM-5.2-w8a8c16
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
@@ -1476,7 +1476,7 @@ all:
               enforce-eager: ''
               num-gpu-blocks-override: 140000
               max-num-batched-tokens: 161280
-              max-num-seqs: 12
+              max-num-seqs: 10
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
@@ -1537,7 +1537,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/logs
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 161280
+            MODEL_LEN_MAX_PREFILL: 262144
             MODEL_PATH: /data1/models/GLM-5.2-w8a8c16
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
@@ -1585,7 +1585,7 @@ all:
               enforce-eager: ''
               num-gpu-blocks-override: 140000
               max-num-batched-tokens: 161280
-              max-num-seqs: 12
+              max-num-seqs: 10
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
@@ -1646,7 +1646,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/logs
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 161280
+            MODEL_LEN_MAX_PREFILL: 262144
             MODEL_PATH: /data1/models/GLM-5.2-w8a8c16
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
@@ -1694,7 +1694,7 @@ all:
               enforce-eager: ''
               num-gpu-blocks-override: 140000
               max-num-batched-tokens: 161280
-              max-num-seqs: 12
+              max-num-seqs: 10
               long-prefill-token-threshold: 32768
               # no-enable-prefix-caching: ''
               speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
@@ -1755,7 +1755,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/logs
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 161280
+            MODEL_LEN_MAX_PREFILL: 262144
             MODEL_PATH: /data1/models/GLM-5.2-w8a8c16
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 2
