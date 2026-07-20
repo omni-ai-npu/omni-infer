@@ -9,7 +9,8 @@
 拉取机器对应镜像
 
 ```bash
-docker pull swr.cn-east-4.myhuaweicloud.com/omni-ci/omniinfer-a3-arm:release_1.2.1.post1-202606292354-vllm
+A3: docker pull swr.cn-east-4.myhuaweicloud.com/omni-ci/omniinfer-a3-arm:release_1.2.1.post1-202606292354-vllm
+A2: docker pull swr.cn-east-4.myhuaweicloud.com/omni-ci/omniinfer-a2-arm:release_1.2.1.post1-202607010954-vllm
 ```
 
 ## 配置ssh
@@ -122,7 +123,8 @@ pip list | grep omni-npu
 docker在各个部署的A3机器上创建好后，在bash通过下述命令拉取推理服务，以 **1P1D** 为例：
 
 ```bash
-ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_w8a8_open.yml --tags run_server,run_proxy
+A3: ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_w8a8_open.yml --tags run_server,run_proxy
+A2: ansible-playbook -i omni_infer_inventory_used_for_1P1D_A2.yml omni_infer_server_template_performance1P1D_92B_A2_w8a8_open.yml --tags run_server,run_proxy
 ```
 
 C节点会在容器内启动nginx+proxy，在master node上启动nginx将并发的请求分配到各个节点上。可在部署的机器上通过日志追踪服务拉起的进程。

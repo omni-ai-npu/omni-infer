@@ -9,7 +9,8 @@ Multi-machine deployment is launched uniformly from the executor machine via ans
 Pull the corresponding image for your machine.
 
 ```bash
-docker pull swr.cn-east-4.myhuaweicloud.com/omni-ci/omniinfer-a3-arm:release_1.2.1.post1-202606292354-vllm
+A3: docker pull swr.cn-east-4.myhuaweicloud.com/omni-ci/omniinfer-a3-arm:release_1.2.1.post1-202606292354-vllm
+A2: docker pull swr.cn-east-4.myhuaweicloud.com/omni-ci/omniinfer-a2-arm:release_1.2.1.post1-202607010954-vllm
 ```
 
 ## Configure SSH
@@ -165,7 +166,8 @@ Simply replace the corresponding server yml in the Playbook:
 92B: omni_infer_server_template_performance4P1D_92B_open_omni_cache.yml, recommended inventory configuration: 4P1D
 
 ```bash
-ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template_performance4P1D_92B_open_omni_cache.yml --tags run_docker,run_server,run_proxy
+A3: ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template_performance4P1D_92B_open_omni_cache.yml --tags run_docker,run_server,run_proxy
+A2: ansible-playbook -i omni_infer_inventory_used_for_1P1D_A2.yml omni_infer_server_template_performance1P1D_92B_A2_w8a8_open.yml --tags run_server,run_proxy
 ```
 
 ### Steps Before Switching from OmniCache Service to Other Configurations
