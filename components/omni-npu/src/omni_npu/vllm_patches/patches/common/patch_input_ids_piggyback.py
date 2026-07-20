@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 #
 # Reuse caller-supplied pre-tokenized `input_ids` on /v1/chat/completions.
 #

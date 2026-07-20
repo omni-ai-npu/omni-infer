@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 """OX performance test for the dynamic-topology request interface.
 
 The validated workload and ZMQ flow remain in ``test_ox_perf.py``. This file

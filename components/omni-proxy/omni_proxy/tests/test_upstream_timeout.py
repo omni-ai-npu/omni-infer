@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 """
 T1-T9 UT for omni_proxy_*_timeout directives.
 
