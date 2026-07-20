@@ -1,0 +1,1261 @@
+# Copyright (c) 2026, Huawei Technologies Co., Ltd. All rights reserved.
+
+- name: run omniai
+  hosts: all
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  gather_facts: yes
+
+  environment:
+    # Global Configuration
+    LOG_PATH: "/path/to/server/log/"
+    MODEL_PATH: "/path/to/model/weights/"
+    MODEL_LEN_MAX_PREFILL: "524288"
+    MODEL_LEN_MAX_DECODE: "524288"
+    LOG_PATH_IN_EXECUTOR: "/path/to/server/log_path_in_executor"
+    CODE_PATH: "/path/to/code/"
+    KV_CONNECTOR: "LLMDataDistConnector"
+    SERVED_MODEL_NAME: "openPangu-2.0-Flash"
+    ENABLE_OMNI_CACHE: "{{ enable_omni_cache | default('1') }}"
+    ENABLE_HOST_MAPPING: "{{ enable_host_mapping | default('0') }}"
+    OMNI_CACHE_PREFILL_MMAP_FILE: "{{ omni_cache_prefill_mmap_file | default('omni_cache_p') }}"
+    OMNI_CACHE_DECODE_MMAP_FILE: "{{ omni_cache_decode_mmap_file | default('omni_cache_d') }}"
+    DISABLE_GATHER_SELECTION: "{{ disable_gather_selection | default('1') }}"
+    ENABLE_OMNI_CACHE_DSA_SPLIT: "{{ enable_omni_cache_dsa_split | default('0') }}"
+    OMNI_CACHE_DSA_MMAP_FILE: "{{ omni_cache_dsa_mmap_file | default('omni_cache_decode_dsa') }}"
+    HYBRID_ATTN_GROUP_SIZE: "{{ hybrid_attn_group_size | default('17') }}"
+    VLLM_PLUGINS: "{{ vllm_plugins | default('omni-npu,omni_custom_models,omni_npu_patches') }}"
+    NUM_DIE_PER_MACH: "{{ num_die_per_mach | default('16') }}"
+    BASE_PORT: "{{ omni_cache_base_port | default('16077') }}"
+    ZMQ_BASE_PORT: "{{ omni_cache_zmq_base_port | default('16555') }}"
+    OMNI_CACHE_MLA_SWA_DEBUG: "{{ omni_cache_mla_swa_debug | default('1') }}"
+
+    # Configuration for containers
+    DOCKER_IMAGE_ID: "image_name:image_tag"
+    DOCKER_NAME_P: "docker_p"
+    DOCKER_NAME_D: "docker_d"
+    DOCKER_NAME_C: "docker_c"
+    SCRIPTS_PATH: "/tmp/scripts_path"
+
+    # Tensor Parallel Size
+    DECODE_TENSOR_PARALLEL_SIZE: "1"
+
+  vars:
+    docker_run_cmd: |
+      docker run -it --shm-size=1600g \
+        -e LOG_PATH=$LOG_PATH \
+        -e PYTHONHASHSEED=123 \
+        --net=host \
+        --privileged=true \
+        -u root \
+        -w /data \
+        --device=/dev/davinci_manager \
+        --device=/dev/hisi_hdc \
+        --device=/dev/devmm_svm \
+        --entrypoint=bash \
+        -v /data:/data \
+        -v /mnt:/mnt \
+        -v /tmp:/tmp \
+        -v /home:/home \
+        -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
+        -v /usr/local/dcmi:/usr/local/dcmi \
+        -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+        -v /etc/ascend_install.info:/etc/ascend_install.info \
+        -v /usr/local/sbin:/usr/local/sbin \
+        -v /etc/hccn.conf:/etc/hccn.conf \
+        -v /usr/bin/hccn_tool:/usr/bin/hccn_tool \
+        -v $LOG_PATH:$LOG_PATH \
+        -v $MODEL_PATH:$MODEL_PATH \
+        -v $SCRIPTS_PATH:$SCRIPTS_PATH \
+        -v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime \
+
+    docker_exec_cmd: |
+      docker exec \
+
+    run_vllm_server_prefill_cmd: |
+      #!/bin/bash
+
+      . ~/.bashrc
+      export HCCL_BUFFSIZE=300
+      export HCCL_CONNECT_TIMEOUT=1800
+      export HCCL_EXEC_TIMEOUT=1800
+      export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
+      export HCCL_OP_EXPANSION_MODE="AIV"
+      export ASCEND_GLOBAL_LOG_LEVEL=3
+      export TASK_QUEUE_ENABLE=2
+      
+      export OMNI_REUSE_PREFILLED_TOKENS=1
+      export OMNI_SKIP_DECODE_TOKENIZE=1
+      export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
+
+      # patch
+      export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
+      export HYBRID_ATTN_GROUP_SIZE=17
+      export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+      export OMNI_NPU_VLLM_PATCHES="ALL"
+      export CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_92B_xp1d_p_open.json"
+
+      export PANGU_TOOL_CALL_ENDS_THINKING=1
+      export TORCH_COMPILE_DISABLE=1
+
+      prefill_server_list=$(echo "$PREFILL_SERVER_LIST" | awk '$1=$1' | tr -d ',')
+      KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
+      export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
+      KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
+      EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --max-num-batched-tokens 49152  --enable-expert-parallel --max-num-seqs 8 --enable-prefix-caching --enable-chunked-prefill --dtype bfloat16 --enforce-eager --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu"
+      REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
+      EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
+      GPU_UTIL=0.88
+      VLLM_ENABLE_MC2=1
+      export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+      unset https_proxy
+      unset http_proxy
+      unset proxy
+      
+      kv_role="kv_producer"
+
+      if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
+        export MASTER_NODE_IP=$HOST_IP
+        export NNODES=$NNODES
+        export NODE_RANK=$NODE_RANK
+        export NODE_IP_LIST=$NODE_IP_LIST
+        export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
+        export RAY_CGRAPH_get_timeout=7200
+        ray stop --force
+        EXTRA_ARGS="${EXTRA_ARGS} --no-disable-hybrid-kv-cache-manager --distributed-executor-backend ray"
+        node_count=$(( $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) + 1 ))
+        PREFILL_TENSOR_PARALLEL_SIZE=$(( PREFILL_TENSOR_PARALLEL_SIZE * node_count ))
+      else
+        EXTRA_ARGS="${EXTRA_ARGS} --no-disable-hybrid-kv-cache-manager --distributed-executor-backend mp"
+      fi
+
+      if [[ "${ENABLE_OMNI_CACHE:-1}" == "1" ]]; then
+        export ENABLE_OMNI_CACHE=1
+        export ENABLE_HOST_MAPPING=0
+        export DISABLE_GATHER_SELECTION=1
+        export OMNI_CACHE_MMAP_FILE="${OMNI_CACHE_PREFILL_MMAP_FILE:-omni_cache_p}"
+        export OMNI_CACHE_MMAP_PATH="/dev/hugepages/${OMNI_CACHE_MMAP_FILE}"
+        export OMNI_CACHE_PACKED_HBM=1
+        export OMNI_CACHE_LAYER_BYTES="${OMNI_CACHE_LAYER_BYTES:-88046829568}" # 82GB
+        export MAP_SIZE_BYTES="${MAP_SIZE_BYTES:-1610612736000}" # 1500GB
+        export NUM_DIE_PER_MACH="${NUM_DIE_PER_MACH:-16}"
+        export BASE_PORT="${BASE_PORT:-16077}"
+        export ZMQ_BASE_PORT="${ZMQ_BASE_PORT:-16555}"
+        export OMNI_CACHE_MLA_SWA_DEBUG="${OMNI_CACHE_MLA_SWA_DEBUG:-1}"
+        export NUM_GPU_BLOCKS_OVERRIDE="${NUM_GPU_BLOCKS_OVERRIDE:-${OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE:-480000}}"
+        export P_NODE_LIST="${P_NODE_LIST:-${HOST_IP}}"
+        export ROLE=prefill
+        export VLLM_PLUGINS="omni-npu,omni_custom_models,omni_npu_patches"
+
+        export KV_CACHE_MEMORY_BYTES="${KV_CACHE_MEMORY_BYTES:=$(( OMNI_CACHE_LAYER_BYTES * HYBRID_ATTN_GROUP_SIZE ))}"
+        EXTRA_ARGS="${EXTRA_ARGS} --kv-cache-memory-bytes ${KV_CACHE_MEMORY_BYTES}"
+
+        SETUP_HUGETLBFS_SH="/workspace/omniinfer/components/omni-cache/tools/setup/setup_hugetlbfs_2MB.sh"
+        MAP_SIZE_BYTES="${MAP_SIZE_BYTES}" OMNI_FILE="${OMNI_CACHE_MMAP_FILE}" bash "${SETUP_HUGETLBFS_SH}"
+
+        python -c "from omni_cache.connector import register_connectors; register_connectors()"
+
+        KV_CONNECTOR="OmniCacheConnector"
+        KV_PARALLEL_SIZE=1
+        EXTRA_ARGS="${EXTRA_ARGS} --num-gpu-blocks-override ${NUM_GPU_BLOCKS_OVERRIDE}"
+      else
+        export ENABLE_OMNI_CACHE=0
+        export ENABLE_HOST_MAPPING=0
+        KV_CONNECTOR="${KV_CONNECTOR:-LLMDataDistConnector}"
+      fi
+
+
+      cd /workspace/omniinfer/tools/scripts
+      bash /workspace/omniinfer/tools/scripts/pd_run.sh \
+        --additional-config '{"enable_low_latency": true}' \
+        --local-decode-server-ip-list "$SERVER_IP_LIST" \
+        --global-decode-server-ip-list "$SERVER_IP_LIST" \
+        --prefill-pod-num ${PREFILL_POD_NUM} \
+        --gloo-socket-ifname ${SOCKET_IFNAME} \
+        --tp-socket-ifname ${SOCKET_IFNAME} \
+        --model-path ${MODEL_PATH} \
+        --served-model-name ${SERVED_MODEL_NAME} \
+        --master-ip ${HOST_IP} \
+        --role "prefill" \
+        --kv-role ${kv_role} \
+        --max-model-len ${MODEL_LEN_MAX_PREFILL} \
+        --master-port ${MASTER_PORT} \
+        --base-api-port ${API_PORT} \
+        --tp ${PREFILL_TENSOR_PARALLEL_SIZE} \
+        --ascend-rt-visible-devices "${PREFILL_SERVER_LIST}" \
+        --kv-rank ${KV_RANK} \
+        --kv-engine-id ${KV_RANK} \
+        --kv-parallel-size ${KV_PARALLEL_SIZE} \
+        --kv-connector ${KV_CONNECTOR} \
+        --gpu-util ${GPU_UTIL} \
+        --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
+        --extra-args "${EXTRA_ARGS}" \
+        --hccl-buffsize "${HCCL_BUFFSIZE}" \
+        --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
+        --num-speculative-tokens 3 \
+        --log-dir "${LOG_PATH}/{{ inventory_hostname }}" > ${LOG_PATH}/{{ inventory_hostname }}/run_prefill.log 2>&1 &
+    
+    run_vllm_server_decode_cmd: |
+      #!/bin/bash
+
+      . ~/.bashrc
+      source /workspace/omniinfer/components/omni-cache/omni_cache/cache/device_backend/ascend/ASVG/vendors/customize/bin/set_env.bash
+      export HCCL_BUFFSIZE=1200
+      export HCCL_CONNECT_TIMEOUT=1800
+      export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
+      export HCCL_EXEC_TIMEOUT=1800
+      export ASCEND_GLOBAL_LOG_LEVEL=3
+      export HCCL_OP_EXPANSION_MODE="AI_CPU"
+
+      export OMNI_REUSE_PREFILLED_TOKENS=1
+      export OMNI_SKIP_DECODE_TOKENIZE=1
+      export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
+
+      # patch
+      export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
+      export HYBRID_ATTN_GROUP_SIZE=17
+      export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+      export OMNI_NPU_VLLM_PATCHES="ALL"
+      export ENABLE_DP_LB=false
+      export VLLM_DATA_PARALLEL_EXTERNAL_LB=false
+      export CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_92B_xp1d_d_open.json"
+
+      export PANGU_TOOL_CALL_ENDS_THINKING=1
+      export TORCH_COMPILE_DISABLE=1
+      
+  
+
+      export VLLM_CACHE_ROOT='./graph_cache'
+      export VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY=False
+      export VLLM_TORCH_PROFILER_WITH_STACK=False
+      export VLLM_TORCH_PROFILER_WITH_FLOPS=False      
+      
+      export TASK_QUEUE_ENABLE=1
+      dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
+      ((dp++))
+
+
+      KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
+
+      declare -A config_dict=(
+          {% for key, value in server_offset_dict.items() %}
+          [{{ key }}]={{ value }}{% if not loop.last %} {% endif %}
+          {% endfor %}
+      )
+
+      export LOCAL_WORLD_SIZE=16
+      rm -rf /workspace/omniinfer/tools/scripts/static_kernel_compile_outputs
+      rm -rf /usr/local/Ascend/cann/opp/static_kernel
+      rm -rf /usr/local/Ascend/cann-9.1.0-beta.1/opp/static_kernel
+      rm -rf graph_cache/
+      EXTRA_ARGS='--no-disable-hybrid-kv-cache-manager --enable-expert-parallel --disable-log-requests --max-num-seqs 4 --no-enable-prefix-caching --enable-chunked-prefill --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[16], "backend":"", "compile_sizes":[16]} --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu'
+      REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
+      EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
+      GPU_UTIL=0.88
+      VLLM_ENABLE_MC2=1
+      export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+      unset https_proxy
+      unset http_proxy
+      unset proxy
+
+      
+
+      if [[ "${ENABLE_OMNI_CACHE:-1}" == "1" ]]; then
+        export ENABLE_OMNI_CACHE=1
+        export ENABLE_HOST_MAPPING="${ENABLE_HOST_MAPPING:-0}"
+        export OMNI_CACHE_MMAP_FILE="${OMNI_CACHE_DECODE_MMAP_FILE:-omni_cache_d}"
+        export OMNI_CACHE_MMAP_PATH="/dev/hugepages/${OMNI_CACHE_MMAP_FILE}"
+        export OMNI_CACHE_LAYER_BYTES="${OMNI_CACHE_LAYER_BYTES:-43253760000}" # 48GB
+        export MAP_SIZE_BYTES="${MAP_SIZE_BYTES:-1099511627776}" # 1000GB
+        export NUM_DIE_PER_MACH="${NUM_DIE_PER_MACH:-16}"
+        export BASE_PORT="${BASE_PORT:-16077}"
+        export ZMQ_BASE_PORT="${ZMQ_BASE_PORT:-16555}"
+        export OMNI_CACHE_MLA_SWA_DEBUG="${OMNI_CACHE_MLA_SWA_DEBUG:-1}"
+        export ENABLE_OMNI_CACHE_DSA_SPLIT="${ENABLE_OMNI_CACHE_DSA_SPLIT:-0}"
+        export OMNI_CACHE_DSA_MMAP_FILE="${OMNI_CACHE_DSA_MMAP_FILE:-omni_cache_decode_dsa}"
+        export OMNI_CACHE_DSA_MMAP_PATH="/dev/hugepages/${OMNI_CACHE_DSA_MMAP_FILE}"
+        export P_NODE_LIST="${P_NODE_LIST:-${HOST_IP}}"
+        export ROLE=decode
+        export DISABLE_GATHER_SELECTION=1
+        export OMNI_CACHE_LOCAL_DP_SIZE=16
+        export VLLM_PLUGINS="omni-npu,omni_custom_models,omni_npu_patches"
+
+        export USE_OMNI_INPUT_BATCH="${USE_OMNI_INPUT_BATCH:-0}"
+
+        SETUP_HUGETLBFS_SH="/workspace/omniinfer/components/omni-cache/tools/setup/setup_hugetlbfs_2MB.sh"
+        MAP_SIZE_BYTES="${MAP_SIZE_BYTES}" OMNI_FILE="${OMNI_CACHE_MMAP_FILE}" bash "${SETUP_HUGETLBFS_SH}"
+        if [[ "${ENABLE_OMNI_CACHE_DSA_SPLIT}" == "1" ]]; then
+          OMNI_CACHE_DSA_MAP_SIZE_BYTES="${OMNI_CACHE_DSA_MAP_SIZE_BYTES:-$((MAP_SIZE_BYTES * 80 / 100))}"
+          PRIMARY_PAGES=$(( (MAP_SIZE_BYTES + (2 * 1024 * 1024) - 1) / (2 * 1024 * 1024) ))
+          DSA_PAGES=$(( (OMNI_CACHE_DSA_MAP_SIZE_BYTES + (2 * 1024 * 1024) - 1) / (2 * 1024 * 1024) ))
+          DSA_TOTAL_PAGES=$(( PRIMARY_PAGES + DSA_PAGES ))
+          MAP_SIZE_BYTES="${OMNI_CACHE_DSA_MAP_SIZE_BYTES}" OMNI_FILE="${OMNI_CACHE_DSA_MMAP_FILE}" \
+            bash "${SETUP_HUGETLBFS_SH}" "${DSA_TOTAL_PAGES}"
+        fi
+
+        python -c "from omni_cache.connector import register_connectors; register_connectors()"
+
+        KV_CONNECTOR="OmniCacheConnector"
+        KV_PARALLEL_SIZE=$((dp + 1))
+      else
+        export ENABLE_OMNI_CACHE=0
+        export ENABLE_HOST_MAPPING=0
+        KV_CONNECTOR="${KV_CONNECTOR:-LLMDataDistConnector}"
+      fi
+
+      cd /workspace/omniinfer/tools/scripts
+      bash /workspace/omniinfer/tools/scripts/pd_run.sh \
+        --additional-config '{"enable_low_latency": true, "npugraph_ex_config":{"enable": true, "super_kernel_optimize": false, "static_kernel_compile": false}}' \
+        --local-decode-server-ip-list "$SERVER_IP_LIST" \
+        --global-decode-server-ip-list "$SERVER_IP_LIST" \
+        --prefill-pod-num ${PREFILL_POD_NUM} \
+        --gloo-socket-ifname ${SOCKET_IFNAME} \
+        --tp-socket-ifname ${SOCKET_IFNAME} \
+        --num-servers ${NUM_SERVERS} \
+        --num-dp ${dp} \
+        --server-offset ${config_dict[$HOST]:-0} \
+        --model-path ${MODEL_PATH} \
+        --served-model-name ${SERVED_MODEL_NAME} \
+        --master-ip ${HOST_IP} \
+        --role "decode" \
+        --kv-role "kv_consumer" \
+        --max-model-len ${MODEL_LEN_MAX_DECODE} \
+        --master-port ${MASTER_PORT} \
+        --base-api-port ${API_PORT} \
+        --tp ${DECODE_TENSOR_PARALLEL_SIZE} \
+        --kv-rank ${PREFILL_POD_NUM} \
+        --kv-engine-id ${PREFILL_POD_NUM} \
+        --kv-parallel-size ${KV_PARALLEL_SIZE} \
+        --kv-connector ${KV_CONNECTOR} \
+        --gpu-util ${GPU_UTIL} \
+        --vllm-enable-mc2 ${VLLM_ENABLE_MC2} \
+        --extra-args "${EXTRA_ARGS}" \
+        --hccl-buffsize "${HCCL_BUFFSIZE}" \
+        --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \
+        --num-speculative-tokens 3 \
+        --log-dir "${LOG_PATH}/{{ inventory_hostname }}" > ${LOG_PATH}/{{ inventory_hostname }}/run_decode.log 2>&1 &
+    
+    run_proxy_cmd: |
+      #!/bin/bash
+      . ~/.bashrc
+
+      export PYTHONHASHSEED=1234
+      export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+
+      prefill_result="{{ PREFILL_API_SERVER_LIST }}"
+      prefill_result=`echo "$prefill_result" | awk '$1=$1'`
+
+      decode_result=""
+      decode_api_servers="{{ DECODE_API_SERVER_LIST_ALL }}"
+      decode_api_servers=`echo "$decode_api_servers" | awk '$1=$1'`
+      decode_array=(${decode_api_servers//,/ })
+      for var in ${decode_array[@]}; do
+        address=${var%@*}
+        ip=${address%:*}
+        port=${address#*:}
+        num=${var#*@}
+        for ((i=0; i<=$num;i++)); do
+          if [[ -z ${decode_result} ]]; then
+            decode_result="$ip:$port"
+          else
+            decode_result="${decode_result},$ip:$port"
+          fi
+          ((port++))
+        done
+      done
+
+      cd /workspace/omniinfer/components/omni-proxy/omni_proxy/
+      bash omni_proxy.sh \
+        --listen-port "$PROXY_NODE_PORT" \
+        --prefill-endpoints "$prefill_result" \
+        --decode-endpoints "$decode_result" \
+        --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
+        --log-level info \
+        --access-log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_access.log \
+        --core-num 4 \
+        --start-core-index 16 \
+        --subrequest-output-buffer-size 10M \
+        --prefill-pod-size "$PREFILL_POD_NUM" \
+        --decode-pod-size "$DECODE_POD_NUM" \
+        --omni-proxy-pd-policy sequential \
+        --omni-proxy-max-batch-num-token 100000 \
+        --omni-proxy-prefill-max-num-seqs 4 \
+        --omni-proxy-decode-max-num-seqs 3
+
+    reload_proxy_cmd: |
+      #!/bin/bash
+      . ~/.bashrc
+
+      export PYTHONHASHSEED=1234
+      export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+
+      prefill_result="{{ PREFILL_API_SERVER_LIST }}"
+      prefill_result=`echo "$prefill_result" | awk '$1=$1'`
+
+      decode_result=""
+      decode_api_servers="{{ DECODE_API_SERVER_LIST_ALL }}"
+      decode_api_servers=`echo "$decode_api_servers" | awk '$1=$1'`
+      decode_array=(${decode_api_servers//,/ })
+      for var in ${decode_array[@]}; do
+        address=${var%@*}
+        ip=${address%:*}
+        port=${address#*:}
+        num=${var#*@}
+        for ((i=0; i<=$num;i++)); do
+          if [[ -z ${decode_result} ]]; then
+            decode_result="$ip:$port"
+          else
+            decode_result="${decode_result},$ip:$port"
+          fi
+          ((port++))
+        done
+      done
+
+      cd /workspace/omniinfer/components/omni-proxy/omni_proxy/
+      bash omni_proxy.sh \
+        --listen-port "$PROXY_NODE_PORT" \
+        --prefill-endpoints "$prefill_result" \
+        --decode-endpoints "$decode_result" \
+        --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log \
+        --log-level info \
+        --access-log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_access.log \
+        --core-num 4 \
+        --omni-proxy-max-batch-num-token 100000 \
+        --omni-proxy-prefill-max-num-seqs 4 \
+        --omni-proxy-decode-max-num-seqs 3 \
+        --start-core-index 16 \
+        --prefill-pod-size "$PREFILL_POD_NUM" \
+        --decode-pod-size "$DECODE_POD_NUM" \
+        --omni-proxy-pd-policy sequential \
+        --reload > ${LOG_PATH}/{{ inventory_hostname }}/run_reload_log.log 2>&1 &
+
+    kill_python_processes_cmd: |
+      #!/bin/bash
+
+      ps aux | grep "VLLM" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+      ps aux | grep "vllm" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+      ps aux | grep "python" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+
+    kill_nginx_processes_cmd: |
+      #!/bin/bash
+
+      ps aux | grep "nginx" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+
+    kill_ray_processes_cmd: |
+      #!/bin/bash
+
+      ps aux | grep "ray" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+
+    start_docker_cmd_p: >
+      {{ docker_run_cmd }}
+      -d --name $DOCKER_NAME_P $DOCKER_IMAGE_ID
+
+    start_docker_cmd_d: >
+      {{ docker_run_cmd }}
+      -d --name $DOCKER_NAME_D $DOCKER_IMAGE_ID
+
+    start_docker_cmd_c: >
+      {{ docker_run_cmd }}
+      -e PROXY_NODE_PORT=$NODE_PORT
+      -d --name $DOCKER_NAME_C $DOCKER_IMAGE_ID
+    
+    p_node_list_computed: >-
+      {{
+        groups['P']
+        | map('extract', hostvars)
+        | selectattr('host_ip', 'defined')
+        | map(attribute='host_ip')
+        | unique
+        | join(';')
+      }}
+
+
+    docker_start_vllm_cmd_p: >
+      {{ docker_exec_cmd }}
+      -e MODEL_PATH=$MODEL_PATH
+      -e MODEL_LEN_MAX_PREFILL=$MODEL_LEN_MAX_PREFILL
+      -e PREFILL_SERVER_LIST=$PREFILL_SERVER_LIST
+      -e PREFILL_TENSOR_PARALLEL_SIZE=$PREFILL_TENSOR_PARALLEL_SIZE
+      -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE
+      -e SERVED_MODEL_NAME=$SERVED_MODEL_NAME
+      -e IP=$IP
+      -e HOST_IP=$HOST_IP
+      -e MASTER_PORT=$NODE_PORT
+      -e API_PORT=$API_PORT
+      -e SERVER_IP_LIST=$SERVER_IP_LIST
+      -e PREFILL_POD_NUM=$PREFILL_POD_NUM
+      -e SOCKET_IFNAME=$SOCKET_IFNAME
+      -e KV_RANK=$KV_RANK
+      -e NNODES=$NNODES
+      -e NODE_RANK=$NODE_RANK
+      -e NODE_IP_LIST=$NODE_IP_LIST
+      -e KV_CONNECTOR=$KV_CONNECTOR
+      -e 'P_NODE_LIST={{ p_node_list_computed }}'
+      -e ENABLE_OMNI_CACHE=$ENABLE_OMNI_CACHE
+      -e DISABLE_GATHER_SELECTION=$DISABLE_GATHER_SELECTION
+      -e OMNI_CACHE_LAYER_BYTES=$OMNI_CACHE_LAYER_BYTES
+      -e MAP_SIZE_BYTES=$MAP_SIZE_BYTES
+      -e OMNI_CACHE_PREFILL_MMAP_FILE=$OMNI_CACHE_PREFILL_MMAP_FILE
+      -e OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE=$OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE
+      -e HYBRID_ATTN_GROUP_SIZE=$HYBRID_ATTN_GROUP_SIZE
+      -e NUM_DIE_PER_MACH=$NUM_DIE_PER_MACH
+      -e BASE_PORT=$BASE_PORT
+      -e ZMQ_BASE_PORT=$ZMQ_BASE_PORT
+      -e OMNI_CACHE_MLA_SWA_DEBUG=$OMNI_CACHE_MLA_SWA_DEBUG
+      -d $DOCKER_NAME_P
+      /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
+
+    docker_start_vllm_cmd_d: >
+      {{ docker_exec_cmd }}
+      -e MODEL_PATH=$MODEL_PATH
+      -e MODEL_LEN_MAX_DECODE=$MODEL_LEN_MAX_DECODE
+      -e DECODE_SERVER_LIST=$DECODE_SERVER_LIST
+      -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE
+      -e DECODE_DATA_PARALLEL_SIZE=$DECODE_DATA_PARALLEL_SIZE
+      -e SERVED_MODEL_NAME=$SERVED_MODEL_NAME
+      -e HOST_IP=$HOST_IP
+      -e MASTER_PORT=$NODE_PORT
+      -e API_PORT=$API_PORT
+      -e DECODE_SERVER_IP_LIST_BY_GROUP=$DECODE_SERVER_IP_LIST_BY_GROUP
+      -e DECODE_SERVER_IP_LIST_ALL=$DECODE_SERVER_IP_LIST_ALL
+      -e PREFILL_POD_NUM=$PREFILL_POD_NUM
+      -e DECODE_POD_NUM=$DECODE_POD_NUM
+      -e SOCKET_IFNAME=$SOCKET_IFNAME
+      -e NUM_SERVERS=$NUM_SERVERS
+      -e HOST=$HOST
+      -e KV_CONNECTOR=$KV_CONNECTOR
+      -e 'P_NODE_LIST={{ p_node_list_computed }}'
+      -e ENABLE_OMNI_CACHE=$ENABLE_OMNI_CACHE
+      -e DISABLE_GATHER_SELECTION=$DISABLE_GATHER_SELECTION
+      -e ENABLE_HOST_MAPPING=$ENABLE_HOST_MAPPING
+      -e OMNI_CACHE_LAYER_BYTES=$OMNI_CACHE_LAYER_BYTES
+      -e MAP_SIZE_BYTES=$MAP_SIZE_BYTES
+      -e OMNI_CACHE_DECODE_MMAP_FILE=$OMNI_CACHE_DECODE_MMAP_FILE
+      -e OMNI_CACHE_DECODE_NUM_GPU_BLOCKS_OVERRIDE=$OMNI_CACHE_DECODE_NUM_GPU_BLOCKS_OVERRIDE
+      -e ENABLE_OMNI_CACHE_DSA_SPLIT=$ENABLE_OMNI_CACHE_DSA_SPLIT
+      -e OMNI_CACHE_DSA_MMAP_FILE=$OMNI_CACHE_DSA_MMAP_FILE
+      -e HYBRID_ATTN_GROUP_SIZE=$HYBRID_ATTN_GROUP_SIZE
+      -e NUM_DIE_PER_MACH=$NUM_DIE_PER_MACH
+      -e BASE_PORT=$BASE_PORT
+      -e ZMQ_BASE_PORT=$ZMQ_BASE_PORT
+      -e OMNI_CACHE_MLA_SWA_DEBUG=$OMNI_CACHE_MLA_SWA_DEBUG
+      -d $DOCKER_NAME_D
+      /bin/bash -c $SCRIPTS_PATH/vllm_run_for_d.sh
+
+    docker_start_proxy_cmd_c: >
+      {{ docker_exec_cmd }}
+      -e PREFILL_POD_NUM=$PREFILL_POD_NUM
+      -e DECODE_POD_NUM=$DECODE_POD_NUM
+      -e MODEL_PATH=$MODEL_PATH
+      -d $DOCKER_NAME_C
+      /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
+
+    docker_reload_proxy_cmd_c: >
+      {{ docker_exec_cmd }}
+      -e MODEL_PATH=$MODEL_PATH
+      -e PREFILL_POD_NUM=$PREFILL_POD_NUM
+      -e DECODE_POD_NUM=$DECODE_POD_NUM
+      -d $DOCKER_NAME_C
+      /bin/bash -c $SCRIPTS_PATH/reload_proxy_server.sh
+
+    docker_cp_prefill_code_cmd: "docker exec $DOCKER_NAME_P rm -rf /workspace/omniinfer/components/omni-npu && docker exec $DOCKER_NAME_P mkdir -p /workspace/omniinfer/components && docker cp {{ ansible_env.CODE_PATH }}/omni-npu $DOCKER_NAME_P:/workspace/omniinfer/components/"
+
+    docker_cp_decode_code_cmd: "docker exec $DOCKER_NAME_D rm -rf /workspace/omniinfer/components/omni-npu && docker exec $DOCKER_NAME_D mkdir -p /workspace/omniinfer/components && docker cp {{ ansible_env.CODE_PATH }}/omni-npu $DOCKER_NAME_D:/workspace/omniinfer/components/"
+
+    docker_cp_proxy_code_cmd: "docker exec $DOCKER_NAME_C rm -rf /workspace/omniinfer/components/omni-npu && docker exec $DOCKER_NAME_C mkdir -p /workspace/omniinfer/components && docker cp {{ ansible_env.CODE_PATH }}/omni-npu $DOCKER_NAME_C:/workspace/omniinfer/components/"
+
+  tasks:
+    - name: generate container name.
+      set_fact:
+        ACTUAL_DOCKER_NAME_P: "{{ ansible_env.DOCKER_NAME_P }}_{{inventory_hostname}}"
+        ACTUAL_DOCKER_NAME_D: "{{ ansible_env.DOCKER_NAME_D }}_{{inventory_hostname}}"
+        ACTUAL_DOCKER_NAME_C: "{{ ansible_env.DOCKER_NAME_C }}_{{inventory_hostname}}"
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      tags: always
+      
+    - name: Check and delete Prefill/Decode group Docker containers.
+      block:
+        - name: Check whether the container exists.
+          shell: |
+            docker inspect --format='{{"{{.Name}}"}}' \
+            $DOCKER_NAME_P $DOCKER_NAME_D \
+            2>/dev/null | grep -v '^$'
+          register: existing_containers
+          environment:
+            DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+            DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+          failed_when: false
+          changed_when: false
+
+        - name: Show generated container name.
+          debug:
+            msg: "Generated container name: {{ existing_containers.stdout_lines }}"
+
+        - name: Stop containers.
+          command: |
+            /bin/bash -c "docker stop {{ existing_containers.stdout_lines | join(' ') }}"
+          when: existing_containers.stdout != ""
+
+        - name: Delete containers.
+          command: |
+            /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
+          when: existing_containers.stdout != ""
+      when: "'P' in group_names or 'D' in group_names"
+      tags:
+        - run_docker
+        - clean_up
+
+    - name: Check and delete containers used for global proxy server.
+      block:
+        - name: Check whether the container exists.
+          shell: |
+            docker inspect --format='{{"{{.Name}}"}}' \
+            $DOCKER_NAME_C \
+            2>/dev/null | grep -v '^$'
+          register: existing_containers
+          environment:
+            DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+          failed_when: false
+          changed_when: false
+
+        - name: Show generated container name.
+          debug:
+            msg: "Generated container name: {{ existing_containers.stdout_lines }}"
+
+        - name: Stop containers.
+          command: |
+            /bin/bash -c "docker stop {{ existing_containers.stdout_lines | join(' ') }}"
+          when: existing_containers.stdout != ""
+
+        - name: Delete containers.
+          command: |
+            /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
+          when: existing_containers.stdout != ""
+      when: "'C' in group_names"
+      tags:
+        - run_docker
+        - clean_up
+
+    - name: Run container for prefill instances.
+      command: bash -c "{{ start_docker_cmd_p }}"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      when: "'P' in group_names"
+      tags: run_docker
+
+    - name: Run container for decode instances.
+      command: bash -c "{{ start_docker_cmd_d }}"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      when: "'D' in group_names"
+      tags: run_docker
+
+    - name: Run container for global proxy server.
+      command: bash -c "{{ start_docker_cmd_c }}"
+      environment:
+        NODE_PORT: "{{ node_port }}"
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+      when: "'C' in group_names"
+      tags:
+        - run_docker
+
+    - name: Create a directory to store the log.
+      ansible.builtin.file:
+        path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
+        state: directory
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      tags: run_docker
+
+    - name: Create a directory to store the code.
+      ansible.builtin.file:
+        path: "{{ ansible_env.CODE_PATH }}"
+        state: directory
+      tags: sync_code
+
+    - name: The executor synchronizes code to all instances.
+      synchronize:
+        src: "{{ ansible_env.CODE_PATH }}/"
+        dest: "{{ ansible_env.CODE_PATH }}/"
+        delete: yes
+        recursive: yes
+      when: >
+        'P' in group_names or
+        'D' in group_names or
+        (
+          'C' in group_names and
+          ansible_host not in
+          (groups.get('P', []) | map('extract', hostvars, 'ansible_host') | list) and
+          ansible_host not in
+          (groups.get('D', []) | map('extract', hostvars, 'ansible_host') | list)
+        )
+      tags: sync_code
+
+    - name: Copy the code from the host machine into the container (prefill).
+      command: bash -c "{{ docker_cp_prefill_code_cmd }}"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      when: "'P' in group_names"
+      tags: sync_code
+
+    - name: Copy the code from the host machine into the container (decode).
+      command: bash -c "{{ docker_cp_decode_code_cmd }}"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      when: "'D' in group_names"
+      tags: sync_code
+
+    - name: Copy the code from the host machine into the container(proxy).
+      command: bash -c "{{ docker_cp_proxy_code_cmd }}"
+      environment:
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+      when: "'C' in group_names"
+      tags: sync_code
+
+    - name: Register all values.
+      set_fact:
+        PREFILL_API_SERVER_LIST: >-
+          {%- set result=[] -%}
+          {%- for host in groups['P']|default([]) -%}
+            {%- set h=hostvars.get(host,{}) -%}
+            {%- set ansible_host_val=h.ansible_host|default('') -%}
+            {%- set host_ip_val=h.host_ip|default('') -%}
+            {%- set api_port_val=h.api_port|default('9000') -%}
+            {%- if ansible_host_val and host_ip_val and ansible_host_val == host_ip_val -%}
+              {%- set entry=ansible_host_val~':'~api_port_val -%}
+              {%- if entry not in result -%}
+              {%- set _=result.append(entry) -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ result | join(',')}}
+        
+        DECODE_API_SERVER_LIST_ALL: >-
+          {%- set result=[] -%}
+          {%- for host in groups['D']|default([]) -%}
+            {%- set h=hostvars.get(host,{}) -%}
+            {%- set ip=h.ansible_host|default('') -%}
+            {%- set port=h.api_port|default('9100') -%}
+            {%- set num=h.ascend_rt_visible_devices.count(',')|default('0') -%}
+            {%- if ip -%}
+              {%- set entry=ip~':'~port~'@'~num -%}
+              {%- if entry not in result -%}
+                {%- set _=result.append(entry) -%}
+              {%- endif -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ result | join(',') }}
+
+        PREFILL_POD_NUM: >-
+          {{
+            groups['P'] |
+            map('extract', hostvars) |
+            map(attribute='host_ip') |
+            unique |
+            length
+          }}
+        P_NODE_LIST: >-
+          {{
+            groups['P'] |
+            map('extract', hostvars) |
+            map(attribute='host_ip') |
+            unique |
+            join(';')
+          }}
+        
+        DECODE_POD_NUM: >-
+          {{
+            groups['D'] |
+            map('extract', hostvars) |
+            map(attribute='host_ip') |
+            unique |
+            length
+          }}
+
+        DECODE_SERVER_IP_LIST_BY_GROUP: >-
+          {%- set host_list = [] -%}
+          {%- for host in groups['D']|default([]) -%}
+            {%- if hostvars[host].host_ip == hostvars[host].ansible_host -%}
+              {%- set _ = host_list.insert(0, hostvars[host].ansible_host) -%}
+            {%- else -%}
+              {%- set _ = host_list.append(hostvars[host].ansible_host) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ host_list | join(',') }}
+
+
+
+
+        DECODE_SERVER_IP_LIST_ALL: >-
+          {%- set host_list = [] -%}
+          {%- for host in groups['D'] |default([]) -%}
+            {%- if hostvars[host].host_ip == hostvars[host].ansible_host -%}
+              {%- set _ = host_list.insert(0, hostvars[host].ansible_host) -%}
+            {%- else -%}
+              {%- set _ = host_list.append(hostvars[host].ansible_host) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ host_list | join(',') }}
+
+        DECODE_SERVER_BY_GROUP: >-
+          {%- set result = [] -%}
+          {%- for host in groups['D']|default([]) -%}
+            {%- set _=result.append(hostvars[host].ascend_rt_visible_devices) -%}
+          {%- endfor -%}
+          {{ result | join(',') }}
+
+        DECODE_SERVER_OFFSET_BY_GROUP: >-
+          {%- set offsets = {} -%}
+          {%- set ns = namespace(cnt=0) -%}
+          {%- for host in groups['D']|default([]) -%}
+            {%- set _ = offsets.update({host: ns.cnt}) -%}
+            {%- set num = hostvars[host].ascend_rt_visible_devices.count(',')|default('0')|int -%}
+            {%- set ns.cnt = ns.cnt + num + 1 -%}
+          {%- endfor -%}
+          {{ offsets }}
+
+        DECODE_SERVER_OFFSET_ALL: >-
+          {%- set offsets = {} -%}
+          {%- set ns = namespace(cnt=0) -%}
+          {%- for host in groups['D']|default([]) -%}
+            {%- set _ = offsets.update({host: ns.cnt}) -%}
+            {%- set num=hostvars[host].ascend_rt_visible_devices.count(',')|default('0')|int -%}
+            {%- set ns.cnt = ns.cnt + num + 1 -%}
+          {%- endfor -%}
+          {{ offsets }}
+      delegate_to: localhost
+      tags: always
+
+    - name: Register values for prefill.
+      set_fact:
+        NODE_IP_LIST: >-
+          {{
+            groups['P'] |
+            map('extract', hostvars) |
+            selectattr('host_ip', '==', host_ip) |
+            map(attribute='ansible_host') |
+            unique |
+            join(',')
+          }}
+        NNODES: >-
+          {{
+            groups['P'] |
+            map('extract', hostvars) |
+            selectattr('host_ip', '==', host_ip) |
+            list |
+            length
+          }}
+
+      when: "'P' in group_names"
+      tags: always
+
+    - name: Display all values.
+      debug:
+        msg: |
+         PREFILL_API_SERVER_LIST: {{ PREFILL_API_SERVER_LIST }}
+         DECODE_API_SERVER_LIST_ALL: {{ DECODE_API_SERVER_LIST_ALL }}
+         DECODE_SERVER_IP_LIST_BY_GROUP: {{ DECODE_SERVER_IP_LIST_BY_GROUP }}
+         DECODE_SERVER_IP_LIST_ALL: {{ DECODE_SERVER_IP_LIST_ALL }}
+         PREFILL_POD_NUM: {{ PREFILL_POD_NUM }}
+         DECODE_SERVER_BY_GROUP: {{ DECODE_SERVER_BY_GROUP }}
+         DECODE_NUM_DP: {{ DECODE_SERVER_BY_GROUP.count(',') + 1 }} 
+         DECODE_SERVER_OFFSET_BY_GROUP: {{ DECODE_SERVER_OFFSET_BY_GROUP }}
+         DECODE_SERVER_OFFSET_ALL: {{ DECODE_SERVER_OFFSET_ALL }}
+         NODE_IP_LIST: {{ NODE_IP_LIST | default('') }}
+         NNODES: {{ NNODES | default('') }}
+
+      delegate_to: localhost
+      tags: always
+
+    - name: Generate a script to kill all Python processes in the container.
+      copy:
+        content: "{{ kill_python_processes_cmd }}"
+        dest: "$SCRIPTS_PATH/kill_python_processes.sh"
+        mode: '0750'
+      when: "'P' in group_names or 'D' in group_names"
+      tags: stop_server
+
+    - name: Generate a script to kill all Ray processes in the container. 
+      copy:
+        content: "{{ kill_ray_processes_cmd }}"
+        dest: "$SCRIPTS_PATH/kill_ray_processes.sh"
+        mode: '0750'
+      when: "'P' in group_names or 'D' in group_names"
+      tags: stop_server
+
+    - name: Kill all Python processes in the container of prefill.
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      failed_when: false
+      no_log: true
+      when: "'P' in group_names"
+      tags: stop_server
+
+    - name: Kill all Ray processes in the container of prefill.
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/kill_ray_processes.sh"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      failed_when: false
+      no_log: true
+      when: "'P' in group_names"
+      tags: stop_server
+
+    - name: Kill all Python processes in the container of decode.
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      failed_when: false
+      no_log: true
+      when: "'D' in group_names"
+      tags: stop_server
+
+    - name: Kill all Ray processes in the container of decode.
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/kill_ray_processes.sh"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      failed_when: false
+      no_log: true
+      when: "'D' in group_names"
+      tags: stop_server
+
+    - name: Wait 5 seconds.
+      pause:
+        seconds: 5
+      when: "(NODE_IP_LIST | default('') | string).split(',') | length == 1"
+      tags:
+        - stop_server
+
+    - name: Remove proc_trace.txt if it exists (P & D nodes)
+      ansible.builtin.file:
+        path: /tmp/process/proc_trace.txt
+        state: absent
+      when: "'P' in group_names or 'D' in group_names"
+      tags:
+        - run_server
+
+    - name: Generate a script to run the vllm server for the prefill instances.
+      copy:
+        content: "{{ run_vllm_server_prefill_cmd }}"
+        dest: "$SCRIPTS_PATH/vllm_run_for_p.sh"
+        mode: '0750'
+      when: "'P' in group_names"
+      tags:
+        - run_server
+
+    - name: Generate a script to run the vllm server for the decode instances.
+      copy:
+        content: "{{ run_vllm_server_decode_cmd }}"
+        dest: "$SCRIPTS_PATH/vllm_run_for_d.sh"
+        mode: '0750'
+      vars:
+        server_offset_dict: "{{ DECODE_SERVER_OFFSET_BY_GROUP }}"
+      when: "'D' in group_names"
+      tags:
+        - run_server
+
+    - name: Get socket name for communication between prefill instances and decode instances.
+      shell: |
+        ip -4 route list 0/0 | awk '{print $5}' | head -1
+      register: default_interface_result
+      changed_when: false
+      tags:
+        - run_server
+
+    - name: Use a variable to store the socket name.
+      set_fact:
+        default_interface: "{{ default_interface_result.stdout }}"
+      when: default_interface_result.stdout != ""
+      tags:
+        - run_server
+
+    - name: Run the Omniai service for prefill instances.
+      command: bash -c "{{ docker_start_vllm_cmd_p }}"
+      environment:
+        ROLE: "P"
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+        NODE_PORT: "{{ node_port }}"
+        PREFILL_SERVER_LIST: "{{ ascend_rt_visible_devices }}"
+        API_PORT: "{{ api_port }}"
+        SERVER_IP_LIST: "{{ DECODE_SERVER_IP_LIST_ALL | replace(' ', '') | trim }}"
+        PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
+        SOCKET_IFNAME: "{{ default_interface }}"
+        IP: "{{ ansible_host }}"
+        HOST_IP: "{{ host_ip }}"
+        KV_RANK: "{{ kv_rank }}"
+        NODE_RANK: "{{ node_rank }}"
+        PREFILL_TENSOR_PARALLEL_SIZE: "{{ ascend_rt_visible_devices.split(',') | length }}"
+        NNODES: "{{ NNODES }}"
+        NODE_IP_LIST: "{{ NODE_IP_LIST }}"
+        P_NODE_LIST: "{{ P_NODE_LIST }}"
+        ENABLE_OMNI_CACHE_DSA_SPLIT: "{{ enable_omni_cache_dsa_split | default('1') }}"
+        OMNI_CACHE_PREFILL_MMAP_FILE: "{{ omni_cache_prefill_mmap_file | default('omni_cache_p') }}"
+        OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE: "{{ omni_cache_prefill_num_gpu_blocks_override | default('480000') }}"
+      when: "'P' in group_names and (NODE_IP_LIST | string).split(',') | length >= 2"
+      tags:
+        - run_server
+
+    - name: Wait 20 seconds.
+      pause:
+        seconds: 20  # Support decimals（such as 0.5s）
+      when: "(NODE_IP_LIST | default('') | string).split(',') | length >= 2"
+      tags:
+        - run_server
+
+    - name: Run the Omniai service for decode instances.
+      command: bash -c "{{ docker_start_vllm_cmd_d }}"
+      environment:
+        ROLE: "D"
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+        NODE_PORT: "{{ node_port }}"
+        API_PORT: "{{ api_port }}"
+        DECODE_SERVER_LIST: "{{ ascend_rt_visible_devices }}"
+        DECODE_SERVER_IP_LIST_BY_GROUP: "{{ DECODE_SERVER_IP_LIST_BY_GROUP | replace(' ', '') | trim }}"
+        DECODE_SERVER_IP_LIST_ALL: "{{ DECODE_SERVER_IP_LIST_ALL | replace(' ', '') | trim }}"
+        PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
+        DECODE_POD_NUM: "{{ DECODE_POD_NUM }}"
+        SOCKET_IFNAME: "{{ default_interface }}"
+        NUM_SERVERS: "{{ ascend_rt_visible_devices.split(',') | length }}"
+        HOST_IP: "{{ host_ip }}"
+        DECODE_DATA_PARALLEL_SIZE: "{{ DECODE_SERVER_BY_GROUP }}"
+        P_NODE_LIST: "{{ P_NODE_LIST }}"
+        OMNI_CACHE_DECODE_MMAP_FILE: "{{ omni_cache_decode_mmap_file | default('omni_cache_d') }}"
+        OMNI_CACHE_DECODE_NUM_GPU_BLOCKS_OVERRIDE: "{{ omni_cache_decode_num_gpu_blocks_override | default('6100') }}"
+        ENABLE_OMNI_CACHE_DSA_SPLIT: "{{ enable_omni_cache_dsa_split | default('0') }}"
+        DISABLE_GATHER_SELECTION: "{{ disable_gather_selection | default('1') }}"
+        OMNI_CACHE_DSA_MMAP_FILE: "{{ omni_cache_dsa_mmap_file | default('omni_cache_decode_dsa') }}"
+
+        HOST: "{{ inventory_hostname }}"
+      when: "'D' in group_names"
+      tags:
+        - run_server
+
+
+    - name: Run the Omniai service for prefill instances.
+      command: bash -c "{{ docker_start_vllm_cmd_p }}"
+      environment:
+        ROLE: "P"
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+        NODE_PORT: "{{ node_port }}"
+        PREFILL_SERVER_LIST: "{{ ascend_rt_visible_devices }}"
+        API_PORT: "{{ api_port }}"
+        SERVER_IP_LIST: "{{ DECODE_SERVER_IP_LIST_ALL | replace(' ', '') | trim }}"
+        PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
+        DECODE_POD_NUM: "{{ DECODE_POD_NUM }}"
+        SOCKET_IFNAME: "{{ default_interface }}"
+        IP: "{{ ansible_host }}"
+        HOST_IP: "{{ host_ip }}"
+        KV_RANK: "{{ kv_rank }}"
+        NODE_RANK: "{{ node_rank }}"
+        PREFILL_TENSOR_PARALLEL_SIZE: "{{ ascend_rt_visible_devices.split(',') | length }}"
+        NNODES: "{{ NNODES }}"
+        NODE_IP_LIST: "{{ NODE_IP_LIST }}"
+        P_NODE_LIST: "{{ P_NODE_LIST }}"
+        ENABLE_OMNI_CACHE_DSA_SPLIT: "{{ enable_omni_cache_dsa_split | default('1') }}"
+        OMNI_CACHE_PREFILL_MMAP_FILE: "{{ omni_cache_prefill_mmap_file | default('omni_cache_p') }}"
+        OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE: "{{ omni_cache_prefill_num_gpu_blocks_override | default('480000') }}"
+      when: "'P' in group_names and (NODE_IP_LIST | string).split(',') | length == 1"
+      tags:
+        - run_server
+
+
+    - name: Wait for vLLM service to be ready in container D
+      ansible.builtin.shell:
+        cmd: |
+          timeout=300
+          while [ $timeout -gt 0 ]; do
+            if docker exec $DOCKER_NAME_D grep -q "Application startup complete" ${LOG_PATH}/{{ inventory_hostname }}/server_0.log; then
+              echo "Service ready"
+              exit 0
+            fi
+            sleep 20
+            timeout=$((timeout - 20))
+          done
+          echo "Timeout waiting for service" >&2
+          exit 1
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+        LOG_PATH: "{{ ansible_env.LOG_PATH }}"
+      when: 
+        - "'D' in group_names"
+        - "proc_bind_enabled | default(false)"
+      tags:
+        - proc_bind
+        - run_server
+        - add_node
+        - delete_node
+    
+    - name: Ensure bind_cpu.sh is executable in the container
+      ansible.builtin.shell:
+        cmd: docker exec $DOCKER_NAME_P chmod +x /workspace/omniinfer/tools/scripts/bind_cpu.sh
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      when: "'P' in group_names"
+      tags:
+        - proc_bind
+        - run_server
+        - add_node
+        - delete_node
+
+    - name: Ensure bind_cpu.sh is executable in the container
+      ansible.builtin.shell:
+        cmd: docker exec $DOCKER_NAME_D chmod +x /workspace/omniinfer/tools/scripts/bind_cpu.sh
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      when: "'D' in group_names"
+      tags:
+        - proc_bind
+        - run_server
+        - add_node
+        - delete_node
+    
+    - name: Prefill cpu_pin
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c /workspace/omniinfer/tools/scripts/bind_cpu.sh"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+        SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+        ROLE: "P"
+      become: yes
+      when: 
+        - "'P' in group_names"
+        - "proc_bind_enabled | default(false)"
+      tags:
+        - proc_bind
+        - run_server
+        - add_node
+        - delete_node
+    
+    - name: Decode cpu_pin
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c /workspace/omniinfer/tools/scripts/bind_cpu.sh"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+        SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+        ROLE: "D"
+      become: yes
+      when: 
+        - "'D' in group_names"
+        - "proc_bind_enabled | default(false)"
+      tags:
+        - proc_bind
+        - run_server
+        - add_node
+        - delete_node
+
+    - name: Generate a script to kill all nginx processes in the container.
+      copy:
+        content: "{{ kill_nginx_processes_cmd }}"
+        dest: "$SCRIPTS_PATH/kill_nginx_processes.sh"
+        mode: '0750'
+      when: "'C' in group_names"
+      tags:
+        - run_proxy
+        - run_server
+        - delete_node
+
+    - name: Kill all Python processes in the container of proxy.
+      command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/kill_nginx_processes.sh"
+      environment:
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+      failed_when: false
+      no_log: true
+      when: "'C' in group_names"
+      tags: 
+        - run_proxy
+        - run_server
+        - delete_node
+
+    - name: Generate a script to run the global proxy server.
+      copy:
+        content: "{{ run_proxy_cmd }}"
+        dest: "$SCRIPTS_PATH/run_proxy_server.sh"
+        mode: '0750'
+      when: "'C' in group_names"
+      tags:
+        - run_proxy
+        - run_server
+        - delete_node
+
+    - name: Run the global proxy server.
+      command: bash -c "{{ docker_start_proxy_cmd_c }}"
+      environment:
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+        PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
+        DECODE_POD_NUM: "{{ DECODE_POD_NUM }}"
+      when: "'C' in group_names"
+      tags:
+        - run_proxy
+        - run_server
+        - delete_node
+
+    - name: Generate a script to reload omni proxy server.
+      copy:
+        content: "{{ reload_proxy_cmd }}"
+        dest: "$SCRIPTS_PATH/reload_proxy_server.sh"
+        mode: '0750'
+      when: "'C' in group_names"
+      tags:
+        - reload_proxy
+
+    - name: Reload omni proxy server.
+      command: bash -c "{{ docker_reload_proxy_cmd_c }}"
+      environment:
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+        PREFILL_POD_NUM: "{{ PREFILL_POD_NUM }}"
+        DECODE_POD_NUM: "{{ DECODE_POD_NUM }}"
+      when: "'C' in group_names"
+      tags:
+        - reload_proxy
+
+    - name: Delete Prefill/Decode instances.
+      block:
+        - name: 
+          assert:
+            that:
+              - delete_node_ip | length > 0
+            fail_msg: "Please use [-e 'delete_node_ip=x.x.x.x,y.y.y.y'] to enter your ip addresses which need to delete"
+
+        - name: 
+          assert:
+            that:
+              - item is ansible.utils.ipv4
+            fail_msg: "{{ item }} is illegal IPv4 address!"
+          loop: "{{ delete_node_ip.split(',') | map('trim') | list }}"
+
+        - name: Add deleted node ip into temporary group
+          add_host:
+            name: "{{ item }}"
+            groups: need_delete_node
+          loop: "{{ delete_node_ip.split(',') | map('trim') | list }}"
+
+        - name: kill vLLM process on deleted node
+          command: /bin/bash -c "kill -15 $(pgrep vllm)"
+          when: "'need_delete_node' in  group_names"
+
+        - name: Wait 30 seconds.
+          pause:
+            seconds: 30
+
+        - name: Stop and delete node container
+          command: /bin/bash -c "docker stop $(docker ps -aq --filter 'name={{ DOCKER_NAME_P }}' --filter 'name={{ DOCKER_NAME_D }}') && docker rm $(docker ps -aq --filter 'name={{ DOCKER_NAME_P }}'  --filter 'name={{ DOCKER_NAME_D }}')"
+          when: "'need_delete_node' in  group_names"
+      tags: 
+        - never
+        - delete_node
+
+    - name: Create a directory on the executor to store the log.
+      ansible.builtin.file:
+        path: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}"
+        state: directory
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      delegate_to: localhost
+      tags:
+        - fetch_log
+
+    - name: Forward logs from all machines to the executor.
+      ansible.builtin.synchronize:
+        mode: pull
+        src: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}/"
+        dest: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}/"
+      when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+      tags:
+        - fetch_log
+

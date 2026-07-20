@@ -19,6 +19,9 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
+from omni_npu.vllm_patches.patches.common.patch_prefilled_token_skip_tokenize import (
+    drain_pending_finish_outputs,
+)
 
 logger = init_logger(__name__)
 
@@ -235,6 +238,8 @@ class SchedulerPatch(VLLMPatch):
         # KV Connector: update state for finished KV Transfers.
         if kv_connector_output:
             self._update_from_kv_xfer_finished(kv_connector_output)
+
+        drain_pending_finish_outputs(self, outputs)
 
         # collect KV cache events from KV cache manager
         events = self.kv_cache_manager.take_events()

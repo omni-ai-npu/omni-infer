@@ -43,6 +43,9 @@ from omni_npu.vllm_patches.patches.common.patch_args_utils import (
 from omni_npu.vllm_patches.patches.common.patch_routed_experts import (
     GPUModelRunnerInitRoutedExpertsPatch as _GPUModelRunnerPatchUpstream,
 )
+from omni_npu.vllm_patches.patches.common.patch_prefilled_token_skip_tokenize import (
+    enforce_speculative_generation_budget,
+)
 
 _THINKING_TOKEN_BUDGET_KEY = "thinking_token_budget"
 
@@ -266,6 +269,8 @@ class InputProcessorPatch(VLLMPatch):
         **kwargs
     ):
         EngineCoreRequest = _original_InputProcessor_process_inputs(self, *args, **kwargs)
+
+        enforce_speculative_generation_budget(self.vllm_config, EngineCoreRequest)
 
         if self.reasoning_config and self.reasoning_config.thinking_token_budget:
             thinking_token_budget = self.reasoning_config.thinking_token_budget

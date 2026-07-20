@@ -58,6 +58,7 @@ from vllm.logger import init_logger
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from omni_npu.vllm_patches.patches.common.patch_prefilled_token_skip_tokenize import (
     OpenAIServingChatPreprocessPatch as _PrefilledPreprocessPatch,
+    _reject_if_prompt_overflows_max_model_len,
 )
 
 logger = init_logger(__name__)
@@ -246,6 +247,10 @@ class InputIdsPiggybackPatch(VLLMPatch):
                     request = tool_parser(tokenizer).adjust_request(request=request)
 
                 prompt_inputs = self._validate_input(request, caller_ids, "")
+                # _validate_input only rejects >= max_model_len; this branch returns
+                # early, so apply omni's M-3N margin here too (else 500 at the guard).
+                _reject_if_prompt_overflows_max_model_len(
+                    self, request, prompt_inputs["prompt_token_ids"])
                 engine_prompt = TokensPrompt(
                     prompt_token_ids=prompt_inputs["prompt_token_ids"]
                 )

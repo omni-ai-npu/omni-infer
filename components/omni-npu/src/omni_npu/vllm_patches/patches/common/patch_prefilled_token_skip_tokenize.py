@@ -56,20 +56,79 @@ def _get_request_max_tokens(request: Any) -> int | None:
     return getattr(request, "max_tokens", None)
 
 
-def _speculative_margin(vllm_config: Any) -> int:
-    """Tokens to reserve below max_model_len when spec decoding is on.
-    max_model_len - num_speculative_tokens*3. 
-    """
+# vllm_config remembered from AsyncLLM.generate: the serving object (API-server
+# process) can't see speculative_config, but the AsyncLLM in the same process can,
+# so the HTTP check falls back to this to get num_spec for the M-3N margin.
+_ENGINE_VLLM_CONFIG: Any = None
+
+
+def _remember_engine_vllm_config(vllm_config: Any) -> None:
+    global _ENGINE_VLLM_CONFIG
+    if _ENGINE_VLLM_CONFIG is None and vllm_config is not None:
+        _ENGINE_VLLM_CONFIG = vllm_config
+
+
+def _extract_num_speculative_tokens(vllm_config: Any) -> int:
     spec = getattr(vllm_config, "speculative_config", None)
-    if spec is None:
-        return 0
-    num_spec = getattr(spec, "num_speculative_tokens", 0) or 0
-    return num_spec * 3
+    return getattr(spec, "num_speculative_tokens", 0) or 0
+
+
+def _num_speculative_tokens(vllm_config: Any) -> int:
+    num_spec = _extract_num_speculative_tokens(vllm_config)
+    if num_spec == 0:
+        num_spec = _extract_num_speculative_tokens(_ENGINE_VLLM_CONFIG)
+    return max(num_spec, 0)
+
+
+def _speculative_margin(vllm_config: Any) -> int:
+    return _num_speculative_tokens(vllm_config) * 3
+
+
+def _effective_max_model_len(max_model_len: int, vllm_config: Any) -> int:
+    return max_model_len - _speculative_margin(vllm_config)
+
+
+def _fits_effective_max_model_len(
+    token_count: int,
+    max_model_len: int,
+    vllm_config: Any,
+    *,
+    reserve_tokens: int = 0,
+) -> bool:
+    return token_count + reserve_tokens <= _effective_max_model_len(
+        max_model_len, vllm_config
+    )
+
+
+def _has_decode_room(
+    token_count: int,
+    max_model_len: int,
+    vllm_config: Any,
+) -> bool:
+    return token_count < _effective_max_model_len(max_model_len, vllm_config)
+
+
+def _get_serving_vllm_config(serving: OpenAIServing) -> Any:
+    """Resolve the config used by HTTP admission checks."""
+    for attr_name in ("_omni_vllm_config", "vllm_config"):
+        vllm_config = getattr(serving, attr_name, None)
+        if vllm_config is not None:
+            return vllm_config
+
+    try:
+        from vllm.config import get_current_vllm_config_or_none
+        vllm_config = get_current_vllm_config_or_none()
+        if vllm_config is not None:
+            return vllm_config
+    except (ImportError, AttributeError):
+        pass
+
+    engine_client = getattr(serving, "engine_client", None)
+    return getattr(engine_client, "vllm_config", None)
 
 
 def _is_kv_producer(serving: OpenAIServing) -> bool:
-    engine_client = getattr(serving, "engine_client", None)
-    vllm_config = getattr(engine_client, "vllm_config", None)
+    vllm_config = _get_serving_vllm_config(serving)
     kv_transfer_config = getattr(vllm_config, "kv_transfer_config", None)
     if kv_transfer_config is not None and getattr(
         kv_transfer_config, "is_kv_transfer_instance", False
@@ -125,6 +184,7 @@ def _reject_if_prompt_overflows_max_model_len(
     serving: OpenAIServing,
     request: Any,
     prompt_token_ids: Optional[list],
+    prefilled_token_ids: Optional[list] = None,
 ) -> None:
     if not prompt_token_ids:
         return
@@ -132,19 +192,18 @@ def _reject_if_prompt_overflows_max_model_len(
     if max_model_len is None:
         return
 
-    engine_client = getattr(serving, "engine_client", None)
-    vllm_config = getattr(engine_client, "vllm_config", None)
+    vllm_config = _get_serving_vllm_config(serving)
     spec_margin = _speculative_margin(vllm_config)
-    effective_max_model_len = max_model_len - spec_margin
+    effective_limit = _effective_max_model_len(max_model_len, vllm_config)
     limit_note = (
         ""
         if spec_margin == 0
-        else f" (effective {effective_max_model_len} after reserving "
+        else f" (effective {effective_limit} after reserving "
              f"{spec_margin} tokens for speculative decoding)"
     )
 
-    token_num = len(prompt_token_ids)
-    if token_num >= effective_max_model_len:
+    token_num = len(prompt_token_ids) + len(prefilled_token_ids or ())
+    if not _has_decode_room(token_num, max_model_len, vllm_config):
         raise VLLMValidationError(
             f"This model's maximum context length is {max_model_len} tokens"
             f"{limit_note}. However, the decode-side prompt has {token_num} "
@@ -160,16 +219,57 @@ def _reject_if_prompt_overflows_max_model_len(
     prefill_overhead = (
         1 if reuse_prefilled_tokens and _is_kv_producer(serving) else 0
     )
-    if token_num + max_tokens + prefill_overhead > effective_max_model_len:
+    if not _fits_effective_max_model_len(
+        token_num,
+        max_model_len,
+        vllm_config,
+        reserve_tokens=max_tokens + prefill_overhead,
+    ):
         raise VLLMValidationError(
             "'max_tokens' or 'max_completion_tokens' is too large: "
             f"{max_tokens}. This model's maximum context length is "
             f"{max_model_len} tokens{limit_note} and the decode-side prompt "
             f"has {token_num} input tokens "
-            f"({max_tokens} > {effective_max_model_len} - {token_num}).",
+            f"({max_tokens} > {effective_limit} - {token_num}).",
             parameter="max_tokens",
             value=max_tokens,
         )
+
+
+def enforce_speculative_generation_budget(vllm_config: Any, engine_core_request: Any) -> None:
+    """Cap over-length max_tokens to M-3N so requests avoid the non-DP-safe decode-side guard."""
+    spec_margin = _speculative_margin(vllm_config)
+    if spec_margin == 0:
+        return
+    sampling_params = getattr(engine_core_request, "sampling_params", None)
+    max_tokens = getattr(sampling_params, "max_tokens", None)
+    if max_tokens is None:
+        return
+    prompt_token_ids = getattr(engine_core_request, "prompt_token_ids", None)
+    if not prompt_token_ids:
+        return
+    seq_len = len(prompt_token_ids)
+    max_model_len = getattr(getattr(vllm_config, "model_config", None), "max_model_len", None)
+    if max_model_len is None:
+        return
+
+    effective_limit = _effective_max_model_len(max_model_len, vllm_config)
+    if seq_len + max_tokens <= effective_limit:
+        return
+
+    room = effective_limit - seq_len
+    if room > 0:
+        sampling_params.max_tokens = room
+        return
+
+    raise VLLMValidationError(
+        f"The prompt has {seq_len} tokens, leaving no room to generate under "
+        f"the effective max_model_len {effective_limit} ({max_model_len} - "
+        f"{spec_margin} reserved for speculative decoding). Please reduce the "
+        "length of the messages.",
+        parameter="input_tokens",
+        value=seq_len,
+    )
 
 
 def _update_waiting_for_remote_kv_patched(self: Scheduler, request: Request) -> bool:
@@ -196,6 +296,47 @@ def _update_waiting_for_remote_kv_patched(self: Scheduler, request: Request) -> 
 
     # Return that we are ready.
     self.finished_recving_kv_req_ids.remove(request.request_id)
+    return True
+
+
+def _append_prefilled_token_if_room(
+    scheduler: Scheduler,
+    request: Request,
+    *,
+    skip_at_boundary: bool = True,
+) -> bool:
+    extra_args = getattr(request.sampling_params, "extra_args", None) or {}
+    kv_params = extra_args.get("kv_transfer_params")
+    prefilled_token = kv_params.get("prefilled_token") if kv_params else None
+    if not prefilled_token:
+        return False
+
+    vllm_config = getattr(scheduler, "vllm_config", None)
+    if not _has_decode_room(
+        request.num_tokens + len(prefilled_token),
+        scheduler.max_model_len,
+        vllm_config,
+    ):
+        if not skip_at_boundary:
+            request.prompt_token_ids.extend(prefilled_token)
+            request.append_output_token_ids(prefilled_token)
+            kv_params.pop("prefilled_token", None)
+            return True
+        logger.warning(
+            "Skipping prefilled_token append for request %s at the context "
+            "boundary (current_len=%d, prefilled_len=%d, "
+            "effective_max_model_len=%d).",
+            request.request_id,
+            request.num_tokens,
+            len(prefilled_token),
+            _effective_max_model_len(scheduler.max_model_len, vllm_config),
+        )
+        kv_params.pop("prefilled_token", None)
+        return False
+
+    request.prompt_token_ids.extend(prefilled_token)
+    request.append_output_token_ids(prefilled_token)
+    kv_params.pop("prefilled_token", None)
     return True
 
 
@@ -424,7 +565,11 @@ class OpenAIServingChatPreprocessPatch(VLLMPatch):
                     request._omni_prefilled_cumulative_logprob = (
                         prefilled_cumulative_logprob)
         _reject_if_prompt_overflows_max_model_len(
-            self, request, engine_prompt.get("prompt_token_ids"))
+            self,
+            request,
+            engine_prompt.get("prompt_token_ids"),
+            engine_prompt.get("prefilled_token_ids"),
+        )
         return conversation, [engine_prompt]
 
 
@@ -458,7 +603,11 @@ class OpenAIServingPatch(VLLMPatch):
             engine_prompt = PrefilledTextPrompt(
                 prompt_token_ids=request.kv_transfer_params["prompt_token_ids"])
         _reject_if_prompt_overflows_max_model_len(
-            self, request, engine_prompt.get("prompt_token_ids"))
+            self,
+            request,
+            engine_prompt.get("prompt_token_ids"),
+            engine_prompt.get("prefilled_token_ids"),
+        )
         return conversation, [engine_prompt]
 
 
@@ -471,23 +620,7 @@ class SchedulerPatch(VLLMPatch):
         if (reuse_prefilled_tokens and
                 request.request_id in self.finished_recving_kv_req_ids and
                 request.request_id not in self.failed_recving_kv_req_ids):
-            extra_args = getattr(request.sampling_params, "extra_args", None) or {}
-            kv_params = extra_args.get("kv_transfer_params")
-            prefilled_token = kv_params.get("prefilled_token") if kv_params else None
-            if prefilled_token:
-                new_len = len(request.prompt_token_ids) + len(prefilled_token)
-                if new_len < self.max_model_len:
-                    request.prompt_token_ids.extend(prefilled_token)
-                    request.append_output_token_ids(prefilled_token)
-                else:
-                    logger.warning(
-                        "Skipping prefilled_token append for request %s at "
-                        "the context boundary (prompt would reach %d tokens, "
-                        "max_model_len=%d); falling back to normal "
-                        "generation.",
-                        request.request_id, new_len, self.max_model_len,
-                    )
-                kv_params.pop("prefilled_token", None)
+            _append_prefilled_token_if_room(self, request)
 
         return _update_waiting_for_remote_kv_patched(self, request)
 
@@ -503,6 +636,10 @@ class SchedulerKvXferFinishedPatch(VLLMPatch):
         if not reuse_prefilled_tokens:
             return
 
+        effective_limit = _effective_max_model_len(
+            self.max_model_len, getattr(self, "vllm_config", None)
+        )
+
         for req_id in kv_connector_output.finished_recving or ():
             request = self.requests.get(req_id)
             if request is None or request.is_finished():
@@ -511,26 +648,21 @@ class SchedulerKvXferFinishedPatch(VLLMPatch):
             if req_id in self.failed_recving_kv_req_ids:
                 continue
 
-            extra_args = getattr(request.sampling_params, "extra_args", None) or {}
-            kv_params = extra_args.get("kv_transfer_params")
-            prefilled_token = kv_params.get("prefilled_token") if kv_params else None
-            if not prefilled_token:
+            if not _append_prefilled_token_if_room(
+                self, request, skip_at_boundary=False
+            ):
                 continue
 
-            request.prompt_token_ids.extend(prefilled_token)
-            request.append_output_token_ids(prefilled_token)
-            kv_params.pop("prefilled_token", None)
-
-            if check_stop(request, self.max_model_len):
+            if check_stop(request, effective_limit):
                 finished_status = request.status
                 if (finished_status == RequestStatus.FINISHED_LENGTH_CAPPED
                         and request.num_output_tokens < request.max_tokens):
                     logger.error(
                         "Request %s: prefilled token exhausts "
-                        "max_model_len before max_tokens (prompt_len=%d, "
-                        "max_tokens=%d, max_model_len=%d)",
+                        "effective max_model_len before max_tokens (prompt_len=%d, "
+                        "max_tokens=%d, effective_max_model_len=%d)",
                         req_id, request.num_tokens, request.max_tokens,
-                        self.max_model_len,
+                        effective_limit,
                     )
                     finished_status = RequestStatus.FINISHED_ERROR
                 request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
@@ -543,24 +675,34 @@ class SchedulerAddRequestGuardPatch(VLLMPatch):
     _attr_names_to_apply = ['add_request']
 
     def add_request(self, request: Request) -> None:
+        if request.sampling_params is None:
+            _original_add_request(self, request)
+            return
+
         pd_flags_enabled = (
             os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
             or os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "0") == "1"
         )
-        if not pd_flags_enabled or request.sampling_params is None:
+        vllm_config = getattr(self, "vllm_config", None)
+        spec_margin = _speculative_margin(vllm_config)
+        if not pd_flags_enabled and spec_margin == 0:
             _original_add_request(self, request)
             return
 
         max_tokens = request.max_tokens or 1
-        spec_margin = _speculative_margin(getattr(self, "vllm_config", None))
-        effective_max_model_len = self.max_model_len - spec_margin
-        if request.num_tokens + max_tokens > effective_max_model_len:
+        effective_limit = _effective_max_model_len(self.max_model_len, vllm_config)
+        if not _fits_effective_max_model_len(
+            request.num_tokens,
+            self.max_model_len,
+            vllm_config,
+            reserve_tokens=max_tokens,
+        ):
             logger.error(
                 "Rejecting request %s: prompt_len(%d) + max_tokens(%d) > "
                 "effective max_model_len(%d) (max_model_len=%d, spec_margin=%d); "
                 "failing instead of scheduling it.",
                 request.request_id, request.num_tokens, max_tokens,
-                effective_max_model_len, self.max_model_len, spec_margin,
+                effective_limit, self.max_model_len, spec_margin,
             )
             _original_add_request(self, request)
             _finish_request_and_notify_client(
@@ -586,6 +728,8 @@ class AsyncLLMPatch(VLLMPatch):
         priority: int = 0,
         data_parallel_rank: int | None = None,
     )-> AsyncGenerator[RequestOutput, None]:
+        # Remember vllm_config so the HTTP admission check can get num_spec (M-3N).
+        _remember_engine_vllm_config(getattr(self, "vllm_config", None))
         from collections import namedtuple
         from typing import List, Dict, Any
         from vllm.sampling_params import RequestOutputKind

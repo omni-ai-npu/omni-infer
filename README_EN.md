@@ -43,7 +43,7 @@ Packages and versions required by the inference code (pre-installed in the image
 
 ## Modify Scripts
 
-The scripts for launching the PD disaggregation service are located at `tools/ansible/template` in the repository. For **1P1D**, the corresponding files are:
+The scripts for launching the PD disaggregation service are located at `tools/ansible/92B` in the repository. For **1P1D**, the corresponding files are:
 
 * `omni_infer_inventory_used_for_1P1D.yml` — node inventory
 * `omni_infer_server_template_performance1P1D_92B_bf16_open.yml` — BF16 weight service template
@@ -77,12 +77,13 @@ environment:
     MODEL_LEN_MAX_DECODE: "524288"
     LOG_PATH_IN_EXECUTOR: "/path/to/server/log_path_in_executor" # Optional: used when aggregating logs, pulls logs from the executor to the control machine
     KV_CONNECTOR: "LLMDataDistConnector"
+    SERVED_MODEL_NAME: "openPangu-2.0-Flash" 	# Required: served model name; the model field in requests must match this value
 
     # Configuration for containers
     DOCKER_IMAGE_ID: "image_name:image_tag" 	# Image used by PD disaggregation docker, must match the image pulled on each machine above
-    DOCKER_NAME_P: "docker_name_p" 	# Container name created by PD disaggregation on the P node, must be set in advance
-    DOCKER_NAME_D: "docker_name_d" 	# Container name created by PD disaggregation on the D node, must be set in advance
-    DOCKER_NAME_C: "docker_name_c" 	# Container name created by PD disaggregation on the proxy node, must be set in advance
+    DOCKER_NAME_P: "docker_p" 	# Container name created by PD disaggregation on the P node, must be set in advance
+    DOCKER_NAME_D: "docker_d" 	# Container name created by PD disaggregation on the D node, must be set in advance
+    DOCKER_NAME_C: "docker_c" 	# Container name created by PD disaggregation on the proxy node, must be set in advance
     SCRIPTS_PATH: "/tmp/scripts_path"
 
     # Tensor Parallel Size
@@ -131,7 +132,7 @@ tail -f /path/to/server/log/server_0.log
 
 After the service is started, send a test request to the proxy node port (default is 7000):
 
-> **Note**: The `model` field in the request body is `openPangu-2.0-Flash`.
+> **Note**: The `model` field in the request body is `openPangu-2.0-Flash` (must match `SERVED_MODEL_NAME` in the template).
 
 ```bash
 # Replace ${MASTER_NODE_IP} with the ansible_host of the C node in the inventory; the port corresponds to proxy_port (default 7000)

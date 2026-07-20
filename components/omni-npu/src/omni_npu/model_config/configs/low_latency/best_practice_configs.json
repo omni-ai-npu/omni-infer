@@ -270,5 +270,16 @@
                 "decode_config_file": "openpangu_v2/pangu_v2_moe_bf16_a3_xp1d_d.json"
             }
         }
+    },
+    {
+        "model": "pangu_v2_moe_505B",
+        "hardware": "A2",
+        "precision": "w8a8c16",
+        "configs": {
+            "2P1D": {
+                "prefill_config_file": "openpangu_v2/pangu_v2_moe_bf16_a3_xp1d_p.json",
+                "decode_config_file": "openpangu_v2/pangu_v2_moe_w8a8c16_a2_505B_xp1d_d_open.json"
+            }
+        }
     }
 ]

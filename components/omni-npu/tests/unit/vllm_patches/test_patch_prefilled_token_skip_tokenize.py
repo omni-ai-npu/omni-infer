@@ -20,6 +20,40 @@ from omni_npu.vllm_patches.patches.common import (
 )
 
 
+class TestSpeculativeMarginEngineCapture(unittest.TestCase):
+    def setUp(self) -> None:
+        patch_mod._ENGINE_VLLM_CONFIG = None
+
+    def tearDown(self) -> None:
+        patch_mod._ENGINE_VLLM_CONFIG = None
+
+    def test_real_config_wins_over_captured(self) -> None:
+        patch_mod._ENGINE_VLLM_CONFIG = SimpleNamespace(
+            speculative_config=SimpleNamespace(num_speculative_tokens=99))
+        cfg = SimpleNamespace(
+            speculative_config=SimpleNamespace(num_speculative_tokens=3))
+        self.assertEqual(patch_mod._speculative_margin(cfg), 9)
+
+    def test_captured_config_used_when_arg_missing(self) -> None:
+        # Simulates the serving-side call: its own config resolves to None, but
+        # the engine's vllm_config was remembered on a prior generate().
+        patch_mod._remember_engine_vllm_config(
+            SimpleNamespace(
+                speculative_config=SimpleNamespace(num_speculative_tokens=3)))
+        self.assertEqual(patch_mod._speculative_margin(None), 9)
+
+    def test_zero_when_nothing_captured(self) -> None:
+        patch_mod._ENGINE_VLLM_CONFIG = None
+        self.assertEqual(patch_mod._speculative_margin(None), 0)
+
+    def test_remember_is_sticky_and_ignores_none(self) -> None:
+        patch_mod._remember_engine_vllm_config(
+            SimpleNamespace(
+                speculative_config=SimpleNamespace(num_speculative_tokens=3)))
+        patch_mod._remember_engine_vllm_config(None)  # must not clobber
+        self.assertEqual(patch_mod._speculative_margin(None), 9)
+
+
 class _FakeKvConnectorOutput:
     def __init__(self, finished_recving=None, finished_sending=None):
         self.finished_recving = finished_recving
@@ -65,6 +99,7 @@ def _run(scheduler: _FakeScheduler, kv_connector_output: _FakeKvConnectorOutput)
 
 class TestUpdateFromKvXferFinished(unittest.TestCase):
     def setUp(self) -> None:
+        patch_mod._ENGINE_VLLM_CONFIG = None  # isolate captured-config global
         os.environ["OMNI_REUSE_PREFILLED_TOKENS"] = "1"
 
     def tearDown(self) -> None:
@@ -130,6 +165,18 @@ class TestUpdateFromKvXferFinished(unittest.TestCase):
             RequestStatus.get_finished_reason(RequestStatus.FINISHED_ERROR),
         )
         self.assertEqual(request.status, RequestStatus.WAITING_FOR_REMOTE_KVS)
+
+    def test_speculative_context_boundary_finishes_as_error(self) -> None:
+        request = _make_request(prompt_len=13, max_tokens=5, prefilled_token=[99])
+        scheduler = _FakeScheduler({request.request_id: request}, max_model_len=20)
+        scheduler.vllm_config = SimpleNamespace(
+            speculative_config=SimpleNamespace(num_speculative_tokens=2)
+        )
+        _run(scheduler, _FakeKvConnectorOutput(finished_recving=[request.request_id]))
+
+        self.assertEqual(len(scheduler.finish_requests_calls), 1)
+        _, status = scheduler.finish_requests_calls[0]
+        self.assertEqual(status, RequestStatus.FINISHED_ERROR)
 
     def test_failed_recving_request_is_left_for_retry(self) -> None:
         request = _make_request(prompt_len=4, max_tokens=1, prefilled_token=[99])
@@ -209,6 +256,7 @@ class _FakeSchedulerForFallback:
 
 class TestSchedulerFallbackAppend(unittest.TestCase):
     def setUp(self) -> None:
+        patch_mod._ENGINE_VLLM_CONFIG = None  # isolate captured-config global
         os.environ["OMNI_REUSE_PREFILLED_TOKENS"] = "1"
 
     def tearDown(self) -> None:
@@ -244,6 +292,39 @@ class TestSchedulerFallbackAppend(unittest.TestCase):
             request.sampling_params.extra_args["kv_transfer_params"],
         )
 
+    def test_fallback_uses_speculative_context_boundary(self) -> None:
+        request = _make_request(prompt_len=13, max_tokens=1, prefilled_token=[99])
+        scheduler = _FakeSchedulerForFallback(request, max_model_len=20)
+        scheduler.vllm_config = SimpleNamespace(
+            speculative_config=SimpleNamespace(num_speculative_tokens=2)
+        )
+
+        ready = patch_mod.SchedulerPatch._update_waiting_for_remote_kv(
+            scheduler, request)
+
+        self.assertTrue(ready)
+        self.assertEqual(request.num_output_tokens, 0)
+        self.assertNotIn(
+            "prefilled_token",
+            request.sampling_params.extra_args["kv_transfer_params"],
+        )
+
+
+class TestContextLimits(unittest.TestCase):
+    def test_speculative_margin_and_effective_limit(self) -> None:
+        vllm_config = SimpleNamespace(
+            speculative_config=SimpleNamespace(num_speculative_tokens=2)
+        )
+
+        self.assertEqual(patch_mod._speculative_margin(vllm_config), 6)
+        self.assertEqual(
+            patch_mod._effective_max_model_len(20, vllm_config), 14)
+        self.assertTrue(
+            patch_mod._fits_effective_max_model_len(
+                13, 20, vllm_config, reserve_tokens=1))
+        self.assertFalse(
+            patch_mod._has_decode_room(14, 20, vllm_config))
+
 
 class _FakeSchedulerForAddRequest:
     def __init__(self, max_model_len: int = 8):
@@ -256,6 +337,7 @@ class _FakeSchedulerForAddRequest:
 
 class TestSchedulerAddRequestGuard(unittest.TestCase):
     def setUp(self) -> None:
+        patch_mod._ENGINE_VLLM_CONFIG = None  # isolate captured-config global
         os.environ["OMNI_REUSE_PREFILLED_TOKENS"] = "1"
 
     def tearDown(self) -> None:
@@ -355,6 +437,36 @@ class TestSchedulerAddRequestGuard(unittest.TestCase):
         scheduler.vllm_config = SimpleNamespace(
             speculative_config=SimpleNamespace(num_speculative_tokens=2)
         )
+        with mock.patch.object(patch_mod, "_original_add_request") as mock_add:
+            patch_mod.SchedulerAddRequestGuardPatch.add_request(scheduler, request)
+
+        mock_add.assert_called_once_with(scheduler, request)
+        self.assertEqual(scheduler.finish_requests_calls, [])
+
+    def test_spec_margin_guards_even_when_pd_flags_off(self) -> None:
+        # Regression for the drafter-boundary hang: with passthrough OFF but
+        # speculative decoding ON, the guard must still reject inside [M-3N, M).
+        os.environ.pop("OMNI_REUSE_PREFILLED_TOKENS", None)
+        os.environ.pop("OMNI_SKIP_DECODE_TOKENIZE", None)
+        request = _make_request(prompt_len=15, max_tokens=1, prefilled_token=None)
+        scheduler = _FakeSchedulerForAddRequest(max_model_len=20)
+        scheduler.vllm_config = SimpleNamespace(
+            speculative_config=SimpleNamespace(num_speculative_tokens=2)
+        )  # margin 6, effective 14; prompt(15)+1 > 14 -> reject
+        with mock.patch.object(patch_mod, "_original_add_request") as mock_add:
+            patch_mod.SchedulerAddRequestGuardPatch.add_request(scheduler, request)
+
+        mock_add.assert_called_once_with(scheduler, request)
+        self.assertEqual(len(scheduler.finish_requests_calls), 1)
+        _, status = scheduler.finish_requests_calls[0]
+        self.assertEqual(status, RequestStatus.FINISHED_ERROR)
+
+    def test_no_spec_no_pd_is_noop(self) -> None:
+        # Neither passthrough nor speculative decoding -> guard stays inert.
+        os.environ.pop("OMNI_REUSE_PREFILLED_TOKENS", None)
+        os.environ.pop("OMNI_SKIP_DECODE_TOKENIZE", None)
+        request = _make_request(prompt_len=8, max_tokens=1, prefilled_token=None)
+        scheduler = _FakeSchedulerForAddRequest(max_model_len=8)  # no vllm_config
         with mock.patch.object(patch_mod, "_original_add_request") as mock_add:
             patch_mod.SchedulerAddRequestGuardPatch.add_request(scheduler, request)
 
@@ -478,6 +590,46 @@ class TestRejectIfPromptOverflowsMaxModelLen(unittest.TestCase):
         os.environ.pop("ROLE", None)
         os.environ.pop("OMNI_REUSE_PREFILLED_TOKENS", None)
 
+    def test_serving_config_takes_priority_over_engine_client_config(self) -> None:
+        serving_config = SimpleNamespace(
+            speculative_config=SimpleNamespace(num_speculative_tokens=2)
+        )
+        engine_client_config = SimpleNamespace(speculative_config=None)
+        serving = SimpleNamespace(
+            max_model_len=20,
+            vllm_config=serving_config,
+            engine_client=SimpleNamespace(vllm_config=engine_client_config),
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            patch_mod._reject_if_prompt_overflows_max_model_len(
+                serving, SimpleNamespace(max_tokens=1), list(range(15)))
+
+        self.assertEqual(ctx.exception.parameter, "input_tokens")
+        self.assertIs(
+            patch_mod._get_serving_vllm_config(serving), serving_config)
+
+    def test_current_config_is_used_when_engine_client_config_is_partial(self) -> None:
+        current_config = SimpleNamespace(
+            speculative_config=SimpleNamespace(num_speculative_tokens=2)
+        )
+        serving = SimpleNamespace(
+            max_model_len=20,
+            engine_client=SimpleNamespace(
+                vllm_config=SimpleNamespace(speculative_config=None)
+            ),
+        )
+
+        with mock.patch(
+            "vllm.config.get_current_vllm_config_or_none",
+            return_value=current_config,
+        ):
+            with self.assertRaises(ValueError) as ctx:
+                patch_mod._reject_if_prompt_overflows_max_model_len(
+                    serving, SimpleNamespace(max_tokens=1), list(range(15)))
+
+        self.assertEqual(ctx.exception.parameter, "input_tokens")
+
     def test_prefill_node_rejects_prompt_that_would_fit_without_overhead(self) -> None:
         os.environ["ROLE"] = "prefill"
         os.environ["OMNI_REUSE_PREFILLED_TOKENS"] = "1"
@@ -524,6 +676,20 @@ class TestRejectIfPromptOverflowsMaxModelLen(unittest.TestCase):
                 serving, request, list(range(6)))  # 6 + 3 = 9 > 8
         self.assertEqual(ctx.exception.parameter, "max_tokens")
         self.assertEqual(ctx.exception.value, 3)
+
+    def test_prefilled_token_is_counted_in_decode_admission(self) -> None:
+        serving = SimpleNamespace(max_model_len=8)
+        request = SimpleNamespace(max_tokens=1)
+        with self.assertRaises(ValueError) as ctx:
+            patch_mod._reject_if_prompt_overflows_max_model_len(
+                serving,
+                request,
+                list(range(7)),
+                prefilled_token_ids=[42],
+            )
+
+        self.assertEqual(ctx.exception.parameter, "input_tokens")
+        self.assertEqual(ctx.exception.value, 8)
 
     def test_prompt_within_budget_is_noop(self) -> None:
         serving = SimpleNamespace(max_model_len=8)
@@ -646,6 +812,49 @@ class TestPreprocessChatMaxModelLenGuard(unittest.TestCase):
                 patch_mod.OpenAIServingPatch._preprocess_chat(
                     serving, request, None, [], None, "auto"))
         self.assertEqual(result["prompt_token_ids"], list(range(7)))
+
+
+class TestEnforceSpeculativeGenerationBudget(unittest.TestCase):
+    # max_model_len=20, num_spec=3 -> margin=9, effective=11.
+    def _cfg(self, num_spec=3):
+        return SimpleNamespace(
+            model_config=SimpleNamespace(max_model_len=20),
+            speculative_config=SimpleNamespace(num_speculative_tokens=num_spec),
+        )
+
+    def _req(self, prompt_len, max_tokens):
+        return SimpleNamespace(
+            request_id="r",
+            prompt_token_ids=list(range(prompt_len)),
+            sampling_params=SimpleNamespace(max_tokens=max_tokens),
+        )
+
+    def test_over_budget_max_tokens_is_capped(self) -> None:
+        # Crash case: serving fills max_tokens to 16 (> effective 11); cap to 7.
+        req = self._req(prompt_len=4, max_tokens=16)
+        patch_mod.enforce_speculative_generation_budget(self._cfg(), req)
+        self.assertEqual(req.sampling_params.max_tokens, 7)  # effective 11 - 4
+
+    def test_within_budget_is_noop(self) -> None:
+        req = self._req(prompt_len=4, max_tokens=5)  # 9 <= 11
+        patch_mod.enforce_speculative_generation_budget(self._cfg(), req)
+        self.assertEqual(req.sampling_params.max_tokens, 5)
+
+    def test_no_room_raises(self) -> None:
+        req = self._req(prompt_len=13, max_tokens=7)  # prompt already > effective 11
+        with self.assertRaises(ValueError) as ctx:
+            patch_mod.enforce_speculative_generation_budget(self._cfg(), req)
+        self.assertEqual(ctx.exception.parameter, "input_tokens")
+
+    def test_no_speculation_is_noop(self) -> None:
+        req = self._req(prompt_len=4, max_tokens=16)
+        patch_mod.enforce_speculative_generation_budget(self._cfg(num_spec=0), req)
+        self.assertEqual(req.sampling_params.max_tokens, 16)
+
+    def test_none_max_tokens_is_noop(self) -> None:
+        req = self._req(prompt_len=4, max_tokens=None)
+        patch_mod.enforce_speculative_generation_budget(self._cfg(), req)
+        self.assertIsNone(req.sampling_params.max_tokens)
 
 
 if __name__ == "__main__":

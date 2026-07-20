@@ -44,7 +44,7 @@ Packages and versions required by the inference code (pre-installed in the image
 
 ## Modify Scripts
 
-The scripts for launching the PD disaggregation service are located at `tools/ansible/template` in the repository. For **1P1D**, the corresponding files are:
+The scripts for launching the PD disaggregation service are located at `tools/ansible/92B` in the repository. For **1P1D**, the corresponding files are:
 
 * `omni_infer_inventory_used_for_1P1D.yml` — node inventory
 * `omni_infer_server_template_performance1P1D_92B_w8a8_open.yml` — INT8 weight service template
@@ -79,12 +79,13 @@ environment:
     MODEL_LEN_MAX_DECODE: "524288"
     LOG_PATH_IN_EXECUTOR: "/path/to/server/log_path_in_executor" # Optional: used when aggregating logs, pulls logs from the executor to the control machine
     KV_CONNECTOR: "LLMDataDistConnector"
+    SERVED_MODEL_NAME: "openPangu-2.0-Flash" 	# Required: served model name; the model field in requests must match this value
 
     # Configuration for containers
     DOCKER_IMAGE_ID: "image_name:image_tag" 	# Image used by PD disaggregation docker, must match the image pulled on each machine above
-    DOCKER_NAME_P: "docker_name_p" 	# Container name created by PD disaggregation on the P node, must be set in advance
-    DOCKER_NAME_D: "docker_name_d" 	# Container name created by PD disaggregation on the D node, must be set in advance
-    DOCKER_NAME_C: "docker_name_c" 	# Container name created by PD disaggregation on the proxy node, must be set in advance
+    DOCKER_NAME_P: "docker_p" 	# Container name created by PD disaggregation on the P node, must be set in advance
+    DOCKER_NAME_D: "docker_d" 	# Container name created by PD disaggregation on the D node, must be set in advance
+    DOCKER_NAME_C: "docker_c" 	# Container name created by PD disaggregation on the proxy node, must be set in advance
     SCRIPTS_PATH: "/tmp/scripts_path"
 
     # Tensor Parallel Size
@@ -123,7 +124,8 @@ For the installation and deployment of the quantization methods, see:[jointfix R
 Once dockers are created on each deployed A3 machine, launch the inference service with the following command in bash, taking **1P1D** as an example:
 
 ```bash
-ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_w8a8_open.yml --tags run_server,run_proxy
+A3: ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_w8a8_open.yml --tags run_server,run_proxy
+A2: ansible-playbook -i omni_infer_inventory_used_for_1P1D_A2.yml omni_infer_server_template_performance1P1D_92B_A2_w8a8_open.yml --tags run_server,run_proxy
 ```
 
 The C node will start nginx+proxy inside the container, and start nginx on the master node to distribute concurrent requests across nodes. You can track the service launch progress through logs on the deployed machine.
@@ -137,7 +139,7 @@ tail -f /path/to/server/log/server_0.log
 
 After the service is started, send a test request to the proxy node port (default is 7000):
 
-> **Note**: The `model` field in the request body is `openPangu-2.0-Flash`.
+> **Note**: The `model` field in the request body is `openPangu-2.0-Flash` (must match `SERVED_MODEL_NAME` in the template).
 
 ```bash
 # Replace ${MASTER_NODE_IP} with the ansible_host of the C node in the inventory; the port corresponds to proxy_port (default 7000)
@@ -163,11 +165,10 @@ curl -X POST http://${MASTER_NODE_IP}:7000/v1/chat/completions \
 
 Simply replace the corresponding server yml in the Playbook:
 
-92B: omni_infer_server_template_performance4P1D_92B_open_omni_cache.yml, recommended inventory configuration: 4P1D
+92B: omni_infer_server_template_performance4P1D_92B_w8a8_open_omni_cache.yml, recommended inventory configuration: 4P1D
 
 ```bash
-A3: ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template_performance4P1D_92B_open_omni_cache.yml --tags run_docker,run_server,run_proxy
-A2: ansible-playbook -i omni_infer_inventory_used_for_1P1D_A2.yml omni_infer_server_template_performance1P1D_92B_A2_w8a8_open.yml --tags run_server,run_proxy
+ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template_performance4P1D_92B_w8a8_open_omni_cache.yml --tags run_docker,run_server,run_proxy
 ```
 
 ### Steps Before Switching from OmniCache Service to Other Configurations

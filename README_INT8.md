@@ -44,7 +44,7 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub root@xxx.xxx.xx.xx
 
 ## 修改脚本
 
-拉起 PD 分离服务的脚本在代码仓的 `tools/ansible/template` 路径下。以 **1P1D** 为例，对应文件为：
+拉起 PD 分离服务的脚本在代码仓的 `tools/ansible/92B` 路径下。以 **1P1D** 为例，对应文件为：
 
 * `omni_infer_inventory_used_for_1P1D.yml` — 节点 inventory
 * `omni_infer_server_template_performance1P1D_92B_w8a8_open.yml` — INT8 权重服务模板
@@ -79,12 +79,13 @@ environment:
     MODEL_LEN_MAX_DECODE: "524288"
     LOG_PATH_IN_EXECUTOR: "/path/to/server/log_path_in_executor" # 可选：汇总日志时使用，将执行机的日志拉取到控制机
     KV_CONNECTOR: "LLMDataDistConnector"
+    SERVED_MODEL_NAME: "openPangu-2.0-Flash" 	# 必选：对外服务名，发请求时 model 字段需与此一致
 
     # Configuration for containers
     DOCKER_IMAGE_ID: "image_name:image_tag" 	# PD分离docker使用的镜像，跟上文拉取到各个机器上的镜像保持一致
-    DOCKER_NAME_P: "docker_name_p" 	# PD分离在P节点创建的容器名，需提前设置
-    DOCKER_NAME_D: "docker_name_d" 	# PD分离在D节点创建的容器名，需提前设置
-    DOCKER_NAME_C: "docker_name_c" 	# PD分离在proxy节点创建的容器名，需提前设置
+    DOCKER_NAME_P: "docker_p" 	# PD分离在P节点创建的容器名，需提前设置
+    DOCKER_NAME_D: "docker_d" 	# PD分离在D节点创建的容器名，需提前设置
+    DOCKER_NAME_C: "docker_c" 	# PD分离在proxy节点创建的容器名，需提前设置
     SCRIPTS_PATH: "/tmp/scripts_path"
 
     # Tensor Parallel Size
@@ -138,7 +139,7 @@ tail -f /path/to/server/log/server_0.log
 
 服务启动后，向proxy节点端口（脚本默认为7000）发送测试请求：
 
-> **注意**：请求 body 中的 `model` 为 `openPangu-2.0-Flash`。
+> **注意**：请求 body 中的 `model` 为 `openPangu-2.0-Flash`（与模板 `SERVED_MODEL_NAME` 一致）。
 
 ```bash
 # ${MASTER_NODE_IP} 替换为 inventory 中 C 节点的 ansible_host，端口对应 proxy_port（默认 7000）

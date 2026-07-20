@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-# Copyright contributors to the vLLM project.
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 """Split combined reasoning+content DeltaMessage chunks into separate SSE events.
 
@@ -118,10 +117,26 @@ def _maybe_split_sse_line(line: str) -> list[str] | None:
         return None
     choice0 = choices[0]
     delta = choice0.get("delta") or {}
-
+    
+    if delta.get("content") == "" and delta.get("reasoning_content") is None:
+        if delta.get("role") == "assistant":
+            del delta["content"]
+        else:
+            del delta["reasoning_content"]
+        choice = {**choice0, "delta": delta}
+        event = {**obj, "choices": [choice]}
+        return [f"data: {json.dumps(event)}\n\n"]
+    
     has_reasoning = bool(delta.get("reasoning")) or bool(delta.get("reasoning_content"))
     has_content_or_tools = bool(delta.get("content")) or bool(delta.get("tool_calls"))
-    if not (has_reasoning and has_content_or_tools):
+    
+    if has_reasoning and delta.get("content") == "":
+        del delta["content"]
+        choice = {**choice0, "delta": delta}
+        event = {**obj, "choices": [choice]}
+        return [f"data: {json.dumps(event)}\n\n"]
+    
+    if not has_content_or_tools:
         return None
 
     # Log each actual split so the patch's effect is verifiable in
@@ -134,17 +149,18 @@ def _maybe_split_sse_line(line: str) -> list[str] | None:
     )
     content_str = delta.get("content") or ""
     tool_calls_count = len(delta.get("tool_calls") or [])
-    logger.info(
-        "patch_split_reasoning_content: split #%d id=%s "
-        "reasoning=%d chars %r content=%d chars %r tool_calls=%d",
-        n,
-        obj.get("id", "?"),
-        len(reasoning_str),
-        reasoning_str[:32],
-        len(content_str),
-        content_str[:32],
-        tool_calls_count,
-    )
+    if has_reasoning:
+        logger.info(
+            "patch_split_reasoning_content: split #%d id=%s "
+            "reasoning=%d chars %r content=%d chars %r tool_calls=%d",
+            n,
+            obj.get("id", "?"),
+            len(reasoning_str),
+            reasoning_str[:32],
+            len(content_str),
+            content_str[:32],
+            tool_calls_count,
+        )
 
     reasoning_delta = {
         k: v for k, v in delta.items() if k not in ("content", "tool_calls")
@@ -154,7 +170,6 @@ def _maybe_split_sse_line(line: str) -> list[str] | None:
         for k, v in delta.items()
         if k not in ("reasoning", "reasoning_content", "role")
     }
-    content_delta['reasoning_content'] = None
 
     reasoning_choice = {**choice0, "delta": reasoning_delta}
     content_choice = {**choice0, "delta": content_delta}
@@ -177,10 +192,11 @@ def _maybe_split_sse_line(line: str) -> list[str] | None:
 
     reasoning_event = {**obj, "choices": [reasoning_choice]}
     content_event = {**obj, "choices": [content_choice]}
-    return [
-        f"data: {json.dumps(reasoning_event, separators=(',', ':'))}\n\n",
-        f"data: {json.dumps(content_event, separators=(',', ':'))}\n\n",
-    ]
+    lines = []
+    if has_reasoning:
+        lines.append(f"data: {json.dumps(reasoning_event)}\n\n")
+    lines.append(f"data: {json.dumps(content_event)}\n\n")
+    return lines
 
 
 @register_patch("ExpertIdServingChatStream", OpenAIServingChat)

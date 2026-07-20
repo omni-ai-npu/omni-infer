@@ -13,7 +13,9 @@
     MODEL_LEN_MAX_PREFILL: "524288"
     MODEL_LEN_MAX_DECODE: "524288"
     LOG_PATH_IN_EXECUTOR: "/path/to/server/log_path_in_executor"
+    CODE_PATH: "/path/to/code/"
     KV_CONNECTOR: "LLMDataDistConnector"
+    SERVED_MODEL_NAME: "openPangu-2.0-Flash"
 
     # Configuration for containers
     DOCKER_IMAGE_ID: "image_name:image_tag"
@@ -87,10 +89,10 @@
       KV_PARALLEL_SIZE=$((PREFILL_POD_NUM + 1))
       export ENDPOINT_PORT={{hostvars[inventory_hostname].api_port | int + 100}}
       KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
-      EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --max-num-batched-tokens 32768  --enable-expert-parallel --max-num-seqs 12 --enable-prefix-caching --enable-chunked-prefill --dtype bfloat16 --enforce-eager --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu --kv-cache-dtype li_int8_ds_mla --enable-lopt --lopt-pool-size 16 --lopt-chunk-size 4096"
+      EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --max-num-batched-tokens 16384  --enable-expert-parallel --max-num-seqs 4 --enable-prefix-caching --enable-chunked-prefill --dtype bfloat16 --enforce-eager --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu --enable-lopt --lopt-pool-size 16 --lopt-chunk-size 4096"
       REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
       EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
-      GPU_UTIL=0.85
+      GPU_UTIL=0.8
       VLLM_ENABLE_MC2=1
       export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
       unset https_proxy
@@ -124,6 +126,7 @@
         --gloo-socket-ifname ${SOCKET_IFNAME} \
         --tp-socket-ifname ${SOCKET_IFNAME} \
         --model-path ${MODEL_PATH} \
+        --served-model-name ${SERVED_MODEL_NAME} \
         --master-ip ${HOST_IP} \
         --role "prefill" \
         --kv-role ${kv_role} \
@@ -196,7 +199,7 @@
       rm -rf /usr/local/Ascend/cann/opp/static_kernel
       rm -rf /usr/local/Ascend/cann-9.1.0-beta.1/opp/static_kernel
       rm -rf graph_cache/
-      EXTRA_ARGS='--no-disable-hybrid-kv-cache-manager --enable-expert-parallel --disable-log-requests --max-num-seqs 4 --enable-prefix-caching --enable-chunked-prefill --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[16], "backend":"", "compile_sizes":[16]} --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu  --kv-cache-dtype li_int8_ds_mla --enable-lopt --lopt-pool-size 16 --lopt-chunk-size 4096'
+      EXTRA_ARGS='--no-disable-hybrid-kv-cache-manager --enable-expert-parallel --disable-log-requests --max-num-seqs 3 --enable-prefix-caching --enable-chunked-prefill --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[12], "backend":"", "compile_sizes":[12]} --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu --enable-lopt --lopt-pool-size 16 --lopt-chunk-size 4096'
       REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
       EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
       GPU_UTIL=0.82
@@ -220,6 +223,7 @@
         --num-dp ${dp} \
         --server-offset ${config_dict[$HOST]:-0} \
         --model-path ${MODEL_PATH} \
+        --served-model-name ${SERVED_MODEL_NAME} \
         --master-ip ${HOST_IP} \
         --role "decode" \
         --kv-role "kv_consumer" \
@@ -283,8 +287,8 @@
         --decode-pod-size "$DECODE_POD_NUM" \
         --omni-proxy-pd-policy sequential \
         --omni-proxy-max-batch-num-token 100000 \
-        --omni-proxy-prefill-max-num-seqs 12 \
-        --omni-proxy-decode-max-num-seqs 4
+        --omni-proxy-prefill-max-num-seqs 4 \
+        --omni-proxy-decode-max-num-seqs 3
 
     reload_proxy_cmd: |
       #!/bin/bash
@@ -368,6 +372,7 @@
       -e PREFILL_SERVER_LIST=$PREFILL_SERVER_LIST
       -e PREFILL_TENSOR_PARALLEL_SIZE=$PREFILL_TENSOR_PARALLEL_SIZE
       -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE
+      -e SERVED_MODEL_NAME=$SERVED_MODEL_NAME
       -e IP=$IP
       -e HOST_IP=$HOST_IP
       -e MASTER_PORT=$NODE_PORT
@@ -390,6 +395,7 @@
       -e DECODE_SERVER_LIST=$DECODE_SERVER_LIST
       -e DECODE_TENSOR_PARALLEL_SIZE=$DECODE_TENSOR_PARALLEL_SIZE
       -e DECODE_DATA_PARALLEL_SIZE=$DECODE_DATA_PARALLEL_SIZE
+      -e SERVED_MODEL_NAME=$SERVED_MODEL_NAME
       -e HOST_IP=$HOST_IP
       -e MASTER_PORT=$NODE_PORT
       -e API_PORT=$API_PORT
@@ -419,6 +425,12 @@
       -e DECODE_POD_NUM=$DECODE_POD_NUM
       -d $DOCKER_NAME_C
       /bin/bash -c $SCRIPTS_PATH/reload_proxy_server.sh
+
+    docker_cp_prefill_code_cmd: "docker exec $DOCKER_NAME_P rm -rf /workspace/omniinfer/components/omni-npu && docker exec $DOCKER_NAME_P mkdir -p /workspace/omniinfer/components && docker cp {{ ansible_env.CODE_PATH }}/omni-npu $DOCKER_NAME_P:/workspace/omniinfer/components/"
+
+    docker_cp_decode_code_cmd: "docker exec $DOCKER_NAME_D rm -rf /workspace/omniinfer/components/omni-npu && docker exec $DOCKER_NAME_D mkdir -p /workspace/omniinfer/components && docker cp {{ ansible_env.CODE_PATH }}/omni-npu $DOCKER_NAME_D:/workspace/omniinfer/components/"
+
+    docker_cp_proxy_code_cmd: "docker exec $DOCKER_NAME_C rm -rf /workspace/omniinfer/components/omni-npu && docker exec $DOCKER_NAME_C mkdir -p /workspace/omniinfer/components && docker cp {{ ansible_env.CODE_PATH }}/omni-npu $DOCKER_NAME_C:/workspace/omniinfer/components/"
 
   tasks:
     - name: generate container name.
@@ -521,6 +533,51 @@
         state: directory
       when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
       tags: run_docker
+
+    - name: Create a directory to store the code.
+      ansible.builtin.file:
+        path: "{{ ansible_env.CODE_PATH }}"
+        state: directory
+      tags: sync_code
+
+    - name: The executor synchronizes code to all instances.
+      synchronize:
+        src: "{{ ansible_env.CODE_PATH }}/"
+        dest: "{{ ansible_env.CODE_PATH }}/"
+        delete: yes
+        recursive: yes
+      when: >
+        'P' in group_names or
+        'D' in group_names or
+        (
+          'C' in group_names and
+          ansible_host not in
+          (groups.get('P', []) | map('extract', hostvars, 'ansible_host') | list) and
+          ansible_host not in
+          (groups.get('D', []) | map('extract', hostvars, 'ansible_host') | list)
+        )
+      tags: sync_code
+
+    - name: Copy the code from the host machine into the container (prefill).
+      command: bash -c "{{ docker_cp_prefill_code_cmd }}"
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+      when: "'P' in group_names"
+      tags: sync_code
+
+    - name: Copy the code from the host machine into the container (decode).
+      command: bash -c "{{ docker_cp_decode_code_cmd }}"
+      environment:
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      when: "'D' in group_names"
+      tags: sync_code
+
+    - name: Copy the code from the host machine into the container(proxy).
+      command: bash -c "{{ docker_cp_proxy_code_cmd }}"
+      environment:
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+      when: "'C' in group_names"
+      tags: sync_code
 
     - name: Register all values.
       set_fact:

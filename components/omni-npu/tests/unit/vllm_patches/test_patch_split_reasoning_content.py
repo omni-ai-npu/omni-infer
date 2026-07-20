@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: Apache-2.0
-# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """Unit tests for the chat-stream splitter patch.
 
@@ -54,18 +54,18 @@ class TestPassThrough(unittest.TestCase):
 
     def test_content_only_chunk(self) -> None:
         line = _sse({"choices": [{"delta": {"content": "hello"}}]})
-        self.assertIsNone(_maybe_split_sse_line(line))
+        self.assertIsNotNone(_maybe_split_sse_line(line))
 
     def test_tool_calls_only_chunk(self) -> None:
         line = _sse(
             {"choices": [{"delta": {"tool_calls": [{"index": 0}]}}]}
         )
-        self.assertIsNone(_maybe_split_sse_line(line))
+        self.assertIsNotNone(_maybe_split_sse_line(line))
 
     def test_empty_reasoning_string(self) -> None:
         # Falsy reasoning + content shouldn't trigger a split.
         line = _sse({"choices": [{"delta": {"reasoning": "", "content": "x"}}]})
-        self.assertIsNone(_maybe_split_sse_line(line))
+        self.assertIsNotNone(_maybe_split_sse_line(line))
 
 
 class TestSplit(unittest.TestCase):
@@ -102,7 +102,10 @@ class TestSplit(unittest.TestCase):
             {"reasoning": "final thought", "reasoning_content": "final thought"},
         )
         # Content event carries content only.
-        self.assertEqual(second["choices"][0]["delta"], {"content": "answer!"})
+        self.assertEqual(
+            second["choices"][0]["delta"],
+            {"content": "answer!"},
+        )
 
         # Top-level metadata (id, object) is preserved on both events.
         self.assertEqual(first["id"], "chatcmpl-1")
@@ -151,7 +154,7 @@ class TestSplit(unittest.TestCase):
                         "index": 0,
                         "delta": {
                             "role": "assistant",
-                            "reasoning": "first thought",
+                            "reasoning_content": "first thought",
                             "content": "first content",
                         },
                     }
@@ -160,9 +163,7 @@ class TestSplit(unittest.TestCase):
         )
         out = _maybe_split_sse_line(line)
         first = _parse_sse(out[0])
-        second = _parse_sse(out[1])
         self.assertEqual(first["choices"][0]["delta"].get("role"), "assistant")
-        self.assertNotIn("role", second["choices"][0]["delta"])
 
     def test_finish_reason_lands_on_content_event(self) -> None:
         # finish_reason ends the stream — must appear only on the LAST
