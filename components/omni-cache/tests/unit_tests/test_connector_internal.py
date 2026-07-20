@@ -13,10 +13,6 @@ from omni_cache.connector.utils.settings import (
     OX_LOG_PATH,
     BLOCK_RELEASE_DELAY,
     PER_REQUEST_CONNECTION,
-    P_NODE_LIST,
-    CLUSTER_LIST,
-    CLUSTER_SIZE,
-    NODE_IP_SPECS,
     BASE_PORT,
     ZMQ_BASE_PORT,
     P_NODE_PORT_LIST,
@@ -63,24 +59,6 @@ class TestSettingsConstants:
         assert isinstance(PER_REQUEST_CONNECTION, int)
         assert PER_REQUEST_CONNECTION > 0
 
-    def test_p_node_list_format(self):
-        """Test that P_NODE_LIST has expected format."""
-        assert isinstance(P_NODE_LIST, str)
-
-    def test_cluster_list_is_list(self):
-        """Test that CLUSTER_LIST is a list."""
-        assert isinstance(CLUSTER_LIST, list)
-
-    def test_cluster_size_is_int(self):
-        """Test that CLUSTER_SIZE is an integer."""
-        assert isinstance(CLUSTER_SIZE, int)
-        assert CLUSTER_SIZE > 0
-
-    def test_node_ip_specs_is_list(self):
-        """Test that NODE_IP_SPECS is a list."""
-        assert isinstance(NODE_IP_SPECS, list)
-        assert len(NODE_IP_SPECS) > 0
-
     def test_base_port_is_int(self):
         """Test that BASE_PORT is an integer."""
         assert isinstance(BASE_PORT, int)
@@ -94,7 +72,6 @@ class TestSettingsConstants:
     def test_p_node_port_list_format(self):
         """Test that P_NODE_PORT_LIST has expected format."""
         assert isinstance(P_NODE_PORT_LIST, str)
-        assert str(BASE_PORT) in P_NODE_PORT_LIST
 
 
 # ==================== Settings environment variable tests ====================
@@ -130,26 +107,19 @@ class TestSettingsEnvironmentVariables:
 
         assert settings.ZMQ_BASE_PORT == 19999
 
-    @patch.dict(os.environ, {"P_NODE_LIST": "1.2.3.4,5.6.7.8"})
-    def test_p_node_list_from_env(self):
-        """Test that P_NODE_LIST can be overridden via environment."""
+    @patch.dict(
+        os.environ,
+        {"P_NODE_PORT_LIST": "10.0.0.1:15077,10.0.0.2:15077"},
+    )
+    def test_p_node_port_list_from_env(self):
+        """Test that dynamic OX endpoints can be provided independently."""
         import importlib
         from omni_cache.connector.utils import settings
         importlib.reload(settings)
 
-        assert settings.P_NODE_LIST == "1.2.3.4,5.6.7.8"
-        assert settings.CLUSTER_LIST == ["1.2.3.4,5.6.7.8"]
-        assert settings.CLUSTER_SIZE == 2
-
-    @patch.dict(os.environ, {"P_NODE_LIST": "1.2.3.4,5.6.7.8;9.10.11.12"})
-    def test_p_node_list_multiple_clusters(self):
-        """Test P_NODE_LIST with multiple clusters."""
-        import importlib
-        from omni_cache.connector.utils import settings
-        importlib.reload(settings)
-
-        assert len(settings.CLUSTER_LIST) == 2
-        assert settings.CLUSTER_SIZE == 2  # Size of first cluster
+        assert settings.P_NODE_PORT_LIST == (
+            "10.0.0.1:15077,10.0.0.2:15077"
+        )
 
 
 # ==================== ReqMeta tests ====================

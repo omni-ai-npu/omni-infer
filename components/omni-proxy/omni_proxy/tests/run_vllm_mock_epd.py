@@ -70,7 +70,8 @@ def graceful_kill_mock(timeout=10):
     )
 
 
-def start_mock_server(encode_num, prefill_num, decode_num, prefill_exec_time_multiplier=1.0):
+def start_mock_server(encode_num, prefill_num, decode_num, prefill_exec_time_multiplier=1.0,
+                     export_expert_id=False, decode_delay_ms=0):
     """
     Start encode, prefill, and decode mock servers.
 
@@ -78,6 +79,14 @@ def start_mock_server(encode_num, prefill_num, decode_num, prefill_exec_time_mul
         encode_num: Number of encode endpoints
         prefill_num: Number of prefill endpoints
         decode_num: Number of decode endpoints
+        prefill_exec_time_multiplier: Multiplier for prefill execution time
+        export_expert_id: When True, mock appends a routed_experts payload
+            (~5KB base64+zlib) to every SSE chunk, dramatically inflating
+            chunk size. Useful for testing the zero-copy input_filter path
+            with realistically-sized per-chunk responses.
+        decode_delay_ms: When > 0, the decode mock delays the start of its
+            stream response by this many ms (used by E2E tests to exercise
+            the omni_proxy main upstream read_timeout).
 
     Returns:
         List of subprocess.Popen objects for all started processes
@@ -108,7 +117,11 @@ def start_mock_server(encode_num, prefill_num, decode_num, prefill_exec_time_mul
         "--prefill-endpoints", ",".join(f"127.0.0.1:{p}" for p in prefill_port_list),
         "--decode-endpoints", ",".join(f"127.0.0.1:{p}" for p in decode_port_list),
         "--prefill-exec-time-multiplier", str(prefill_exec_time_multiplier),
+        "--decode-delay-ms", str(decode_delay_ms),
     ]
+
+    if export_expert_id:
+        cmd.append("--export-expert-id")
 
     if encode_num > 0:
         print(f"\n[SETUP] Starting EPD mock server with {encode_num} encode, {prefill_num} prefill, {decode_num} decode")

@@ -29,7 +29,7 @@ import random, time, ctypes, logging, msgspec
 #     AllBlocksCleared,
 # )
 
-MODEL_LAYER_NUM = 58
+MODEL_LAYER_NUM = 46
 TOPK_NUM = 8
 
 ## 每个进程最多只支持400并发的情况下能保证实时性
@@ -371,7 +371,7 @@ class PrefillBatchExecutor:
 class VLLMNode:
     def __init__(self, role: str, port: int, model_path: str, kv_offset: int, pd_policy: str,
                  max_batch_size: int = 16, base_time_per_req: float = 0.05, export_expert_id=False,
-                 prefill_exec_time_multiplier: float = 1.0):
+                 prefill_exec_time_multiplier: float = 1.0, decode_delay_ms: int = 0):
         self.role = role
         self.port = port
         self.model_path = model_path
@@ -392,6 +392,7 @@ class VLLMNode:
                 executor_id=port, exec_time_multiplier=prefill_exec_time_multiplier
             )
         self.export_expert_id = export_expert_id  # 新增功能开关
+        self.decode_delay_ms = decode_delay_ms  # E2E 测试用：让 decode mock 在响应前 sleep 触发 read_timeout
         logging.info(f"[VLLMNode] {role} started on {port}, kv_port={self.kv_port}")
 
     def generate_3d_list(self, dim1, dim2, dim3):
@@ -410,7 +411,7 @@ class VLLMNode:
         #start_ts = time.time_ns()
         #expert_id_list = [[[random.randint(0, 100) for _ in range(dim3)] for _ in range(dim2)] for _ in range(dim1)]
         total = dim1 * dim2 * dim3
-        expert_id_list = (np.arange(total, dtype=np.int32) % 100).reshape(dim1, dim2, dim3)
+        expert_id_list = (np.arange(total, dtype=np.int16) % 384).reshape(dim1, dim2, dim3)
         #end_ts = time.time_ns()
         #diff = (end_ts - start_ts) / 1000
         #print(f"gen list cost time: {diff} us")
@@ -497,6 +498,10 @@ class VLLMNode:
                 async def event_generator():
                     print(f"[{time.strftime('%H:%M:%S')}] [Request {request_id}] stream start, "
                         f"{prefill_tokens=}, {max_tokens=}")
+                    # decode 阶段延迟（E2E 测试用：mock 慢响应触发 read_timeout）
+                    if self.role == "decode" and self.decode_delay_ms > 0:
+                        print(f"[{time.strftime('%H:%M:%S')}] [Request {request_id}] decode_delay {self.decode_delay_ms} ms")
+                        await asyncio.sleep(self.decode_delay_ms / 1000.0)
                     # prefill 阶段延迟
                     if prefill_delay_us > 0:
                         print(f"[{time.strftime('%H:%M:%S')}] [Request {request_id}] prefill_delay {prefill_delay_us} us")
@@ -619,6 +624,10 @@ class VLLMNode:
 
             else:
                 start_ts = time.time_ns()
+                # decode 阶段延迟（非流式路径同样支持，E2E 测试触发 read_timeout）
+                if self.role == "decode" and self.decode_delay_ms > 0:
+                    print(f"[{time.strftime('%H:%M:%S')}] [Request {request_id}] decode_delay {self.decode_delay_ms} ms")
+                    await asyncio.sleep(self.decode_delay_ms / 1000.0)
                 # Non-stream: 总延迟
                 #total_sleep = (prefill_delay_us + decode_interval_us * max_tokens * 0) / 1_000_000.0
                 total_sleep = 0
@@ -808,15 +817,17 @@ def set_cpu_affinity(worker_id: int):
     except OSError as e:
         print(f"[ERROR] Failed to set CPU affinity for worker {worker_id}: {e}")
 
-def run_node(role, port, model_path, kv_offset, pd_policy, worker_id=0, export_expert_id=False, prefill_exec_time_multiplier=1.0):
+def run_node(role, port, model_path, kv_offset, pd_policy, worker_id=0, export_expert_id=False, prefill_exec_time_multiplier=1.0, decode_delay_ms=0):
     #set_cpu_affinity(worker_id)
     node = VLLMNode(role, port, model_path, kv_offset, pd_policy, export_expert_id=export_expert_id,
-                    prefill_exec_time_multiplier=prefill_exec_time_multiplier)
+                    prefill_exec_time_multiplier=prefill_exec_time_multiplier,
+                    decode_delay_ms=decode_delay_ms)
     asyncio.run(node.run())
 
-def run_encode_node(role, port, model_path, kv_offset, pd_policy, worker_id=0, export_expert_id=False, prefill_exec_time_multiplier=1.0):
+def run_encode_node(role, port, model_path, kv_offset, pd_policy, worker_id=0, export_expert_id=False, prefill_exec_time_multiplier=1.0, decode_delay_ms=0):
     node = VLLMNode(role, port, model_path, kv_offset, pd_policy, export_expert_id=export_expert_id,
-                    prefill_exec_time_multiplier=prefill_exec_time_multiplier)
+                    prefill_exec_time_multiplier=prefill_exec_time_multiplier,
+                    decode_delay_ms=decode_delay_ms)
     asyncio.run(node.run())
 
 if __name__ == "__main__":
@@ -832,6 +843,9 @@ if __name__ == "__main__":
     parser.add_argument("--export-expert-id", action="store_true", default=False, help="Enable export of routed_experts")
     parser.add_argument("--prefill-exec-time-multiplier", type=float, default=1.0,
                         help="Prefill execution time multiplier (default 1.0, set to 5.0 for overflow test)")
+    parser.add_argument("--decode-delay-ms", type=int, default=0,
+                        help="When role == 'decode', delay response by N ms before sending first byte. "
+                             "Used by E2E tests to exercise the omni_proxy main upstream read_timeout.")
     args = parser.parse_args()
     all_procs = []
 
@@ -845,7 +859,9 @@ if __name__ == "__main__":
                                           args.omni_proxy_kv_port_offset,
                                           args.omni_proxy_pd_policy,
                                           len(all_procs),
-                                          args.export_expert_id))
+                                          args.export_expert_id,
+                                          1.0,
+                                          args.decode_delay_ms))
         p.start()
         all_procs.append(p)
 
@@ -858,7 +874,8 @@ if __name__ == "__main__":
                                           args.omni_proxy_pd_policy,
                                           len(all_procs),
                                           args.export_expert_id,
-                                          args.prefill_exec_time_multiplier))
+                                          args.prefill_exec_time_multiplier,
+                                          args.decode_delay_ms))
         p.start()
         all_procs.append(p)
 
@@ -871,7 +888,8 @@ if __name__ == "__main__":
                                           args.omni_proxy_pd_policy,
                                           len(all_procs),
                                           args.export_expert_id,
-                                          1.0))  # decode doesn't need multiplier
+                                          1.0,  # decode doesn't need multiplier
+                                          args.decode_delay_ms))
         p.start()
         all_procs.append(p)
 

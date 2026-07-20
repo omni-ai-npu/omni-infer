@@ -68,8 +68,7 @@ if [[ -z "${LOCAL_NODE_IP:-}" ]]; then
         LOCAL_NODE_IP="$(_detect_ip "$PREFILL_CONTAINER")"
     fi
 fi
-: "${KV_P_NODE_LIST:=${P_NODE_LIST:-${LOCAL_NODE_IP}}}"
-: "${P_NODE_LIST_DECODE:=${LOCAL_NODE_IP}}"
+: "${PREFILL_NODE_IPS:=${LOCAL_NODE_IP}}"
 
 # ─── HCCL / deterministic ────────────────────────────────────────────────
 : "${HCCL_DETERMINISTIC:=false}"
@@ -140,8 +139,6 @@ _launch_prefill() {
         export ASCEND_RT_VISIBLE_DEVICES='$devices'
         export ENABLE_OMNI_CACHE='$ENABLE_OMNI_CACHE'
         export ENABLE_HOST_MAPPING='$ENABLE_HOST_MAPPING'
-        export P_NODE_LIST='$LOCAL_NODE_IP'
-        export KV_P_NODE_LIST='$KV_P_NODE_LIST'
         export P_NODE_PORT_LIST='$P_NODE_PORT_LIST'
         export BASE_PORT='$base_port'
         export KV_PORT='$kv_port'
@@ -212,8 +209,6 @@ if [[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "all" || "$LAUNCH_MODE" == "
         export ENABLE_OMNI_CACHE='$ENABLE_OMNI_CACHE'
         export ENABLE_HOST_MAPPING='$ENABLE_HOST_MAPPING'
         export OMNI_CACHE_PACKED_HBM='$OMNI_CACHE_PACKED_HBM'
-        export P_NODE_LIST='$P_NODE_LIST_DECODE'
-        export KV_P_NODE_LIST='$KV_P_NODE_LIST'
         export P_NODE_PORT_LIST='$P_NODE_PORT_LIST'
         export HCCL_DETERMINISTIC='$HCCL_DETERMINISTIC'
         export ACL_OP_DETERMINISTIC='$ACL_OP_DETERMINISTIC'
@@ -244,9 +239,8 @@ fi
 
 # Launch proxy
 if [[ "$LAUNCH_MODE" == "all" || "$LAUNCH_MODE" == "proxy" ]]; then
-    # Build prefill endpoint list from P_NODE_LIST and port assignments
-    # P_NODE_LIST is semicolon-separated: "ip_p0;ip_p1;ip_p2"
-    IFS=';' read -ra _p_ips <<< "${P_NODE_LIST:-$LOCAL_NODE_IP}"
+    # PREFILL_NODE_IPS is semicolon-separated: "ip_p0;ip_p1;ip_p2".
+    IFS=';' read -ra _p_ips <<< "$PREFILL_NODE_IPS"
     : "${P0_PORT:=8000}"
     : "${P1_PORT:=8001}"
     _p2_ip="${_p_ips[2]:-$LOCAL_NODE_IP}"

@@ -659,3 +659,100 @@ class TestComputePrefixCachingBlockIndices(unittest.TestCase):
 
         self.assertEqual(int(lct[0].item()), 2)
         self.assertEqual(int(lct[1].item()), 0)
+
+
+class TestBuildForSp(unittest.TestCase):
+    """_build_for_sp：scheme_conv_sp 入参 save_all 与 init/save_idx 映射"""
+
+    @staticmethod
+    def _builder(state_len=2):
+        b = _manual_builder()
+        b.state_len = state_len
+        return b
+
+    @patch("omni_npu.attention.backends.mome.scheme_conv_sp")
+    @patch("omni_npu.attention.backends.mome.get_tp_group")
+    def test_no_prefix_cache_uses_block_table_directly(self, mock_get_tp_group, mock_scheme):
+        tp_group = MagicMock()
+        mock_get_tp_group.return_value = tp_group
+        fake_meta = ((), (), (), ())
+        mock_scheme.return_value = fake_meta
+
+        b = self._builder(state_len=2)
+        seq_cumlens = torch.tensor([0, 32], dtype=torch.int32)
+        num_computed = torch.tensor([0], dtype=torch.int32)
+        block_table = torch.tensor([100], dtype=torch.int32)
+
+        init_idx, save_idx, meta = b._build_for_sp(
+            seq_cumlens=seq_cumlens,
+            num_computed=num_computed,
+            init_block_idx=None,
+            block_table=block_table,
+            block_size=32,
+        )
+
+        self.assertTrue(torch.equal(init_idx, block_table))
+        self.assertTrue(torch.equal(save_idx, block_table))
+        self.assertIs(meta, fake_meta)
+        mock_scheme.assert_called_once()
+        args, kwargs = mock_scheme.call_args
+        self.assertIs(args[0], tp_group)
+        self.assertEqual(args[1].tolist(), [0, 32])
+        self.assertEqual(args[2].tolist(), [0])
+        self.assertIs(kwargs["like"], seq_cumlens)
+        self.assertEqual(kwargs["block_size"], 32)
+        self.assertEqual(kwargs["state_len"], 2)
+        self.assertFalse(kwargs["save_all"])
+
+    @patch("omni_npu.attention.backends.mome.scheme_conv_sp")
+    @patch("omni_npu.attention.backends.mome.get_tp_group")
+    def test_prefix_cache_maps_init_and_save_idx(self, mock_get_tp_group, mock_scheme):
+        mock_get_tp_group.return_value = MagicMock()
+        save_range = [slice(1, 3), slice(0, 2)]
+        fake_meta = ((), (), (), save_range)
+        mock_scheme.return_value = fake_meta
+
+        b = self._builder()
+        seq_cumlens = torch.tensor([0, 32, 64], dtype=torch.int32)
+        num_computed = torch.tensor([0, 4], dtype=torch.int32)
+        block_table = torch.tensor(
+            [[10, 11, 12, 13], [20, 21, 22, 23]],
+            dtype=torch.int32,
+        )
+        init_block_idx = torch.tensor([1, 2], dtype=torch.int32)
+
+        init_idx, save_idx, meta = b._build_for_sp(
+            seq_cumlens=seq_cumlens,
+            num_computed=num_computed,
+            init_block_idx=init_block_idx,
+            block_table=block_table,
+            block_size=32,
+        )
+
+        self.assertTrue(torch.equal(save_idx, torch.tensor([11, 12, 20, 21], dtype=torch.int32)))
+        self.assertTrue(torch.equal(init_idx, torch.tensor([11, 22], dtype=torch.int32)))
+        self.assertIs(meta, fake_meta)
+        self.assertTrue(mock_scheme.call_args.kwargs["save_all"])
+
+    @patch("omni_npu.attention.backends.mome.scheme_conv_sp")
+    @patch("omni_npu.attention.backends.mome.get_tp_group")
+    def test_prefix_cache_empty_save_slice(self, mock_get_tp_group, mock_scheme):
+        mock_get_tp_group.return_value = MagicMock()
+        save_range = [slice(0, 0), slice(2, 3)]
+        mock_scheme.return_value = ((), (), (), save_range)
+
+        b = self._builder()
+        block_table = torch.tensor([[5, 6, 7], [8, 9, 10]], dtype=torch.int32)
+        init_block_idx = torch.tensor([0, 2], dtype=torch.int32)
+
+        init_idx, save_idx, _ = b._build_for_sp(
+            seq_cumlens=torch.tensor([0, 16, 32], dtype=torch.int32),
+            num_computed=torch.tensor([0, 0], dtype=torch.int32),
+            init_block_idx=init_block_idx,
+            block_table=block_table,
+            block_size=16,
+        )
+
+        self.assertEqual(save_idx.numel(), 1)
+        self.assertEqual(int(save_idx.item()), 10)
+        self.assertTrue(torch.equal(init_idx, torch.tensor([5, 10], dtype=torch.int32)))

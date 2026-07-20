@@ -21,7 +21,7 @@ class ReqMeta:
     local_block_ids: List[List[int]]
     remote_block_ids: List[int]
     remote_host: str
-    remote_cluster_id: str
+    remote_ox_shard_list: str
     spec_token_ids: Optional[List[int]]
     remote_dp_rank: Optional[int]
     remote_request_id: Optional[str]
@@ -41,7 +41,7 @@ def _build_req_meta(
             local_block_ids=local_block_ids,
             remote_block_ids=[1, 2, 3, 4, 5],
             remote_host="0.0.0.0",
-            remote_cluster_id="0",
+            remote_ox_shard_list="127.0.0.1:15077",
             spec_token_ids=[0],
             remote_dp_rank=0,
             remote_request_id="abc-123",
@@ -51,7 +51,7 @@ def _build_req_meta(
         local_block_ids=local_block_ids,
         remote_block_ids=kv_transfer_params["remote_block_ids"],
         remote_host=kv_transfer_params["remote_host_ip"],
-        remote_cluster_id=kv_transfer_params["remote_cluster_id"],
+        remote_ox_shard_list=kv_transfer_params["remote_cluster_id"],
         spec_token_ids=kv_transfer_params["spec_token_ids"],
         remote_dp_rank=kv_transfer_params.get("remote_dp_rank", 0),
         remote_request_id=kv_transfer_params.get("remote_request_id"),
@@ -132,7 +132,7 @@ class DTypeUtils:
 @dataclass
 class _SendItem:
     request_id: str
-    cluster_id: int
+    remote_ox_shard_list: str
     src_ids: List[int]
     dst_ids: List[int]
     rank_id: int
@@ -144,7 +144,7 @@ class PendingReq:
     request_id: str
     local_block_ids: List[List[int]]
     remote_block_ids: List[int]
-    dst_cluster_id: str
+    remote_ox_shard_list: str
     remote_request_id: Optional[str]
     remote_host_ip: str
     dp_rank: int

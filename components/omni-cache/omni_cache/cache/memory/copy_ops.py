@@ -18,6 +18,70 @@ logger = init_logger("vllm.v1.omni")
 _TRACE_MEMCPY = os.getenv("OMNI_TRACE_MEMCPY", "0") == "1"
 
 
+def merge_contiguous_copy_args(
+    batch_device_mem: list,
+    batch_device_max: list,
+    batch_host_mem: list,
+    batch_host_sizes: list,
+):
+    """Merge adjacent memcpy args when source and destination are continuous.
+
+    Keeps the original copy order and only coalesces entries whose copied
+    source range and destination range are both byte-contiguous.
+    """
+    lengths = {
+        len(batch_device_mem),
+        len(batch_device_max),
+        len(batch_host_mem),
+        len(batch_host_sizes),
+    }
+    if len(lengths) != 1:
+        raise RuntimeError(
+            "copy arg list length mismatch: "
+            f"device_mem={len(batch_device_mem)} "
+            f"device_max={len(batch_device_max)} "
+            f"host_mem={len(batch_host_mem)} "
+            f"host_sizes={len(batch_host_sizes)}"
+        )
+    if not batch_device_mem:
+        return batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes
+
+    merged_device_mem = [batch_device_mem[0]]
+    merged_device_max = [batch_device_max[0]]
+    merged_host_mem = [batch_host_mem[0]]
+    merged_host_sizes = [batch_host_sizes[0]]
+
+    for idx in range(1, len(batch_device_mem)):
+        dst = batch_device_mem[idx]
+        dst_max = batch_device_max[idx]
+        src = batch_host_mem[idx]
+        src_size = batch_host_sizes[idx]
+
+        prev_dst_end = merged_device_mem[-1] + merged_host_sizes[-1]
+        prev_src_end = merged_host_mem[-1] + merged_host_sizes[-1]
+        can_merge = (
+            merged_device_max[-1] == merged_host_sizes[-1]
+            and dst_max == src_size
+            and dst == prev_dst_end
+            and src == prev_src_end
+        )
+        if can_merge:
+            merged_device_max[-1] += dst_max
+            merged_host_sizes[-1] += src_size
+        else:
+            merged_device_mem.append(dst)
+            merged_device_max.append(dst_max)
+            merged_host_mem.append(src)
+            merged_host_sizes.append(src_size)
+
+    return (
+        merged_device_mem,
+        merged_device_max,
+        merged_host_mem,
+        merged_host_sizes,
+    )
+
+
 def batch_layer_copy_to_npu(
     get_block_fn,
     block_ids: list,
@@ -115,10 +179,13 @@ def memcpy_async(
     batch_device_max,
     batch_host_mem,
     batch_host_sizes,
+    kind=None,
 ):
-    """Execute async memory copy from host to device."""
+    """Execute async memory copy with an explicit ACL memcpy kind."""
     start_time = time.time()
     batch_count = len(batch_device_mem)
+    if kind is None:
+        raise RuntimeError("memcpy_async requires an explicit ACL memcpy kind.")
 
     for idx in range(batch_count):
         device_mem = ctypes.c_void_p(batch_device_mem[idx])
@@ -126,18 +193,22 @@ def memcpy_async(
         host_ptr = ctypes.c_void_p(batch_host_mem[idx])
         host_size = batch_host_sizes[idx]
 
-        logger.debug(
-            "[MEMCPY-TRACE] idx=%d/%d dst=0x%x dst_max=%d src=0x%x src_size=%d",
-            idx, batch_count,
-            batch_device_mem[idx], device_max,
-            batch_host_mem[idx], host_size,
-        )
+        if _TRACE_MEMCPY:
+            logger.debug(
+                "[MEMCPY-TRACE] idx=%d/%d dst=0x%x dst_max=%d src=0x%x src_size=%d",
+                idx, batch_count,
+                batch_device_mem[idx], device_max,
+                batch_host_mem[idx], host_size,
+            )
 
         try:
-            ascend_cl_stream.memcpy_async(device_mem, device_max, host_ptr, host_size, 1)
+            ascend_cl_stream.memcpy_async(
+                device_mem, device_max, host_ptr, host_size, kind
+            )
         except RuntimeError as e:
             logger.error(
                 f"memcpy_async failed at entry idx={idx}/{batch_count}: "
+                f"kind={kind} "
                 f"dst=0x{batch_device_mem[idx]:x} dst_max={device_max} "
                 f"src=0x{batch_host_mem[idx]:x} count={host_size}: {e}"
             )

@@ -221,8 +221,6 @@ class PrefillOmniCache(PrefillDeviceCacheMixin, BaseOmniCache):
             dtype=self.dtype,
             device=self.device,
         )
-        self.h2d_stream = torch.npu.Stream(device=self.device)
-        self.h2d_event = torch.npu.Event(blocking=False, enable_timing=False)
 
     # ── Token indices ─────────────────────────────────────────────────────
 

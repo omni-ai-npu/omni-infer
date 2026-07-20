@@ -18,6 +18,9 @@ from omni_cache.cache.utils.debug import (
     summarize_array,
     summarize_map,
 )
+from omni_cache.cache.device_backend.ascend.memcopy import (
+    ACL_MEMCPY_DEVICE_TO_DEVICE,
+)
 from vllm.logger import init_logger
 
 if TYPE_CHECKING:
@@ -235,8 +238,11 @@ def _synchronize_h2d_prefill_unified(
     maps = getattr(input_batch, "_volatile_real_to_fake_per_group", None)
     fake_to_real = None
     if maps is not None and group_idx < len(maps) and maps[group_idx]:
-        fake_to_real = {v: k for k, v in maps[group_idx].items()}
-        host_block_ids = [fake_to_real.get(int(fid), int(fid)) for fid in block_ids]
+        luts = getattr(input_batch, "_volatile_per_group_luts", None)
+        f2r = luts[group_idx][1] if (luts and group_idx < len(luts)) else None
+        if f2r is not None:
+            ids_t = torch.tensor(block_ids, dtype=torch.int64).clamp(0, f2r.shape[0] - 1)
+            host_block_ids = f2r[ids_t].tolist()
 
     next_layer_device_stage_idx = (cache.stage_record + 1) % cache.num_stages_layer_copy
     raw = cache.device_raw_tensors[next_layer_device_stage_idx]
@@ -300,9 +306,16 @@ def _synchronize_h2d_prefill_unified(
             c1,
         )
 
-    # H2D + all-gather on h2d_stream
+    # H2D + optional all-gather, on a per-group stream so each attention
+    # spec (MLA/DSA/MoME) can transfer independently.
+    h2d_streams = getattr(cache, 'h2d_streams', None)
+    if h2d_streams and group_idx < len(h2d_streams):
+        group_stream = h2d_streams[group_idx]
+    else:
+        group_stream = cache.h2d_stream
+
     h2d_event = torch.npu.Event(blocking=False, enable_timing=False)
-    with torch.npu.stream(cache.h2d_stream):
+    with torch.npu.stream(group_stream):
         dev_block_ids_t = torch.tensor(block_ids, dtype=torch.long, device=cache.device)
         device_shard = host_shard.to(device=cache.device, non_blocking=True)
         if cache.tp_world_size > 1:
@@ -312,19 +325,13 @@ def _synchronize_h2d_prefill_unified(
         else:
             device_full = device_shard
         raw[dev_block_ids_t] = device_full
-        h2d_event.record(cache.h2d_stream)
-        cache.h2d_event.record(cache.h2d_stream)
+        h2d_event.record(group_stream)
 
     # Store per-stage per-group event so _moe_post_sync can fence on the
     # correct stage for the correct attention group.
     h2d_stages = getattr(cache, "h2d_event_stages", None)
     if h2d_stages is not None and 0 <= next_layer_device_stage_idx < len(h2d_stages):
         h2d_stages[next_layer_device_stage_idx][group_idx] = h2d_event
-
-    if not load_next_layer:
-        # Layer 0: no MoE boundary before KV is used — sync now.
-        cache.h2d_stream.synchronize()
-        cache.h2d_event.synchronize()
 
 
 def _restore_volatile_swap_np_for_d2h(cache: "PrefillOmniCache") -> bool:
@@ -452,9 +459,11 @@ def synchronize_d2h_prefill(
         input_batch = getattr(runner, "input_batch", None) if runner else None
         maps = getattr(input_batch, "_volatile_real_to_fake_per_group", None)
         if maps is not None and group_idx < len(maps) and maps[group_idx]:
-            fake_to_real = {v: k for k, v in maps[group_idx].items()}
-            real_list = [fake_to_real.get(int(fid), int(fid)) for fid in block_ids_cpu.tolist()]
-            real_block_ids_cpu = torch.tensor(real_list, dtype=block_ids_cpu.dtype)
+            luts = getattr(input_batch, "_volatile_per_group_luts", None)
+            f2r = luts[group_idx][1] if (luts and group_idx < len(luts)) else None
+            if f2r is not None:
+                ids_clamped = block_ids_cpu.long().clamp(0, f2r.shape[0] - 1)
+                real_block_ids_cpu = f2r[ids_clamped].to(block_ids_cpu.dtype)
         if should_log_rank(cache):
             logger.warning(
                 "[APCDBG/D2H_PREP] tp_rank=%s dp_rank=%s stage=%s "
@@ -689,7 +698,10 @@ def synchronize_h2d_decode(
     # KV diagnostics: probe decode host pool (Stage 3) after OX, before H2D
     # ctxs are passed through from _post_success via the h2d_q batch
 
-    cache.host_cache.memcpy_async(batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes)
+    cache.host_cache.memcpy_async(
+        batch_device_mem, batch_device_max,
+        batch_host_mem, batch_host_sizes, kind=ACL_MEMCPY_DEVICE_TO_DEVICE
+    )
     # The memcpy above is queued on `ascend_cl_stream` asynchronously. The
     # caller `_post_success` marks the request as KV-ready immediately after
     # we return, and the scheduler will then dispatch the first decode step.

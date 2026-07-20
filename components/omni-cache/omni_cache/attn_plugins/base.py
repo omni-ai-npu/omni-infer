@@ -35,6 +35,29 @@ class AttentionPlugin:
     necessary parameters from args and kwargs as needed.
     """
 
+    def __init__(self):
+        self._omni_cache = None
+        self._enabled = False
+
+    @property
+    def omni_cache(self):
+        if self._omni_cache is None:
+            from omni_cache.cache import omni_cache
+            self._omni_cache = omni_cache
+        return self._omni_cache
+
+    @property
+    def enabled(self) -> bool:
+        if self._enabled:
+            return True
+        if self.omni_cache is None:
+            return False
+        if hasattr(self.omni_cache, 'enable'):
+            self._enabled = self.omni_cache.enable
+        else:
+            self._enabled = True
+        return self._enabled
+
     def pre_attn(self, *args, **kwargs) -> None:
         """Called before attention computation.
 
@@ -274,19 +297,12 @@ def _moe_post_sync():
     # (single-stage legacy handle).
     s = int(getattr(oc, "stage_record", 0) or 0)
 
-    h2d_event = getattr(oc, "h2d_event", None)
-    if h2d_event is not None:
-        try:
-            h2d_event.synchronize()
-        except Exception:
-            pass
     n_stages = max(1, int(getattr(oc, "num_stages_layer_copy", 1) or 1))
     cur = int(getattr(oc, "stage_record", 0) or 0)
     oc.stage_record = (cur + 1) % n_stages
     # Next block's D2H reads device_cache[oc.stage_record] → drain D2H only
     _drain_d2h_stage(oc, oc.stage_record)
     # Next block's H2D writes device_cache[(oc.stage_record + 1) % n_stages] → drain H2D only
-    _drain_h2d_stage(oc, (oc.stage_record + 1) % n_stages)
 
 
 def _create_moe_decorator():

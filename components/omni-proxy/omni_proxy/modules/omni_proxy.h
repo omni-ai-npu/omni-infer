@@ -32,7 +32,16 @@ typedef struct
     ngx_int_t vllm_kv_port_offset;
     ngx_int_t metrics_enabled;
     ngx_int_t kv_block_size;
+    /* Target chunk size (bytes) for the parallel chunked tokenizer's segment
+       split; passed to the Python tokenizer at init. Smaller = more segments =
+       finer parallelism (helps large prompts; neutral for ones below it). */
+    ngx_uint_t tokenize_chunk_bytes;
     ngx_http_upstream_srv_conf_t *upstream;
+
+    /* per-loc upstream conf; layout differs from srv_conf_t (local /
+     * buffer_size live here). Zero-init via create_loc_conf pcalloc. */
+    ngx_http_upstream_conf_t   upstream_conf;
+
     ngx_uint_t max_batch_num_token;
     ngx_uint_t prefill_max_num_seqs;
     ngx_uint_t decode_max_num_seqs;

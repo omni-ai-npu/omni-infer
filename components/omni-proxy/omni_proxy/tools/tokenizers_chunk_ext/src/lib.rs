@@ -254,6 +254,85 @@ impl ChunkTokenizer {
         };
         Ok((out, stats))
     }
+
+    #[pyo3(signature = (texts, target_bytes = 32768, parallel = true))]
+    pub fn encode_batch_newline_parallel(
+        &self,
+        texts: Vec<String>,
+        target_bytes: usize,
+        parallel: bool,
+    ) -> PyResult<(Vec<Vec<u32>>, InterleaveStats)> {
+        let wall = Instant::now();
+        let target = if target_bytes == 0 { 32768 } else { target_bytes };
+
+        // 1) Build chunk tasks across all texts (cheap serial O(n) scan).
+        let t0 = Instant::now();
+        struct Task {
+            ti: usize,
+            ci: usize,
+            s: usize,
+            e: usize,
+        }
+        let mut tasks: Vec<Task> = Vec::new();
+        let mut total_bytes = 0usize;
+        for (ti, t) in texts.iter().enumerate() {
+            let cuts = Self::newline_cut_points(t);
+            for (ci, (s, e)) in Self::chunk_ranges(t, target, &cuts).into_iter().enumerate() {
+                total_bytes += e - s;
+                tasks.push(Task { ti, ci, s, e });
+            }
+        }
+        let us_build = t0.elapsed().as_micros() as u64;
+        let total_segments = tasks.len();
+
+        // 2) Encode each chunk fully, in parallel across ALL chunks of ALL texts.
+        let t1 = Instant::now();
+        let texts_ref = &texts;
+        let run = |task: &Task| -> PyResult<(usize, usize, Vec<u32>)> {
+            let chunk = &texts_ref[task.ti][task.s..task.e];
+            Ok((task.ti, task.ci, self.encode_chunk_ids(chunk)?))
+        };
+        let results: Vec<(usize, usize, Vec<u32>)> = if parallel {
+            tasks.par_iter().map(run).collect::<PyResult<Vec<_>>>()?
+        } else {
+            tasks.iter().map(run).collect::<PyResult<Vec<_>>>()?
+        };
+        let us_tok = t1.elapsed().as_micros() as u64;
+
+        // 3) Merge per text in chunk order.
+        let t2 = Instant::now();
+        let mut buckets: Vec<Vec<(usize, Vec<u32>)>> = vec![Vec::new(); texts.len()];
+        for (ti, ci, ids) in results.into_iter() {
+            buckets[ti].push((ci, ids));
+        }
+        let mut out: Vec<Vec<u32>> = Vec::with_capacity(texts.len());
+        for mut b in buckets.into_iter() {
+            b.sort_by_key(|(k, _)| *k);
+            let cap: usize = b.iter().map(|(_, v)| v.len()).sum();
+            let mut ids = Vec::with_capacity(cap);
+            for (_, v) in b.into_iter() {
+                ids.extend_from_slice(&v);
+            }
+            out.push(ids);
+        }
+        let us_merge = t2.elapsed().as_micros() as u64;
+
+        let stats = InterleaveStats {
+            texts: texts.len(),
+            total_pieces: 0,
+            total_segments,
+            total_bytes,
+            us_norm_pretok: 0, // folded into tokenize_segments for this method
+            us_build_segments: us_build,
+            us_tokenize_segments: us_tok,
+            us_merge,
+            us_wall: wall.elapsed().as_micros() as u64,
+            seg_us_p50: 0,
+            seg_us_p95: 0,
+            seg_us_mean: 0.0,
+        };
+        Ok((out, stats))
+    }
 }
 
 impl ChunkTokenizer {
@@ -307,6 +386,100 @@ impl ChunkTokenizer {
             norm: std::sync::Arc::new(norm),
             pieces,
         })
+    }
+
+    fn newline_cut_points(text: &str) -> Vec<usize> {
+        let mut cuts = Vec::new();
+        let mut in_ws = false;
+        let mut saw_nl = false;
+        let mut last_nl_end = 0usize;
+        for (idx, c) in text.char_indices() {
+            if c.is_whitespace() {
+                in_ws = true;
+                if c == '\n' || c == '\r' {
+                    saw_nl = true;
+                    last_nl_end = idx + c.len_utf8();
+                }
+            } else {
+                if in_ws && saw_nl {
+                    cuts.push(last_nl_end);
+                }
+                in_ws = false;
+                saw_nl = false;
+            }
+        }
+        cuts
+    }
+
+    fn chunk_ranges(text: &str, target: usize, cuts: &[usize]) -> Vec<(usize, usize)> {
+        let n = text.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        if cuts.is_empty() {
+            return vec![(0, n)]; // no safe boundary -> one serial chunk
+        }
+
+        let k = ((n + target - 1) / target).max(1);
+        let mut ranges = Vec::with_capacity(k);
+        let mut start = 0usize;
+        let mut ci = 0usize;
+        for i in 1..k {
+            let goal = ((n as u64) * (i as u64) / (k as u64)) as usize;
+            while ci < cuts.len() && cuts[ci] <= start {
+                ci += 1;
+            }
+            // largest safe cut <= goal (backward from the even boundary)
+            let mut chosen: Option<usize> = None;
+            let mut j = ci;
+            while j < cuts.len() && cuts[j] <= goal {
+                chosen = Some(cuts[j]);
+                j += 1;
+            }
+            let end = match chosen {
+                Some(c) => c,
+                None => {
+                    if ci < cuts.len() {
+                        cuts[ci] // no cut at/below the boundary -> fall forward
+                    } else {
+                        break; // no cuts left -> the rest is the final chunk
+                    }
+                }
+            };
+            if end <= start || end >= n {
+                break;
+            }
+            ranges.push((start, end));
+            start = end;
+        }
+        ranges.push((start, n));
+        ranges
+    }
+
+    /// Encode one chunk to ids (no special tokens): normalize + pretok + BPE, serial.
+    fn encode_chunk_ids(&self, chunk: &str) -> PyResult<Vec<u32>> {
+        let tp = self.extract_piece_entries_zero_copy(chunk)?;
+        let model = self.inner.get_model();
+        let mut ids: Vec<u32> = Vec::new();
+        for piece in &tp.pieces {
+            match piece {
+                PieceEntry::PreIds { ids: pre, .. } => ids.extend_from_slice(pre),
+                PieceEntry::Range { s, e } => {
+                    if *s < *e {
+                        if let Some(p) = tp.norm.get(*s..*e) {
+                            if let Ok(toks) = model.tokenize(p) {
+                                ids.reserve(toks.len());
+                                for tk in toks {
+                                    ids.push(tk.id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(ids)
     }
 }
 

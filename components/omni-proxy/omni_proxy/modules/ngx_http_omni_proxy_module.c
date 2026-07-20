@@ -2343,9 +2343,7 @@ static ngx_int_t ngx_http_omni_start_decode_upstream(ngx_http_request_t *r)
 
     ngx_http_upstream_t *u = r->upstream;
 
-    u->conf = olcf->upstream->srv_conf[ngx_http_upstream_module.ctx_index];
-    u->conf->buffer_size = 1024;
-    u->conf->send_lowat = 0;
+    u->conf = &olcf->upstream_conf;
 
     u->create_request = ngx_http_omni_create_request;
     u->reinit_request = ngx_http_omni_reinit_request;
@@ -2719,6 +2717,7 @@ static void *ngx_http_omni_create_loc_conf(ngx_conf_t *cf)
     conf->model_path.data = NULL;
     conf->model_path.len = 0;
     conf->kv_block_size = 128;
+    conf->tokenize_chunk_bytes = NGX_CONF_UNSET_UINT;
 
     conf->vllm_kv_port_offset = NGX_CONF_UNSET;
     conf->max_batch_num_token = NGX_CONF_UNSET_UINT;
@@ -2733,6 +2732,12 @@ static void *ngx_http_omni_create_loc_conf(ngx_conf_t *cf)
     conf->stream_ops = (ngx_prefill_stream_op_e) NGX_CONF_UNSET_UINT;
     conf->prefill_groups = NULL;
     conf->decode_groups = NULL;
+
+    /* Leave timeout slots unset so per-location directives can override them. */
+    conf->upstream_conf.connect_timeout = NGX_CONF_UNSET_MSEC;
+    conf->upstream_conf.send_timeout = NGX_CONF_UNSET_MSEC;
+    conf->upstream_conf.read_timeout = NGX_CONF_UNSET_MSEC;
+    conf->upstream_conf.next_upstream_timeout = NGX_CONF_UNSET_MSEC;
 
     return conf;
 }
@@ -2756,6 +2761,10 @@ static char *ngx_http_omni_merge_loc_conf(ngx_conf_t *cf, void *parent, void *ch
         conf->vllm_kv_port_offset = (prev->vllm_kv_port_offset != NGX_CONF_UNSET) ? prev->vllm_kv_port_offset : NGX_CONF_UNSET;
     }
 
+    /* default 16384 (16 KB): bench_chunk.py shows it consistently beats the old
+       32768 on the parallel newline path; smaller helps large prompts and is
+       neutral for prompts that fit in a single segment. */
+    ngx_conf_merge_uint_value(conf->tokenize_chunk_bytes, prev->tokenize_chunk_bytes, 16384);
     ngx_conf_merge_uint_value(conf->max_batch_num_token, prev->max_batch_num_token, 32000);
     ngx_conf_merge_uint_value(conf->prefill_max_num_seqs, prev->prefill_max_num_seqs, 32);
     ngx_conf_merge_uint_value(conf->decode_max_num_seqs, prev->decode_max_num_seqs, 32);
@@ -2798,6 +2807,19 @@ static char *ngx_http_omni_merge_loc_conf(ngx_conf_t *cf, void *parent, void *ch
             conf->stream_ops = prev->stream_ops;
         }
     }
+
+    /* finalize per-loc upstream_conf defaults; zero-init would zero the connect
+     * timeout and trigger an immediate 504 in ngx_http_upstream_connect. */
+    ngx_conf_merge_msec_value(conf->upstream_conf.connect_timeout,
+                              prev->upstream_conf.connect_timeout, 60000);
+    ngx_conf_merge_msec_value(conf->upstream_conf.send_timeout,
+                              prev->upstream_conf.send_timeout, 60000);
+    ngx_conf_merge_msec_value(conf->upstream_conf.read_timeout,
+                              prev->upstream_conf.read_timeout, 60000);
+    ngx_conf_merge_msec_value(conf->upstream_conf.next_upstream_timeout,
+                              prev->upstream_conf.next_upstream_timeout, 0);
+    conf->upstream_conf.buffer_size        = 1024;
+    conf->upstream_conf.send_lowat         = 0;
 
     return NGX_CONF_OK;
 }
@@ -3568,6 +3590,7 @@ static ngx_int_t omni_proxy_init_tokenizer_worker(ngx_cycle_t *cycle)
 
     local_state.tokenize_worker.model_path = local_state.loc_conf->model_path;
     local_state.tokenize_worker.kv_block_size = local_state.loc_conf->kv_block_size;
+    local_state.tokenize_worker.tokenize_chunk_bytes = local_state.loc_conf->tokenize_chunk_bytes;
 
     if (omni_tokenizer_worker_init(cycle, &local_state.tokenize_worker) != NGX_OK)
     {
@@ -4338,6 +4361,13 @@ static ngx_command_t omni_proxy_commands[] = {
      offsetof(ngx_http_omni_loc_conf_t, max_batch_num_token),
      NULL},
 
+     {ngx_string("omni_proxy_tokenize_chunk_bytes"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_num_slot,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_omni_loc_conf_t, tokenize_chunk_bytes),
+     NULL},
+
     {ngx_string("omni_proxy_prefill_max_num_seqs"),
      NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
      ngx_conf_set_num_slot,
@@ -4364,6 +4394,34 @@ static ngx_command_t omni_proxy_commands[] = {
      ngx_conf_set_num_slot,
      NGX_HTTP_LOC_CONF_OFFSET,
      offsetof(ngx_http_omni_loc_conf_t, prefill_starvation_timeout),
+     NULL},
+
+    {ngx_string("omni_proxy_connect_timeout"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_msec_slot,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_omni_loc_conf_t, upstream_conf.connect_timeout),
+     NULL},
+
+    {ngx_string("omni_proxy_send_timeout"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_msec_slot,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_omni_loc_conf_t, upstream_conf.send_timeout),
+     NULL},
+
+    {ngx_string("omni_proxy_read_timeout"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_msec_slot,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_omni_loc_conf_t, upstream_conf.read_timeout),
+     NULL},
+
+    {ngx_string("omni_proxy_next_upstream_timeout"),
+     NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+     ngx_conf_set_msec_slot,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_omni_loc_conf_t, upstream_conf.next_upstream_timeout),
      NULL},
 
     {ngx_string("omni_proxy_health_status"),

@@ -47,6 +47,8 @@ struct Config {
     size_t connections_per_shard = 16;
     size_t connections_per_req = 4;
     int zmq_port = 5555;
+    int max_connect_retries = 10;
+    int max_request_retries = 3;
 
     inline size_t block_table_size() const
     {
@@ -100,6 +102,8 @@ void print_usage(const char *program_name)
               << "                                           e.g. "
                  "\"10.0.0.1:15000,10.0.0.2:15000;10.0.1.1:15000,10.0.1.2:15000\"\n"
               << "  --zmq-port <port>                        ZMQ port\n"
+              << "  --max-connect-retries <num>              Maximum number of connection retries (default: 10)\n"
+              << "  --max-request-retries <num>              Maximum number of request retries (default: 3)\n"
               << "  --block-table-shm <name>                 Shared memory name for block table\n"
               << "  --num-block-tables <num>                 Number of block tables (default: 1)\n"
               << "  --num-blocks <num>                       Number of blocks in each block table\n"
@@ -109,7 +113,7 @@ void print_usage(const char *program_name)
               << "  --dtype <size>                           Block size with unit (e.g., 1 for int8, 2 for bfloat16)\n"
               << "  --num-threads <threads>                  Number of threads (default: 16)\n"
               << "  --num-connections <conn>                 Number of connections per shard (default: 16)\n"
-              << "  --num-connections-per-req <conn>               Number of connections per req (default: 4)\n"
+              << "  --num-connections-per-req <conn>         Number of connections per req (default: 4)\n"
               << "  -h                                       Show this help message\n";
 }
 
@@ -226,6 +230,10 @@ Config parse_arguments(int argc, char *argv[])
                 config.connections_per_req = std::stoul(argv[++i]);
             } else if ((arg == "--zmq-port" || arg == "--zmq_port") && i + 1 < argc) {
                 config.zmq_port = std::stoul(argv[++i]);
+            } else if ((arg == "--max-connect-retries" || arg == "--max_connect_retries") && i + 1 < argc) {
+                config.max_connect_retries = std::stoi(argv[++i]);
+            } else if ((arg == "--max-request-retries" || arg == "--max_request_retries") && i + 1 < argc) {
+                config.max_request_retries = std::stoi(argv[++i]);
             } else if (arg == "-h" || arg == "--help") {
                 print_usage(argv[0]);
                 exit(0);
@@ -236,20 +244,18 @@ Config parse_arguments(int argc, char *argv[])
             }
         }
 
-        if (config.server_list.empty() && config.shard_list.empty()) {
-            throw std::runtime_error("Either --addr or --shard-list must be specified");
-        }
+        // --addr or --shard-list may both be absent in dynamic mode
+        // (D-side OX receives shard endpoints per request via ZMQ)
 
-        if (config.block_table_shm.empty()) {
-            throw std::runtime_error("--block-table-shm must be specified");
+        if (config.block_table_shm.empty() && config.server_list.empty()) {
+            // block-table-shm is only required for D-side OX (client mode)
+            // P-side OX (server mode via --addr) doesn't need it
         }
-
-        if (config.num_blocks == 0) {
-            throw std::runtime_error("--num-blocks must be specified and greater than 0");
-        }
-
-        if (config.block_size == 0) {
-            throw std::runtime_error("--block-size must be specified and greater than 0");
+        if (!config.block_table_shm.empty()) {
+            // D-side mode requires these
+            if (config.num_blocks == 0) {
+                throw std::runtime_error("--num-blocks must be specified and greater than 0");
+            }
         }
     } catch (const std::exception &e) {
         std::cerr << "Error parsing arguments: " << e.what() << std::endl;

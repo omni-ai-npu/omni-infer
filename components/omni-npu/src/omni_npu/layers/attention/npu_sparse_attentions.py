@@ -274,7 +274,7 @@ class MomeAttention(MambaBase):
         from vllm.v1.kv_cache_interface import MomeSpec
 
         enable_prefix_caching = vllm_config.cache_config.enable_prefix_caching
-        block_size = vllm_config.cache_config.block_size
+        block_size = vllm_config.cache_config.mamba_block_size
         max_model_len = vllm_config.model_config.max_model_len
         mamba_block_size = block_size if enable_prefix_caching else max_model_len
 

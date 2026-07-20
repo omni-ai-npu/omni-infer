@@ -1436,8 +1436,19 @@ class NPUModelRunner(GPUModelRunner):
         draft_token_ids, req_ids = self._get_draft_token_ids_cpu()
         num_reqs = len(req_ids)
         mask_list = self.discard_request_mask.cpu[:num_reqs].tolist()
-        req_ids = [req_id for req_id, mask in zip(req_ids, mask_list) if not mask]
-        draft_token_ids = [draft_token_id for draft_token_id, mask in zip(draft_token_ids, mask_list) if not mask]
-        if len(req_ids) == 0:
+        filtered_req_ids = []
+        filtered_draft_token_ids = []
+        for req_id, tokens, discard in zip(req_ids, draft_token_ids, mask_list):
+            if discard:
+                continue
+            if any(t < 0 for t in tokens):
+                logger.warning(
+                    "Dropping invalid draft token id(s) for request %s: %s",
+                    req_id, tokens,
+                )
+                continue
+            filtered_req_ids.append(req_id)
+            filtered_draft_token_ids.append(tokens)
+        if len(filtered_req_ids) == 0:
             return None
-        return DraftTokenIds(req_ids, draft_token_ids)
+        return DraftTokenIds(filtered_req_ids, filtered_draft_token_ids)

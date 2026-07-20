@@ -470,12 +470,12 @@ class OpenPanguV2MOE(nn.Module):
                 if not use_allreduce:
                     hidden_states_int8 = get_ep_group().all_gather(hidden_states_int8, dim=0)
 
-                    topk_cat = torch.cat((topk_weights, topk_ids.to(torch.float), pertoken_scale.unsqueeze(-1)), dim=-1)
+                    topk_cat = torch.cat((topk_weights, pertoken_scale.unsqueeze(-1)), dim=-1)
                     topk_all = get_ep_group().all_gather(topk_cat, dim=0)
-                    topk_weights, topk_ids, pertoken_scale = torch.split(
-                        topk_all, [topk_weights.shape[-1], topk_ids.shape[-1], 1], dim=-1)
-                    topk_ids = torch.round(topk_ids).to(torch.int32)
+                    topk_weights, pertoken_scale = torch.split(
+                        topk_all, [topk_weights.shape[-1], 1], dim=-1)
                     pertoken_scale = pertoken_scale.squeeze(-1)
+                    topk_ids = get_ep_group().all_gather(topk_ids, dim=0)
             else:
                 if not use_allreduce:
                     hidden_states = get_ep_group().all_gather(hidden_states, dim=0)
@@ -502,14 +502,6 @@ class OpenPanguV2MOE(nn.Module):
                     active_expert_range=expert_range,
                     row_idx_type=1 if ENABLE_GMM_FR else 0,
                 )
-
-                # Launch shared experts on side stream after init_routing
-                # Code structure: trigger here, actual computation at the end
-                if use_side_stream:
-                    main_stream = torch.npu.current_stream()
-                    shared_done_event = torch.npu.Event()
-                    shared_pre_event = torch.npu.Event()
-                    shared_pre_event.record()
 
                 # Step 3: Int8 group_matmul - First matmul (gate_up projection) -> int32
                 gate_up_proj_output = torch_npu.npu_grouped_matmul(
@@ -616,14 +608,6 @@ class OpenPanguV2MOE(nn.Module):
                         row_idx_type=0,
                     )
 
-                # Launch shared experts on side stream after init_routing
-                # Code structure: trigger here, actual computation at the end
-                if use_side_stream:
-                    main_stream = torch.npu.current_stream()
-                    shared_done_event = torch.npu.Event()
-                    shared_pre_event = torch.npu.Event()
-                    shared_pre_event.record()
-
                 gate_up_proj_output = torch_npu.npu_grouped_matmul(
                     [sorted_tokens],
                     [self.experts.w13_weight],
@@ -655,6 +639,14 @@ class OpenPanguV2MOE(nn.Module):
                     topk_ids,
                     drop_pad_mode=3,
                 )
+
+        # Launch shared experts on side stream after init_routing
+        # Code structure: trigger here, actual computation at the end
+        if use_side_stream:
+            main_stream = torch.npu.current_stream()
+            shared_done_event = torch.npu.Event()
+            shared_pre_event = torch.npu.Event()
+            shared_pre_event.record()
 
         # Step 7: Apply post-MoE communication
         if use_allreduce:

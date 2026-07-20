@@ -57,16 +57,17 @@ if [[ "$ENABLE_OMNI_CACHE" == 1 ]]; then
     : "${ENABLE_HOST_MAPPING:=1}"
     : "${NUM_GPU_BLOCKS_OVERRIDE:=11800}"
     : "${KV_CACHE_MEMORY_BYTES:=OMNI_CACHE_LAYER_BYTES * HYBRID_ATTN_GROUP_SIZE}"
-    : "${P_NODE_LIST:=127.0.0.1}"
 else
     export ENABLE_OMNI_CACHE=0
     export ENABLE_HOST_MAPPING=0
-    : "${P_NODE_LIST:=192.168.0.12}"
 fi
 
 SETUP_HUGETLBFS_SH="$REPO_ROOT/tools/setup/setup_hugetlbfs_2MB.sh"
 : "${LOG_DIR:=$SCRIPT_DIR/logs/decode}"
 
+
+export HCCL_EXEC_TIMEOUT=3200
+export HCCL_CONNECT_TIMEOUT=1800
 export BASE_PORT=16077
 export ZMQ_BASE_PORT=16555
 
@@ -78,7 +79,7 @@ export \
     OMNI_KV_DUMP_GEAR OMNI_KV_DUMP_DIR OMNI_KV_DUMP_BRANCH OMNI_KV_DUMP_MAX \
     MTP ENABLE_PREFIX_CACHING BLOCK_SIZE VLLM_PLUGINS OMNI_NPU_PATCHES_DIR OMNI_NPU_VLLM_PATCHES \
     VLLM_LOGGING_LEVEL VLLM_WORKER_MULTIPROC_METHOD \
-    P_NODE_LIST TP_NNODES \
+    TP_NNODES \
     ASCEND_GLOBAL_LOG_LEVEL HCCL_OP_EXPANSION_MODE \
     HCCL_INTRA_ROCE_ENABLE HCCL_INTRA_PCIE_ENABLE HCCL_BUFFSIZE \
     GLOO_SOCKET_IFNAME HCCL_SOCKET_IFNAME \
@@ -155,7 +156,6 @@ command -v vllm >/dev/null \
     echo "ENABLE_PREFIX_CACHING=${ENABLE_PREFIX_CACHING}"
     echo ""
     echo "--- Networking ---"
-    echo "P_NODE_LIST=${P_NODE_LIST}"
     echo "BASE_PORT=${BASE_PORT}"
     echo "ZMQ_BASE_PORT=${ZMQ_BASE_PORT}"
     echo "TP_NNODES=${TP_NNODES}"
@@ -234,9 +234,9 @@ for ((rank=0; rank<DECODE_DP_SIZE; rank++)); do
     else
         kv_psize=1
     fi
-    kv_conf_base='{"kv_connector":"%s","kv_role":"kv_consumer","kv_rank":%d,"kv_parallel_size":%d,"kv_connector_extra_config":{"p_node_list":["%s"],"kv_producer_dp_size":1}}'
+    kv_conf_base='{"kv_connector":"%s","kv_role":"kv_consumer","kv_rank":%d,"kv_parallel_size":%d,"kv_connector_extra_config":{"kv_producer_dp_size":1}}'
     kv_conf=$(printf "$kv_conf_base" \
-        "$KV_CONNECTOR" "$((rank + 1))" "$kv_psize" "$P_NODE_LIST")
+        "$KV_CONNECTOR" "$((rank + 1))" "$kv_psize")
 
     VLLM_CMD=(
         vllm serve "$MODEL_PATH"

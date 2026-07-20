@@ -218,7 +218,7 @@ class KVLoader:
             self._read_blocks,
             local_block_ids=meta.local_block_ids,
             remote_block_ids=remote_blocks,
-            dst_cluster_id=meta.remote_cluster_id,
+            remote_ox_shard_list=meta.remote_ox_shard_list,
             request_id=req_id,
             remote_request_id=meta.remote_request_id,
             remote_host_ip=meta.remote_host,
@@ -229,7 +229,7 @@ class KVLoader:
         self,
         local_block_ids: List[List[int]],
         remote_block_ids: List[int],
-        dst_cluster_id: str,
+        remote_ox_shard_list: str,
         request_id: str,
         remote_request_id: Optional[str],
         remote_host_ip: str,
@@ -272,7 +272,7 @@ class KVLoader:
                 request_id=request_id,
                 local_block_ids=local_block_ids,
                 remote_block_ids=remote_block_ids,
-                dst_cluster_id=dst_cluster_id,
+                remote_ox_shard_list=remote_ox_shard_list,
                 remote_request_id=remote_request_id,
                 remote_host_ip=remote_host_ip,
                 dp_rank=self.omni_cache.dp_local_rank,
@@ -293,7 +293,7 @@ class KVLoader:
             request_id=request_id,
             local_block_ids=local_block_ids,
             remote_block_ids=remote_block_ids,
-            dst_cluster_id=dst_cluster_id,
+            remote_ox_shard_list=remote_ox_shard_list,
             remote_request_id=remote_request_id,
             remote_host_ip=remote_host_ip,
             dp_rank=self.omni_cache.dp_local_rank,
@@ -320,7 +320,7 @@ class KVLoader:
 
         self.worker.zmq_client.send_request(
             request_id=request_id,
-            cluster_id=dst_cluster_id,
+            remote_ox_shard_list=remote_ox_shard_list,
             src_id_list=src_clean,
             dst_id_list=dst_clean,
             rank_id=self.omni_cache.dp_local_rank,
@@ -328,9 +328,9 @@ class KVLoader:
         )
 
         logger.warning(
-            "KV pull req_id=%s cluster_id=%s remote_host=%s remote_dp_rank=%d "
+            "[DYNAMIC-TOPO] KV pull req_id=%s remote_ox_shard_list=%s remote_host=%s remote_dp_rank=%d "
             "src_blocks=%d dst_blocks=%d in %.6f s",
-            request_id, dst_cluster_id, remote_host_ip, remote_dp_rank,
+            request_id, remote_ox_shard_list, remote_host_ip, remote_dp_rank,
             len(src_clean), len(dst_clean), time.time() - start,
         )
 
@@ -353,7 +353,7 @@ class KVLoader:
                 self._read_blocks_mock_prefill,
                 local_block_ids=meta.local_block_ids,
                 remote_block_ids=[0],
-                dst_cluster_id="0",
+                remote_ox_shard_list="127.0.0.1:15077",
                 request_id=req_id,
                 remote_request_id=req_id,
                 remote_host_ip="0.0.0.0",
@@ -368,7 +368,7 @@ class KVLoader:
         self,
         local_block_ids: List[List[int]],
         remote_block_ids: List[int],
-        dst_cluster_id: str,
+        remote_ox_shard_list: str,
         request_id: str,
         remote_request_id: Optional[str],
         remote_host_ip: str,
@@ -379,7 +379,7 @@ class KVLoader:
         Args:
             local_block_ids: Local block IDs.
             remote_block_ids: Remote block IDs (ignored in mock).
-            dst_cluster_id: Destination cluster ID.
+            remote_ox_shard_list: OX shard endpoint list.
             request_id: Request ID.
             remote_request_id: Remote request ID.
             remote_host_ip: Remote host IP.
@@ -388,18 +388,18 @@ class KVLoader:
         logger.warning("<<<<<< In _read_blocks_mock_prefill")
         start = time.time()
 
-        req = PendingReq(
+        req_mock = PendingReq(
             request_id=request_id,
             local_block_ids=local_block_ids,
             remote_block_ids=remote_block_ids,
-            dst_cluster_id=dst_cluster_id,
+            remote_ox_shard_list=remote_ox_shard_list,
             remote_request_id=remote_request_id,
             remote_host_ip=remote_host_ip,
             dp_rank=self.omni_cache.dp_local_rank,
             t_submit=start,
         )
 
-        self.worker.pending[request_id] = req
+        self.worker.pending[request_id] = req_mock
 
         try:
             self.worker.recv_q.put(request_id)

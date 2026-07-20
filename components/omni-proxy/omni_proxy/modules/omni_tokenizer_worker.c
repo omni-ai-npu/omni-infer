@@ -25,7 +25,19 @@ static void *omni_tokenizer_worker_func(void *data)
     char model_path_str[256];
     ngx_snprintf((u_char *)model_path_str, sizeof(model_path_str), "%V", &worker->model_path);
 
-    if (omni_init_tokenizer(model_path_str) != 0)
+    omni_global_state_t *gs = omni_get_global_state();
+    if (gs == NULL)
+    {
+        ngx_log_error(NGX_LOG_ERR, worker->log, 0, "Tokenizer global state is not initialized");
+        omni_tokenizer_cleanup();
+        return NULL;
+    }
+
+    ngx_shmtx_lock(&gs->shmtx);
+    int init_rc = omni_init_tokenizer(model_path_str, (long)worker->tokenize_chunk_bytes);
+    ngx_shmtx_unlock(&gs->shmtx);
+
+    if (init_rc != 0)
     {
         ngx_log_error(NGX_LOG_ERR, worker->log, 0, "Failed to init tokenizer with model: %V", &worker->model_path);
         omni_tokenizer_cleanup();

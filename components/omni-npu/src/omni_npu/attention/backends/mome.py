@@ -25,7 +25,11 @@ from vllm.v1.kv_cache_interface import AttentionSpec
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
 from vllm.distributed import get_tp_group
 
-from omni_npu.attention.backends.utils import register_attention_backend, _maybe_padded_raw_tensor_to_strided_caches
+from omni_npu.attention.backends.utils import (
+    register_attention_backend,
+    _maybe_padded_raw_tensor_to_strided_caches,
+    scheme_conv_sp,
+)
 from omni_npu.attention.backends.attention import NPUAttentionBackendImpl
 from omni_npu.model_config.config_loader.loader import model_extra_config
 
@@ -109,6 +113,8 @@ class NPUMomeAttentionMetadata:
     block_idx_last_computed_token: torch.Tensor | None = None  # shape: [batch,]
     block_idx_first_scheduled_token: torch.Tensor | None = None  # shape: [batch,]
     block_idx_last_scheduled_token: torch.Tensor | None = None  # shape: [batch,]
+
+    conv_sp_meta = None
 
 
 class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
@@ -381,6 +387,33 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         fc2_metadata.rearrange_ratio = rearrange_ratio
         fc2_metadata.cache_indices_rearranged = cache_indices_rearranged
 
+    def _build_for_sp(self,
+        seq_cumlens: torch.Tensor,            # [bs+1]
+        num_computed: torch.Tensor,           # [bs]
+        init_block_idx: torch.Tensor | None,  # [bs] or None for no prefix-caching
+        block_table: torch.Tensor,            # [bs, *] or [bs] for no prefix-caching
+        block_size: int = 128,
+    ) -> tuple:
+        save_all = bool(block_table.dim() == 2)  # prefix-caching or not
+        meta = scheme_conv_sp(
+            get_tp_group(),
+            seq_cumlens.cpu().numpy(),
+            num_computed.cpu().numpy(),
+            like=seq_cumlens,
+            block_size=block_size,
+            state_len=self.state_len,
+            save_all=save_all,
+        )
+        _, _, _, save_range = meta
+        if save_all:  # prefix-caching
+            save_idx = [tab[idxs] for tab, idxs in zip(block_table, save_range)]
+            save_idx = torch.cat(save_idx, dim=0)
+            init_idx = [tab[i: i + 1] for tab, i in zip(block_table, init_block_idx)]
+            init_idx = torch.cat(init_idx, dim=0)
+        else:  # no prefix-caching
+            init_idx = save_idx = block_table
+        return init_idx, save_idx, meta
+
     def build(
         self,
         common_prefix_len: int,
@@ -559,7 +592,18 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                 block_idx_first_scheduled_token=block_idx_first_scheduled_token[:num_decodes] if apc_enabled else None, 
                 block_idx_last_scheduled_token=block_idx_last_scheduled_token[:num_decodes] if apc_enabled else None, 
             )
-
+        if (
+            num_prefills > 0
+            and num_decodes == 0
+            and model_extra_config.operator_opt_config.enable_mome_sp
+        ):
+            attn_metadata.conv_sp_meta = self._build_for_sp(
+                seq_cumlens=common_attn_metadata.query_start_loc,  # [bs+1]
+                num_computed=num_computed_tokens,                  # [bs]
+                init_block_idx=block_idx_last_computed_token,      # [bs]
+                block_table=cache_indices,                         # [bs, *]
+                block_size=self.mome_block_size,
+            )
         return attn_metadata
 
     def build_for_drafting(

@@ -10,6 +10,7 @@ import pickle
 import queue
 import subprocess
 import threading
+import time
 from collections import defaultdict
 from multiprocessing import current_process
 from typing import Dict, List, Optional, Set, Tuple
@@ -26,7 +27,6 @@ from omni_cache.connector.utils.process_utils import handle_exception, stdout_pr
 from omni_cache.connector.utils.settings import (
     OX_LOG_PATH,
     OX_PATH,
-    P_NODE_PORT_LIST,
     PER_REQUEST_CONNECTION,
     ZMQ_BASE_PORT,
 )
@@ -75,11 +75,15 @@ class DecodeConnectorWorker:
     def _init_state(self) -> None:
         """Initialize internal state."""
         self._recving_transfers = queue.Queue()
+        self._load_error_block_ids = multiprocessing.Queue()
         self._done_recving_count: defaultdict[str, int] = defaultdict(lambda: 0)
         self._pull_kv_lock = threading.Lock()
         self.queues: Dict[str, queue.Queue] = {}
         self.threads: Dict[str, threading.Thread] = {}
         self._transfer_lock = threading.Lock()
+        self._load_timeout_sec = float(
+            os.getenv("OMNI_CACHE_KV_LOAD_TIMEOUT_SEC", "600")
+        )
 
     def _init_zmq(self) -> None:
         """Initialize ZMQ context and sockets."""
@@ -206,6 +210,60 @@ class DecodeConnectorWorker:
         """Get receiving transfers queue."""
         return self._recving_transfers
 
+    def mark_transfer_failed(self, req_id: str, reason: str) -> None:
+        """Record a failed KV load without killing the transfer pipeline."""
+        ctx = self.pending.pop(req_id, None)
+        block_ids: Set[int] = set()
+        if ctx is not None:
+            local_block_ids = getattr(ctx, "local_block_ids", None)
+            if local_block_ids:
+                flat_ids = local_block_ids[0]
+                block_ids = {
+                    int(block_id) for block_id in flat_ids if int(block_id) != 0
+                }
+
+        if not block_ids:
+            logger.error(
+                "KV load failed for request %s, but no local block ids were "
+                "available to report invalid blocks. reason=%s",
+                req_id, reason,
+            )
+            return
+
+        self._load_error_block_ids.put(block_ids)
+        logger.error(
+            "KV load failed for request %s. Reporting %d invalid local blocks "
+            "to scheduler. reason=%s",
+            req_id, len(block_ids), reason,
+        )
+
+    def get_block_ids_with_load_errors(self) -> Set[int]:
+        """Return and clear block ids whose KV load failed."""
+        block_ids: Set[int] = set()
+        while True:
+            try:
+                block_ids.update(self._load_error_block_ids.get_nowait())
+            except queue.Empty:
+                break
+        return block_ids
+
+    def fail_expired_transfers(self) -> None:
+        """Abort pending KV loads that exceeded the configured timeout."""
+        if self._load_timeout_sec <= 0:
+            return
+
+        now = time.time()
+        expired_req_ids = []
+        for req_id, ctx in self.pending.items():
+            t_submit = getattr(ctx, "t_submit", now)
+            if now - t_submit > self._load_timeout_sec:
+                expired_req_ids.append(req_id)
+
+        for req_id in expired_req_ids:
+            self.mark_transfer_failed(
+                req_id, f"kv_load_timeout>{self._load_timeout_sec:.1f}s"
+            )
+
     def on_fast_path_req(self) -> None:
         """Fast path request handler for async KV pull."""
         context = zmq.Context()
@@ -269,8 +327,6 @@ class DecodeConnectorWorker:
 
         cmd = [
             str(OX_PATH),
-            "--shard-list",
-            str(P_NODE_PORT_LIST),
             "--zmq-port",
             end_port,
             "--block-table-shm",

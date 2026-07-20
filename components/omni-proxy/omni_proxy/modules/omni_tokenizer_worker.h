@@ -26,6 +26,7 @@ typedef struct
     ngx_int_t active;
     ngx_str_t model_path;
     ngx_int_t kv_block_size;
+    ngx_uint_t tokenize_chunk_bytes; /* parallel-tokenizer segment target (bytes) */
     ngx_log_t *log;
     ngx_connection_t *resp_connection;
 } ngx_omni_tokenize_worker_t;

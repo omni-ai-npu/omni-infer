@@ -19,28 +19,157 @@ from vllm.entrypoints.openai.serving_engine import OpenAIServing, ChatLikeReques
 from vllm.inputs.data import PromptType, TokensPrompt
 from vllm.tool_parsers import ToolParser
 from vllm.tokenizers import TokenizerLike
-from vllm.v1.engine import EngineCoreRequest
+from vllm.v1.engine import EngineCoreOutput, EngineCoreRequest
 from vllm.lora.request import LoRARequest
 from vllm.outputs import RequestOutput, CompletionOutput
 from vllm.v1.engine.parallel_sampling import ParentRequest
-from vllm.v1.request import Request
+from vllm.v1.request import Request, RequestStatus
 from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
 from vllm.entrypoints.openai.serving_engine import OpenAIServing
 from vllm.v1.core.sched.scheduler import Scheduler
+from vllm.v1.core.sched.utils import check_stop
 from vllm.v1.engine.async_llm import AsyncLLM
+from vllm.exceptions import VLLMValidationError
+from vllm.logger import init_logger
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
+
+logger = init_logger(__name__)
 
 _original_chat_completion_full_generator = OpenAIServingChat.chat_completion_full_generator
 _original_preprocess_chat = OpenAIServingChat._preprocess_chat
 _original_preprocess_chat_engine = OpenAIServing._preprocess_chat
 _original_generate = AsyncLLM.generate
+_original_update_from_kv_xfer_finished = Scheduler._update_from_kv_xfer_finished
+_original_add_request = Scheduler.add_request
 _ROUTED_EXPERT_KEYS = (
     "routed_experts_shape",
     "routed_experts_dtype",
     "routed_experts_str_len",
     "routed_experts_str",
 )
+
+
+def _get_request_max_tokens(request: Any) -> int | None:
+    if isinstance(request, ChatCompletionRequest):
+        return request.max_completion_tokens or request.max_tokens
+    return getattr(request, "max_tokens", None)
+
+
+def _speculative_margin(vllm_config: Any) -> int:
+    """Tokens to reserve below max_model_len when spec decoding is on.
+    max_model_len - num_speculative_tokens*3. 
+    """
+    spec = getattr(vllm_config, "speculative_config", None)
+    if spec is None:
+        return 0
+    num_spec = getattr(spec, "num_speculative_tokens", 0) or 0
+    return num_spec * 3
+
+
+def _is_kv_producer(serving: OpenAIServing) -> bool:
+    engine_client = getattr(serving, "engine_client", None)
+    vllm_config = getattr(engine_client, "vllm_config", None)
+    kv_transfer_config = getattr(vllm_config, "kv_transfer_config", None)
+    if kv_transfer_config is not None and getattr(
+        kv_transfer_config, "is_kv_transfer_instance", False
+    ):
+        kv_role = getattr(kv_transfer_config, "kv_role", None)
+        return kv_role == "kv_producer" or getattr(
+            kv_transfer_config, "is_kv_producer", False
+        )
+    return os.getenv("ROLE") == "prefill"
+
+
+def _queue_finish_notification(
+    scheduler: Scheduler, request: Request, finished_status: "RequestStatus"
+) -> None:
+    pending = getattr(scheduler, "_omni_pending_finish_outputs", None)
+    if pending is None:
+        pending = []
+        scheduler._omni_pending_finish_outputs = pending
+    pending.append(
+        (
+            request.client_index,
+            EngineCoreOutput(
+                request_id=request.request_id,
+                new_token_ids=[],
+                finish_reason=RequestStatus.get_finished_reason(finished_status),
+                stop_reason=request.stop_reason,
+                events=request.take_events(),
+                trace_headers=request.trace_headers,
+                num_cached_tokens=request.num_cached_tokens,
+            ),
+        )
+    )
+
+
+def _finish_request_and_notify_client(
+    scheduler: Scheduler, request: Request, finished_status: "RequestStatus"
+) -> None:
+    scheduler.finish_requests(request.request_id, finished_status)
+    _queue_finish_notification(scheduler, request, finished_status)
+
+
+def drain_pending_finish_outputs(scheduler: Scheduler, outputs) -> None:
+    """Drain queued finish notifications into update_from_output outputs."""
+    pending = getattr(scheduler, "_omni_pending_finish_outputs", None)
+    if not pending:
+        return
+    for client_index, engine_core_output in pending:
+        outputs[client_index].append(engine_core_output)
+    pending.clear()
+
+
+def _reject_if_prompt_overflows_max_model_len(
+    serving: OpenAIServing,
+    request: Any,
+    prompt_token_ids: Optional[list],
+) -> None:
+    if not prompt_token_ids:
+        return
+    max_model_len = getattr(serving, "max_model_len", None)
+    if max_model_len is None:
+        return
+
+    engine_client = getattr(serving, "engine_client", None)
+    vllm_config = getattr(engine_client, "vllm_config", None)
+    spec_margin = _speculative_margin(vllm_config)
+    effective_max_model_len = max_model_len - spec_margin
+    limit_note = (
+        ""
+        if spec_margin == 0
+        else f" (effective {effective_max_model_len} after reserving "
+             f"{spec_margin} tokens for speculative decoding)"
+    )
+
+    token_num = len(prompt_token_ids)
+    if token_num >= effective_max_model_len:
+        raise VLLMValidationError(
+            f"This model's maximum context length is {max_model_len} tokens"
+            f"{limit_note}. However, the decode-side prompt has {token_num} "
+            "input tokens, leaving no room to generate. Please reduce the "
+            "length of the input messages.",
+            parameter="input_tokens",
+            value=token_num,
+        )
+    max_tokens = _get_request_max_tokens(request)
+    if max_tokens is None:
+        return
+    reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
+    prefill_overhead = (
+        1 if reuse_prefilled_tokens and _is_kv_producer(serving) else 0
+    )
+    if token_num + max_tokens + prefill_overhead > effective_max_model_len:
+        raise VLLMValidationError(
+            "'max_tokens' or 'max_completion_tokens' is too large: "
+            f"{max_tokens}. This model's maximum context length is "
+            f"{max_model_len} tokens{limit_note} and the decode-side prompt "
+            f"has {token_num} input tokens "
+            f"({max_tokens} > {effective_max_model_len} - {token_num}).",
+            parameter="max_tokens",
+            value=max_tokens,
+        )
 
 
 def _update_waiting_for_remote_kv_patched(self: Scheduler, request: Request) -> bool:
@@ -101,7 +230,7 @@ class PrefilledTextPrompt(TokensPrompt):
 
 @register_patch("PrefilledTokenSkipOpenAIServingChat", OpenAIServingChat)
 class OpenAIServingChatPatch(VLLMPatch):
-    _attr_names_to_apply = ['chat_completion_full_generator', '_preprocess_chat']
+    _attr_names_to_apply = ['chat_completion_full_generator']
 
     async def chat_completion_full_generator(
         self,
@@ -126,7 +255,6 @@ class OpenAIServingChatPatch(VLLMPatch):
 
         assert final_res is not None
 
-        import os
         reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
         skip_decode_tokenize = os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "0") == "1"
 
@@ -178,58 +306,7 @@ class OpenAIServingChatPatch(VLLMPatch):
                 key: request.kv_transfer_params[key] for key in _ROUTED_EXPERT_KEYS
             }
 
-        engine_client = getattr(self, "engine_client", None)
-        vllm_config = getattr(engine_client, "vllm_config", None)
-        kv_transfer_config = getattr(vllm_config, "kv_transfer_config", None)
-        is_prefill_node = False
-        if kv_transfer_config is not None and getattr(
-            kv_transfer_config, "is_kv_transfer_instance", False
-        ):
-            kv_role = getattr(kv_transfer_config, "kv_role", None)
-            if kv_role == "kv_producer" or getattr(
-                kv_transfer_config, "is_kv_producer", False
-            ):
-                is_prefill_node = True
-        elif os.getenv("ROLE") == "prefill":
-            is_prefill_node = True
-
-        if is_prefill_node:
-            for output in final_res.outputs:
-                routed_experts = getattr(output, "routed_experts", None)
-                if routed_experts is None or getattr(routed_experts, "shape", None) is None:
-                    continue
-                if routed_experts.shape[0] == 0:
-                    continue
-                if final_res.kv_transfer_params is None:
-                    final_res.kv_transfer_params = {}
-                self.add_ndarray_info_to_dict(
-                    routed_experts,
-                    final_res.kv_transfer_params,
-                )
-                break
-
-        request_kv_payload = None
-        if request.kv_transfer_params and all(
-            key in request.kv_transfer_params for key in _ROUTED_EXPERT_KEYS
-        ):
-            request_kv_payload = {
-                key: request.kv_transfer_params[key] for key in _ROUTED_EXPERT_KEYS
-            }
-
-        engine_client = getattr(self, "engine_client", None)
-        vllm_config = getattr(engine_client, "vllm_config", None)
-        kv_transfer_config = getattr(vllm_config, "kv_transfer_config", None)
-        is_prefill_node = False
-        if kv_transfer_config is not None and getattr(
-            kv_transfer_config, "is_kv_transfer_instance", False
-        ):
-            kv_role = getattr(kv_transfer_config, "kv_role", None)
-            if kv_role == "kv_producer" or getattr(
-                kv_transfer_config, "is_kv_producer", False
-            ):
-                is_prefill_node = True
-        elif os.getenv("ROLE") == "prefill":
-            is_prefill_node = True
+        is_prefill_node = _is_kv_producer(self)
 
         if is_prefill_node:
             for output in final_res.outputs:
@@ -272,11 +349,14 @@ class OpenAIServingChatPatch(VLLMPatch):
         for choice, payload in zip(response.choices, payloads):
             if payload is not None:
                 choice.routed_experts = payload
-        if reuse_prefilled_tokens and getattr(
-                request, "_omni_prefilled_token_ids", None):
-            response.usage.completion_tokens += 1
-            response.usage.total_tokens += 1
         return response
+
+
+# Not registered as a patch — patch_input_ids_piggyback owns
+# OpenAIServingChat._preprocess_chat and calls this class's method as the
+# next link in the relay chain (input_ids_piggyback -> here -> upstream).
+class OpenAIServingChatPreprocessPatch(VLLMPatch):
+    _attr_names_to_apply = ['_preprocess_chat']
 
     async def _preprocess_chat(
             self,
@@ -343,6 +423,8 @@ class OpenAIServingChatPatch(VLLMPatch):
                     request._omni_prefilled_logprobs = prefilled_logprobs
                     request._omni_prefilled_cumulative_logprob = (
                         prefilled_cumulative_logprob)
+        _reject_if_prompt_overflows_max_model_len(
+            self, request, engine_prompt.get("prompt_token_ids"))
         return conversation, [engine_prompt]
 
 
@@ -375,6 +457,8 @@ class OpenAIServingPatch(VLLMPatch):
         if request.kv_transfer_params and "prompt_token_ids" in request.kv_transfer_params:
             engine_prompt = PrefilledTextPrompt(
                 prompt_token_ids=request.kv_transfer_params["prompt_token_ids"])
+        _reject_if_prompt_overflows_max_model_len(
+            self, request, engine_prompt.get("prompt_token_ids"))
         return conversation, [engine_prompt]
 
 
@@ -391,12 +475,98 @@ class SchedulerPatch(VLLMPatch):
             kv_params = extra_args.get("kv_transfer_params")
             prefilled_token = kv_params.get("prefilled_token") if kv_params else None
             if prefilled_token:
-                request.prompt_token_ids.extend(prefilled_token)
-                request.append_output_token_ids(prefilled_token)
-                # Consume once to avoid repeated append in subsequent scheduler ticks.
+                new_len = len(request.prompt_token_ids) + len(prefilled_token)
+                if new_len < self.max_model_len:
+                    request.prompt_token_ids.extend(prefilled_token)
+                    request.append_output_token_ids(prefilled_token)
+                else:
+                    logger.warning(
+                        "Skipping prefilled_token append for request %s at "
+                        "the context boundary (prompt would reach %d tokens, "
+                        "max_model_len=%d); falling back to normal "
+                        "generation.",
+                        request.request_id, new_len, self.max_model_len,
+                    )
                 kv_params.pop("prefilled_token", None)
 
         return _update_waiting_for_remote_kv_patched(self, request)
+
+
+@register_patch("PrefilledTokenSkipKvXferFinished", Scheduler)
+class SchedulerKvXferFinishedPatch(VLLMPatch):
+    _attr_names_to_apply = ['_update_from_kv_xfer_finished']
+
+    def _update_from_kv_xfer_finished(self, kv_connector_output) -> None:
+        _original_update_from_kv_xfer_finished(self, kv_connector_output)
+
+        reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
+        if not reuse_prefilled_tokens:
+            return
+
+        for req_id in kv_connector_output.finished_recving or ():
+            request = self.requests.get(req_id)
+            if request is None or request.is_finished():
+                continue
+
+            if req_id in self.failed_recving_kv_req_ids:
+                continue
+
+            extra_args = getattr(request.sampling_params, "extra_args", None) or {}
+            kv_params = extra_args.get("kv_transfer_params")
+            prefilled_token = kv_params.get("prefilled_token") if kv_params else None
+            if not prefilled_token:
+                continue
+
+            request.prompt_token_ids.extend(prefilled_token)
+            request.append_output_token_ids(prefilled_token)
+            kv_params.pop("prefilled_token", None)
+
+            if check_stop(request, self.max_model_len):
+                finished_status = request.status
+                if (finished_status == RequestStatus.FINISHED_LENGTH_CAPPED
+                        and request.num_output_tokens < request.max_tokens):
+                    logger.error(
+                        "Request %s: prefilled token exhausts "
+                        "max_model_len before max_tokens (prompt_len=%d, "
+                        "max_tokens=%d, max_model_len=%d)",
+                        req_id, request.num_tokens, request.max_tokens,
+                        self.max_model_len,
+                    )
+                    finished_status = RequestStatus.FINISHED_ERROR
+                request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
+                self.finished_recving_kv_req_ids.discard(req_id)
+                _finish_request_and_notify_client(self, request, finished_status)
+
+
+@register_patch("PrefilledTokenSkipSchedulerAddRequestGuard", Scheduler)
+class SchedulerAddRequestGuardPatch(VLLMPatch):
+    _attr_names_to_apply = ['add_request']
+
+    def add_request(self, request: Request) -> None:
+        pd_flags_enabled = (
+            os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
+            or os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "0") == "1"
+        )
+        if not pd_flags_enabled or request.sampling_params is None:
+            _original_add_request(self, request)
+            return
+
+        max_tokens = request.max_tokens or 1
+        spec_margin = _speculative_margin(getattr(self, "vllm_config", None))
+        effective_max_model_len = self.max_model_len - spec_margin
+        if request.num_tokens + max_tokens > effective_max_model_len:
+            logger.error(
+                "Rejecting request %s: prompt_len(%d) + max_tokens(%d) > "
+                "effective max_model_len(%d) (max_model_len=%d, spec_margin=%d); "
+                "failing instead of scheduling it.",
+                request.request_id, request.num_tokens, max_tokens,
+                effective_max_model_len, self.max_model_len, spec_margin,
+            )
+            _original_add_request(self, request)
+            _finish_request_and_notify_client(
+                self, request, RequestStatus.FINISHED_ERROR)
+            return
+        _original_add_request(self, request)
 
 
 @register_patch("PrefilledTokenSkipAsyncLLM", AsyncLLM)
@@ -415,8 +585,7 @@ class AsyncLLMPatch(VLLMPatch):
         trace_headers: Mapping[str, str] | None = None,
         priority: int = 0,
         data_parallel_rank: int | None = None,
-    ) -> AsyncGenerator[RequestOutput, None]:
-        import os
+    )-> AsyncGenerator[RequestOutput, None]:
         from collections import namedtuple
         from typing import List, Dict, Any
         from vllm.sampling_params import RequestOutputKind
@@ -470,7 +639,6 @@ class AsyncLLMPatch(VLLMPatch):
                     prefilled_token_ids = prompt["prefilled_token_ids"] or []
                     prompt_token_ids = prompt.get("prompt_token_ids")
                     prefilled_text = prompt.get("prefilled_texts", "")
-                    # Consume once to avoid repeated synthetic output.
                     prompt["prefilled_token_ids"] = []
                     prefilled_logprobs = convert_to_standard_logprobs(
                         prompt.get("prefilled_logprobs"))

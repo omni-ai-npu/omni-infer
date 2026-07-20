@@ -14,10 +14,16 @@ def generate_proxy_endpoints(port_list) -> str:
 
 def setup_proxy(proxy_port=7000, prefill_port_list=None, decode_port_list=None,
                 encode_port_list=None,
-                prefill_groups=None, decode_groups=None, dry_run=False,
-                stream_ops="add",
+                prefill_groups=None, decode_groups=None, encode_ep_groups=None, prefill_ep_groups=None, dry_run=False,
                 max_request_slots=None,
-                worker_processes=1):
+                worker_processes=1,
+                pd_policy=None,
+                stream_ops="add",
+                decode_upstream_buffer_size=None,
+                omni_proxy_connect_timeout=None,
+                omni_proxy_send_timeout=None,
+                omni_proxy_read_timeout=None,
+                omni_proxy_next_upstream_timeout=None):
     env = os.environ.copy()
     env['PYTHONHASHSEED'] = '123'
     if '/usr/sbin' not in env.get('PATH', ''):
@@ -27,7 +33,7 @@ def setup_proxy(proxy_port=7000, prefill_port_list=None, decode_port_list=None,
     decode_list = generate_proxy_endpoints(decode_port_list)
     try:
         cmd = [
-            "bash", proxy_script_path,
+            "sudo", "bash", proxy_script_path,
             "--nginx-conf-file", f"{CUR_DIR}/nginx.conf",
             "--core-num", str(worker_processes),
             "--listen-port", f"{proxy_port}",
@@ -36,21 +42,37 @@ def setup_proxy(proxy_port=7000, prefill_port_list=None, decode_port_list=None,
             "--log-file", f"{CUR_DIR}/nginx_error.log",
             "--log-level", "info",
             "--access-log-file", f"{CUR_DIR}/nginx_access.log",
-            "--stream-ops", stream_ops,
-            "--no-reuseport"
+            "--no-reuseport",
+            "--stream-ops", stream_ops
         ]
         if encode_port_list:
             cmd += ["--encode-endpoints", generate_proxy_endpoints(encode_port_list)]
         # else:
-            # cmd += ["--omni-proxy-model-path", f"{CUR_DIR}/mock_model"]
+        #     cmd += ["--omni-proxy-model-path", f"{CUR_DIR}/mock_model"]
         if prefill_groups:
             cmd.extend(["--omni-proxy-prefill-groups", prefill_groups])
         if decode_groups:
             cmd.extend(["--omni-proxy-decode-groups", decode_groups])
+        if encode_ep_groups:
+            cmd.extend(["--omni-proxy-encode-ep-groups", encode_ep_groups])
+        if prefill_ep_groups:
+            cmd.extend(["--omni-proxy-prefill-ep-groups", prefill_ep_groups])
+        if decode_upstream_buffer_size:
+            cmd.extend(["--decode-upstream-buffer-size", decode_upstream_buffer_size])
+        if omni_proxy_connect_timeout:
+            cmd.extend(["--omni-proxy-connect-timeout", omni_proxy_connect_timeout])
+        if omni_proxy_send_timeout:
+            cmd.extend(["--omni-proxy-send-timeout", omni_proxy_send_timeout])
+        if omni_proxy_read_timeout:
+            cmd.extend(["--omni-proxy-read-timeout", omni_proxy_read_timeout])
+        if omni_proxy_next_upstream_timeout is not None:
+            cmd.extend(["--omni-proxy-next-upstream-timeout", omni_proxy_next_upstream_timeout])
         if dry_run:
             cmd.extend(["--dry-run"])
         if max_request_slots is not None:
             cmd.extend(["--omni-proxy-max-request-slots", str(max_request_slots)])
+        if pd_policy is not None:
+            cmd.extend(["--omni-proxy-pd-policy", pd_policy])
         print(f"\n[SETUP] Starting proxy with command: {' '.join(cmd)}")
         result = subprocess.run(
             cmd,
@@ -73,7 +95,7 @@ def setup_proxy(proxy_port=7000, prefill_port_list=None, decode_port_list=None,
 def teardown_proxy():
     try:
         cmd = [
-            "bash", proxy_script_path,
+            "sudo", "bash", proxy_script_path,
             "--stop",
         ]
         print(f"\n[TEARDOWN] Stopping proxy with command: {' '.join(cmd)}")

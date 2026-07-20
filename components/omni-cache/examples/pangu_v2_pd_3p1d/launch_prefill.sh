@@ -65,10 +65,8 @@ if [[ "$ENABLE_OMNI_CACHE" == 1 ]]; then
     : "${NUM_GPU_BLOCKS_OVERRIDE:=50000}"
     : "${KV_CACHE_MEMORY_BYTES:=OMNI_CACHE_LAYER_BYTES * HYBRID_ATTN_GROUP_SIZE}"
     : "${OMNI_CACHE_PACKED_HBM:=1}"
-    : "${P_NODE_LIST:=127.0.0.1}"
 else
     export ENABLE_OMNI_CACHE=0
-    : "${P_NODE_LIST:=127.0.0.1}"
 fi
 
 SETUP_HUGETLBFS_SH="$REPO_ROOT/tools/setup/setup_hugetlbfs_2MB.sh"
@@ -87,7 +85,7 @@ export \
     OMNI_REUSE_PREFILLED_TOKENS OMNI_SKIP_DECODE_TOKENIZE \
     VLLM_PLUGINS OMNI_NPU_PATCHES_DIR OMNI_NPU_VLLM_PATCHES VLLM_LOGGING_LEVEL \
     MTP ENABLE_PREFIX_CACHING ENABLE_CHUNKED_PREFILL CHUNKED_PREFILL_TOKEN_THRESHOLD \
-    ASCEND_RT_VISIBLE_DEVICES P_NODE_LIST TP_NNODES \
+    ASCEND_RT_VISIBLE_DEVICES TP_NNODES \
     ASCEND_GLOBAL_LOG_LEVEL HCCL_OP_EXPANSION_MODE \
     HCCL_INTRA_ROCE_ENABLE HCCL_INTRA_PCIE_ENABLE HCCL_BUFFSIZE \
     GLOO_SOCKET_IFNAME HCCL_SOCKET_IFNAME \
@@ -162,7 +160,6 @@ _dump_launch_config() {
         echo "ENABLE_PREFIX_CACHING=${ENABLE_PREFIX_CACHING}"
         echo ""
         echo "--- Networking ---"
-        echo "P_NODE_LIST=${P_NODE_LIST}"
         echo "BASE_PORT=${BASE_PORT}"
         echo "ZMQ_BASE_PORT=${ZMQ_BASE_PORT}"
         echo "TP_NNODES=${TP_NNODES}"
@@ -202,9 +199,8 @@ else
     KV_PARALLEL_SIZE=1
 fi
 : "${KV_PORT:=14579}"
-: "${KV_P_NODE_LIST:=$P_NODE_LIST}"
-KV_TRANSFER_CONF=$(printf '{"kv_connector":"%s","kv_role":"kv_producer","kv_rank":%d,"kv_parallel_size":%d,"kv_port":%d,"kv_connector_extra_config":{"p_node_list":["%s"],"kv_producer_dp_size":%d}}' \
-    "$KV_CONNECTOR" "$PREFILL_RANK" "$KV_PARALLEL_SIZE" "$KV_PORT" "$KV_P_NODE_LIST" 1)
+KV_TRANSFER_CONF=$(printf '{"kv_connector":"%s","kv_role":"kv_producer","kv_rank":%d,"kv_parallel_size":%d,"kv_port":%d,"kv_connector_extra_config":{"kv_producer_dp_size":%d}}' \
+    "$KV_CONNECTOR" "$PREFILL_RANK" "$KV_PARALLEL_SIZE" "$KV_PORT" 1)
 
 ENDPOINT_PORT=$((PORT + 100))
 KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'"${ENDPOINT_PORT}"'"}'

@@ -62,15 +62,30 @@ extern "C" int register_tensor(
     }
 
     void* out_dev_ptr = nullptr;
-    // use mapped registration so device can access host memory (adjust type if needed)
-    aclrtHostRegisterType type = ACL_HOST_REGISTER_MAPPED;
-    aclError ret = aclrtHostRegister(cpu_ptr, size, type, &out_dev_ptr);
+    std::cout << "Register hugepage host tensor: cpu_ptr=" << cpu_ptr
+              << " size=" << size << " device_id=" << device_id << std::endl;
+    aclError ret = aclrtHostRegisterV2(
+        cpu_ptr, size, ACL_HOST_REG_PINNED | ACL_HOST_REG_MAPPED);
     if (ret != ACL_SUCCESS) {
-        std::cerr << "aclrtHostRegister failed: " << ret << std::endl;
-        // attempt to restore previous device
-        if (prev_device >= 0) aclrtSetDevice(prev_device);
+        std::cerr << "aclrtHostRegisterV2 failed: " << ret << std::endl;
+        if (prev_device >= 0) {
+            aclrtSetDevice(prev_device);
+        }
         return static_cast<int>(ret);
     }
+
+    aclError ret_ptr = aclrtHostGetDevicePointer(cpu_ptr, &out_dev_ptr, 0);
+    if (ret_ptr != ACL_SUCCESS) {
+        std::cerr << "aclrtHostGetDevicePointer failed: " << ret_ptr << std::endl;
+        aclrtHostUnregister(cpu_ptr);
+        if (prev_device >= 0) {
+            aclrtSetDevice(prev_device);
+        }
+        return static_cast<int>(ret_ptr);
+    }
+    std::cout << "Mapped hugepage host tensor: cpu_ptr=" << cpu_ptr
+              << " dev_ptr=" << out_dev_ptr
+              << " size=" << size << " device_id=" << device_id << std::endl;
 
     // save registration info
     {

@@ -178,7 +178,8 @@ class NPUVocabParallelEmbedding(VocabParallelEmbedding):
                 self.shard_indices.added_vocab_start_index,
                 self.shard_indices.added_vocab_end_index)
         else:
-            masked_input = input_
+            input_mask = (input_ < 0) | (input_ >= self.num_embeddings_per_partition)
+            masked_input = torch.where(input_mask, torch.zeros_like(input_), input_)
 
         if masked_input.dtype != torch.long:
             masked_input = masked_input.long()
@@ -187,8 +188,7 @@ class NPUVocabParallelEmbedding(VocabParallelEmbedding):
         output_parallel = self.quant_method.embedding(self, masked_input)
 
         # Mask the output embedding.
-        if self.tp_size > 1: # adapter for faster
-            output_parallel *= ~input_mask.unsqueeze(-1)
+        output_parallel *= ~input_mask.unsqueeze(-1)
 
         if enable_scatter: # RS, global sequence parallel
             if self.local_parallel:

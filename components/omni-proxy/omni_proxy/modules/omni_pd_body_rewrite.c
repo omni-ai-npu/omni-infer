@@ -860,6 +860,75 @@ void omni_proxy_prepare_decode_request_body(ngx_http_request_t *r, omni_req_cont
         chain = chain_new;
     }
 
+    /* Inject input_ids into the decode body too (tokenizer reuse): the decode engine
+       needs the same prompt token ids as prefill to skip its own tokenization. Only
+       when a tokenized chain exists; mirrors the prefill-subrequest injection. The
+       engine ignores it unless patched to honor input_ids on /v1/chat/completions. */
+    {
+        size_t n_ids = (ctx->req != NULL
+                        && ctx->req->tokenizer_req.input_ids != NULL
+                        && ctx->req->tokenizer_req.input_ids_len > 0)
+                       ? ctx->req->tokenizer_req.input_ids_len : 0;
+        if (n_ids > 0 && chain->buf != NULL)
+        {
+            ngx_buf_t *cur = chain->buf;
+            while (cur->last > cur->pos) /* trim the trailing '}' */
+            {
+                if (cur->last[-1] == '}')
+                {
+                    cur->last -= 1;
+                    break;
+                }
+                cur->last -= 1;
+            }
+
+            /* prefix/suffix + up to 20 int64 digits and a comma per id */
+            size_t buf_len = sizeof(",\"input_ids\":[]}") + n_ids * 21;
+            b_new = ngx_create_temp_buf(r->pool, buf_len);
+            if (b_new == NULL)
+            {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "gen decode request: input_ids ngx_create_temp_buf failed %uz", buf_len);
+                ngx_http_finalize_request(r, NGX_ERROR);
+                return;
+            }
+            u_int pos = 0;
+            ngx_memcpy(b_new->pos + pos, ",\"input_ids\":[", sizeof(",\"input_ids\":[") - 1);
+            pos += sizeof(",\"input_ids\":[") - 1;
+            int64_t *ids = ctx->req->tokenizer_req.input_ids;
+            for (size_t k = 0; k < n_ids; k++)
+            {
+                pos = ngx_snprintf(b_new->pos + pos, buf_len - pos, "%L", ids[k]) - b_new->pos;
+                if (k + 1 < n_ids)
+                {
+                    b_new->pos[pos++] = ',';
+                }
+            }
+            b_new->pos[pos++] = ']';
+            b_new->pos[pos++] = '}';
+            b_new->pos[pos] = '\0';
+            b_new->last = b_new->pos + pos;
+            b_new->memory = 1;
+
+            chain_new = ngx_alloc_chain_link(r->pool);
+            if (chain_new == NULL)
+            {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "gen decode request: input_ids ngx_alloc_chain_link failed");
+                ngx_http_finalize_request(r, NGX_ERROR);
+                return;
+            }
+            chain->buf->last_buf = 0;
+            chain->buf->last_in_chain = 0;
+            b_new->last_buf = 1;
+            b_new->last_in_chain = 1;
+            chain_new->buf = b_new;
+            chain_new->next = NULL;
+            chain->next = chain_new;
+            chain = chain_new;
+        }
+    }
+
     if (chain->buf != NULL)
     {
         chain->buf->last_buf = 1;
@@ -1080,7 +1149,14 @@ void gen_prefill_json_str_jsmn(
             return;
         }
     }
-    size_t cap = len + encode_str.len + 256; // ensure enough room for additional metadata
+    // Budget for injecting the tokenizer result (input_ids) so the downstream
+    // prefill engine can skip re-tokenizing. Token ids are vocab-bounded; 12 bytes
+    // each (digits + comma) is a safe upper bound.
+    size_t n_ids = (ctx->req != NULL
+                    && ctx->req->tokenizer_req.input_ids != NULL
+                    && ctx->req->tokenizer_req.input_ids_len > 0)
+                   ? ctx->req->tokenizer_req.input_ids_len : 0;
+    size_t cap = len + encode_str.len + 256 + n_ids * 12 + 32; // room for additional metadata
     u_char *newjson = ngx_palloc(r->pool, cap);
     if (!newjson)
     {
@@ -1140,6 +1216,25 @@ void gen_prefill_json_str_jsmn(
         size_t ins_len = ngx_strlen(insertion);
         ngx_memcpy(newjson + pos, insertion, ins_len);
         pos += ins_len;
+    }
+
+    // Inject the tokenizer result (input_ids) so the downstream prefill engine
+    // can reuse it and skip re-tokenization (~30% tokenizer savings on multi-machine
+    // PD). Field name "input_ids" per README_CN. Only when a tokenized chain exists.
+    if (n_ids > 0) {
+        if (pos > 0 && newjson[pos - 1] != '{') {
+            newjson[pos++] = ',';
+        }
+        ngx_memcpy(newjson + pos, "\"input_ids\":[", sizeof("\"input_ids\":[") - 1);
+        pos += sizeof("\"input_ids\":[") - 1;
+        int64_t *ids = ctx->req->tokenizer_req.input_ids;
+        for (size_t k = 0; k < n_ids; k++) {
+            pos = ngx_snprintf(newjson + pos, cap - pos, "%L", ids[k]) - newjson;
+            if (k + 1 < n_ids) {
+                newjson[pos++] = ',';
+            }
+        }
+        newjson[pos++] = ']';
     }
 
     if (omni_get_global_state()->pd_policy == PD_PARALLEL) {

@@ -10,7 +10,7 @@ HYBRID_ATTN_GROUP_SIZE=17
 # ─── Role-specific overrides ──────────────────────────────────────────────
 if [[ "${ROLE:-}" == "prefill" ]]; then
     BSZ=8
-    MAX_LEN=512000
+    MAX_LEN=524288
     OMNI_CACHE_LAYER_BYTES=30541989660
     MAP_SIZE_BYTES=549755813888           # 512 GiB
     NUM_GPU_BLOCKS_OVERRIDE=160000
@@ -23,7 +23,7 @@ if [[ "${ROLE:-}" == "prefill" ]]; then
     CHUNKED_PREFILL_TOKEN_THRESHOLD=$MAX_BATCHED_TOKENS
 elif [[ "${ROLE:-}" == "decode" ]]; then
     BSZ=3
-    MAX_LEN=512000
+    MAX_LEN=524288
     OMNI_CACHE_LAYER_BYTES=20541989660
     MAP_SIZE_BYTES=549755813888           # 512 GiB
     NUM_GPU_BLOCKS_OVERRIDE=21000

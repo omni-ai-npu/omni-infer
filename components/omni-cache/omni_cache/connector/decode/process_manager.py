@@ -110,7 +110,10 @@ class ProcessManager:
                 self.worker.address_process.is_alive() if self.worker.address_process else False,
             ]
             if sum(is_alive) != len(is_alive):
-                logger.warning(f"[resp_process, address_process] alive status = {is_alive}")
+                logger.warning(
+                    f"[resp_process, address_process] alive status = {is_alive}"
+                )
+            self.worker.fail_expired_transfers()
             time.sleep(1)
 
     def _process_zmq(self) -> None:
@@ -126,15 +129,19 @@ class ProcessManager:
                 t0 = time.time()
                 ok = client.send_request(
                     request_id=item.request_id,
-                    cluster_id=item.cluster_id,
+                    remote_ox_shard_list=item.remote_ox_shard_list,
                     src_id_list=item.src_ids,
                     dst_id_list=item.dst_ids,
                     rank_id=item.rank_id,
                     src_dp_rank=getattr(item, "src_dp_rank", 0),
                 )
                 if not ok:
-                    raise ValueError(f"Send failed for req_id={item.request_id}")
-                logger.warning("Sent req_id=%s in %.6f s", item.request_id, time.time() - t0)
+                    self.worker.mark_transfer_failed(item.request_id, "zmq_send_failed")
+                    continue
+                logger.warning(
+                    "Sent req_id=%s in %.6f s",
+                    item.request_id, time.time() - t0
+                )
 
         async def receiver():
             while not self.worker.resp_stop.is_set():
@@ -143,14 +150,24 @@ class ProcessManager:
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    raise RuntimeError(f" ***** Failed to receive zmq response with error code {e}") from e
+                    logger.exception(
+                        "Failed to receive ZMQ response from OX: %s", e
+                    )
+                    await asyncio.sleep(0.1)
+                    continue
+
+                if resp is None:
+                    logger.error("Received empty ZMQ response from OX.")
+                    continue
 
                 req_id = resp.get("request_id")
                 success = bool(resp.get("success"))
                 if not req_id:
-                    raise ValueError(f"Received response without request_id: {resp}")
+                    logger.error("Received response without request_id: %s", resp)
+                    continue
                 if not success:
-                    raise ValueError(f"Failed to pull kv of request {req_id}")
+                    self.worker.mark_transfer_failed(req_id, "ox_response_failed")
+                    continue
 
                 try:
                     await asyncio.to_thread(self.worker.recv_q.put, req_id)
@@ -258,6 +275,8 @@ class ProcessManager:
                 logger.exception(
                     "H2D worker error on req_id=%s: %s", ",".join([str(ctx.request_id) for ctx in ctxs]), e
                 )
+                for ctx in ctxs:
+                    self.worker.mark_transfer_failed(ctx.request_id, f"h2d_failed:{e}")
             finally:
                 for ctx in ctxs:
                     self.worker.pending.pop(ctx.request_id, None)

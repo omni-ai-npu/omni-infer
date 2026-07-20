@@ -69,16 +69,18 @@ void omni_tokenizer_cleanup()
     is_initialized = 0;
 }
 
-int omni_init_tokenizer(const char *model_path)
+int omni_init_tokenizer(const char *model_path, long chunk_bytes)
 {
     if (!is_initialized)
     {
         return -1;
     }
 
-    PyObject *pArgs = PyTuple_New(1);
+    PyObject *pArgs = PyTuple_New(2);
     PyObject *pModelPath = PyUnicode_FromString(model_path);
     PyTuple_SetItem(pArgs, 0, pModelPath);
+    /* PyTuple_SetItem steals the ref; calls c_init_tokenizer(model_path, chunk_bytes) */
+    PyTuple_SetItem(pArgs, 1, PyLong_FromLong(chunk_bytes));
 
     PyObject *pResult = PyObject_CallObject(pInitTokenizerFunc, pArgs);
     Py_DECREF(pArgs);

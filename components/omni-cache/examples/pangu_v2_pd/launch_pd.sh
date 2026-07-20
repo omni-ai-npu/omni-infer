@@ -65,8 +65,6 @@ _detect_ip() {
     echo "$ip"
 }
 : "${PREFILL_IP:=$(_detect_ip "$PREFILL_CONTAINER")}"
-: "${P_NODE_LIST_PREFILL:=${PREFILL_IP}}"
-: "${P_NODE_LIST_DECODE:=${PREFILL_IP}}"
 
 # ─── HCCL / deterministic ────────────────────────────────────────────────
 : "${HCCL_DETERMINISTIC:=false}"
@@ -106,8 +104,8 @@ echo "    mtp:             $MTP"
 echo "    prefix_caching:  $ENABLE_PREFIX_CACHING"
 echo "    chunk_prefill:   $ENABLE_CHUNKED_PREFILL (threshold=$CHUNKED_PREFILL_TOKEN_THRESHOLD)"
 echo "    block_size:      $BLOCK_SIZE"
-echo "    prefill: $PREFILL_CONTAINER  (IP=$PREFILL_IP P_NODE_LIST=$P_NODE_LIST_PREFILL)"
-echo "    decode:  $DECODE_CONTAINER   (P_NODE_LIST=$P_NODE_LIST_DECODE)"
+echo "    prefill: $PREFILL_CONTAINER  (IP=$PREFILL_IP)"
+echo "    decode:  $DECODE_CONTAINER"
 echo "    launch_mode:     $LAUNCH_MODE"
 
 # Env vars passed to both prefill and decode containers
@@ -134,7 +132,6 @@ if [[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "all" || "$LAUNCH_MODE" == "
     echo "[launch_pd] starting prefill..."
     sudo -n docker exec -d \
         "${_DOCKER_ENV_ARGS[@]}" \
-        -e "P_NODE_LIST=${P_NODE_LIST_PREFILL}" \
         -e "TP_SIZE=${TP_SIZE}" \
         -e "DP_SIZE=${DP_SIZE}" \
         -e "ASCEND_RT_VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES}" \
@@ -152,7 +149,6 @@ if [[ "$LAUNCH_MODE" == "both" || "$LAUNCH_MODE" == "all" || "$LAUNCH_MODE" == "
     echo "[launch_pd] starting decode..."
     sudo -n docker exec -d \
         "${_DOCKER_ENV_ARGS[@]}" \
-        -e "P_NODE_LIST=${P_NODE_LIST_DECODE}" \
         -e "DECODE_DP_SIZE=${DECODE_DP_SIZE}" \
         "$DECODE_CONTAINER" bash -lc '
         source ~/.bashrc

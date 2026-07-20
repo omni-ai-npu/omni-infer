@@ -23,10 +23,13 @@ if [ ! -f SOURCES/nginx-${NGINX_VERSION}.tar.gz ]; then
     wget --no-check-certificate https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz -O SOURCES/nginx-${NGINX_VERSION}.tar.gz
 fi
 
-if [ ! -f SOURCES/omni_proxy.tar.gz ]; then
-    echo "omni_proxy.tar.gz not found, creating..."
-    tar --exclude=build -czf SOURCES/omni_proxy.tar.gz -C ../ omni_proxy
-fi
+# Always regenerate the source tarball from the current tree (caching it would
+# build the RPM from stale source). Heavy build artifacts are excluded to keep it
+# lean; the spec rebuilds the modules and the Rust wheel from source.
+echo "creating omni_proxy.tar.gz from current source..."
+rm -f SOURCES/omni_proxy.tar.gz
+tar --exclude=build --exclude=target --exclude=__pycache__ --exclude='*.pyc' \
+    -czf SOURCES/omni_proxy.tar.gz -C ../ omni_proxy
 
 cp SOURCES/omni_proxy.tar.gz $RPMBUILD/SOURCES/
 cp SOURCES/nginx-${NGINX_VERSION}.tar.gz $RPMBUILD/SOURCES/

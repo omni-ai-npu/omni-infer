@@ -331,29 +331,36 @@ class StreamManager:
 
     def __init__(self, device):
         self.device = device
-        self.h2d_stream: Optional[torch.Stream] = None  # For prefill H2D
+        self.h2d_streams: List[torch.Stream] = []  # Per-group prefill H2D
+        self.h2d_stream: Optional[torch.Stream] = None  # Backward compat / TP serialization
         self.d2h_stream: Optional[torch.Stream] = None  # For prefill D2H
         self.decode_h2d_stream: Optional[torch.Stream] = None  # For decode H2D
         self.copy_stream: Optional[torch.Stream] = None  # General copy stream
         self.h2d_event: Optional[torch.Event] = None  # Event for H2D completion
         self.d2h_event: Optional[torch.Event] = None  # Event for D2H completion
 
-    def initialize_prefill_streams(self, cache) -> None:
+    def initialize_prefill_streams(self, cache, num_kv_groups: int = 1) -> None:
         """Initialize streams for prefill operations.
 
-        This method replaced parts of prefill_omni_cache.py:_init_streams_and_pools()
-        and _init_prefix_buffer()
+        Creates one H2D stream per KV cache group so each attention spec
+        (MLA, DSA, MoME) can transfer independently without blocking
+        the others.
 
         Args:
             cache: The PrefillOmniCache instance
+            num_kv_groups: Number of KV cache groups (one stream per group)
         """
         self.d2h_stream = torch.npu.Stream(device=self.device)
-        self.h2d_stream = torch.npu.Stream(device=self.device)
+        num_kv_groups = max(1, num_kv_groups)
+        self.h2d_streams = [
+            torch.npu.Stream(device=self.device) for _ in range(num_kv_groups)
+        ]
+        self.h2d_stream = self.h2d_streams[0]
         self.h2d_event = torch.npu.Event(blocking=False, enable_timing=False)
         self.d2h_event = torch.npu.Event(blocking=False, enable_timing=False)
 
-        # Attach to cache for backward compatibility
         cache.d2h_stream = self.d2h_stream
+        cache.h2d_streams = self.h2d_streams
         cache.h2d_stream = self.h2d_stream
         cache.h2d_event = self.h2d_event
 

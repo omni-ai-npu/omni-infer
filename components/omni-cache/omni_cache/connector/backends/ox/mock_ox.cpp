@@ -11,6 +11,7 @@
 #include <exception>
 #include <msgpack.hpp>
 #include <shared_mutex>
+#include <utility>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -55,9 +56,9 @@ struct RequestMessage {
     table_id_t table_id;
     block_list_t src_block_ids;
     block_list_t dst_block_ids;
-    int cluster_id{0};
+    std::string remote_ox_shard_list;
     int src_dp_rank{0};
-    MSGPACK_DEFINE_MAP(request_id, table_id, src_block_ids, dst_block_ids, cluster_id, src_dp_rank)
+    MSGPACK_DEFINE_MAP(request_id, table_id, src_block_ids, dst_block_ids, remote_ox_shard_list, src_dp_rank)
 };
 
 struct ResponseMessage {
@@ -78,7 +79,7 @@ using ConnectionChannel = concurrent_channel<asio::any_io_executor, void(boost::
 using ShardMessage = std::tuple<std::string, block_list_t>;
 using ShardChannel = concurrent_channel<asio::any_io_executor, void(boost::system::error_code, ShardMessage)>;
 
-using GroupMessage = std::tuple<client_id_t, int>;
+using GroupMessage = std::tuple<request_id_t, int, bool>;  // (request_id, rank, success)
 using GroupChannel = concurrent_channel<asio::any_io_executor, void(boost::system::error_code, GroupMessage)>;
 
 // Forward declarations
@@ -152,11 +153,12 @@ public:
     }
 
     asio::awaitable<void> submit_request(
-        std::string &request_id, table_id_t table_id,
-        block_list_t &src_block_ids, block_list_t &dst_block_ids, int src_dp_rank)
+        std::string request_id, table_id_t table_id,
+        block_list_t src_block_ids, block_list_t dst_block_ids, int src_dp_rank)
     {
         co_await request.async_send(boost::system::error_code{},
-            std::make_tuple(request_id, table_id, src_block_ids, dst_block_ids, src_dp_rank),
+            std::make_tuple(std::move(request_id), table_id,
+                std::move(src_block_ids), std::move(dst_block_ids), src_dp_rank),
             asio::use_awaitable);
     }
 
@@ -187,7 +189,7 @@ public:
                   << " conns=" << connections.size() << " started" << std::endl;
     }
 
-    asio::awaitable<void> gather(RequestMessage &req)
+    asio::awaitable<void> gather(RequestMessage req)
     {
         requests_mutex.lock();
         task_status[req.request_id] = std::set<block_id_t>(req.dst_block_ids.begin(), req.dst_block_ids.end());
@@ -200,7 +202,7 @@ public:
 
         if (total_ids == 0 || num_conns == 0) {
             co_await upstream.async_send(
-                boost::system::error_code{}, std::make_tuple(req.request_id, rank),
+                boost::system::error_code{}, std::make_tuple(req.request_id, rank, true),
                 asio::use_awaitable);
             co_return;
         }
@@ -243,7 +245,7 @@ public:
                 task_status.erase(request_id);
                 requests_mutex.unlock();
                 co_await upstream.async_send(
-                    boost::system::error_code{}, std::make_tuple(request_id, rank),
+                    boost::system::error_code{}, std::make_tuple(request_id, rank, true),
                     asio::use_awaitable);
             } else {
                 requests_mutex.unlock();
@@ -306,7 +308,7 @@ public:
         uint64_t completed_count = 0;
         try {
             while (true) {
-                auto [request_id, rank] = co_await downstream.async_receive(asio::use_awaitable);
+                auto [request_id, rank, shard_ok] = co_await downstream.async_receive(asio::use_awaitable);
 
                 requests_mutex.lock();
                 auto it = requests_status.find(request_id);
@@ -314,24 +316,27 @@ public:
                     requests_mutex.unlock();
                     continue;
                 }
-                auto &[client_id, table_id, rank_finished, block_ids] = it->second;
+                auto &[client_id, table_id, rank_finished, block_ids, failed] = it->second;
+
+                if (!shard_ok) failed = true;
 
                 if (rank >= 0 && static_cast<size_t>(rank) < rank_finished.size()) {
                     rank_finished[static_cast<size_t>(rank)] = true;
                 }
 
                 if (std::all_of(rank_finished.begin(), rank_finished.end(), [](bool b) { return b; })) {
+                    bool req_failed = failed;
+                    client_id_t cid = client_id;
                     requests_status.erase(request_id);
                     requests_mutex.unlock();
 
-                    client_id_t cid = client_id;
                     ++completed_count;
                     if (completed_count % 1000 == 0) {
                         std::cout << "[MOCK-GROUP] total completed: " << completed_count << std::endl;
                     }
                     co_await upstream.async_send(
                         boost::system::error_code{},
-                        std::make_tuple(cid, request_id, true),
+                        std::make_tuple(cid, request_id, !req_failed),
                         asio::use_awaitable);
                 } else {
                     requests_mutex.unlock();
@@ -343,18 +348,16 @@ public:
         co_return;
     }
 
-    asio::awaitable<void> gather(client_id_t client_id, RequestMessage &req)
+    asio::awaitable<void> gather(client_id_t client_id, RequestMessage req)
     {
-        int cid = req.cluster_id;
-        if (cid < 0 || static_cast<size_t>(cid) >= clusters.size())
-            cid = 0;
+        int cid = 0;
 
         {
             std::unique_lock<std::shared_mutex> lock(requests_mutex);
             size_t shard_cnt = clusters[cid].size();
             requests_status[req.request_id] =
                 std::make_tuple(client_id, req.table_id,
-                                std::vector<bool>(shard_cnt, false), req.dst_block_ids);
+                                std::vector<bool>(shard_cnt, false), req.dst_block_ids, false);
         }
 
         for (auto &shard : clusters[cid]) {
@@ -365,11 +368,42 @@ public:
 public:
     mutable std::shared_mutex requests_mutex;
     std::unordered_map<request_id_t,
-        std::tuple<client_id_t, table_id_t, std::vector<bool>, std::vector<block_id_t>>>
+        std::tuple<client_id_t, table_id_t, std::vector<bool>, std::vector<block_id_t>, bool>>
         requests_status;
     std::vector<std::vector<std::shared_ptr<MockTPShard>>> clusters;
     GroupChannel downstream;
     ZMQChannel &upstream;
+};
+
+// Dynamic connection pool for mock
+class MockTPGroupManager {
+public:
+    MockTPGroupManager(Config &config, ZMQChannel &channel)
+        : config(config), channel(channel) {}
+
+    std::shared_ptr<MockTPGroup> get_or_create(const std::string &shard_list_str)
+    {
+        std::unique_lock<std::shared_mutex> lock(mutex);
+        auto it = groups.find(shard_list_str);
+        if (it != groups.end()) {
+            std::cout << "[DYNAMIC-TOPO][MOCK] Reusing existing group for "
+                      << shard_list_str << std::endl;
+            return it->second;
+        }
+
+        auto group = std::make_shared<MockTPGroup>(config, channel);
+        co_spawn(config.get_io_context(), group->run(), detached);
+        groups[shard_list_str] = group;
+        std::cout << "[DYNAMIC-TOPO][MOCK] *** CREATED NEW GROUP *** for "
+                  << shard_list_str << std::endl;
+        return group;
+    }
+
+private:
+    mutable std::shared_mutex mutex;
+    std::unordered_map<std::string, std::shared_ptr<MockTPGroup>> groups;
+    Config &config;
+    ZMQChannel &channel;
 };
 
 // ---------------------------------------------------------------------------
@@ -409,7 +443,7 @@ asio::awaitable<void> response_sender(ZmqCoroutineSocket &router_socket, ZMQChan
     }
 }
 
-asio::awaitable<void> router_receiver(ZmqCoroutineSocket &router_socket, MockTPGroup &group)
+asio::awaitable<void> router_receiver(ZmqCoroutineSocket &router_socket, MockTPGroupManager &manager)
 {
     while (true) {
         try {
@@ -433,8 +467,14 @@ asio::awaitable<void> router_receiver(ZmqCoroutineSocket &router_socket, MockTPG
 
                 global_stats_update_running(1);
 
+                std::cout << "[DYNAMIC-TOPO][MOCK] OX received req_id=" << request.request_id
+                          << " remote_ox_shard_list=" << request.remote_ox_shard_list
+                          << " src_blocks=" << request.src_block_ids.size()
+                          << " dst_blocks=" << request.dst_block_ids.size() << std::endl;
+
+                auto group = manager.get_or_create(request.remote_ox_shard_list);
                 co_spawn(co_await asio::this_coro::executor,
-                    group.gather(client_id, request), detached);
+                    group->gather(client_id, request), detached);
             } else {
                 std::cerr << "[ZMQ-RECV-WARN] Unexpected msg size: "
                           << (msg ? std::to_string(msg->size()) : "nullopt") << std::endl;
@@ -446,8 +486,7 @@ asio::awaitable<void> router_receiver(ZmqCoroutineSocket &router_socket, MockTPG
 }
 
 // ---------------------------------------------------------------------------
-// Periodic ZMQ stats printer (complements ox_metrics.hpp's print_statistics
-// which covers bandwidth/running counts; this one covers ZMQ-level counters)
+// Periodic ZMQ statistics for mock stress tests.
 // ---------------------------------------------------------------------------
 asio::awaitable<void> print_zmq_statistics()
 {
@@ -531,23 +570,22 @@ int main(int argc, char *argv[])
         ZMQChannel response_channel(io_context, 128);
         ZmqCoroutineSocket zmq_router(ZMQ_ROUTER, io_context);
 
-        // If no shard_list / shard_clusters specified, use a single dummy shard
-        // (the actual address doesn't matter - MockTPShard won't connect)
-        if (config.shard_list.empty() && config.shard_clusters.empty()) {
-            config.shard_list.push_back(
-                boost::asio::ip::tcp::endpoint(
-                    boost::asio::ip::address::from_string("127.0.0.1"), 1));
-        }
+        // Dynamic mode: MockTPGroupManager creates groups on demand
+        auto manager = std::make_shared<MockTPGroupManager>(config, response_channel);
 
-        auto tp_group = std::make_shared<MockTPGroup>(config, response_channel);
+        // If --shard-list given, pre-create a default group
+        if (!config.shard_list.empty() || !config.shard_clusters.empty()) {
+            manager->get_or_create("mock-default");
+        }
 
         std::string address = "tcp://*:" + std::to_string(config.zmq_port);
         zmq_router.bind(address);
 
-        co_spawn(io_context, tp_group->run(), detached);
-        co_spawn(io_context, router_receiver(zmq_router, *tp_group), detached);
+        co_spawn(io_context, router_receiver(zmq_router, *manager), detached);
         co_spawn(io_context, response_sender(zmq_router, response_channel), detached);
-        co_spawn(io_context, print_statistics(), detached);
+        if (ox_debug_logging_enabled()) {
+            co_spawn(io_context, print_statistics(), detached);
+        }
         co_spawn(io_context, print_zmq_statistics(), detached);
 
         std::cout << "[MOCK-OX] Started. ZMQ: " << address

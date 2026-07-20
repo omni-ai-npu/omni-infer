@@ -4,7 +4,7 @@ CXX      := g++
 CXXSTD   := -std=c++20
 
 # Preprocessor macros, warnings, and optimisation flags
-CXXFLAGS := $(CXXSTD) -DNDEBUG -fcoroutines -I./ -g -march=native \
+CXXFLAGS := $(CXXSTD) -DNDEBUG -fcoroutines -I./ -O2 -march=native \
             -Wall -Wextra
 
 # Libraries to link against

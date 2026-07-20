@@ -6,6 +6,12 @@ std::atomic<uint64_t> g_total_bytes_received{0};
 
 std::chrono::steady_clock::time_point g_program_start_time;
 
+inline bool ox_debug_logging_enabled()
+{
+    const char *value = std::getenv("OMNI_CACHE_OX_DEBUG");
+    return value != nullptr && std::string(value) == "1";
+}
+
 inline void global_stats_update(size_t n)
 {
     g_total_bytes_received += n;

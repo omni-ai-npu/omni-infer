@@ -34,7 +34,7 @@ class RouterDealerClient:
     def send_request(
         self,
         request_id: str,
-        cluster_id: int,
+        remote_ox_shard_list: str,
         src_id_list: List[int],
         dst_id_list: List[int],
         rank_id: int,
@@ -44,7 +44,7 @@ class RouterDealerClient:
 
         Args:
             request_id: Unique request ID.
-            cluster_id: Target cluster ID.
+            remote_ox_shard_list: OX shard endpoint list for the target P cluster.
             src_id_list: Source block IDs.
             dst_id_list: Destination block IDs.
             rank_id: Rank ID.
@@ -59,11 +59,14 @@ class RouterDealerClient:
                 'table_id': rank_id,
                 'src_block_ids': src_id_list,
                 'dst_block_ids': dst_id_list,
-                'cluster_id': cluster_id,
+                'remote_ox_shard_list': remote_ox_shard_list,
                 'src_dp_rank': src_dp_rank
             }
             packed_data = msgpack.packb(request_data)
             self.socket.send(packed_data)
+            print(f"[DYNAMIC-TOPO] ZMQ->OX req_id={request_id} "
+                  f"remote_ox_shard_list={remote_ox_shard_list} "
+                  f"src_blocks={len(src_id_list)} dst_blocks={len(dst_id_list)}")
             return True
         except Exception as e:
             print(f"Error sending request {request_id}: {e}")
@@ -110,7 +113,7 @@ class ZMQSendProxy:
     def send_request(
         self,
         request_id: str,
-        cluster_id: int,
+        remote_ox_shard_list: str,
         src_id_list: List[int],
         dst_id_list: List[int],
         rank_id: int,
@@ -120,7 +123,7 @@ class ZMQSendProxy:
 
         Args:
             request_id: Unique request ID.
-            cluster_id: Target cluster ID.
+            remote_ox_shard_list: OX shard endpoint list for the target P cluster.
             src_id_list: Source block IDs.
             dst_id_list: Destination block IDs.
             rank_id: Rank ID.
@@ -132,7 +135,7 @@ class ZMQSendProxy:
         from omni_cache.connector.utils.metadata import _SendItem
         self._q.put(_SendItem(
             request_id=request_id,
-            cluster_id=int(cluster_id),
+            remote_ox_shard_list=str(remote_ox_shard_list),
             src_ids=list(src_id_list),
             dst_ids=list(dst_id_list),
             rank_id=int(rank_id),

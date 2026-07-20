@@ -14,7 +14,10 @@ import time
 from typing import Dict, List, Tuple
 
 import zmq
-from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
+from vllm.distributed.parallel_state import (
+    get_tensor_model_parallel_rank,
+    get_world_group,
+)
 
 from vllm.logger import init_logger
 
@@ -32,7 +35,6 @@ from omni_cache.connector.utils.process_utils import (
 from omni_cache.connector.utils.settings import (
     BASE_PORT,
     BLOCK_RELEASE_DELAY,
-    CLUSTER_SIZE,
     OX_PATH,
     P_SERVER_WAIT_TIMEOUT,
 )
@@ -60,6 +62,7 @@ class PrefillConnectorWorker:
         self.host_port = host_port
         self.vllm_config = vllm_config
         self.rank = get_tensor_model_parallel_rank()
+        self.tp_rank_local = get_world_group().local_rank
         self.dp_rank = vllm_config.parallel_config.data_parallel_rank_local
         if self.rank == 0:
             self.ctx = zmq.Context()
@@ -102,7 +105,6 @@ class PrefillConnectorWorker:
             omni_cache: OmniCache instance with cache configuration
         """
         self.host_block_offset = omni_cache.host_block_offset
-        self.tp_rank_local = self.rank % (self.vllm_config.parallel_config.tensor_parallel_size // CLUSTER_SIZE)
         data_type_size = DTypeUtils.size(data_type)
         if self.tp_rank_local == 0 and self.dp_rank == 0:
             cmd = [

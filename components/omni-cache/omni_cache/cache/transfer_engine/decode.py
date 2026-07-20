@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
+from omni_cache.cache.memory.copy_ops import merge_contiguous_copy_args
 from vllm.logger import init_logger
 
 logger = init_logger("vllm.v1.omni")
@@ -184,17 +185,16 @@ def prepare_h2d_copy_args_hybrid(cache, local_block_ids: List[List[int]], tp_nno
     raw_tensors = getattr(cache, 'raw_tensors_by_row', None)
     page_size = getattr(cache, 'page_size_padded', None)
     host_kvi = (
-        cache.host_cache.kvi_tensors[0]
-        if getattr(cache.host_cache, 'kvi_tensors', None)
+        cache.host_cache.kvi_tensors_swap[0]
+        if getattr(cache.host_cache, 'kvi_tensors_swap', None)
         else None
     )
     if raw_tensors is None or page_size is None or host_kvi is None:
-        logger.warning(
-            "[h2d_hybrid] missing raw_tensors_by_row(%s) / page_size_padded(%s) / "
-            "host_kvi(%s) — returning no-op",
-            raw_tensors is not None, page_size, host_kvi is not None,
+        raise RuntimeError(
+            "[h2d_hybrid] missing raw_tensors_by_row"
+            f"({raw_tensors is not None}) / page_size_padded({page_size}) / "
+            f"mapped_host_kvi({host_kvi is not None})"
         )
-        return batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes
 
     # Collapse the DP leading dim if present. host_kvi shape is either
     # (num_layers, num_blocks, block_size, head_elts) or
@@ -209,6 +209,10 @@ def prepare_h2d_copy_args_hybrid(cache, local_block_ids: List[List[int]], tp_nno
     # Per-group pairing. The scheduler slices local_block_ids[0] into
     # local_block_ids[1] per kv_cache_group, positionally. Walk groups in
     # order and consume consecutive entries from flat_host_ids.
+    # Build (src_block, dst_block) pairs first, then iterate row-major so
+    # that consecutive blocks within the same row are adjacent in the
+    # output lists — this lets merge_contiguous_copy_args coalesce them.
+    block_pairs: list = []
     flat_idx = 0
     for _idx_grp, block_id_grp in enumerate(local_block_ids[1]):
         if not block_id_grp:
@@ -218,22 +222,27 @@ def prepare_h2d_copy_args_hybrid(cache, local_block_ids: List[List[int]], tp_nno
                 break
             src_block = flat_host_ids[flat_idx]
             flat_idx += 1
-            # Sentinel: vLLM reserves block 0 as a zero-padding slot. Writing
-            # there would overwrite the shared pad used by every unfilled
-            # attention lane.
             if src_block == 0 and dst_block == 0:
                 continue
-            for row_idx in range(num_rows):
-                raw_tensor = raw_tensors[row_idx]
-                host_page = host_kvi[row_idx, src_block]
-                dst_ptr = raw_tensor.data_ptr() + dst_block * page_size
-                src_ptr = host_page.data_ptr()
-                batch_device_mem.append(dst_ptr)
-                batch_device_max.append(page_size)
-                batch_host_mem.append(src_ptr)
-                batch_host_sizes.append(page_size)
+            block_pairs.append((src_block, dst_block))
 
-    return batch_device_mem, batch_device_max, batch_host_mem, batch_host_sizes
+    for row_idx in range(num_rows):
+        raw_tensor = raw_tensors[row_idx]
+        for src_block, dst_block in block_pairs:
+            host_page = host_kvi[row_idx, src_block]
+            dst_ptr = raw_tensor.data_ptr() + dst_block * page_size
+            src_ptr = host_page.data_ptr()
+            batch_device_mem.append(dst_ptr)
+            batch_device_max.append(page_size)
+            batch_host_mem.append(src_ptr)
+            batch_host_sizes.append(page_size)
+
+    return merge_contiguous_copy_args(
+        batch_device_mem,
+        batch_device_max,
+        batch_host_mem,
+        batch_host_sizes,
+    )
 
 
 def prepare_h2d_copy_args_hbm_buffer(cache, local_block_ids: List[List[int]], request_id: str):

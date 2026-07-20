@@ -30,7 +30,7 @@ class PrefillConnectorScheduler:
     def __init__(
         self,
         vllm_config: "VllmConfig",
-        cluster_id_start: str,
+        ox_shard_list: str,
         host_ip: str,
         host_port: str
     ):
@@ -38,17 +38,17 @@ class PrefillConnectorScheduler:
 
         Args:
             vllm_config: vLLM configuration.
-            cluster_id_start: Starting cluster ID.
+            ox_shard_list: OX shard endpoint list for this P cluster.
             host_ip: Host IP address.
             host_port: Host port.
         """
         self.vllm_config = vllm_config
-        self.cluster_id_start = cluster_id_start
+        self.ox_shard_list = ox_shard_list
         self.host_ip = host_ip
         self.host_port = host_port
         logger.info(
-            "Initializing OmniCacheConnector Scheduler %s %s %s",
-            cluster_id_start, host_ip, host_port
+            "[DYNAMIC-TOPO] Initializing OmniCacheConnector Scheduler ox_shard_list=%s host=%s:%s",
+            ox_shard_list, host_ip, host_port
         )
         self.requests_finish_time: Dict[str, float] = {}
 
@@ -127,16 +127,17 @@ class PrefillConnectorScheduler:
         if delay_free_blocks:
             self.requests_finish_time[request.request_id] = time.monotonic()
             logger.warning(
-                "KV produced req_id=%s cluster_id=%s host=%s:%s blocks=%d",
-                request.request_id, self.cluster_id_start,
+                "[DYNAMIC-TOPO] KV produced req_id=%s ox_shard_list=%s host=%s:%s blocks=%d",
+                request.request_id, self.ox_shard_list,
                 self.host_ip, self.host_port, len(block_ids),
             )
 
-        return delay_free_blocks, dict(
+        kv_transfer_params = dict(
             remote_block_ids=block_ids,
-            remote_cluster_id=self.cluster_id_start,
+            remote_cluster_id=self.ox_shard_list,
             remote_host_ip=f"tcp://{self.host_ip}:{self.host_port}",
             spec_token_ids=spec_token_ids,
             remote_dp_rank=self.vllm_config.parallel_config.data_parallel_rank,
             remote_request_id=request.request_id
         )
+        return delay_free_blocks, kv_transfer_params

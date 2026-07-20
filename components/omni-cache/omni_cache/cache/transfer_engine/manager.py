@@ -69,8 +69,9 @@ class TransferManager:
         # Initialize token indices
         self.buffers.initialize_token_indices(max_num_batched_tokens)
 
-        # Initialize streams
-        self.streams.initialize_prefill_streams(self.cache)
+        # Initialize streams (one H2D stream per KV cache group)
+        num_kv_groups = len(kv_cache_config.kv_cache_groups)
+        self.streams.initialize_prefill_streams(self.cache, num_kv_groups=num_kv_groups)
 
     def initialize_decode(self) -> None:
         """Initialize all resources for decode operations.

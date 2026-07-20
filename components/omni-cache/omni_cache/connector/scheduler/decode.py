@@ -38,6 +38,7 @@ class DecodeConnectorScheduler:
         self.block_size = vllm_config.cache_config.block_size
         self._reqs_need_recv: Dict[str, Tuple["Request", List[int]]] = {}
         self.processed_request: Set[str] = set()
+        self._abort_request_ids: Set[str] = set()
 
         self.is_pangu_v2 = _is_pangu_v2_model(vllm_config)
 
@@ -69,11 +70,14 @@ class DecodeConnectorScheduler:
         if request.request_id in self.processed_request:
             logger.error(
                 "@@@@@@ MATCH_SKIP reason=processed req_id=%s prompt_len=%s "
-                "local_hit_tokens=%s",
+                "local_hit_tokens=%s — marking for abort "
+                "(preempted after KV pull)",
                 request.request_id,
                 prompt_len,
                 num_computed_tokens,
             )
+            self.processed_request.discard(request.request_id)
+            self._abort_request_ids.add(request.request_id)
             return 0, False
 
         params = request.kv_transfer_params
@@ -221,3 +225,16 @@ class DecodeConnectorScheduler:
         if request.request_id in self.processed_request:
             self.processed_request.remove(request.request_id)
         return False, None
+
+    def get_load_kv_failure_reqs(self) -> Optional[Set[str]]:
+        """Return and clear request IDs that should be aborted.
+
+        These are requests that were preempted after a successful KV pull.
+        The prefill node has already freed its KV blocks (ack was sent),
+        so re-pulling would fail. Abort is the only correct option.
+        """
+        if not self._abort_request_ids:
+            return None
+        result = self._abort_request_ids.copy()
+        self._abort_request_ids.clear()
+        return result

@@ -29,6 +29,6 @@ typedef struct
 
 int omni_tokenizer_init();
 void omni_tokenizer_cleanup();
-int omni_init_tokenizer(const char *model_path);
+int omni_init_tokenizer(const char *model_path, long chunk_bytes);
 int omni_batch_chat_encode(omni_tokenizer_request **requests, size_t num_reqs);
 void print_tokenize_result(omni_tokenizer_request *requests);

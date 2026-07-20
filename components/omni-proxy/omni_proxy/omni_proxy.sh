@@ -16,6 +16,7 @@ log_level="notice"
 access_log_file="/tmp/nginx_access.log"
 omni_proxy_pd_policy="sequential"
 omni_proxy_model_path=""
+omni_proxy_tokenize_chunk_bytes="16384"
 omni_proxy_max_batch_num_token="32000"
 omni_proxy_prefill_max_num_seqs="32"
 omni_proxy_decode_max_num_seqs="32"
@@ -27,6 +28,10 @@ stream_ops="off"
 omni_proxy_max_tokens_weight=""
 omni_proxy_prefill_groups=""
 omni_proxy_decode_groups=""
+omni_proxy_connect_timeout="600s"
+omni_proxy_send_timeout="600s"
+omni_proxy_read_timeout="14400s"
+omni_proxy_next_upstream_timeout="0"
 client_max_body_size="10M"
 client_body_buffer_size="1M"
 subrequest_output_buffer_size="1M"
@@ -56,6 +61,7 @@ print_help() {
     echo "  --access-log-file <path>        Access log file path (default: /tmp/nginx_access.log)"
     echo "  --omni-proxy-pd-policy <policy> sequential or parallel or aggregation (default: sequential)"
     echo "  --omni-proxy-model-path <path>  Path to model directory (default: unset)"
+    echo "  --omni-proxy-tokenize-chunk-bytes <N>     parallel-tokenizer segment target bytes (default: 16384)"
     echo "  --omni-proxy-max-batch-num-token <N>      max_batch_num_token (default: 32000)"
     echo "  --omni-proxy-max-tokens-weight <N>        max_tokens_weight coefficient (default: 0)"
     echo "  --omni-proxy-max-request-slots <N>      max_request_slots (default: 16384)"
@@ -71,6 +77,10 @@ print_help() {
     echo "  --client-max-body-size <size>            client_max_body_size (default: 10M)"
     echo "  --client-body-buffer-size <size>         client_body_buffer_size (default: 1M)"
     echo "  --subrequest-output-buffer-size <size>   subrequest_output_buffer_size (default: 1M)"
+    echo "  --omni-proxy-connect-timeout <T>        omni_proxy_connect_timeout (default: 600s, aligned with http proxy_connect_timeout)"
+    echo "  --omni-proxy-send-timeout <T>           omni_proxy_send_timeout (default: 600s, aligned with http proxy_send_timeout)"
+    echo "  --omni-proxy-read-timeout <T>           omni_proxy_read_timeout (default: 14400s, aligned with http proxy_read_timeout)"
+    echo "  --omni-proxy-next-upstream-timeout <T>  omni_proxy_next_upstream_timeout (default: 0, disabled)"
     echo "  --dry-run                       Only generate nginx config, do not start nginx"
     echo "  --stop                          Stop nginx"
     echo "  --reload                        Reload nginx config without restarting"
@@ -149,6 +159,10 @@ while [[ $# -gt 0 ]]; do
             omni_proxy_model_path="$2"
             shift 2
             ;;
+        --omni-proxy-tokenize-chunk-bytes)
+            omni_proxy_tokenize_chunk_bytes="$2"
+            shift 2
+            ;;
         --omni-proxy-max-batch-num-token)
             omni_proxy_max_batch_num_token="$2"
             shift 2
@@ -191,6 +205,22 @@ while [[ $# -gt 0 ]]; do
             ;;
         --subrequest-output-buffer-size)
             subrequest_output_buffer_size="$2"
+            shift 2
+            ;;
+        --omni-proxy-connect-timeout)
+            omni_proxy_connect_timeout="$2"
+            shift 2
+            ;;
+        --omni-proxy-send-timeout)
+            omni_proxy_send_timeout="$2"
+            shift 2
+            ;;
+        --omni-proxy-read-timeout)
+            omni_proxy_read_timeout="$2"
+            shift 2
+            ;;
+        --omni-proxy-next-upstream-timeout)
+            omni_proxy_next_upstream_timeout="$2"
             shift 2
             ;;
         --prefill-pod-size)
@@ -318,21 +348,6 @@ function rollback_nginx_conf() {
         echo "Rolled back nginx config to $backup_file"
     else
         echo "No backup config found to rollback."
-    fi
-}
-
-function clear_model_transformers_cache() {
-    [[ -z "$omni_proxy_model_path" ]] && return 0
-
-    local tfm_cache="${HF_MODULES_CACHE:-$HOME/.cache/huggingface/modules}/transformers_modules"
-    [[ ! -d "$tfm_cache" ]] && return 0
-
-    local name target
-    name="$(basename "${omni_proxy_model_path%/}" | awk '{gsub(/\./, "_dot_"); gsub(/-/, "_hyphen_"); if ($0 ~ /^[0-9]/) $0 = "_" $0; print}')"
-    target="${tfm_cache}/${name}"
-    if [[ -d "$target" ]]; then
-        echo "Clearing transformers dynamic cache: $target"
-        rm -rf "$target"
     fi
 }
 
@@ -492,7 +507,6 @@ http {
 $(if [[ -n "$encode_endpoints" ]]; then
     gen_upstream_block "encode_endpoints" "$encode_endpoints"
 fi)
-
 $(if [[ "$omni_proxy_pd_policy" != "aggregation" ]]; then
     gen_upstream_block "prefill_endpoints" "$prefill_endpoints"
 fi)
@@ -520,6 +534,7 @@ EOF
             omni_proxy decode_endpoints;
             stream_ops $stream_ops;
             omni_proxy_pd_policy $omni_proxy_pd_policy;
+            omni_proxy_tokenize_chunk_bytes $omni_proxy_tokenize_chunk_bytes;
             omni_proxy_max_batch_num_token $omni_proxy_max_batch_num_token;
             omni_proxy_prefill_max_num_seqs $omni_proxy_prefill_max_num_seqs;
             omni_proxy_decode_max_num_seqs $omni_proxy_decode_max_num_seqs;
@@ -530,6 +545,10 @@ ${omni_proxy_schedule_algo_directive}
 ${omni_proxy_max_tokens_weight_directive}
 ${omni_proxy_prefill_groups_directive}
 ${omni_proxy_decode_groups_directive}
+            omni_proxy_connect_timeout $omni_proxy_connect_timeout;
+            omni_proxy_send_timeout $omni_proxy_send_timeout;
+            omni_proxy_read_timeout $omni_proxy_read_timeout;
+            omni_proxy_next_upstream_timeout $omni_proxy_next_upstream_timeout;
 EOF
 
     if [[ -n "$omni_proxy_model_path" ]]; then
@@ -651,7 +670,6 @@ function do_start() {
 
     if [ "$keepalive_nginx" = false ]; then
         stop_nginx
-        clear_model_transformers_cache
     fi
 
     start_nginx "$nginx_conf_file"

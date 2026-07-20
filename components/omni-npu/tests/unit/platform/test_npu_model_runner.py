@@ -3104,6 +3104,23 @@ class TestUnregisterAndReregisterKVCaches:
         assert result.req_ids == ["req2"]
         assert result.draft_token_ids == [[3, 4]]
 
+    def test_take_draft_token_ids_filters_negative_draft_tokens(self, monkeypatch):
+        """Drops requests whose draft tokens contain negative placeholders."""
+        runner = object.__new__(NPUModelRunner)
+        runner.num_spec_tokens = 5
+        runner._draft_token_req_ids = ["req1", "req2", "req3"]
+        monkeypatch.setattr(
+            runner, '_get_draft_token_ids_cpu',
+            lambda: ([[1, 2], [-1, 3], [4, 5]], ["req1", "req2", "req3"])
+        )
+        runner.discard_request_mask = SimpleNamespace(
+            cpu=torch.tensor([False, False, False], dtype=torch.bool)
+        )
+        result = runner.take_draft_token_ids()
+        assert result is not None
+        assert result.req_ids == ["req1", "req3"]
+        assert result.draft_token_ids == [[1, 2], [4, 5]]
+
     def test_take_draft_token_ids_returns_all_when_none_discarded(self, monkeypatch):
         """Returns DraftTokenIds with all requests when no mask is set."""
         runner = object.__new__(NPUModelRunner)

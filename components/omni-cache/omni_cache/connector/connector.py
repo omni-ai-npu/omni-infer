@@ -14,12 +14,12 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 )
 from vllm.logger import init_logger
 
-from omni_cache.connector.utils.helpers import resolve_prefill_endpoint, get_config_from_dict_or_env
+from omni_cache.connector.utils.helpers import get_config_from_dict_or_env
 from omni_cache.connector.utils.metadata import (
     DatadistConnectorMetadata, DatadistConnectorMetadataPrefill,
 )
 from omni_cache.connector.utils.settings import (
-    CLUSTER_SIZE, NODE_IP_SPECS, P_NODE_LIST,
+    BASE_PORT, P_NODE_PORT_LIST,
 )
 from omni_cache.connector.scheduler import PrefillConnectorScheduler, DecodeConnectorScheduler
 
@@ -65,18 +65,31 @@ class OmniCacheConnector(KVConnectorBase_V1, SupportsHMA):
 
     def _init_prefill_config(self, vllm_config: VllmConfig) -> None:
         """Initialize prefill-specific configuration."""
-        endpoint = resolve_prefill_endpoint(
-            vllm_config=vllm_config,
-            node_ip_specs=NODE_IP_SPECS,
-            cluster_size=CLUSTER_SIZE,
-            p_node_list=P_NODE_LIST,
-            get_local_ip=self._get_local_ip,
-            get_config_value=get_config_from_dict_or_env,
+        kv_rank = getattr(vllm_config.kv_transfer_config, "kv_rank", None)
+        cluster_idx = int(kv_rank or 0)
+        self.cluster_id_start = 0
+        self.host_ip = self._get_local_ip()
+        self.host_port = get_config_from_dict_or_env(
+            vllm_config.kv_transfer_config,
+            "kv_port",
+            "VLLM_LLMDATADIST_ZMQ_PORT",
+            "5568",
+            int,
         )
-        self.cluster_id_start = endpoint.cluster_id_start
-        self.host_ip = endpoint.host_ip
-        self.host_port = endpoint.host_port
-        self._host_port_str = str(endpoint.host_port)
+        self.host_port += vllm_config.parallel_config.data_parallel_rank
+        self._host_port_str = str(self.host_port)
+
+        clusters = [c.strip() for c in P_NODE_PORT_LIST.split(';') if c.strip()]
+        self.ox_shard_list = (
+            clusters[cluster_idx]
+            if cluster_idx < len(clusters)
+            else f"{self.host_ip}:{BASE_PORT}"
+        )
+        logger.warning(
+            "[DYNAMIC-TOPO] P-side computed ox_shard_list=%s "
+            "(cluster_idx=%d, total_clusters=%d)",
+            self.ox_shard_list, cluster_idx, len(clusters),
+        )
 
     def _init_decode_config(self) -> None:
         """Initialize decode-specific configuration."""
@@ -91,7 +104,10 @@ class OmniCacheConnector(KVConnectorBase_V1, SupportsHMA):
         if role == KVConnectorRole.SCHEDULER:
             if self.is_prefill:
                 self.connector_scheduler = PrefillConnectorScheduler(
-                    vllm_config, self.cluster_id_start, self.host_ip, self._host_port_str
+                    vllm_config,
+                    self.ox_shard_list,
+                    self.host_ip,
+                    self._host_port_str,
                 )
             else:
                 self.connector_scheduler = DecodeConnectorScheduler(vllm_config)
@@ -187,6 +203,15 @@ class OmniCacheConnector(KVConnectorBase_V1, SupportsHMA):
             return 1
         return None
 
+    def get_load_kv_failure_reqs(self) -> Optional[Set[str]]:
+        """Return request IDs that should be aborted due to KV loading failure."""
+        if self.connector_scheduler is None:
+            return None
+        method = getattr(self.connector_scheduler, "get_load_kv_failure_reqs", None)
+        if method is None:
+            return None
+        return method()
+
     # ========== Worker Side Methods ==========
 
     def register_kv_caches(self, kv_pool_mmap_path, data_type, block_len_dtype, omni_cache=None):
@@ -206,6 +231,15 @@ class OmniCacheConnector(KVConnectorBase_V1, SupportsHMA):
         if self.connector_worker is None:
             raise RuntimeError("self.connector_worker cannot be None")
         return self.connector_worker.get_finished(self._connector_metadata)
+
+    def get_block_ids_with_load_errors(self) -> Set[int]:
+        """Return KV block ids whose async load failed."""
+        if self.connector_worker is None:
+            raise RuntimeError("self.connector_worker cannot be None")
+        method = getattr(self.connector_worker, "get_block_ids_with_load_errors", None)
+        if method is None:
+            return set()
+        return method()
 
     def start_load_kv(
         self,

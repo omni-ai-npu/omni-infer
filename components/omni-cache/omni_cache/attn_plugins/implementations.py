@@ -32,33 +32,6 @@ class CompressMQAAttnPlugin(AttentionPlugin):
     Handles offload for compressed attention with sparse indexing.
     """
 
-    def __init__(self):
-        super().__init__()
-        self._omni_cache = None
-        self._enabled = False
-
-    @property
-    def omni_cache(self) -> Any:
-        """Lazy load and cache omni_cache instance."""
-        if self._omni_cache is None:
-            from omni_cache.cache import omni_cache
-
-            self._omni_cache = omni_cache
-        return self._omni_cache
-
-    @property
-    def enabled(self) -> bool:
-        """Check if omni_cache is enabled."""
-        if self._enabled:
-            return True
-        if self.omni_cache is None:
-            return False
-        if hasattr(self.omni_cache, "enable"):
-            self._enabled = self.omni_cache.enable
-        else:
-            self._enabled = True
-        return self._enabled
-
     def pre_attn(self, *args, **kwargs) -> None:
         """Pre-attention hook: D2H for prefill phase.
 
@@ -195,31 +168,6 @@ class MLAAttnPlugin(AttentionPlugin):
     Handles offload for MLA attention with latent KV.
     """
 
-    def __init__(self):
-        super().__init__()
-        self._omni_cache = None
-        self._enabled = False
-
-    @property
-    def omni_cache(self) -> Any:
-        if self._omni_cache is None:
-            from omni_cache.cache import omni_cache
-
-            self._omni_cache = omni_cache
-        return self._omni_cache
-
-    @property
-    def enabled(self) -> bool:
-        if self._enabled:
-            return True
-        if self.omni_cache is None:
-            return False
-        if hasattr(self.omni_cache, "enable"):
-            self._enabled = self.omni_cache.enable
-        else:
-            self._enabled = True
-        return self._enabled
-
     def pre_attn(self, *args, **kwargs) -> None:
         """Pre-attention: H2D sync + D2H for MLA prefill.
 
@@ -229,7 +177,15 @@ class MLAAttnPlugin(AttentionPlugin):
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
 
-        sync_h2d_event(self.omni_cache)
+        if type(self.omni_cache).__name__ == 'PrefillOmniCache':
+            instance = args[0] if args else kwargs.get('instance')
+            mla_layer_name = None
+            if instance is not None and hasattr(instance, 'attn') and hasattr(instance.attn, 'prefix'):
+                mla_layer_name = instance.attn.prefix
+            elif instance is not None and hasattr(instance, 'prefix'):
+                mla_layer_name = f"{instance.prefix}.attn"
+
+            sync_h2d_event(self.omni_cache, layer_name=mla_layer_name)
 
         self._do_mla_d2h(*args, **kwargs)
 
@@ -328,31 +284,6 @@ class GeneralMQAAttnPlugin(AttentionPlugin):
     A simpler plugin for basic MQA offload.
     """
 
-    def __init__(self):
-        super().__init__()
-        self._omni_cache = None
-        self._enabled = False
-
-    @property
-    def omni_cache(self) -> Any:
-        if self._omni_cache is None:
-            from omni_cache.cache import omni_cache
-
-            self._omni_cache = omni_cache
-        return self._omni_cache
-
-    @property
-    def enabled(self) -> bool:
-        if self._enabled:
-            return True
-        if self.omni_cache is None:
-            return False
-        if hasattr(self.omni_cache, "enable"):
-            self._enabled = self.omni_cache.enable
-        else:
-            self._enabled = True
-        return self._enabled
-
     def pre_attn(self, *args, **kwargs) -> None:
         if not self.enabled:
             return
@@ -386,31 +317,6 @@ class DSAAttnPlugin(AttentionPlugin):
             )
     """
 
-    def __init__(self):
-        super().__init__()
-        self._omni_cache = None
-        self._enabled = False
-
-    @property
-    def omni_cache(self) -> Any:
-        if self._omni_cache is None:
-            from omni_cache.cache import omni_cache
-
-            self._omni_cache = omni_cache
-        return self._omni_cache
-
-    @property
-    def enabled(self) -> bool:
-        if self._enabled:
-            return True
-        if self.omni_cache is None:
-            return False
-        if hasattr(self.omni_cache, "enable"):
-            self._enabled = self.omni_cache.enable
-        else:
-            self._enabled = True
-        return self._enabled
-
     def pre_attn(self, *args, **kwargs) -> None:
         """Pre-attention: H2D sync + D2H for DSA prefill.
 
@@ -420,8 +326,17 @@ class DSAAttnPlugin(AttentionPlugin):
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
 
-        if type(self.omni_cache).__name__ == "PrefillOmniCache":
-            sync_h2d_event(self.omni_cache)
+        if type(self.omni_cache).__name__ == 'PrefillOmniCache':
+            instance = args[0] if args else kwargs.get('instance')
+            layer_name = kwargs.get("layer_name")
+            if instance is not None and hasattr(instance, 'attn') and hasattr(instance.attn, 'prefix'):
+                layer_name = instance.attn.prefix
+            elif layer_name is None and instance is not None:
+                layer_name = getattr(instance, 'prefix', None)
+            if layer_name is not None and not layer_name.endswith(".attn"):
+                layer_name = f"{layer_name}.attn"
+
+            sync_h2d_event(self.omni_cache, layer_name=layer_name)
 
         return self._do_d2h_common(*args, **kwargs)
 
@@ -558,32 +473,7 @@ class DSAAttnPlugin(AttentionPlugin):
 
 
 class MOMEAttnPlugin(AttentionPlugin):
-    """Plugin for standard multi-query attention without compression."""
-
-    def __init__(self):
-        super().__init__()
-        self._omni_cache = None
-        self._enabled = False
-
-    @property
-    def omni_cache(self) -> Any:
-        if self._omni_cache is None:
-            from omni_cache.cache import omni_cache
-
-            self._omni_cache = omni_cache
-        return self._omni_cache
-
-    @property
-    def enabled(self) -> bool:
-        if self._enabled:
-            return True
-        if self.omni_cache is None:
-            return False
-        if hasattr(self.omni_cache, "enable"):
-            self._enabled = self.omni_cache.enable
-        else:
-            self._enabled = True
-        return self._enabled
+    """Plugin for MoME."""
 
     def pre_attn(self, *args, **kwargs) -> None:
         """Pre-attention: H2D sync for MOME.
@@ -594,7 +484,13 @@ class MOMEAttnPlugin(AttentionPlugin):
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
             return
 
-        sync_h2d_event(self.omni_cache)
+        if type(self.omni_cache).__name__ == 'PrefillOmniCache':
+            instance = args[0] if args else kwargs.get('instance')
+            mome_layer_name = None
+            if instance is not None and hasattr(instance, 'prefix'):
+                mome_layer_name = f"{instance.prefix}.mome"
+
+            sync_h2d_event(self.omni_cache, layer_name=mome_layer_name)
 
     def post_attn(self, *args, **kwargs) -> None:
         if not int(os.getenv("ENABLE_OMNI_CACHE", "0")):
@@ -911,10 +807,6 @@ class MoEFFNPlugin(AttentionPlugin):
     Registered via entry-point ``omni.moe_ffn_decorators`` and triggered
     by ``moe_ffn_decorator`` after each ``FusedMoE.forward`` call.
     """
-
-    def __init__(self):
-        super().__init__()
-        self.omni_cache = None
 
     def pre_attn(self, *args, **kwargs):
         pass

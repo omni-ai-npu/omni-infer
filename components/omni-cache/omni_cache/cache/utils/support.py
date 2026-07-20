@@ -8,28 +8,74 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 
-def sync_h2d_event(omni_cache: Any) -> None:
+def sync_h2d_event(omni_cache: Any, layer_name: Optional[str] = None) -> None:
     """Synchronize H2D event to ensure H2D transfer is complete.
 
     This should be called in pre_attn before the attention kernel runs,
     to ensure the prefetched KV from the previous layer's post_attn
     has landed in device memory.
 
+    When *layer_name* is provided, only the per-group event for that
+    layer's KV cache group is synchronized — other groups' in-flight
+    H2D transfers are not waited on.
+
     Args:
         omni_cache: The omni_cache instance (PrefillOmniCache or DecodeOmniCache)
+        layer_name: If given, sync only this layer's group stream/event.
     """
     if omni_cache is None:
         return
 
-    # Synchronize the H2D stream first (ensures all H2D ops complete)
-    h2d_stream = getattr(omni_cache, "h2d_stream", None)
-    if h2d_stream is not None:
-        h2d_stream.synchronize()
+    if layer_name is not None:
+        try:
+            group_idx, _ = omni_cache._layer_name_to_group_and_layer_idx(
+                layer_name
+            )
+        except Exception:
+            group_idx = None
+        if group_idx is not None and _sync_group_h2d_event(omni_cache, group_idx):
+            return
 
-    # Then synchronize the event (belt-and-braces)
-    h2d_event = getattr(omni_cache, "h2d_event", None)
+    # Fallback: sync ALL h2d streams
+    h2d_streams = getattr(omni_cache, 'h2d_streams', None)
+    if h2d_streams:
+        for stream in h2d_streams:
+            stream.synchronize()
+    else:
+        h2d_stream = getattr(omni_cache, 'h2d_stream', None)
+        if h2d_stream is not None:
+            h2d_stream.synchronize()
+
+    h2d_event = getattr(omni_cache, 'h2d_event', None)
     if h2d_event is not None:
         h2d_event.synchronize()
+
+
+def _sync_group_h2d_event(omni_cache: Any, group_idx: int) -> bool:
+    """Wait for a specific KV cache group's H2D event to complete.
+    Returns True if an event was found and synchronized.
+    """
+    h2d_stages = getattr(omni_cache, "h2d_event_stages", None)
+    if not h2d_stages:
+        return False
+
+    n_stages = max(1, int(getattr(omni_cache, "num_stages_layer_copy", 1) or 1))
+    stage_record = int(getattr(omni_cache, "stage_record", 0) or 0)
+    target_stage = (stage_record + 1) % n_stages
+
+    if target_stage >= len(h2d_stages):
+        return False
+
+    stage_events = h2d_stages[target_stage]
+    if not isinstance(stage_events, dict):
+        return False
+
+    event = stage_events.get(group_idx)
+    if event is None:
+        return False
+
+    event.synchronize()
+    return True
 
 
 class BlockHashType(NamedTuple):

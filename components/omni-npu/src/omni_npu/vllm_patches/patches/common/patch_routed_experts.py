@@ -55,6 +55,9 @@ from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
+from omni_npu.vllm_patches.patches.common.patch_prefilled_token_skip_tokenize import (
+    drain_pending_finish_outputs,
+)
 from omni_npu.plugin_decorators import update_from_output_decorator
 
 if TYPE_CHECKING:
@@ -829,6 +832,32 @@ class SchedulerRoutedExpertsPatch(VLLMPatch):
         if stopped_preempted_reqs:
             self.waiting.remove_requests(stopped_preempted_reqs)
 
+        # Abort requests that were preempted after successful KV pull.
+        if self.connector is not None:
+            _get_failure = getattr(
+                self.connector, "get_load_kv_failure_reqs", None)
+            if _get_failure is not None:
+                loading_kv_failure = _get_failure()
+                if loading_kv_failure:
+                    for _fid in loading_kv_failure:
+                        _freq = self.requests.get(_fid)
+                        if _freq is None:
+                            continue
+                        logger.warning(
+                            "Aborting request %s: preempted after KV pull",
+                            _fid)
+                        _freq.stop_reason = "Abort for KV loading failure"
+                        self.finish_requests(
+                            _fid, RequestStatus.FINISHED_ABORTED)
+                        outputs[_freq.client_index].append(
+                            EngineCoreOutput(
+                                request_id=_fid,
+                                new_token_ids=[],
+                                finish_reason=_freq.get_finished_reason(),
+                                stop_reason=_freq.stop_reason,
+                            )
+                        )
+
         if failed_kv_load_req_ids and not self.recompute_kv_load_failures:
             requests = [self.requests[req_id] for req_id in failed_kv_load_req_ids]
             self.finish_requests(failed_kv_load_req_ids, RequestStatus.FINISHED_ERROR)
@@ -846,6 +875,8 @@ class SchedulerRoutedExpertsPatch(VLLMPatch):
 
         if kv_connector_output:
             self._update_from_kv_xfer_finished(kv_connector_output)
+
+        drain_pending_finish_outputs(self, outputs)
 
         events = self.kv_cache_manager.take_events()
         if self.connector is not None:

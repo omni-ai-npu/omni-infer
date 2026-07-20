@@ -8,6 +8,9 @@ from copy import deepcopy
 from pathlib import Path
 from vllm.logger import init_logger
 
+import torch
+import numpy as np
+
 logger = init_logger("vllm.v1.omni")
 
 # Import mock_schedule at module level — this runs as soon as plugin.py
@@ -179,7 +182,6 @@ class InitConfigPlugin:
 
             if model_runner.omni_cache.is_pangu_v2:
                 # Create a patched version of bind_kv_cache that removes the layer name check
-                import torch
                 from collections import defaultdict
                 from vllm.attention.layer import Attention
                 from vllm.model_executor.models.utils import extract_layer_index
@@ -666,25 +668,46 @@ class PrepareInputsPlugin:
                 )
         if fake_counter == 1:
             return
-        # Rewrite only the VALID cells in place, using each group's own
-        # mapping.
+
+        # Build per-group CPU LUT tensors from the dict maps.
+        per_group_luts = []
+        for group_map in per_group_maps:
+            if not group_map:
+                per_group_luts.append((None, None))
+                continue
+            _keys = torch.tensor(list(group_map.keys()), dtype=torch.int64)
+            _vals = torch.tensor(list(group_map.values()), dtype=torch.int64)
+            r2f = torch.arange(int(_keys.max()) + 1, dtype=torch.int64)
+            r2f[_keys] = _vals
+            f2r = torch.arange(int(_vals.max()) + 1, dtype=torch.int64)
+            f2r[_vals] = _keys
+            per_group_luts.append((r2f, f2r))
+
+        # Rewrite only the VALID cells in place using numpy vectorized ops.
         for grp_idx, (bt_item, group_map) in enumerate(zip(staged_bts, per_group_maps)):
             if not group_map:
                 continue
             if not (hasattr(bt_item, "block_table") and hasattr(bt_item.block_table, "np")):
                 continue
             bt_np = bt_item.block_table.np
-            num_blocks_per_row = getattr(bt_item, "num_blocks_per_row", None)
-            for row in range(n_reqs):
-                n_cols = (
-                    max(0, min(int(num_blocks_per_row[row]) + 1, bt_np.shape[1]))
-                    if num_blocks_per_row is not None
-                    else bt_np.shape[1]
-                )
-                for col in range(n_cols):
-                    rid = int(bt_np[row, col])
-                    if rid != 0 and rid in group_map:
-                        bt_np[row, col] = group_map[rid]
+            num_blocks_per_row = getattr(bt_item, 'num_blocks_per_row', None)
+            r2f_lut, _ = per_group_luts[grp_idx]
+            if r2f_lut is not None:
+                r2f_np = r2f_lut.numpy()
+                lut_max = r2f_np.shape[0] - 1
+                view = bt_np[:n_reqs]
+                clipped = view.clip(0, lut_max)
+                remapped = r2f_np[clipped]
+                if num_blocks_per_row is not None:
+                    col_idx = np.arange(bt_np.shape[1])[np.newaxis, :]
+                    limit = np.array([
+                        max(0, min(int(num_blocks_per_row[r]) + 1, bt_np.shape[1]))
+                        for r in range(n_reqs)
+                    ], dtype=np.int64)[:, np.newaxis]
+                    mask = (col_idx < limit) & (view != 0)
+                else:
+                    mask = view != 0
+                view[mask] = remapped[mask]
             if apc_dbg:
                 logger.warning(
                     "[APCDBG/SWAP] tp_rank=%s dp_rank=%s stage=%s group_idx=%d layer_name=%s after_rewrite %s",
@@ -702,6 +725,7 @@ class PrepareInputsPlugin:
         input_batch._real_block_tables_per_group = per_group_real
         input_batch._restore_real_block_tables_per_group = per_group_restore_real
         input_batch._volatile_real_to_fake_per_group = per_group_maps
+        input_batch._volatile_per_group_luts = per_group_luts
 
         # Also stash on omni_cache for next chunk restoration. Keep the
         # zeroed table for D2H scatter, and the full realized table for
@@ -709,6 +733,7 @@ class PrepareInputsPlugin:
         _oc._real_block_tables_per_group = per_group_real
         _oc._restore_real_block_tables_per_group = per_group_restore_real
         _oc._volatile_real_to_fake_per_group = per_group_maps
+        _oc._volatile_per_group_luts = per_group_luts
 
 
 def _register_kv_connectors() -> None:

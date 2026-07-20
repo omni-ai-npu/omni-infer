@@ -281,11 +281,11 @@ class KVCacheMemoryPool:
         )
 
     def memcpy_async(self, batch_device_mem, batch_device_max,
-                     batch_host_mem, batch_host_sizes):
+                     batch_host_mem, batch_host_sizes, kind=None):
         """Execute async memory copy."""
         _memcpy_async(
             self.ascend_cl_stream, batch_device_mem, batch_device_max,
-            batch_host_mem, batch_host_sizes
+            batch_host_mem, batch_host_sizes, kind=kind
         )
 
     def set_block(self, block_idx: int, tensors: List[torch.Tensor]) -> None:
