@@ -221,11 +221,6 @@ def _get_final_df(data_by_request, request_role, disable_encode=False):
         encode = request_role[request_id].get("encode")
         decode = request_role[request_id].get("decode")
         prefill = request_role[request_id].get("prefill")
-        if decode is None or prefill is None:
-            print(
-                f'request_id: {request_role[request_id].get("request_id")} decode or prefill is None'
-            )
-            continue
         row = {"RequestID": request_id, "P_NODE": prefill, "D_NODE": decode}
         if not disable_encode:
             row["E_NODE"] = encode

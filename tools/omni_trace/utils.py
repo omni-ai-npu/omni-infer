@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
+import contextvars
 import os
 import threading
 import multiprocessing
@@ -11,8 +12,32 @@ from pathlib import Path
 import socket
 import requests
 
-PREFILL = "prefill"
-DECODE = "decode"
+
+_trace_mm_hash_to_req_id: contextvars.ContextVar[dict[str, str] | None] = (
+    contextvars.ContextVar("_trace_mm_hash_to_req_id", default=None)
+)
+
+
+def trace_set_mm_hash_req_map(mapping: dict[str, str]) -> None:
+    """Set mm_hash -> request_id map for the current async/thread context."""
+    _trace_mm_hash_to_req_id.set(mapping)
+
+
+def trace_clear_mm_hash_req_map() -> None:
+    _trace_mm_hash_to_req_id.set(None)
+
+
+def trace_lookup_req_id(mm_hash: str | None) -> str | None:
+    """Look up request_id for a single mm_hash."""
+    mapping = _trace_mm_hash_to_req_id.get() or {}
+    return mapping[mm_hash] if mm_hash in mapping else None
+
+
+def trace_lookup_req_ids_for_load(mm_hashes: list[str]) -> list[str]:
+    """Look up request_ids for a batch of mm_hashes to load, deduplicated."""
+    mapping = _trace_mm_hash_to_req_id.get() or {}
+    return list({mapping[mm_hash] for mm_hash in mm_hashes if mm_hash in mapping})
+
 
 def safe_print(directory, message):
     process_id = multiprocessing.current_process().pid
