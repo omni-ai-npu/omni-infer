@@ -1,0 +1,223 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "graphTooltip": 1,
+  "tags": ["omni-metrics", "inference"],
+  "templating": { "list": [] },
+  "time": { "from": "now-3h", "to": "now" },
+  "timepicker": {},
+  "title": "OMNI-METRICS 推理观测",
+  "uid": "omni-metrics",
+  "schemaVersion": 37,
+  "version": 2,
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "P 侧（prefill）—— 只做首字，关注 TTFT / prefill / 排队",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "TTFT P50（首字延迟 中位数）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni:ttft_p50{role=\"P\"}", "legendFormat": "{{node}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "TTFT P90（虚线=昨天同时刻）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni:ttft_p90{role=\"P\"}", "legendFormat": "{{node}} 当前" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni:ttft_p90{role=\"P\"} offset 1d", "legendFormat": "{{node}} 昨天" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "TTFT P99（长尾）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni:ttft_p99{role=\"P\"}", "legendFormat": "{{node}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "P 侧 prefill / queue 耗时 P90",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni:prefill_time_p90{role=\"P\"}", "legendFormat": "prefill {{node}}" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni:queue_time_p90{role=\"P\"}", "legendFormat": "queue {{node}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "P 侧排队（running / waiting）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "vllm:num_requests_running{role=\"P\"}", "legendFormat": "running {{node}}" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "vllm:num_requests_waiting{role=\"P\"}", "legendFormat": "waiting {{node}}" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "P 侧 worker 显存 allocated（每 rank）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni_npu:worker_mem_allocated_bytes{role=\"P\"}", "legendFormat": "rank {{rank}}" }
+      ]
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "D 侧（decode）—— 只做生成，关注 TPOT / 吞吐 / KV / 抢占",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "TPOT P50（每 token 时延 中位数，对标 benchmark）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni:tpot_p50{role=\"D\"}", "legendFormat": "e{{engine}}" }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "TPOT P90",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni:tpot_p90{role=\"D\"}", "legendFormat": "e{{engine}}" }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "TPOT P99（长尾）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni:tpot_p99{role=\"D\"}", "legendFormat": "e{{engine}}" }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "D 侧吞吐（tokens/s）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni:token_throughput{role=\"D\"}", "legendFormat": "e{{engine}}" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "sum(omni:token_throughput{role=\"D\"})", "legendFormat": "D 总计" }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "D 侧 KV cache 水位",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "vllm:kv_cache_usage_perc{role=\"D\"}", "legendFormat": "e{{engine}}" }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "D 侧抢占速率（次/秒）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni:preemption_rate{role=\"D\"}", "legendFormat": "e{{engine}}" }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "D 侧 decode 总耗时 P90（单请求首字→末字，与输出长度成正比，非单 token）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 30 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni:decode_time_p90{role=\"D\"}", "legendFormat": "e{{engine}}" }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "KV 传输失败速率（按 kind）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 30 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "rate(omni_npu:kv_transfer_failures_total[5m])", "legendFormat": "{{kind}} {{node}}-e{{engine}}" }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "D 侧 worker 显存 allocated（每 rank）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 37 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni_npu:worker_mem_allocated_bytes{role=\"D\"}", "legendFormat": "{{node}}-r{{rank}}" }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "D 侧 worker 显存 reserved（每 rank，reserved-allocated 差=碎片/缓存池）",
+      "datasource": { "type": "prometheus", "uid": "omni-prom" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 37 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "omni-prom" }, "expr": "omni_npu:worker_mem_reserved_bytes{role=\"D\"}", "legendFormat": "{{node}}-r{{rank}}" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+# OMNI-METRICS recording rules
+
+groups:
+  # ── D1 排队 ──────────────────────────────────────────────────────────
+  - name: omni_metrics_d1_queue
+    interval: 30s
+    rules:
+      - record: omni:queue_depth_ratio
+        expr: vllm:num_requests_waiting / omni_npu:scheduler_max_num_seqs
+
+      - record: omni:queue_time_p90
+        expr: histogram_quantile(0.9, rate(vllm:request_queue_time_seconds_bucket[5m]))
+
+      - record: omni:queue_waiting_slope
+        expr: deriv(vllm:num_requests_waiting[5m])
+
+  # ── D2 显存 ──────────────────────────────────────────────────────────
+  - name: omni_metrics_d2_memory
+    interval: 30s
+    rules:
+      - record: omni:preemption_rate
+        expr: rate(vllm:num_preemptions_total[5m])
+
+      - record: omni:token_throughput
+        expr: rate(vllm:iteration_tokens_total_sum[5m])
+
+      - record: omni:worker_mem_alloc_slope_30m
+        expr: deriv(omni_npu:worker_mem_allocated_bytes[30m])
+
+  # ── D3 时延 ──────────────────────────────────────────────────────────
+  - name: omni_metrics_d3_latency
+    interval: 30s
+    rules:
+      - record: omni:ttft_p50
+        expr: histogram_quantile(0.5, rate(vllm:time_to_first_token_seconds_bucket[5m]))
+
+      - record: omni:ttft_p90
+        expr: histogram_quantile(0.9, rate(vllm:time_to_first_token_seconds_bucket[5m]))
+
+      - record: omni:ttft_p99
+        expr: histogram_quantile(0.99, rate(vllm:time_to_first_token_seconds_bucket[5m]))
+
+      - record: omni:tpot_p50
+        expr: histogram_quantile(0.5, rate(vllm:request_time_per_output_token_seconds_bucket[5m]))
+
+      - record: omni:tpot_p90
+        expr: histogram_quantile(0.9, rate(vllm:request_time_per_output_token_seconds_bucket[5m]))
+
+      - record: omni:tpot_p99
+        expr: histogram_quantile(0.99, rate(vllm:request_time_per_output_token_seconds_bucket[5m]))
+
+      - record: omni:ttft_p90_vs_1d
+        expr: omni:ttft_p90 / (omni:ttft_p90 offset 1d)
+
+      - record: omni:prefill_time_p90
+        expr: histogram_quantile(0.9, rate(vllm:request_prefill_time_seconds_bucket[5m]))
+
+      - record: omni:decode_time_p90
+        expr: histogram_quantile(0.9, rate(vllm:request_decode_time_seconds_bucket[5m]))
+
+      - record: omni:inference_time_p90
+        expr: histogram_quantile(0.9, rate(vllm:request_inference_time_seconds_bucket[5m]))
+
+      - record: omni:prompt_tokens_rate
+        expr: rate(vllm:prompt_tokens_total[5m])
+
+      - record: omni:prefix_cache_hit_ratio
+        expr: rate(vllm:prefix_cache_hits_total[5m]) / rate(vllm:prefix_cache_queries_total[5m])
+
+  # ── 活锁辅助量 ────────────────────────────────────────────────────────
+  - name: omni_metrics_livelock
+    interval: 30s
+    rules:
+      - record: omni:generation_token_rate
+        expr: rate(vllm:generation_tokens_total[5m])
