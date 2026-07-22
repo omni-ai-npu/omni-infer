@@ -1,0 +1,85 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
+all:
+  vars:
+    ansible_user: root
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+    # ansible_ssh_private_key_file: /path/to/key.pem  # Private key path on the executor
+    global_port_base: 8000
+    base_api_port: 9000
+    proxy_port: 7000
+    port_offset:
+      P: 0      # Actual port range for group P: 8000-8099
+      D: 100    # Actual port range for group D: 8100-8199
+
+  children:
+    P:
+      children:
+        P0:
+          hosts:
+            p0:
+              ansible_host: "127.0.0.1"
+              node_rank: 0
+              kv_rank: 0
+              node_port: "{{ global_port_base + port_offset.P + kv_rank * 10 }}"
+              api_port: "{{ base_api_port + port_offset.P + kv_rank *10 + node_rank }}"
+              host_ip: "127.0.0.1"
+              ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+        P1:
+          hosts:
+            p1:
+              ansible_host: "127.0.0.2"
+              node_rank: 0
+              kv_rank: 1
+              node_port: "{{ global_port_base + port_offset.P + kv_rank * 10 }}"
+              api_port: "{{ base_api_port + port_offset.P + kv_rank *10 + node_rank }}"
+              host_ip: "127.0.0.2"
+              ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+        P2:
+          hosts:
+            p2:
+              ansible_host: "127.0.0.3"
+              node_rank: 0
+              kv_rank: 2
+              node_port: "{{ global_port_base + port_offset.P + kv_rank * 10 }}"
+              api_port: "{{ base_api_port + port_offset.P + kv_rank *10 + node_rank }}"
+              host_ip: "127.0.0.3"
+              ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+        P3:
+          hosts:
+            p3:
+              ansible_host: "127.0.0.4"
+              node_rank: 0
+              kv_rank: 3
+              node_port: "{{ global_port_base + port_offset.P + kv_rank * 10 }}"
+              api_port: "{{ base_api_port + port_offset.P + kv_rank *10 + node_rank }}"
+              host_ip: "127.0.0.4"
+              ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+
+    D:
+      children:
+        D0:
+          hosts:
+            d0:
+              ansible_host: "127.0.0.5"
+              node_rank: 0
+              node_port: "{{ global_port_base + port_offset.D }}"
+              api_port: "{{ base_api_port + port_offset.D + node_rank }}"
+              host_ip: "127.0.0.5"
+              ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+            d1:
+              ansible_host: "127.0.0.6"
+              node_rank: 1
+              node_port: "{{ global_port_base + port_offset.D }}"
+              api_port: "{{ base_api_port + port_offset.D + node_rank }}"
+              host_ip: "127.0.0.5"
+              ascend_rt_visible_devices: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+
+    C:
+      hosts:
+        c0:
+          ansible_host: "127.0.0.1"
+          node_rank: 0
+          node_port: "{{ proxy_port + node_rank }}"
+          host_ip: "127.0.0.1"
+          role: "C"
