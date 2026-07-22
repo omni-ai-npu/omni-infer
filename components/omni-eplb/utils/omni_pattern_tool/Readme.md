@@ -2,7 +2,6 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # 专家部署流水线说明文档
 
-**作者：陶壮**  
 **更新日期：2025年7月8日**  
 
 

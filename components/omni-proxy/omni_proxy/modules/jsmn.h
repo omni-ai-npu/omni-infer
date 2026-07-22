@@ -25,7 +25,7 @@
  * SOFTWARE.
  * ---------------------------
  * Modifications:
- * Modified by wuhang <wuhang6@huawei.com> on 2025-06-04
+ * Modified on 2025-06-04
  * - support escape random symbol in function `jsmn_parse_string`
  * Modified on 2026-04-17
  * - jsmn_alloc_token auto-expands via ngx_alloc; parser stores ngx_pool_t

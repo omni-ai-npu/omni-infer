@@ -49,7 +49,6 @@
          Users online:   0
 
 
-         [root@devserver-hps-91b9def8-g00615224-00016 data]# 
       ```
       - 在omni_infer代码目录中，进入到Placement代码
       ```
