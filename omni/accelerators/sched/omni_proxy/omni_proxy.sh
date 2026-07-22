@@ -378,7 +378,7 @@ http {
     proxy_http_version 1.1;
     tcp_nodelay on;
     client_max_body_size 10M;
-    client_body_buffer_size 1M;
+    client_body_buffer_size 10M;
 
     proxy_read_timeout 14400s;
     proxy_connect_timeout 600s;
@@ -450,7 +450,7 @@ EOF
         location ~ ^/prefill_sub(?<orig>/.*)\$ {
             internal;
             proxy_pass http://prefill_endpoints\$orig\$is_args\$args;
-            subrequest_output_buffer_size 1M;
+            subrequest_output_buffer_size 10M;
         }
 
         location /v1 {
@@ -462,7 +462,7 @@ EOF
         location = /omni_proxy_broadcast_sub {
             internal;
             proxy_pass http://\$arg_target;
-            subrequest_output_buffer_size 1M;
+            subrequest_output_buffer_size 10M;
         }
     }
 }
