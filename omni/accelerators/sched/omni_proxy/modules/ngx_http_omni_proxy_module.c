@@ -1830,19 +1830,6 @@ static ngx_int_t ngx_http_omni_process_status_line(ngx_http_request_t *r)
         return NGX_HTTP_UPSTREAM_INVALID_HEADER;
     }
 
-    /* Handle HTTP 100 Continue: skip it and wait for the real response.
-     * Without this, nginx treats 100 as the final status, sets header_sent=1,
-     * and the write handler becomes a dummy — body sending stops permanently. */
-    if (st.code == 100) {
-        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                      "omni_proxy: skipping HTTP 100 Continue from upstream");
-
-        u->buffer.pos = u->buffer.last;
-        return NGX_AGAIN;
-    }
-
-    u->headers_in.status_n = st.code;
-
     u->headers_in.status_line.len = st.end - st.start;
     u->headers_in.status_line.data = ngx_pnalloc(r->pool, u->headers_in.status_line.len);
     if (u->headers_in.status_line.data == NULL)

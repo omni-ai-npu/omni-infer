@@ -388,6 +388,8 @@ $(gen_upstream_block "prefill_endpoints" "$prefill_endpoints")
     
 $(gen_upstream_block "decode_endpoints" "$decode_endpoints")
 
+    proxy_set_header Expect "";
+
     server {
         listen $listen_port reuseport;
         server_name localhost;
