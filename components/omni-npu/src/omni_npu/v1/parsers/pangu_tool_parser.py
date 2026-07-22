@@ -198,8 +198,11 @@ class PanguToolParser(ToolParser):
             current_text = current_text.split(
                 self.tool_call_start_token)[-1].split(self.tool_call_end_token)[0]
             current_text = current_text[
-                current_text.find('[') + 1: current_text.rfind(']')
+                current_text.find('[') + 1:
                 ]
+            rstripped = current_text.rstrip()
+            if rstripped.endswith(']'):
+                current_text = rstripped[:-1]
             start_idx = current_text.find("{")
         
             try:
