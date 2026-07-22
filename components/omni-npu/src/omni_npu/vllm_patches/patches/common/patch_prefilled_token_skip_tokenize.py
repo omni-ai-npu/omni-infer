@@ -6,7 +6,7 @@
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from typing import Any, AsyncGenerator, Optional, Callable
 
 from vllm.entrypoints.chat_utils import ChatCompletionMessageParam, ChatTemplateContentFormatOption
@@ -26,6 +26,7 @@ from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.request import Request, RequestStatus
 from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
 from vllm.entrypoints.openai.serving_engine import OpenAIServing
+from vllm.v1.kv_cache_interface import AttentionSpec
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.core.sched.utils import check_stop
 from vllm.v1.engine.async_llm import AsyncLLM
@@ -297,6 +298,33 @@ def _update_waiting_for_remote_kv_patched(self: Scheduler, request: Request) -> 
     # Return that we are ready.
     self.finished_recving_kv_req_ids.remove(request.request_id)
     return True
+
+
+def _get_kv_load_recovery_block_ids(
+    scheduler: Scheduler, request_id: str
+) -> list[int]:
+    """Return the attention group's block IDs."""
+    block_id_groups = scheduler.kv_cache_manager.get_block_ids(request_id)
+    if len(block_id_groups) == 1:
+        return block_id_groups[0]
+
+    kv_cache_groups = getattr(
+        getattr(scheduler, "kv_cache_config", None), "kv_cache_groups", ()
+    )
+    for group_idx, group in enumerate(kv_cache_groups):
+        if (
+            group_idx < len(block_id_groups)
+            and isinstance(getattr(group, "kv_cache_spec", None), AttentionSpec)
+        ):
+            return block_id_groups[group_idx]
+
+    logger.warning(
+        "Request %s has %d KV cache groups but no attention group; "
+        "using group 0 for KV load recovery.",
+        request_id,
+        len(block_id_groups),
+    )
+    return block_id_groups[0]
 
 
 def _append_prefilled_token_if_room(
@@ -623,6 +651,75 @@ class SchedulerPatch(VLLMPatch):
             _append_prefilled_token_if_room(self, request)
 
         return _update_waiting_for_remote_kv_patched(self, request)
+
+
+@register_patch("HybridKVLoadFailureScheduler", Scheduler)
+class HybridKVLoadFailureSchedulerPatch(VLLMPatch):
+    """Make vLLM's invalid-block recovery work with hybrid KV cache groups."""
+
+    _attr_names_to_apply = ["_update_requests_with_invalid_blocks"]
+
+    def _update_requests_with_invalid_blocks(
+        self,
+        requests: Iterable[Request],
+        invalid_block_ids: set[int],
+        evict_blocks: bool = True,
+    ) -> tuple[set[str], int, set[int]]:
+        affected_req_ids: set[str] = set()
+        total_affected_tokens = 0
+        blocks_to_evict: set[int] = set()
+        marked_invalid_block_ids: set[int] = set()
+
+        for request in requests:
+            is_affected = False
+            marked_invalid_block = False
+            req_id = request.request_id
+            req_block_ids = _get_kv_load_recovery_block_ids(self, req_id)
+
+            if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
+                req_num_computed_tokens = (
+                    request.num_computed_tokens
+                    if req_id in self.failed_recving_kv_req_ids
+                    else len(req_block_ids) * self.block_size
+                )
+            else:
+                req_num_computed_tokens = request.num_cached_tokens
+
+            req_num_computed_blocks = (
+                req_num_computed_tokens + self.block_size - 1
+            ) // self.block_size
+            for idx, block_id in zip(range(req_num_computed_blocks), req_block_ids):
+                if block_id not in invalid_block_ids:
+                    continue
+
+                is_affected = True
+                if block_id in marked_invalid_block_ids:
+                    continue
+
+                marked_invalid_block_ids.add(block_id)
+                if marked_invalid_block:
+                    continue
+
+                marked_invalid_block = True
+                request.num_computed_tokens = idx * self.block_size
+                num_affected_tokens = (
+                    req_num_computed_tokens - request.num_computed_tokens
+                )
+                total_affected_tokens += num_affected_tokens
+                request.num_external_computed_tokens -= num_affected_tokens
+                if evict_blocks:
+                    blocks_to_evict.update(req_block_ids[idx:])
+
+            if is_affected:
+                if not marked_invalid_block:
+                    total_affected_tokens += (
+                        request.num_computed_tokens - request.num_cached_tokens
+                    )
+                    request.num_computed_tokens = request.num_cached_tokens
+
+                affected_req_ids.add(req_id)
+
+        return affected_req_ids, total_affected_tokens, blocks_to_evict
 
 
 @register_patch("PrefilledTokenSkipKvXferFinished", Scheduler)

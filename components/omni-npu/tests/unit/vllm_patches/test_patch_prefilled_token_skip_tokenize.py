@@ -13,6 +13,7 @@ from unittest import mock
 
 from vllm.entrypoints.openai.protocol import ChatCompletionRequest
 from vllm.sampling_params import SamplingParams
+from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.request import Request, RequestStatus
 
 from omni_npu.vllm_patches.patches.common import (
@@ -855,6 +856,126 @@ class TestEnforceSpeculativeGenerationBudget(unittest.TestCase):
         req = self._req(prompt_len=4, max_tokens=None)
         patch_mod.enforce_speculative_generation_budget(self._cfg(), req)
         self.assertIsNone(req.sampling_params.max_tokens)
+
+
+class _FakeAttentionSpec:
+    pass
+
+
+class _FakeKVCacheManagerForLoadRecovery:
+    def __init__(self, block_id_groups: dict[str, tuple[list[int], ...]]) -> None:
+        self.block_id_groups = block_id_groups
+        self.evicted_blocks: list[set[int]] = []
+
+    def get_block_ids(self, request_id: str) -> tuple[list[int], ...]:
+        return self.block_id_groups[request_id]
+
+    def evict_blocks(self, block_ids: set[int]) -> None:
+        self.evicted_blocks.append(block_ids)
+
+
+class _FakeSchedulerForLoadRecovery:
+    def __init__(
+        self,
+        requests: list[SimpleNamespace],
+        block_id_groups: dict[str, tuple[list[int], ...]],
+        *,
+        recompute_kv_load_failures: bool,
+    ) -> None:
+        self.waiting = requests
+        self.running: list[SimpleNamespace] = []
+        self.block_size = 4
+        self.kv_cache_manager = _FakeKVCacheManagerForLoadRecovery(block_id_groups)
+        self.kv_cache_config = SimpleNamespace(
+            kv_cache_groups=[
+                SimpleNamespace(kv_cache_spec=object()),
+                SimpleNamespace(kv_cache_spec=_FakeAttentionSpec()),
+            ]
+        )
+        self.failed_recving_kv_req_ids: set[str] = set()
+        self.recompute_kv_load_failures = recompute_kv_load_failures
+
+    def _update_requests_with_invalid_blocks(
+        self, requests, invalid_block_ids, evict_blocks=True
+    ):
+        return patch_mod.HybridKVLoadFailureSchedulerPatch._update_requests_with_invalid_blocks(
+            self, requests, invalid_block_ids, evict_blocks
+        )
+
+
+def _make_load_recovery_request(request_id: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        request_id=request_id,
+        status=RequestStatus.WAITING_FOR_REMOTE_KVS,
+        num_computed_tokens=0,
+        num_external_computed_tokens=12,
+        num_cached_tokens=0,
+    )
+
+
+class TestHybridKVLoadFailureRecovery(unittest.TestCase):
+    def _scheduler(self, *, recompute: bool) -> _FakeSchedulerForLoadRecovery:
+        request = _make_load_recovery_request("req-1")
+        return _FakeSchedulerForLoadRecovery(
+            [request],
+            {"req-1": ([100, 101, 102], [200, 201, 202])},
+            recompute_kv_load_failures=recompute,
+        )
+
+    def test_selects_attention_group_for_hybrid_invalid_blocks(self) -> None:
+        scheduler = self._scheduler(recompute=True)
+
+        with mock.patch.object(patch_mod, "AttentionSpec", _FakeAttentionSpec):
+            affected, affected_tokens, blocks_to_evict = (
+                patch_mod.HybridKVLoadFailureSchedulerPatch
+                ._update_requests_with_invalid_blocks(
+                    scheduler, scheduler.waiting, {201}, evict_blocks=False
+                )
+            )
+
+        request = scheduler.waiting[0]
+        self.assertEqual(affected, {"req-1"})
+        self.assertEqual(affected_tokens, 8)
+        self.assertEqual(blocks_to_evict, set())
+        self.assertEqual(request.num_computed_tokens, 4)
+        self.assertEqual(request.num_external_computed_tokens, 4)
+
+    def test_single_group_preserves_upstream_behavior(self) -> None:
+        request = _make_load_recovery_request("req-1")
+        scheduler = _FakeSchedulerForLoadRecovery(
+            [request], {"req-1": ([100, 101, 102],)}, recompute_kv_load_failures=True
+        )
+
+        affected, affected_tokens, blocks_to_evict = (
+            patch_mod.HybridKVLoadFailureSchedulerPatch
+            ._update_requests_with_invalid_blocks(
+                scheduler, scheduler.waiting, {101}, evict_blocks=True
+            )
+        )
+
+        self.assertEqual(affected, {"req-1"})
+        self.assertEqual(affected_tokens, 8)
+        self.assertEqual(blocks_to_evict, {101, 102})
+        self.assertEqual(request.num_computed_tokens, 4)
+
+    def test_recompute_policy_marks_async_request_for_retry(self) -> None:
+        scheduler = self._scheduler(recompute=True)
+
+        with mock.patch.object(patch_mod, "AttentionSpec", _FakeAttentionSpec):
+            failed_req_ids = Scheduler._handle_invalid_blocks(scheduler, {201})
+
+        self.assertEqual(failed_req_ids, set())
+        self.assertEqual(scheduler.failed_recving_kv_req_ids, {"req-1"})
+        self.assertEqual(scheduler.waiting[0].num_computed_tokens, 4)
+
+    def test_fail_policy_returns_only_the_affected_request(self) -> None:
+        scheduler = self._scheduler(recompute=False)
+
+        with mock.patch.object(patch_mod, "AttentionSpec", _FakeAttentionSpec):
+            failed_req_ids = Scheduler._handle_invalid_blocks(scheduler, {201})
+
+        self.assertEqual(failed_req_ids, {"req-1"})
+        self.assertEqual(scheduler.failed_recving_kv_req_ids, set())
 
 
 if __name__ == "__main__":
