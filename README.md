@@ -43,7 +43,7 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub root@xxx.xxx.xx.xx
 
 ## 修改脚本
 
-拉起 PD 分离服务的脚本在代码仓的 `tools/ansible/92B` 路径下。以 **1P1D** 为例，对应文件为：
+拉起 PD 分离服务的脚本在代码仓的 `tools/ansible/92B`和`tools/ansible/505B` 路径下。以 **1P1D** 为例，对应文件为：
 
 * `omni_infer_inventory_used_for_1P1D.yml` — 节点 inventory
 * `omni_infer_server_template_performance1P1D_92B_bf16_open.yml` — BF16 权重服务模板
@@ -97,7 +97,11 @@ environment:
 在P节点运行下述命令可启动镜像，在设置的每台服务器上创建docker。注意替换成本机上的对应文件名，以 **1P1D** 为例：
 
 ```bash
+#92B
 ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_bf16_open.yml --tags run_docker
+
+#505B
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template_performance2P1D_505B_bf16_open.yml --tags run_docker
 ```
 
 docker创建好后可跳转到 [推理服务拉起](#推理服务拉起) 章节拉起推理服务。
@@ -118,7 +122,11 @@ pip list | grep omni-npu
 docker在各个部署的A3机器上创建好后，在bash通过下述命令拉取推理服务，以 **1P1D** 为例：
 
 ```bash
+#92B
 ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_bf16_open.yml --tags run_server,run_proxy
+
+#505B
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template_performance2P1D_505B_bf16_open.yml --tags run_server,run_proxy
 ```
 
 C节点会在容器内启动nginx+proxy，在master node上启动nginx将并发的请求分配到各个节点上。可在部署的机器上通过日志追踪服务拉起的进程。
@@ -132,7 +140,7 @@ tail -f /path/to/server/log/server_0.log
 
 服务启动后，向proxy节点端口（脚本默认为7000）发送测试请求：
 
-> **注意**：请求 body 中的 `model` 为 `openPangu-2.0-Flash`（与模板 `SERVED_MODEL_NAME` 一致）。
+> **注意**：请求 body 中的 `model` 为 `openPangu-2.0-Flash`（与模板 `SERVED_MODEL_NAME` 一致，92B默认为 `openPangu-2.0-Flash`，505B默认为`openPangu-2.0-Pro`）。
 
 ```bash
 # ${MASTER_NODE_IP} 替换为 inventory 中 C 节点的 ansible_host，端口对应 proxy_port（默认 7000）

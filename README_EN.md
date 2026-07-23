@@ -43,7 +43,7 @@ Packages and versions required by the inference code (pre-installed in the image
 
 ## Modify Scripts
 
-The scripts for launching the PD disaggregation service are located at `tools/ansible/92B` in the repository. For **1P1D**, the corresponding files are:
+The scripts for launching the PD disaggregation service are located at `tools/ansible/92B` and `tools/ansible/505B` in the repository. For **1P1D**, the corresponding files are:
 
 * `omni_infer_inventory_used_for_1P1D.yml` — node inventory
 * `omni_infer_server_template_performance1P1D_92B_bf16_open.yml` — BF16 weight service template
@@ -97,7 +97,11 @@ Additionally, the **P node** configuration is under `run_vllm_server_prefill_cmd
 Run the following command on the P node to start the image and create a docker on each configured server. Replace the file name with the corresponding one on your machine. Taking **1P1D** as an example:
 
 ```bash
+#92B
 ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_bf16_open.yml --tags run_docker
+
+#505B
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template_performance2P1D_505B_bf16_open.yml --tags run_docker
 ```
 
 Once the docker is created, you can jump to the [Launch Inference Service](#launch-inference-service) section to launch the inference service.
@@ -118,7 +122,11 @@ pip list | grep omni-npu
 Once dockers are created on each deployed A3 machine, launch the inference service with the following command in bash, taking **1P1D** as an example:
 
 ```bash
+#92B
 ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_bf16_open.yml --tags run_server,run_proxy
+
+#505B
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template_performance2P1D_505B_bf16_open.yml --tags run_server,run_proxy
 ```
 
 The C node will start nginx+proxy inside the container, and start nginx on the master node to distribute concurrent requests across nodes. You can track the service launch progress through logs on the deployed machine.
@@ -132,7 +140,7 @@ tail -f /path/to/server/log/server_0.log
 
 After the service is started, send a test request to the proxy node port (default is 7000):
 
-> **Note**: The `model` field in the request body is `openPangu-2.0-Flash` (must match `SERVED_MODEL_NAME` in the template).
+> **Note**: The `model` field in the request body is `openPangu-2.0-Flash` (must match `SERVED_MODEL_NAME` in the template, 92B defaults to `openPangu-2.0-Flash` and 505B defaults to `openPangu-2.0-Pro`).
 
 ```bash
 # Replace ${MASTER_NODE_IP} with the ansible_host of the C node in the inventory; the port corresponds to proxy_port (default 7000)

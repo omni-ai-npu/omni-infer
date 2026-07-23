@@ -44,7 +44,7 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub root@xxx.xxx.xx.xx
 
 ## 修改脚本
 
-拉起 PD 分离服务的脚本在代码仓的 `tools/ansible/92B` 路径下。以 **1P1D** 为例，对应文件为：
+拉起 PD 分离服务的脚本在代码仓的 `tools/ansible/92B`和`tools/ansible/505B` 路径下。以 **1P1D** 为例，对应文件为：
 
 * `omni_infer_inventory_used_for_1P1D.yml` — 节点 inventory
 * `omni_infer_server_template_performance1P1D_92B_w8a8_open.yml` — INT8 权重服务模板
@@ -99,7 +99,12 @@ environment:
 在P节点运行下述命令可启动镜像，在设置的每台服务器上创建docker。注意替换成本机上的对应文件名，以 **1P1D** 为例：
 
 ```bash
-ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_w8a8_open.yml --tags run_docker
+#92B
+A3: ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_w8a8_open.yml --tags run_docker
+A2: ansible-playbook -i omni_infer_inventory_used_for_1P1D_A2.yml omni_infer_server_template_performance1P1D_92B_A2_w8a8_open.yml --tags run_docker
+
+#505B
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template_performance2P1D_505B_int8_open.yml --tags run_docker
 ```
 
 docker创建好后可跳转到 [推理服务拉起](#推理服务拉起) 章节拉起推理服务。
@@ -124,8 +129,12 @@ pip list | grep omni-npu
 docker在各个部署的A3机器上创建好后，在bash通过下述命令拉取推理服务，以 **1P1D** 为例：
 
 ```bash
+#92B
 A3: ansible-playbook -i omni_infer_inventory_used_for_1P1D.yml omni_infer_server_template_performance1P1D_92B_w8a8_open.yml --tags run_server,run_proxy
 A2: ansible-playbook -i omni_infer_inventory_used_for_1P1D_A2.yml omni_infer_server_template_performance1P1D_92B_A2_w8a8_open.yml --tags run_server,run_proxy
+
+#505B
+ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template_performance2P1D_505B_int8_open.yml --tags run_server,run_proxy
 ```
 
 C节点会在容器内启动nginx+proxy，在master node上启动nginx将并发的请求分配到各个节点上。可在部署的机器上通过日志追踪服务拉起的进程。
@@ -139,7 +148,7 @@ tail -f /path/to/server/log/server_0.log
 
 服务启动后，向proxy节点端口（脚本默认为7000）发送测试请求：
 
-> **注意**：请求 body 中的 `model` 为 `openPangu-2.0-Flash`（与模板 `SERVED_MODEL_NAME` 一致）。
+> **注意**：请求 body 中的 `model` 为 `openPangu-2.0-Flash`（与模板 `SERVED_MODEL_NAME` 一致，92B默认为 `openPangu-2.0-Flash`，505B默认为`openPangu-2.0-Pro`）。
 
 ```bash
 # ${MASTER_NODE_IP} 替换为 inventory 中 C 节点的 ansible_host，端口对应 proxy_port（默认 7000）
@@ -166,9 +175,14 @@ curl -X POST http://${MASTER_NODE_IP}:7000/v1/chat/completions \
 在 Playbook 中将对应server yml 替换即可
 
 92B: omni_infer_server_template_performance4P1D_92B_w8a8_open_omni_cache.yml 推荐inventory 形态: 4P1D
+505B: omni_infer_server_template_performance4P1D_505B_int8_open_omni_cache.yml 推荐inventory 形态: 4P81D16 (4个单机组P实例, 1个双机组D实例)
 
 ```bash
+#92B
 ansible-playbook -i omni_infer_inventory_used_for_4P1D.yml omni_infer_server_template_performance4P1D_92B_w8a8_open_omni_cache.yml --tags run_docker,run_server,run_proxy
+
+#505B
+ansible-playbook -i omni_infer_inventory_used_for_4P81D16.yml omni_infer_server_template_performance4P1D_505B_int8_open_omni_cache.yml --tags run_docker,run_server,run_proxy
 ```
 
 ### 从OmniCache服务切换到其他配置前的处理
