@@ -1830,6 +1830,19 @@ static ngx_int_t ngx_http_omni_process_status_line(ngx_http_request_t *r)
         return NGX_HTTP_UPSTREAM_INVALID_HEADER;
     }
 
+    u->headers_in.status_n = st.code;
+
+    {
+        omni_req_t *req = omni_get_req(r);
+        if (req) {
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                          "[Decode-%d] status_line_received: status=%ui; RequestID:%s",
+                          req->slot_index,
+                          (ngx_uint_t)st.code,
+                          req->request_id);
+        }
+    }
+
     u->headers_in.status_line.len = st.end - st.start;
     u->headers_in.status_line.data = ngx_pnalloc(r->pool, u->headers_in.status_line.len);
     if (u->headers_in.status_line.data == NULL)

@@ -339,7 +339,7 @@ static u_char *export_histogram_series(u_char *p, u_char *end,
 // Export all metrics in Prometheus format
 ngx_str_t omni_metrics_export(omni_global_state_t *global_state)
 {
-    static u_char buffer[65536];
+    static u_char buffer[262144];
     u_char *p = buffer;
     u_char *end = buffer + sizeof(buffer);
 
@@ -359,9 +359,12 @@ ngx_str_t omni_metrics_export(omni_global_state_t *global_state)
     }
 
     // Track which metrics we've already output HELP/TYPE for
-    int help_output[256] = {0}; // Simple deduplication array
+    int help_output[2048] = {0};
 
     // Export all metrics
+    if (count > 2048) {
+        count = 2048;
+    }
     for (size_t i = 0; i < count; i++)
     {
         const omni_metric_desc_t *desc = &registry[i];
