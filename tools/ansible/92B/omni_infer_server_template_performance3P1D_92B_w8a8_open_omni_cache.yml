@@ -42,7 +42,7 @@
 
   vars:
     docker_run_cmd: |
-      docker run -it --shm-size=1600g \
+      docker run -it --shm-size=1400g \
         -e LOG_PATH=$LOG_PATH \
         -e PYTHONHASHSEED=123 \
         --net=host \
@@ -84,8 +84,9 @@
       export ASCEND_GLOBAL_LOG_LEVEL=3
       export TASK_QUEUE_ENABLE=2
       
-      export OMNI_REUSE_PREFILLED_TOKENS=1
-      export OMNI_SKIP_DECODE_TOKENIZE=1
+      export OMNI_REUSE_PREFILLED_TOKENS=0
+      export OMNI_SKIP_DECODE_TOKENIZE=0
+      export OMNI_PIGGYBACK_INPUT_IDS=1
       export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
 
       # patch
@@ -136,13 +137,13 @@
         export OMNI_CACHE_MMAP_FILE="${OMNI_CACHE_PREFILL_MMAP_FILE:-omni_cache_p}"
         export OMNI_CACHE_MMAP_PATH="/dev/hugepages/${OMNI_CACHE_MMAP_FILE}"
         export OMNI_CACHE_PACKED_HBM=1
-        export OMNI_CACHE_LAYER_BYTES="${OMNI_CACHE_LAYER_BYTES:-88046829568}" # 82GB
-        export MAP_SIZE_BYTES="${MAP_SIZE_BYTES:-1610612736000}" # 1500GB
+        export OMNI_CACHE_LAYER_BYTES="${OMNI_CACHE_LAYER_BYTES:-68719476736}" # 64GB
+        export MAP_SIZE_BYTES="${MAP_SIZE_BYTES:-1288490188800}" # 1200GB
         export NUM_DIE_PER_MACH="${NUM_DIE_PER_MACH:-16}"
         export BASE_PORT="${BASE_PORT:-16077}"
         export ZMQ_BASE_PORT="${ZMQ_BASE_PORT:-16555}"
         export OMNI_CACHE_MLA_SWA_DEBUG="${OMNI_CACHE_MLA_SWA_DEBUG:-1}"
-        export NUM_GPU_BLOCKS_OVERRIDE="${NUM_GPU_BLOCKS_OVERRIDE:-${OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE:-480000}}"
+        export NUM_GPU_BLOCKS_OVERRIDE="${NUM_GPU_BLOCKS_OVERRIDE:-${OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE:-360000}}"
         export P_NODE_LIST="${P_NODE_LIST:-${HOST_IP}}"
         export ROLE=prefill
         export VLLM_PLUGINS="omni-npu,omni_custom_models,omni_npu_patches"
@@ -207,8 +208,9 @@
       export ASCEND_GLOBAL_LOG_LEVEL=3
       export HCCL_OP_EXPANSION_MODE="AI_CPU"
 
-      export OMNI_REUSE_PREFILLED_TOKENS=1
-      export OMNI_SKIP_DECODE_TOKENIZE=1
+      export OMNI_REUSE_PREFILLED_TOKENS=0
+      export OMNI_SKIP_DECODE_TOKENIZE=0
+      export OMNI_PIGGYBACK_INPUT_IDS=1
       export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
 
       # patch
@@ -248,7 +250,7 @@
       rm -rf /usr/local/Ascend/cann/opp/static_kernel
       rm -rf /usr/local/Ascend/cann-9.1.0-beta.1/opp/static_kernel
       rm -rf graph_cache/
-      EXTRA_ARGS='--no-disable-hybrid-kv-cache-manager --enable-expert-parallel --disable-log-requests --max-num-seqs 4 --no-enable-prefix-caching --enable-chunked-prefill --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[16], "backend":"", "compile_sizes":[16]} --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu'
+      EXTRA_ARGS='--no-disable-hybrid-kv-cache-manager --enable-expert-parallel --disable-log-requests --max-num-seqs 16 --no-enable-prefix-caching --enable-chunked-prefill --distributed-executor-backend mp --dtype bfloat16 --compilation-config {"level": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[64], "backend":"", "compile_sizes":[64]} --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu'
       REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
       EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
       GPU_UTIL=0.88
@@ -989,7 +991,7 @@
         P_NODE_LIST: "{{ P_NODE_LIST }}"
         ENABLE_OMNI_CACHE_DSA_SPLIT: "{{ enable_omni_cache_dsa_split | default('1') }}"
         OMNI_CACHE_PREFILL_MMAP_FILE: "{{ omni_cache_prefill_mmap_file | default('omni_cache_p') }}"
-        OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE: "{{ omni_cache_prefill_num_gpu_blocks_override | default('480000') }}"
+        OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE: "{{ omni_cache_prefill_num_gpu_blocks_override | default('360000') }}"
       when: "'P' in group_names and (NODE_IP_LIST | string).split(',') | length >= 2"
       tags:
         - run_server
@@ -1052,7 +1054,7 @@
         P_NODE_LIST: "{{ P_NODE_LIST }}"
         ENABLE_OMNI_CACHE_DSA_SPLIT: "{{ enable_omni_cache_dsa_split | default('1') }}"
         OMNI_CACHE_PREFILL_MMAP_FILE: "{{ omni_cache_prefill_mmap_file | default('omni_cache_p') }}"
-        OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE: "{{ omni_cache_prefill_num_gpu_blocks_override | default('480000') }}"
+        OMNI_CACHE_PREFILL_NUM_GPU_BLOCKS_OVERRIDE: "{{ omni_cache_prefill_num_gpu_blocks_override | default('360000') }}"
       when: "'P' in group_names and (NODE_IP_LIST | string).split(',') | length == 1"
       tags:
         - run_server

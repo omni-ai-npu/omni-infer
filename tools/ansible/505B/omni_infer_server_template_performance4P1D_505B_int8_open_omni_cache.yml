@@ -615,12 +615,12 @@
 
         - name: Stop containers.
           command: |
-            /bin/bash -c "docker stop {{ existing_containers.stdout_lines | join(' ') }}"
+            /bin/bash -c "docker stop {{ existing_containers.stdout_lines | unique | join(' ') }}"
           when: existing_containers.stdout != ""
 
         - name: Delete containers.
           command: |
-            /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
+            /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | unique | join(' ') }}"
           when: existing_containers.stdout != ""
       when: "'P' in group_names or 'D' in group_names"
       tags:
@@ -646,12 +646,12 @@
 
         - name: Stop containers.
           command: |
-            /bin/bash -c "docker stop {{ existing_containers.stdout_lines | join(' ') }}"
+            /bin/bash -c "docker stop {{ existing_containers.stdout_lines | unique | join(' ') }}"
           when: existing_containers.stdout != ""
 
         - name: Delete containers.
           command: |
-            /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
+            /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | unique | join(' ') }}"
           when: existing_containers.stdout != ""
       when: "'C' in group_names"
       tags:
