@@ -1664,6 +1664,18 @@ static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r)
                 continue;
             }
 
+            if (h[i].key.len == sizeof("Expect") - 1 &&
+                ngx_strncasecmp(h[i].key.data,
+                                (u_char *)"Expect",
+                                h[i].key.len) == 0 &&
+                h[i].value.len >= 3 &&
+                h[i].value.data[0] == '1' &&
+                h[i].value.data[1] >= '0' && h[i].value.data[1] <= '9' &&
+                h[i].value.data[2] >= '0' && h[i].value.data[2] <= '9')
+            {
+                continue;
+            }
+
             header_len += h[i].key.len + sizeof(": ") - 1 + h[i].value.len + sizeof("\r\n") - 1;
         }
 
@@ -1703,6 +1715,18 @@ static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r)
                 continue;
             }
 
+            if (h[i].key.len == sizeof("Expect") - 1 &&
+                ngx_strncasecmp(h[i].key.data,
+                                (u_char *)"Expect",
+                                h[i].key.len) == 0 &&
+                h[i].value.len >= 3 &&
+                h[i].value.data[0] == '1' &&
+                h[i].value.data[1] >= '0' && h[i].value.data[1] <= '9' &&
+                h[i].value.data[2] >= '0' && h[i].value.data[2] <= '9')
+            {
+                continue;
+            }
+
             hdr->last = ngx_snprintf(hdr->last, hdr->end - hdr->last,
                                      "%V: %V\r\n", &h[i].key, &h[i].value);
         }
@@ -1717,6 +1741,16 @@ static ngx_int_t ngx_http_omni_create_request(ngx_http_request_t *r)
 
     hdr->last = ngx_snprintf(hdr->last, hdr->end - hdr->last,
                              "Content-Length: %O\r\n\r\n", (off_t)body_len);
+
+    {
+        omni_req_t *req = omni_get_req(r);
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                      "[Decode-%d] upstream_request_header (%uz bytes): \"%*s\"; RequestID:%s",
+                      req ? req->slot_index : -1,
+                      (size_t)(hdr->last - hdr->pos),
+                      (size_t)(hdr->last - hdr->pos), hdr->pos,
+                      req ? req->request_id : (u_char *)"unknown");
+    }
 
     cl = ngx_alloc_chain_link(r->pool);
     if (cl == NULL)
