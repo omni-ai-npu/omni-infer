@@ -946,6 +946,7 @@ class SimpleSampler(RejectionSamplerV1):
             sampled_token_ids = output_token_ids,
             logprobs_tensors = None
         )
+        self.main_sampler.topk_topp_sampler.dsa_stream.wait_stream(torch_npu.npu.default_stream())
 
         return sampler_output, forward_tokens, last_accepted_index, accepted_num
 
@@ -1072,6 +1073,7 @@ class SparseRejectionSampler(RejectionSamplerV1):
             sampled_token_ids = output_token_ids,
             logprobs_tensors = None
         )
+        self.main_sampler.topk_topp_sampler.dsa_stream.wait_stream(torch_npu.npu.default_stream())
 
         return sampler_output, forward_tokens, last_accepted_index, accepted_num
 

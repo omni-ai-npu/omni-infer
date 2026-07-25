@@ -492,6 +492,7 @@ class NPUModelRunner(GPUModelRunner):
         arange = self.arange_np[:total_num_scheduled_tokens] - cumsums_offsets
         positions_np = self.positions_np[:total_num_scheduled_tokens]
         np.add(self.input_batch.num_computed_tokens_cpu[req_indices], arange, out=positions_np)
+        real_cu_num_tokens = cu_num_tokens.copy()
 
         if self.uses_mrope:
             self._calc_mrope_positions(scheduler_output)
@@ -636,8 +637,13 @@ class NPUModelRunner(GPUModelRunner):
                 req_idx = self.input_batch.req_id_to_index[req_id]
                 num_draft_tokens[req_idx] = len(draft_token_ids)
             spec_decode_metadata = self._calc_spec_decode_metadata(
-                num_draft_tokens, cu_num_tokens)
-            sample_indices = spec_decode_metadata.logits_indices
+                num_draft_tokens, real_cu_num_tokens)
+            if model_extra_config.parall_config.attn_sp_size > 1 and attn_state != AscendAttentionState.DecodeOnly:
+                selected_indices = cu_num_tokens - 1
+                sample_indices = torch.from_numpy(selected_indices).to(
+                    self.device, non_blocking=True)
+            else:
+                sample_indices = spec_decode_metadata.logits_indices
         else:
             sample_indices = cu_num_tokens - 1
             sample_indices = torch.from_numpy(sample_indices).to(self.device, non_blocking=True)

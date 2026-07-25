@@ -143,6 +143,8 @@ class VocabParallelEmbedding(VocabParallelEmbeddingGPU):
  
     def forward_vocab(self, input_, reduce = 0):
         if self.tp_size > 1:
+            padding_index = (input_ == -1).nonzero()
+            input_[input_ == -1] = 0
             # Build the mask.
             if self.parallel_lmhead:
                 input_ = all_gather_local(input_, idx=0, dim=0)
@@ -153,6 +155,7 @@ class VocabParallelEmbedding(VocabParallelEmbeddingGPU):
                 self.shard_indices.num_org_vocab_padding,
                 self.shard_indices.added_vocab_start_index,
                 self.shard_indices.added_vocab_end_index)
+            input_mask[padding_index] = True
         else:
             masked_input = input_
  

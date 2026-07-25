@@ -388,6 +388,8 @@ class PrefillOmniCache(BaseOmniCache):
         self._packed_slot_mapping = None
         self._real_to_fake_lut = None
         self._fake_to_real_lut = None
+        self._d2h_block_ids = None
+        self._d2h_host_block_ids = None
 
     # def calc_cache_shape(self) -> Tuple[Tuple[int, ...], int]:
     #     self.tp_node_id = self.tp_rank // NUM_DIE_PER_MACH
@@ -682,7 +684,11 @@ class PrefillOmniCache(BaseOmniCache):
         self.batch_token_indices = token_idx
 
         if not model_extra_config.operator_opt_config.enable_dsa:
+            self._d2h_block_ids = None
+            self._d2h_host_block_ids = None
             return None, None
+
+        self.prepare_d2h_block_ids(orig_slot_mapping)
 
         max_num_blocks_per_req = self.volatile_table.shape[1]
         slot_mapping = []
@@ -700,6 +706,13 @@ class PrefillOmniCache(BaseOmniCache):
         if slot_mapping.shape != orig_shape:
             raise RuntimeError(f"Slot mapping shape mismatch! {slot_mapping.shape=}, {orig_shape=}.")
         return self.volatile_table, slot_mapping
+
+    def prepare_d2h_block_ids(self, slot_mapping: torch.Tensor) -> None:
+        block_ids = torch.unique(slot_mapping[slot_mapping != -1] // self.block_size)
+        self._d2h_block_ids = block_ids
+        self._d2h_host_block_ids = block_ids
+        if self._fake_to_real_lut is not None:
+            self._d2h_host_block_ids = self._fake_to_real_lut[block_ids.long()]
 
     def get_current_rank_host_data(self, layer_idx, prefix_meta):
         # flatten
@@ -779,6 +792,8 @@ class PrefillOmniCache(BaseOmniCache):
         key_states: (Tq, N, Dk)
         values_states: (Tq, N, Dv)
         """
+        if wait_event is not None:
+            self.h2d_stream.wait_event(wait_event)
         if prefix_meta is None or layer_idx >= self.num_layers:
             return
 
@@ -829,24 +844,17 @@ class PrefillOmniCache(BaseOmniCache):
         kv_cache: Tuple[torch.Tensor,...],
         layer_idx: int,
         kv_event: torch.npu.Event,
-        slot_mapping: torch.Tensor,
+        slot_mapping: Optional[torch.Tensor] = None,
         tensor_indices: Optional[List[int]] = None
     ) -> torch.npu.Event:
+        if self.copy_future is not None and not self.copy_future.done():
+            self.copy_future.result()
         d2h_event = torch.npu.Event(blocking=False, enable_timing=False)
 
-        block_ids = torch.unique(slot_mapping[slot_mapping != -1] // self.block_size)
-        max_valid_block = kv_cache[0].shape[0]
-        if self._fake_to_real_lut is None:
-            if len(block_ids) > 0 and block_ids.max().item() >= max_valid_block:
-                raise IndexError(
-                    f"block_ids {block_ids.tolist()} contain values >= kv_cache size {max_valid_block}. "
-                    f"This indicates a mismatch between slot_mapping and kv_cache dimensions."
-                    )
-
-        host_block_ids = block_ids
-        if self._fake_to_real_lut is not None:
-            block_ids_long = block_ids.long()
-            host_block_ids = self._fake_to_real_lut[block_ids_long.clamp(max=self._fake_to_real_lut.shape[0] - 1)]
+        block_ids = self._d2h_block_ids
+        host_block_ids = self._d2h_host_block_ids
+        if block_ids is None or host_block_ids is None:
+            raise RuntimeError("D2H block ids are not prepared. Call get_volatile_metadata before synchronize_d2h.")
 
         with torch.npu.stream(self.d2h_stream):
             self.d2h_stream.wait_event(kv_event)
@@ -877,7 +885,7 @@ class PrefillOmniCache(BaseOmniCache):
             host_block_ids, layer_idx, d2h_event, tensor_indices
         )
         return d2h_event
-    
+
     def _padding_kv_cache(self, tensor):
         result = torch.zeros((self.sum_total_len, *tensor.shape[1:]), dtype=tensor.dtype, device = tensor.device)
         result[self.query_mask] = tensor[:self.sum_query_len]

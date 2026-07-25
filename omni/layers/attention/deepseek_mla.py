@@ -496,9 +496,10 @@ class DeepseekMLA(nn.Module):
             self.scale = self.scale * mscale * mscale
 
         self.is_mla_prolog_init = False
+        self.mla_prolog_mtp_init_flag = 0
 
-        cur_vllm_config = get_current_vllm_config()
-        self.enable_graph_mode = (cur_vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
+        self.cur_vllm_config = get_current_vllm_config()
+        self.enable_graph_mode = (self.cur_vllm_config.npu_compilation_config.level > CompilationLevel.NO_COMPILATION and supports_dynamo())
 
         self.attn_mask = ~torch.tril(
             torch.ones((2048, 2048), dtype=torch.bool, device=current_platform.device_type)
@@ -560,7 +561,7 @@ class DeepseekMLA(nn.Module):
             self.W_UK = self.W_UK.permute(1, 2, 0)
             self.W_UV = self.W_UV.transpose(0, 1)
             self.is_init = False
-            self.num_speculative_tokens = 0 if not cur_vllm_config.speculative_config or not model_extra_config.operator_opt_config.mtp_remove_redundant_kv else cur_vllm_config.speculative_config.num_speculative_tokens
+            self.num_speculative_tokens = 0 if not self.cur_vllm_config.speculative_config or not model_extra_config.operator_opt_config.mtp_remove_redundant_kv else self.cur_vllm_config.speculative_config.num_speculative_tokens
             self.norm_res = {}
             self.actual_seq_lengths = {}
             for batch_size in model_extra_config.task_config.decode_gear_list:
@@ -579,6 +580,10 @@ class DeepseekMLA(nn.Module):
         self.stream1 = torch.npu.Stream() if model_extra_config.operator_opt_config.enable_mla_prefill_multistream else None
 
     def _get_base_skip_topk(self, config: PretrainedConfig) -> bool:
+        num_hidden_layers = getattr(config, "num_hidden_layers", None)
+        if num_hidden_layers is not None and self.layer_idx >= num_hidden_layers:
+            return False
+
         index_topk_pattern = getattr(config, "index_topk_pattern", None)
         if index_topk_pattern is not None:
             if 0 <= self.layer_idx < len(index_topk_pattern):
@@ -730,13 +735,17 @@ class DeepseekMLA(nn.Module):
             output = self._forward_decode(positions, hidden_states, kv_cache, attn_metadata)
         if model_extra_config.operator_opt_config.use_mlaprolog and not self.is_mla_prolog_init:
             self.is_mla_prolog_init = True
-            if model_extra_config.parall_config.attn_sp_size > 1:
-                self.q_a_proj_weight_copy = self._process_hybrid_mla_prolog_weight(self.q_a_proj.weight)
-                self.kv_a_proj_with_mqa_weight_copy = self._process_hybrid_mla_prolog_weight(self.kv_a_proj_with_mqa.weight)
-            else:
-                self.q_a_proj.weight = self._process_mla_prolog_weight(self.q_a_proj.weight)
-                self.q_b_proj.weight = self._process_mla_prolog_weight(self.q_b_proj.weight)
-                self.kv_a_proj_with_mqa.weight = self._process_mla_prolog_weight(self.kv_a_proj_with_mqa.weight)
+            if self.layer_idx >= self.num_hidden_layers:
+                self.mla_prolog_mtp_init_flag += 1
+                self.is_mla_prolog_init = (self.mla_prolog_mtp_init_flag == self.cur_vllm_config.speculative_config.num_speculative_tokens)
+            if self.is_mla_prolog_init:
+                if model_extra_config.parall_config.attn_sp_size > 1:
+                    self.q_a_proj_weight_copy = self._process_hybrid_mla_prolog_weight(self.q_a_proj.weight)
+                    self.kv_a_proj_with_mqa_weight_copy = self._process_hybrid_mla_prolog_weight(self.kv_a_proj_with_mqa.weight)
+                else:
+                    self.q_a_proj.weight = self._process_mla_prolog_weight(self.q_a_proj.weight)
+                    self.q_b_proj.weight = self._process_mla_prolog_weight(self.q_b_proj.weight)
+                    self.kv_a_proj_with_mqa.weight = self._process_mla_prolog_weight(self.kv_a_proj_with_mqa.weight)
         return output
 
     def _process_mla_prolog_weight(self, weight):

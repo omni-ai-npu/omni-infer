@@ -291,7 +291,10 @@ class PostDrafter(EagleProposer):
                                 if attn_state == AscendAttentionState.DecodeOnly:
                                     previous_hidden_states[last_accepted_index] = next_hidden_states[last_accepted_index]
                                 else: # prefill
-                                    previous_hidden_states[sample_indices] = next_hidden_states[sample_indices]
+                                    if next_hidden_states.shape[0] == sample_indices.shape[0]:
+                                        previous_hidden_states[sample_indices] = next_hidden_states
+                                    else:
+                                        previous_hidden_states[sample_indices] = next_hidden_states[sample_indices]
 
                 finally:
                     if share_mtp_indices:

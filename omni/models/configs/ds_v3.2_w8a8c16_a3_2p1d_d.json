@@ -13,7 +13,7 @@
         "unquant_bmm_nz": true,
         "decode_moe_dispatch_combine": true,
         "use_super_kernel": false,
-        "use_mlaprolog": true,
+        "use_mlaprolog": false,
         "cast_w2_scale_f32": true,
         "control_accept_rate": -1,
         "use_prefetch": true,
