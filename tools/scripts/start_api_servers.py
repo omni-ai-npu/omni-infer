@@ -206,7 +206,8 @@ def start_single_node_api_servers(
         ]
         if distributed_executor_backend is not None and distributed_executor_backend != "None":
             cmd.extend(["--distributed-executor-backend", str(distributed_executor_backend)])
-        if os.getenv('ROLE', 'prefill') == 'decode' and total_dp_size > 1:
+        pd_role = os.getenv("OMNI_PD_ROLE", os.getenv("ROLE", "prefill"))
+        if pd_role == "decode" and total_dp_size > 1:
             cmd.extend([
                 "--data-parallel-size", str(total_dp_size), # one engine core for one dp
                 "--data-parallel-rank", str(rank + server_offset // tp),
@@ -372,4 +373,3 @@ if __name__ == "__main__":
                 break
     except KeyboardInterrupt:
         signal_handler(signal.SIGINT, None)
-        

@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: run_docker
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: deploy_code
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: set_topology
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: stop_server
+  tags: stop_server
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: manage_mooncake
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: run_server
+- ansible.builtin.import_tasks: prepare_nodes.yml
+  tags:
+    - never
+    - add_node
+    - add_node_with_sync_code
+- ansible.builtin.import_tasks: sync_node_code.yml
+  tags:
+    - never
+    - add_node_with_sync_code
+- ansible.builtin.import_tasks: activate_nodes.yml
+  tags:
+    - never
+    - add_node
+    - add_node_with_sync_code
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: bind_cpus
+  tags:
+    - run_server
+    - add_node
+    - delete_node
+    - add_node_with_sync_code
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: run_proxy
+
+- name: Refresh Proxy as part of the elastic server workflow.
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: run_proxy
+    apply:
+      tags: run_server
+  when: >-
+    (
+      run_server_common_profile_defaults
+      | combine(run_server_common_profile, recursive=true)
+    ).restart_proxy | bool
+  tags:
+    - never
+    - run_server
+
+- ansible.builtin.import_tasks: reload_proxy.yml
+- ansible.builtin.import_tasks: delete_nodes.yml
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: fetch_logs

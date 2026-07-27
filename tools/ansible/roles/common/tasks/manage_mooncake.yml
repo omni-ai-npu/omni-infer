@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: Set mooncake & etcd configuration.
+  ansible.builtin.set_fact:
+    ETCD_IP: "{{ hostvars[groups['C'][0]]['ansible_host'] }}"
+    ETCD_PORT: "{{ etcd_port }}"
+    MOONCAKE_MASTER_IP: "{{ hostvars[groups['C'][0]]['ansible_host'] }}"
+    MOONCAKE_MASTER_PORT: "{{ mooncake_master_port }}"
+    MOONCAKE_METRICS_PORT: "{{ mooncake_metrics_port }}"
+    PROXY_PORT: "{{ proxy_port }}"
+  when: "('P' in group_names or 'D' in group_names or 'C' in group_names) and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
+  tags:
+    - stop_server
+    - run_server
+
+- name: Kill Mooncake master pod.
+  ansible.builtin.command: /bin/bash -c "kill -9 $(netstat -tulpn | grep :{{ MOONCAKE_MASTER_PORT }} | awk '{print $7}' | grep -oP '\d+')"
+  failed_when: false
+  when: "'C' in group_names and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
+  tags:
+    - stop_server
+    - run_server
+
+- name: Kill etcd pod.
+  ansible.builtin.command: /bin/bash -c "kill -9 $(netstat -tulpn | grep :{{ ETCD_PORT }} | awk '{print $7}' | grep -oP '\d+')"
+  failed_when: false
+  when: "'C' in group_names and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
+  tags:
+    - stop_server
+    - run_server
+
+- name: Wait after stopping Mooncake processes.
+  ansible.builtin.pause:
+    seconds: "{{ resolved_mooncake_profile.wait_seconds }}"
+  vars:
+    resolved_mooncake_profile: >-
+      {{ mooncake_profile_defaults | combine(mooncake_profile, recursive=true) }}
+  when:
+    - resolved_mooncake_profile.wait_seconds | int > 0
+    - "(NODE_IP_LIST | default('') | string).split(',') | length == 1"
+  tags: stop_server
+
+- name: Generate a mooncake config json.
+  ansible.builtin.copy:
+    content: "{{ generate_mooncake_config_json }}"
+    dest: "$SCRIPTS_PATH/mooncake_config.json"
+    mode: '0750'
+  vars:
+    HOST_IP: "{{ ansible_host }}"
+    resolved_mooncake_profile: >-
+      {{ mooncake_profile_defaults | combine(mooncake_profile, recursive=true) }}
+  when:
+    - resolved_mooncake_profile.generate_config | bool
+    - "('P' in group_names or 'D' in group_names) and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
+  tags: run_server
+
+- name: Generate a lmcahce + mooncake config yaml.
+  ansible.builtin.copy:
+    content: "{{ generate_lmcache_mooncake_config_yml }}"
+    dest: "$SCRIPTS_PATH/lmcache_mooncake_config.yml"
+    mode: '0750'
+  vars:
+    resolved_mooncake_profile: >-
+      {{ mooncake_profile_defaults | combine(mooncake_profile, recursive=true) }}
+  when:
+    - resolved_mooncake_profile.generate_config | bool
+    - "('P' in group_names or 'D' in group_names) and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
+  tags: run_server
+
+- name: Run etcd for Mooncake.
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - -c
+      - "{{ docker_start_etcd_cmd }}"
+  environment:
+    DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+  vars:
+    resolved_mooncake_profile: >-
+      {{ mooncake_profile_defaults | combine(mooncake_profile, recursive=true) }}
+  when:
+    - resolved_mooncake_profile.start_services | bool
+    - >-
+      (
+        run_server_common_profile_defaults
+        | combine(run_server_common_profile, recursive=true)
+      ).kv_connector == 'LMCacheConnectorV1'
+    - "'C' in group_names and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
+  tags: run_server
+
+- name: Run master port of Mooncake.
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - -c
+      - "{{ docker_start_mooncake_master_cmd }}"
+  environment:
+    DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+  vars:
+    resolved_mooncake_profile: >-
+      {{ mooncake_profile_defaults | combine(mooncake_profile, recursive=true) }}
+  when:
+    - resolved_mooncake_profile.start_services | bool
+    - >-
+      (
+        run_server_common_profile_defaults
+        | combine(run_server_common_profile, recursive=true)
+      ).kv_connector == 'LMCacheConnectorV1'
+    - "'C' in group_names and etcd_port is defined and mooncake_master_port is defined and mooncake_metrics_port is defined"
+  tags: run_server

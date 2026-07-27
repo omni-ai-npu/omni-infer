@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: Resolve the proc_bind profile.
+  ansible.builtin.set_fact:
+    resolved_proc_bind_profile: >-
+      {{ proc_bind_profile_defaults | combine(proc_bind_profile, recursive=true) }}
+  tags: proc_bind
+
+- name: Wait for vLLM service to be ready in container D
+  ansible.builtin.shell:
+    cmd: |
+      timeout=300
+      while [ $timeout -gt 0 ]; do
+        if docker exec $DOCKER_NAME_D grep -q "Application startup complete" ${LOG_PATH}/{{ inventory_hostname }}/server_0.log; then
+          echo "Service ready"
+          exit 0
+        fi
+        sleep 20
+        timeout=$((timeout - 20))
+      done
+      echo "Timeout waiting for service" >&2
+      exit 1
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+    LOG_PATH: "{{ ansible_env.LOG_PATH }}"
+  when:
+    - "'D' in group_names"
+    - resolved_proc_bind_profile.enabled | bool
+  tags: proc_bind
+
+- name: Ensure bind_cpu.sh is executable in the container
+  ansible.builtin.shell:
+    cmd: docker exec $DOCKER_NAME_P chmod +x {{ container_workspace }}/omniinfer/tools/scripts/bind_cpu.sh
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  when: "'P' in group_names"
+  tags: proc_bind
+
+- name: Ensure bind_cpu.sh is executable in the container
+  ansible.builtin.shell:
+    cmd: docker exec $DOCKER_NAME_D chmod +x {{ container_workspace }}/omniinfer/tools/scripts/bind_cpu.sh
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  when: "'D' in group_names"
+  tags: proc_bind
+
+- name: Prefill cpu_pin
+  ansible.builtin.command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c {{ container_workspace }}/omniinfer/tools/scripts/bind_cpu.sh"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+    SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+    ROLE: "P"
+  become: true
+  when:
+    - "'P' in group_names"
+    - resolved_proc_bind_profile.enabled | bool
+  tags: proc_bind
+
+- name: Decode cpu_pin
+  ansible.builtin.command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c {{ container_workspace }}/omniinfer/tools/scripts/bind_cpu.sh"
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+    SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+    ROLE: "D"
+  become: true
+  when:
+    - "'D' in group_names"
+    - resolved_proc_bind_profile.enabled | bool
+  tags: proc_bind
