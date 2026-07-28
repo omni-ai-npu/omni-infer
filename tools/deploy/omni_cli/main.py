@@ -410,21 +410,6 @@ def _verify_and_fix_env_vars(
     else:
         print(f"{INFO} inventory at {inventory_path} has passed verification")
 
-
-
-def omni_ranktable(inventory):
-    cur_dir = os.path.dirname(__file__)
-    cmd = ["ansible-playbook", "-i", str(inventory), 
-           f"{cur_dir}/configs/generate_ranktable.yml"]
-    
-    result = subprocess.Popen(cmd, text=True)
-    result.wait()
-
-    if result.returncode != 0:
-        raise subprocess.CalledProcessError(
-            result.returncode, cmd, output=result.stdout, stderr=result.stderr
-        )
-
 def maybe_start_ray(is_master, pod_info, role, log_path):
 
     if role == "decode":
@@ -548,8 +533,8 @@ def omni_cli_start(
 
         start_server_cmd = f"""
 # Exec the command
-cd {_double_quotes(code_path)}/tools/scripts
-echo "cd {_double_quotes(code_path)}/tools/scripts" >> {log_path}/omni_cli.log
+cd {_double_quotes(code_path)}/tools/deploy/start_server_common
+echo "cd {_double_quotes(code_path)}/tools/deploy/start_server_common" >> {log_path}/omni_cli.log
 {python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &
 echo "{python_bin} {entry_py} {args_line} >> {log_path}/omni_cli.log 2>&1 &" >> {log_path}/omni_cli.log
 """

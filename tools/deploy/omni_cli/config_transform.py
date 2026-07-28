@@ -345,7 +345,7 @@ def transform_deployment_config(config_path):
 
         # update the omni_infer_server.yml
         update_yml_file(logger, playbookArges, \
-            f"{input_data['services']['code_path']}/omniinfer/tools/ansible/template/omni_infer_server_template.yml")
+            f"{input_data['services']['code_path']}/omniinfer/tools/deploy/ansible/template/omni_infer_server_template.yml")
 
         # Write to output file
         with open(f'{os.getcwd()}/omni_infer_inventory.yml', 'w') as f:

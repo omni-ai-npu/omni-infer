@@ -43,7 +43,7 @@ spec:
                 - command:
                     - /bin/sh
                     - '-c'
-                    - bash /workspace/omniinfer/tools/k8s/start.sh --port=8080
+                    - bash /workspace/omniinfer/tools/deploy/k8s/start.sh --port=8080
                   image: "REPOSITORY:TAG"
                   imagePullPolicy: Never
                   lifecycle:
@@ -52,13 +52,13 @@ spec:
                         command:
                           - /bin/bash
                           - '-c'
-                          - sh /workspace/omniinfer/tools/k8s/pre_stop.sh --business-check-timeout=3540
+                          - sh /workspace/omniinfer/tools/deploy/k8s/pre_stop.sh --business-check-timeout=3540
                   livenessProbe:
                     exec:
                       command:
                         - sh
                         - '-ec'
-                        - sh /workspace/omniinfer/tools/k8s/health.sh liveness
+                        - sh /workspace/omniinfer/tools/deploy/k8s/health.sh liveness
                     failureThreshold: 6
                     initialDelaySeconds: 120
                     periodSeconds: 10
@@ -69,7 +69,7 @@ spec:
                       command:
                         - sh
                         - '-ec'
-                        - sh /workspace/omniinfer/tools/k8s/health.sh readiness
+                        - sh /workspace/omniinfer/tools/deploy/k8s/health.sh readiness
                     failureThreshold: 3
                     initialDelaySeconds: 120
                     periodSeconds: 10
@@ -88,7 +88,7 @@ spec:
                       command:
                         - sh
                         - '-ec'
-                        - sh /workspace/omniinfer/tools/k8s/health.sh startup
+                        - sh /workspace/omniinfer/tools/deploy/k8s/health.sh startup
                     failureThreshold: 720
                     initialDelaySeconds: 120
                     periodSeconds: 10
@@ -139,7 +139,7 @@ spec:
                 - command:
                     - /bin/sh
                     - '-c'
-                    - bash /workspace/omniinfer/tools/k8s/start.sh --port=8080 --served-model-name=deepseek --enable-logging-config=0 --model-path=/sfs/model/DeepSeek-R1-w8a8-fusion --gpu-util=0.85 --max-model-len=65536
+                    - bash /workspace/omniinfer/tools/deploy/k8s/start.sh --port=8080 --served-model-name=deepseek --enable-logging-config=0 --model-path=/sfs/model/DeepSeek-R1-w8a8-fusion --gpu-util=0.85 --max-model-len=65536
                   image: "REPOSITORY:TAG"
                   env:
                   - name: ASCEND_VISIBLE_DEVICES
@@ -153,13 +153,13 @@ spec:
                         command:
                           - /bin/bash
                           - '-c'
-                          - sh /workspace/omniinfer/tools/k8s/pre_stop.sh --business-check-timeout=3540
+                          - sh /workspace/omniinfer/tools/deploy/k8s/pre_stop.sh --business-check-timeout=3540
                   livenessProbe:
                     exec:
                       command:
                         - sh
                         - '-ec'
-                        - sh /workspace/omniinfer/tools/k8s/health.sh liveness
+                        - sh /workspace/omniinfer/tools/deploy/k8s/health.sh liveness
                     failureThreshold: 6
                     initialDelaySeconds: 120
                     periodSeconds: 10
@@ -181,7 +181,7 @@ spec:
                       command:
                         - sh
                         - '-ec'
-                        - sh /workspace/omniinfer/tools/k8s/health.sh startup
+                        - sh /workspace/omniinfer/tools/deploy/k8s/health.sh startup
                     failureThreshold: 720
                     initialDelaySeconds: 120
                     periodSeconds: 10
@@ -271,7 +271,7 @@ spec:
                 - command:
                     - /bin/sh
                     - '-c'
-                    - bash /workspace/omniinfer/tools/k8s/start.sh --port=8080 --served-model-name=deepseek --enable-logging-config=0 --model-path=/sfs/model/DeepSeek-R1-w8a8-fusion --gpu-util=0.88 --max-model-len=65536
+                    - bash /workspace/omniinfer/tools/deploy/k8s/start.sh --port=8080 --served-model-name=deepseek --enable-logging-config=0 --model-path=/sfs/model/DeepSeek-R1-w8a8-fusion --gpu-util=0.88 --max-model-len=65536
                   image: "REPOSITORY:TAG"
                   env:
                   - name: ASCEND_VISIBLE_DEVICES
@@ -285,13 +285,13 @@ spec:
                         command:
                           - /bin/bash
                           - '-c'
-                          - sh /workspace/omniinfer/tools/k8s/pre_stop.sh --business-check-timeout=3540
+                          - sh /workspace/omniinfer/tools/deploy/k8s/pre_stop.sh --business-check-timeout=3540
                   livenessProbe:
                     exec:
                       command:
                         - sh
                         - '-ec'
-                        - sh /workspace/omniinfer/tools/k8s/health.sh liveness
+                        - sh /workspace/omniinfer/tools/deploy/k8s/health.sh liveness
                     failureThreshold: 6
                     initialDelaySeconds: 120
                     periodSeconds: 10
@@ -313,7 +313,7 @@ spec:
                       command:
                         - sh
                         - '-ec'
-                        - sh /workspace/omniinfer/tools/k8s/health.sh startup
+                        - sh /workspace/omniinfer/tools/deploy/k8s/health.sh startup
                     failureThreshold: 720
                     initialDelaySeconds: 120
                     periodSeconds: 10

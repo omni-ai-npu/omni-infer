@@ -38,9 +38,9 @@
 - `volumes`：该字段下的`hostPath`对应挂载到容器内的宿主机路径。
 
 ### 服务拉起配置的传入
-k8s服务的拉起主要通过`start.sh`执行，拉起的环境变量配置也由该脚本传入。大部分环境变量都在`omniinfer/tools/k8s/config/env`路径下的脚本文件赋默认值，传入参数时，会覆盖这些默认值。例如：
+k8s服务的拉起主要通过`start.sh`执行，拉起的环境变量配置也由该脚本传入。大部分环境变量都在`omniinfer/tools/deploy/k8s/config/env`路径下的脚本文件赋默认值，传入参数时，会覆盖这些默认值。例如：
 ```bash
-bash /workspace/omniinfer/tools/k8s/start.sh --port=8080 --served-model-name=deepseek --enable-logging-config=0 --model-path=/sfs/model/DeepSeek-R1-w8a8-fusion --gpu-util=0.85 --max-model-len=65536
+bash /workspace/omniinfer/tools/deploy/k8s/start.sh --port=8080 --served-model-name=deepseek --enable-logging-config=0 --model-path=/sfs/model/DeepSeek-R1-w8a8-fusion --gpu-util=0.85 --max-model-len=65536
 ```
 ### 执行服务拉起命令
 修改好omni_kubeinfer.yaml配置文件后，就可以执行k8s的一些命令来拉起服务和查看运行状态。常用命令如下：
