@@ -1,0 +1,383 @@
+kind: KubeInfer
+apiVersion: infer.modelarts.huaweicloud/v1
+metadata:
+  annotations:
+    app.modelarts.huaweicloud/networkPolicy: 'true'
+  labels:
+    app.modelarts.huaweicloud/instanceGroupId: dcc9c9cc-1394-4dd6-9746-e5d9b8704c68
+    app.modelarts.huaweicloud/serviceId: 7b794120-fd0a-4902-8b18-e5d9b8704c68
+    app.modelarts.huaweicloud/serviceName: dpsk-v3_2-omni-a3-03
+  name: infer-dcc9c9cc-1394-4dd6-9746-e5d9b8704c68
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxSurge: 0%
+      maxUnavailable: 34%
+    type: InstanceRollingUpdate
+  template:
+    metadata:
+      labels:
+        app.modelarts.huaweicloud/kubeInfer: infer-dcc9c9cc-1394-4dd6-9746-e5d9b8704c68
+    spec:
+      roles:
+        - recoveryPolicy:
+            restart: Instance
+            type: Restart
+          replicas: 1
+          strategy:
+            rollingUpdate:
+              maxSurge: 1
+              maxUnavailable: 0
+            type: RollingUpdate
+          template:
+            metadata:
+              labels:
+                modelarts-infer-npu-reset-enable: 'true'
+            spec:
+              affinity: {}
+              nodeSelector:
+                nodes-name-prefix: devserver-hps-a0f74d4d-g00615224
+              containers:
+                - command:
+                    - /bin/sh
+                    - '-c'
+                    - bash /workspace/omniinfer/tools/k8s/start.sh --port=8080
+                  image: "REPOSITORY:TAG"
+                  imagePullPolicy: Never
+                  lifecycle:
+                    preStop:
+                      exec:
+                        command:
+                          - /bin/bash
+                          - '-c'
+                          - sh /workspace/omniinfer/tools/k8s/pre_stop.sh --business-check-timeout=3540
+                  livenessProbe:
+                    exec:
+                      command:
+                        - sh
+                        - '-ec'
+                        - sh /workspace/omniinfer/tools/k8s/health.sh liveness
+                    failureThreshold: 6
+                    initialDelaySeconds: 120
+                    periodSeconds: 10
+                    timeoutSeconds: 30
+                  name: infer-7b794120-fd0a-4902-8b18-e5d9b8704c68
+                  readinessProbe:
+                    exec:
+                      command:
+                        - sh
+                        - '-ec'
+                        - sh /workspace/omniinfer/tools/k8s/health.sh readiness
+                    failureThreshold: 3
+                    initialDelaySeconds: 120
+                    periodSeconds: 10
+                    timeoutSeconds: 30
+                  resources:
+                    limits:
+                      cpu: '16'
+                      memory: "32Gi"
+                    requests:
+                      cpu: '16'
+                      memory: "32Gi"
+                  securityContext:
+                    capabilities: {}
+                  startupProbe:
+                    exec:
+                      command:
+                        - sh
+                        - '-ec'
+                        - sh /workspace/omniinfer/tools/k8s/health.sh startup
+                    failureThreshold: 720
+                    initialDelaySeconds: 120
+                    periodSeconds: 10
+                    timeoutSeconds: 30
+                  terminationMessagePath: /dev/termination-log
+                  terminationMessagePolicy: File
+                  volumeMounts:
+                    - mountPath: /dev/shm
+                      name: shm-volume
+                    - mountPath: /sfs/model/
+                      name: model-path
+                      readOnly: true
+              dnsPolicy: ClusterFirst
+              imagePullSecrets:
+                - name: default-secret
+              restartPolicy: Always
+              schedulerName: volcano
+              securityContext: {}
+              terminationGracePeriodSeconds: 3600
+              volumes:
+                - emptyDir:
+                    medium: Memory
+                    sizeLimit: 33554432k
+                  name: shm-volume
+                - hostPath:
+                    path: /data/models
+                    type: Directory
+                  name: model-path
+        - recoveryPolicy:
+            restart: Instance
+            type: Restart
+          replicas: 1
+          strategy:
+            rollingUpdate:
+              maxSurge: 1
+              maxUnavailable: 0
+            type: RollingUpdate
+          template:
+            metadata:
+              labels:
+                modelarts-infer-npu-reset-enable: 'true'
+            spec:
+              affinity:
+                podAffinity: {}
+              nodeSelector:
+                nodes-name-prefix: devserver-hps-a0f74d4d-g00615224 #label
+              containers:
+                - command:
+                    - /bin/sh
+                    - '-c'
+                    - bash /workspace/omniinfer/tools/k8s/start.sh --port=8080 --served-model-name=deepseek --enable-logging-config=0 --model-path=/sfs/model/DeepSeek-R1-w8a8-fusion --gpu-util=0.85 --max-model-len=65536
+                  image: "REPOSITORY:TAG"
+                  env:
+                  - name: ASCEND_VISIBLE_DEVICES
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.annotations['huawei.com/ascend-visible-devices']
+                  imagePullPolicy: Never
+                  lifecycle:
+                    preStop:
+                      exec:
+                        command:
+                          - /bin/bash
+                          - '-c'
+                          - sh /workspace/omniinfer/tools/k8s/pre_stop.sh --business-check-timeout=3540
+                  livenessProbe:
+                    exec:
+                      command:
+                        - sh
+                        - '-ec'
+                        - sh /workspace/omniinfer/tools/k8s/health.sh liveness
+                    failureThreshold: 6
+                    initialDelaySeconds: 120
+                    periodSeconds: 10
+                    timeoutSeconds: 30
+                  name: infer-7b794120-fd0a-4902-8b18-e5d9b8704c68
+                  resources:
+                    limits:
+                      cpu: "16"
+                      huawei.com/ascend-1980: '16'
+                      memory: 1073741824k
+                    requests:
+                      cpu: "16"
+                      huawei.com/ascend-1980: '16'
+                      memory: 1073741824k
+                  securityContext:
+                    capabilities: {}
+                  startupProbe:
+                    exec:
+                      command:
+                        - sh
+                        - '-ec'
+                        - sh /workspace/omniinfer/tools/k8s/health.sh startup
+                    failureThreshold: 720
+                    initialDelaySeconds: 120
+                    periodSeconds: 10
+                    timeoutSeconds: 30
+                  terminationMessagePath: /dev/termination-log
+                  terminationMessagePolicy: File
+                  volumeMounts:
+                    - mountPath: /dev/shm
+                      name: shm-volume
+                    - mountPath: /usr/local/Ascend/driver
+                      name: ascend-driver-path-pv
+                      readOnly: true
+                    - mountPath: /usr/local/sbin
+                      name: ascend-npu-smi-path-pv
+                      readOnly: true
+                    - mountPath: /etc/ascend_install.info
+                      name: ascend-install-info-path-pv
+                      readOnly: true
+                    - mountPath: /sfs/model/
+                      name: model-path
+                      readOnly: true
+                    - mountPath: /etc/hccn.conf
+                      name: hccn-file
+                    - mountPath: /usr/local/dcmi
+                      name: dcmi-path
+              dnsPolicy: ClusterFirst
+              imagePullSecrets:
+                - name: default-secret
+              restartPolicy: Always
+              schedulerName: volcano
+              securityContext: {}
+              terminationGracePeriodSeconds: 3600
+              volumes:
+                - emptyDir:
+                    medium: Memory
+                    sizeLimit: 536870912k
+                  name: shm-volume
+                - hostPath:
+                    path: /usr/local/Ascend/driver
+                    type: Directory
+                  name: ascend-driver-path-pv
+                - hostPath:
+                    path: /usr/local/sbin
+                    type: Directory
+                  name: ascend-npu-smi-path-pv
+                - hostPath:
+                    path: /etc/ascend_install.info
+                    type: File
+                  name: ascend-install-info-path-pv
+                - hostPath:
+                    path: /etc/hccn.conf
+                    type: File
+                  name: hccn-file
+                - hostPath:
+                    path: /usr/local/dcmi
+                    type: Directory
+                  name: dcmi-path
+                - hostPath:
+                    path: /sbin
+                  name: init-container-host-cache-sbin-volume
+                - hostPath:
+                    path: /proc/1/ns/net
+                  name: init-container-host-cache-network-volume
+                - hostPath:
+                    path: /data/models
+                    type: Directory
+                  name: model-path
+        - recoveryPolicy:
+            restart: Instance
+            type: Restart
+          replicas: 2
+          strategy:
+            rollingUpdate:
+              maxSurge: 1
+              maxUnavailable: 0
+            type: RollingUpdate
+          template:
+            metadata:
+              labels:
+                modelarts-infer-npu-reset-enable: 'true'
+            spec:
+              affinity:
+                podAffinity: {}
+              nodeSelector:
+                nodes-name-prefix: devserver-hps-a0f74d4d-g00615224
+              containers:
+                - command:
+                    - /bin/sh
+                    - '-c'
+                    - bash /workspace/omniinfer/tools/k8s/start.sh --port=8080 --served-model-name=deepseek --enable-logging-config=0 --model-path=/sfs/model/DeepSeek-R1-w8a8-fusion --gpu-util=0.88 --max-model-len=65536
+                  image: "REPOSITORY:TAG"
+                  env:
+                  - name: ASCEND_VISIBLE_DEVICES
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.annotations['huawei.com/ascend-visible-devices']
+                  imagePullPolicy: IfNotPresent
+                  lifecycle:
+                    preStop:
+                      exec:
+                        command:
+                          - /bin/bash
+                          - '-c'
+                          - sh /workspace/omniinfer/tools/k8s/pre_stop.sh --business-check-timeout=3540
+                  livenessProbe:
+                    exec:
+                      command:
+                        - sh
+                        - '-ec'
+                        - sh /workspace/omniinfer/tools/k8s/health.sh liveness
+                    failureThreshold: 6
+                    initialDelaySeconds: 120
+                    periodSeconds: 10
+                    timeoutSeconds: 30
+                  name: infer-7b794120-fd0a-4902-8b18-e5d9b8704c68
+                  resources:
+                    limits:
+                      cpu: "16"
+                      huawei.com/ascend-1980: '16'
+                      memory: 1073741824k
+                    requests:
+                      cpu: "16"
+                      huawei.com/ascend-1980: '16'
+                      memory: 1073741824k
+                  securityContext:
+                    capabilities: {}
+                  startupProbe:
+                    exec:
+                      command:
+                        - sh
+                        - '-ec'
+                        - sh /workspace/omniinfer/tools/k8s/health.sh startup
+                    failureThreshold: 720
+                    initialDelaySeconds: 120
+                    periodSeconds: 10
+                    timeoutSeconds: 30
+                  terminationMessagePath: /dev/termination-log
+                  terminationMessagePolicy: File
+                  volumeMounts:
+                    - mountPath: /dev/shm
+                      name: shm-volume
+                    - mountPath: /usr/local/Ascend/driver
+                      name: ascend-driver-path-pv
+                      readOnly: true
+                    - mountPath: /usr/local/sbin
+                      name: ascend-npu-smi-path-pv
+                      readOnly: true
+                    - mountPath: /etc/ascend_install.info
+                      name: ascend-install-info-path-pv
+                      readOnly: true
+                    - mountPath: /sfs/model
+                      name: model-path
+                      readOnly: true
+                    - mountPath: /etc/hccn.conf
+                      name: hccn-file
+                    - mountPath: /usr/local/dcmi
+                      name: dcmi-path
+              dnsPolicy: ClusterFirst
+              imagePullSecrets:
+                - name: default-secret
+              restartPolicy: Always
+              schedulerName: volcano
+              securityContext: {}
+              terminationGracePeriodSeconds: 3600
+              volumes:
+                - emptyDir:
+                    medium: Memory
+                    sizeLimit: 536870912k
+                  name: shm-volume
+                - hostPath:
+                    path: /usr/local/Ascend/driver
+                    type: Directory
+                  name: ascend-driver-path-pv
+                - hostPath:
+                    path: /usr/local/sbin
+                    type: Directory
+                  name: ascend-npu-smi-path-pv
+                - hostPath:
+                    path: /etc/ascend_install.info
+                    type: File
+                  name: ascend-install-info-path-pv
+                - hostPath:
+                    path: /sbin
+                  name: init-container-host-cache-sbin-volume
+                - hostPath:
+                    path: /proc/1/ns/net
+                  name: init-container-host-cache-network-volume
+                - hostPath:
+                    path: /data/models
+                    type: Directory
+                  name: model-path
+                - hostPath:
+                    path: /etc/hccn.conf
+                    type: File
+                  name: hccn-file
+                - hostPath:
+                    path: /usr/local/dcmi
+                    type: Directory
+                  name: dcmi-path

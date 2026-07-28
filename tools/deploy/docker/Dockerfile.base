@@ -1,0 +1,171 @@
+# The Dockerfile is used to construct base image.
+
+ARG BASE_IMAGE
+#################### PYTHON BUILD IMAGE ####################
+FROM ${BASE_IMAGE} AS tmp_base
+ARG ARCHITECTURE
+COPY openEuler.repo /etc/yum.repos.d/openEuler.repo
+RUN sed -i "s/aarch64/${ARCHITECTURE}/g" /etc/yum.repos.d/openEuler.repo
+
+FROM tmp_base AS builder
+
+ARG HTTP_PROXY
+ARG PYTHON_VERSION
+
+# Install tools for build python
+RUN export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    yum -y install gcc g++ make wget libffi-devel zlib-devel bzip2-devel openssl-devel ncurses-devel sqlite-devel readline-devel tk-devel findutils cronie crontabs logrotate zeromq zeromq-devel boost-devel
+
+COPY install_python.sh /tmp/install_python.sh
+RUN chmod +x /tmp/install_python.sh && \
+    export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    /tmp/install_python.sh /usr/local ${PYTHON_VERSION}
+#################### PYTHON BUILD IMAGE ####################
+
+#################### BASE IMAGE ####################
+FROM tmp_base AS base
+
+ARG HTTP_PROXY
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+
+USER root
+WORKDIR /workspace
+
+COPY --from=builder /usr/local /usr/local/
+COPY ./copy_data/msgpack-c-6.1.0.tar.gz /workspace/
+ARG PYTHON_VERSION
+# Install python and packages
+RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/python${PYTHON_VERSION%.*}.conf && \
+    ln -sf /usr/local/bin/python${PYTHON_VERSION%.*} /usr/bin/python && \
+    ln -sf /usr/local/bin/pip3 /usr/bin/pip && \
+    ln -sf /usr/local/bin/pip3 /usr/bin/pip3 && \
+    export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    yum -y install zeromq findutils zeromq-devel boost-devel && \
+    python -m pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --upgrade pip==25.1.1 && \
+    pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --no-cache-dir --upgrade \
+        setuptools requests wheel && \
+    pip cache purge && \
+    echo "export PYTHONPATH=/usr/local/lib/python${PYTHON_VERSION%.*}/site-packages/:$PYTHONPATH" >> ~/.bashrc;
+
+RUN export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    yum install -y make cmake gcc-c++ gcc && \
+    tar -zxf msgpack-c-6.1.0.tar.gz && \
+    cd msgpack-c-6.1.0 && \
+    mkdir build && cd build && \
+    cmake .. -DMSGPACK_BUILD_EXAMPLES=OFF -DMSGPACK_BUILD_TESTS=OFF -DMSGPACK_USE_BOOST=OFF -DCMAKE_INSTALL_PREFIX=/usr && \
+    make -j8 && make install && \
+    rm -rf /workspace/msgpack-c-6.1.0 /workspace/msgpack-c-6.1.0.tar.gz 
+#################### BASE IMAGE ####################
+
+#################### CANN Pytorch IMAGE ####################
+FROM base AS cann_pytorch
+
+ARG HTTP_PROXY
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+ARG CANN_INSTALL_MODE
+ARG ARCHITECTURE
+
+RUN mkdir -p /workspace/copy_data && \
+    mkdir -p /usr/local/Ascend/driver
+
+# Copy Ascend files
+COPY copy_data /workspace/copy_data/
+
+# Install PyTorch according to architecture
+RUN cd /workspace/copy_data && \
+    export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    if [ "$ARCHITECTURE" = "x86_64" ]; then \
+        echo "Building for x86_64, installing torch and torch_npu from local WHLs..."; \
+        TORCH_FILE=$(find . -type f -name "torch-*x86_64.whl" | head -n 1); \
+        TORCHNPU_FILE=$(find . -maxdepth 1 -type f -name "torch_npu-*x86_64.whl" | head -n 1); \
+        TORCHVISION_FILE=$(find . -maxdepth 1 -type f -name "torchvision-*x86_64.whl" | head -n 1); \
+        pip install --no-cache-dir "$TORCH_FILE" "$TORCHNPU_FILE" "$TORCHVISION_FILE";  \
+    elif [ "$ARCHITECTURE" = "aarch64" ]; then \
+        echo "Building for aarch64, installing torch and torch_npu from local WHLs..."; \
+        TORCHNPU_FILE=$(find . -maxdepth 1 -type f -name "torch_npu-*aarch64.whl" | head -n 1); \
+        TORCHVISION_FILE=$(find . -maxdepth 1 -type f -name "torchvision-*aarch64.whl" | head -n 1); \
+        pip install --no-cache-dir "$TORCHNPU_FILE" "$TORCHVISION_FILE"; \
+    else \
+        echo "ERROR: Unsupported ARCHITECTURE='$ARCHITECTURE'. Only 'aarch64' or 'x86_64' allowed."; \
+        exit 1; \
+    fi && \
+    pip cache purge && \
+    yum -y install sudo util-linux diffutils hostname net-tools dos2unix iproute wget vim  && \
+    yum clean all && \
+    rm -rf /var/cache/yum
+
+
+    # Install CANN packages
+RUN cd /workspace/copy_data && \
+    chmod +x *.run && \
+    if [ "$CANN_INSTALL_MODE" = "split" ]; then \
+    FWKPLUGIN=$(find ./ -name "tfadapter*" -type f) && \
+    if [ -f "$FWKPLUGIN" ]; then \
+    tar -zxvf /workspace/copy_data/tfadapter*; \
+    pip install fwkplugin/bin/npu_*; \
+    fi; \
+    if [ -f ./CANN-runtime-*.run ]; then \
+    echo y | ./CANN-runtime-*.run --full; \
+    fi; \
+    if [ -f ./CANN-opp-*.run ]; then \
+    echo y | ./CANN-opp-*.run --full; \
+    fi; \
+    if [ -f ./CANN-toolkit-*.run ]; then \
+    echo y | ./CANN-toolkit-*.run --full --pylocal; \
+    fi; \
+    if [ -f ./CANN-compiler-*.run ]; then \
+    echo y | ./CANN-compiler-*.run --full --pylocal; \
+    fi; \
+    if [ -f ./CANN-hccl-*.run ]; then \
+    echo y | ./CANN-hccl-*.run --full --pylocal; \
+    fi; \
+    if [ -f ./CANN-aoe-*.run ]; then \
+    echo y | ./CANN-aoe-*.run --full; \
+    fi; \
+    if [ -f ./Ascend*-opp_kernel-*.run ]; then \
+    echo y | ./Ascend*-opp_kernel-*.run --full; \
+    fi && \
+    echo "export ASCEND_TOOLKIT_HOME=/usr/local/Ascend/latest" >> ~/.bashrc && \
+    echo "source /usr/local/Ascend/latest/bin/setenv.bash" >> ~/.bashrc && \
+    source ~/.bashrc && \
+    if [ -f ./Ascend-cann-nnal*.run ]; then \
+    echo Y | ./Ascend-cann-nnal*.run --install && \
+    echo "source /usr/local/Ascend/nnal/atb/set_env.sh" >> ~/.bashrc; \
+    fi && \
+    echo 'export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/driver:$LD_LIBRARY_PATH' >> ~/.bashrc && \
+    echo 'export HCCL_OP_RETRY_ENABLE="L0:0, L1:0, L2:0"' >> ~/.bashrc && \
+    source ~/.bashrc; \
+    else \
+    TOOLKITFILE=$(find ./ -name "Ascend-cann-toolkit_*.run" -type f) && \
+    echo y | ./$TOOLKITFILE --install && \
+    echo 'source /usr/local/Ascend/ascend-toolkit/set_env.sh' >> ~/.bashrc && \
+    source ~/.bashrc && \
+    KERNELFILE=$(find ./ -name "A*-cann-kernels*.run" -type f) && \
+    echo y | ./$KERNELFILE --install && \
+    NNALFILE=$(find ./ -name "Ascend-cann-nnal*.run" -type f) && \
+    if [ -n "$NNALFILE" ]; then \
+        echo "Found NNAL package: $NNALFILE, installing..." && \
+        echo y | ./$NNALFILE --install && \
+        echo "source /usr/local/Ascend/nnal/atb/set_env.sh" >> ~/.bashrc \
+    else \
+        echo "NNAL package not found, skipping installation."; \
+    fi && \
+    if [ -f /usr/local/Ascend/driver/bin/setenv.bash ]; then \
+        echo 'source /usr/local/Ascend/driver/bin/setenv.bash' >> ~/.bashrc; \
+    else \
+        DRIVER_LIB_PATH="/usr/local/Ascend/driver/lib64/driver" && \
+        TOOLKIT_RUNTIME_LIB_PATH="/usr/local/Ascend/ascend-toolkit/latest/runtime/lib64/stub" && \
+        echo "export LD_LIBRARY_PATH=$DRIVER_LIB_PATH:\$LD_LIBRARY_PATH:$TOOLKIT_RUNTIME_LIB_PATH/" >> ~/.bashrc; \
+    fi \
+    fi && \
+    if [ -n "$EXECUTE_CMD" ]; then sh -c "$EXECUTE_CMD"; fi && \
+    sed -i '/TMOUT=/d' /etc/bashrc && \
+    rm -rf /workspace/copy_data
+#################### CANN Pytorch IMAGE ####################
