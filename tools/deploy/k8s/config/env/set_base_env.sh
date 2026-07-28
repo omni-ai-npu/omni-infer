@@ -26,7 +26,7 @@ set_env_from_arg_or_default "RAY_LOG_CLEANER_LOG_PATH" "--ray-log-cleaner-log-pa
 set_env_from_arg_or_default "RAY_LOG_DIR" "--ray-log-dir" "/tmp/ray" "$@"
 set_env_from_arg_or_default "RAY_LOG_TO_KEEP_IN_DAY" "--ray-log-to-keep-in-day" 7 "$@"
 set_env_from_arg_or_default "RAY_PORT" "--ray-port" 6379 "$@"
-set_env_from_arg_or_default "SCRIPT_DIR" "--script-dir" "${CODE_PATH}/tools/deploy/start_server_common" "$@"
+set_env_from_arg_or_default "SCRIPT_DIR" "--script-dir" "${CODE_PATH}/tools/deploy/start_server" "$@"
 
 # 启动参数使用的环境变量
 set_env_from_arg_or_default "SERVED_MODEL_NAME" "--served-model-name" "DeepSeek" "$@"
