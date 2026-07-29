@@ -1,0 +1,39 @@
+{
+    "model_parallel_config": {
+        "layer_parallel_config": {
+            "self_attn.o_proj": {
+                "tp_size_or_ranks": 1,
+                "x_transform": {
+                    "type": "None"
+                },
+                "y_transform": {
+                    "type": "AllReduce",
+                    "tp_size_or_ranks": 1
+                }
+            },
+            "mlp.gate_up_proj": {
+                "tp_size_or_ranks": 1
+            },
+            "mlp.down_proj": {
+                "tp_size_or_ranks": 1,
+                "x_transform": {
+                    "type": "None"
+                },
+                "y_transform": {
+                    "type": "AllReduce",
+                    "tp_size_or_ranks": 1
+                }
+            }
+        }
+    },
+    "operator_optimization_config": {
+        "use_aicpu_fa_tiling": true,
+        "use_noncontiguous_kv": true,
+        "enable_prefill_mla_absorb_pa": false,
+        "enable_kv_rmsnorm_rope_cache": true,
+        "decode_moe_dispatch_combine": true,
+        "kv_nz": false,
+        "merge_q_kv_conv": false
+    }
+}
+

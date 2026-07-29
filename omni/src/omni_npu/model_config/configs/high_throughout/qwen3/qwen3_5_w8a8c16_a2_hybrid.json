@@ -1,0 +1,8 @@
+{
+    "model_parallel_config": {
+    },
+    "operator_optimization_config": {
+        "kv_nz": false,
+        "disable_npu_top_k_top_p_sample": false
+    }
+}

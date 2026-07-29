@@ -1,0 +1,5 @@
+# To avoid polluted blame results, run once after cloning:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Normalize text files to LF.
+c514e280fa0bde66077ccaff45e1ca6f4296ccbd

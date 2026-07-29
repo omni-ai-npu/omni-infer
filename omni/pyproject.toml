@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=61", "wheel", "torch", "pybind11>=2.10"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omni-npu"
+version = "0.2.0"
+description = "vLLM NPU platform plugin and worker/modelrunner integration"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Omni NPU"}]
+license = { text = "MIT" }
+keywords = ["npu", "vllm", "plugin", "torch_npu"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.optional-dependencies]
+npu = [
+  "torch-npu",
+]
+test = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+]
+
+[project.urls]
+Homepage = "https://gitee.com/omniai/omninpu"
+
+[project.entry-points."vllm.platform_plugins"]
+omni-npu = "omni_npu.vllm_plugin:plugin"
+
+[project.entry-points."vllm.general_plugins"]
+omni_npu_patches = "omni_npu.vllm_patches:apply_patches"
+omni_custom_models = "omni_npu.v1.models:register_models"
+
+
+[project.entry-points."vllm.stat_logger_plugins"]
+omni_npu_metrics = "omni_npu.diagnostics.watchdog.stat_logger:OmniNpuStatLogger"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["omni_npu*"]
+
+[tool.setuptools.package-data]
+"omni_npu.script" = ["*.sh"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

@@ -1,0 +1,8 @@
+{
+    "model_parallel_config": {
+    },
+    "operator_optimization_config": {
+        "decode_moe_dispatch_combine": false,
+        "kv_nz": true
+    }
+}

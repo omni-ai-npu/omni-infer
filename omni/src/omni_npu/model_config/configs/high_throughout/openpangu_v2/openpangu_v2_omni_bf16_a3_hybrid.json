@@ -1,0 +1,7 @@
+{
+    "model_parallel_config": {
+    },
+    "operator_optimization_config": {
+        "enable_moe_allreduce": true
+    }
+}
