@@ -1,0 +1,37 @@
+{
+    "model_parallel_config": {
+        "ena_seq_parallel": true,
+        "ena_context_parallel": true,
+        "layer_parallel_config": {
+            "self_attn.q_b_proj": {
+                "tp_size_or_ranks": 1
+            },
+            "self_attn.kv_b_proj": {
+                "tp_size_or_ranks": 1
+            },
+            "self_attn.o_proj": {
+                "y_transform": {
+                    "type": "ReduceScatter",
+                    "dim": 0
+                }
+            },
+            "mlp.gate_up_proj": {
+                "x_transform": {
+                    "type": "AllGather",
+                    "dim": 0
+                }
+            },
+            "mlp.down_proj": {
+                "y_transform": {
+                    "type": "ReduceScatter",
+                    "dim": 0
+                }
+            }
+        }
+    },
+    "operator_optimization_config": {
+        "enable_kv_rmsnorm_rope_cache": true,
+        "experts_pruning": false,
+        "disable_npu_top_k_top_p_sample": true
+    }
+}

@@ -1,0 +1,30 @@
+{
+    "model_parallel_config": {
+        "layer_parallel_config": {
+            "self_attn.o_proj": {
+                "tp_size_or_ranks": 16,
+                "x_transform": {
+                    "type": "None"
+                },
+                "y_transform": {
+                    "type": "AllReduce",
+                    "tp_size_or_ranks": 16
+                }
+            },
+            "mlp.down_proj": {
+                "tp_size_or_ranks": 16,
+                "x_transform": {
+                    "type": "None"
+                },
+                "y_transform": {
+                    "type": "AllReduce",
+                    "tp_size_or_ranks": 16
+                }
+            }
+        },
+        "input_split": true
+    },
+    "operator_optimization_config": {
+        "enable_kv_rmsnorm_rope_cache": true
+    }
+}

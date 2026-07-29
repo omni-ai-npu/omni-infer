@@ -1,0 +1,22 @@
+{
+    "model_parallel_config": {
+        "layer_parallel_config": {
+            "self_attn.o_proj": {
+                "y_transform": {
+                    "type": "AllReduce"
+                }
+            },
+            "mlp.down_proj": {
+                "y_transform": {
+                    "type": "AllReduce"
+                }
+            }
+        }
+    },
+    "operator_optimization_config": {
+        "enable_kv_rmsnorm_rope_cache": true,
+        "experts_pruning": false,
+        "disable_npu_top_k_top_p_sample": true,
+        "decode_moe_dispatch_combine": true
+    }
+}

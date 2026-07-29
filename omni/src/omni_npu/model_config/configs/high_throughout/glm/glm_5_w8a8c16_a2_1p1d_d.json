@@ -1,0 +1,38 @@
+{
+    "model_parallel_config": {
+        "layer_parallel_config": {
+            "self_attn.o_proj": {
+                "tp_size_or_ranks": 8,
+                "x_transform": {
+                    "type": "DP2TP",
+                    "dim": -1
+                },
+                "y_transform": {
+                    "type": "ReduceScatter"
+                }
+            },
+            "mlp.down_proj": {
+                "y_transform": {
+                    "type": "AllReduce"
+                }
+            }
+        }
+    },
+    "operator_optimization_config": {
+        "enable_round_pipeline_comm": true,
+        "enable_kv_rmsnorm_rope_cache": true,
+        "li_prolog_multi_stream": true,
+        "moe_multi_stream_tune": true,
+        "enable_agrs_finalize_metadata_overlap": true,
+        "decode_moe_dispatch_combine": false,
+        "shared_expert_multi_stream": true,
+        "shared_expert_parallel_schedule": "with_all_gather",
+        "enable_super_kernel": false,
+        "enable_mlaprolog": true,
+        "enable_prefetch": false,
+        "expert_gate_up_prefetch": 50,
+        "expert_down_prefetch": 0,
+        "attn_prefetch": 96,
+        "disable_npu_top_k_top_p_sample": true
+    }
+}
