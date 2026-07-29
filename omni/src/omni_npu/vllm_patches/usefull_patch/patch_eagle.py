@@ -4,6 +4,7 @@
 from copy import copy
 from dataclasses import dataclass, field
 from typing import cast
+import os
 
 import numpy as np
 import torch
@@ -26,6 +27,7 @@ from vllm.v1.attention.backend import (
     AttentionMetadataBuilder,
     CommonAttentionMetadata,
 )
+from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.sample.metadata import SamplingMetadata
@@ -48,7 +50,6 @@ class DraftAttnGroup:
     kv_cache_group_id: int
     layer_names: list[str] = field(default_factory=list)
     builder: AttentionMetadataBuilder | None = None
-    is_base: bool = False  # True for group containing attn_layer_names[0]
 
 
 @register_patch("TorchEagleProposer", EagleProposer)
@@ -64,9 +65,12 @@ class EagleProposerPatch(VLLMPatch):
         'load_model',
         'propose',
         'propose_multi_mtp', # new
-        'validate_same_kv_cache_group',
+        'initialize_attn_backend',
+        # draft groups are built in initialize_attn_backend; do not list
+        # validate_same_kv_cache_group here (method not defined) — PatchManager
+        # catches apply errors and leaves later attrs (e.g. _save_*) unpatched.
         '_build_common_attn_metadata_for_group',
-        '_build_per_group_metadata',
+        'build_per_group_and_layer_attn_metadata',
         '_rebuild_per_group_metadata_for_step',
         "_save_and_change_target_input", # new
     ]
@@ -378,44 +382,42 @@ class EagleProposerPatch(VLLMPatch):
         if hasattr(self.model, "set_shared_weight"):
             self.model.set_shared_weight(target_language_model)
 
-    def validate_same_kv_cache_group(self, kv_cache_config) -> None:
-        """Build per-group draft layer structure from runner's attn_groups.
-
-        Instead of requiring all draft layers to be in one KV cache group,
-        this discovers each draft layer's (kv_cache_gid, attn_group) and
-        groups them accordingly.  Each DraftAttnGroup shares one block table
-        and one metadata builder.
+    def initialize_attn_backend(
+        self,
+        kv_cache_config: KVCacheConfig,
+        kernel_block_sizes: list[int] | None = None,
+    ) -> None:
         """
-        base_layer = (
-            self.attn_layer_names[0] if self.attn_layer_names else None
-        )
+        Initialize AttentionGroups for draft layers using kv_cache_config.
+        Called from the model runner's initialize_metadata_builders.
+        """
+        kv_cache_spec = None
+        for gid, group in enumerate(kv_cache_config.kv_cache_groups):
+            if self._draft_attn_layer_names & set(group.layer_names):
+                self.kv_cache_gid = gid
+                kv_cache_spec = group.kv_cache_spec
+                break
 
         self.draft_attn_groups = []
         for kv_cache_group_id, kv_attn_groups in enumerate(self.runner.attn_groups):
             for attn_group in kv_attn_groups:
                 draft_in_group = set(attn_group.layer_names) & set(self.attn_layer_names)
                 if draft_in_group:
-                    is_base = (
-                        base_layer is not None
-                        and base_layer in draft_in_group
-                    )
                     self.draft_attn_groups.append(
                         DraftAttnGroup(
                             kv_cache_group_id=kv_cache_group_id,
                             layer_names=sorted(list(draft_in_group)),
-                            builder=attn_group.get_metadata_builder(),
-                            is_base=is_base,
+                            builder=attn_group.get_metadata_builder()
                         )
                     )
-
-        # Sort so the base group comes first.  This ensures the base CM is
-        # updated in-place before other groups shallow-copy from it.
-        self.draft_attn_groups.sort(
-            key=lambda g: (not g.is_base, g.kv_cache_group_id)
-        )
-        self.kv_cache_gid = next(
-            (g.kv_cache_group_id for g in self.draft_attn_groups if g.is_base), None
-        )
+        self.block_size = self.draft_attn_groups[0].builder.kv_cache_spec.block_size
+        logger.debug("Using block size %d for drafting layers", self.block_size)
+    
+    def validate_same_kv_cache_group(self, kv_cache_config) -> None:
+        # Upstream EagleProposer rejects hybrid KV (draft layers spanning
+        # multiple kv_cache_groups). Omni-infer supports hybrid MLA/DSA +
+        # Mome via per-group draft_attn_groups, so skip this check.
+        return
 
     def _build_common_attn_metadata_for_group(
         self,
@@ -426,7 +428,8 @@ class EagleProposerPatch(VLLMPatch):
 
         For the base group the original *base_cm* is returned as-is (no
         copy).  For other groups a shallow copy is made and the block table
-        / slot_mapping are swapped.
+        / slot_mapping are swapped.  Relies on kv_cache_gid being synced to
+        base_kv_cache_group_id so base_cm already carries the correct slots.
         """
         if kv_cache_group_id == self.kv_cache_gid:
             return base_cm
@@ -441,14 +444,18 @@ class EagleProposerPatch(VLLMPatch):
             cm.slot_mapping[base_cm.num_tokens_unpadded:].fill_(PADDING_SLOT_ID)
         return cm
 
-    def _build_per_group_metadata(
+    def build_per_group_and_layer_attn_metadata(
         self,
         common_attn_metadata: CommonAttentionMetadata,
         draft_index: int = 0,
-    ) -> dict:
-        """Build per-layer attention metadata for all draft groups."""
+    ) -> tuple[list[object], dict[str, object]]:
+        """Build per-group / per-layer attention metadata for all draft groups.
 
-        per_layer_attn_metadata: dict = {}
+        Unlike upstream, each group gets a CM with its own block_table /
+        slot_mapping (hybrid MLA + Mome).
+        """
+        per_group_attn_metadata: list[object] = []
+        per_layer_attn_metadata: dict[str, object] = {}
         for group in self.draft_attn_groups:
             extra_attn_metadata_args = {}
             if isinstance(group.builder, NPUMomeAttentionMetadataBuilder):
@@ -467,9 +474,10 @@ class EagleProposerPatch(VLLMPatch):
                 draft_index=draft_index,
                 **extra_attn_metadata_args,
             )
+            per_group_attn_metadata.append(attn_metadata)
             for name in group.layer_names:
                 per_layer_attn_metadata[name] = attn_metadata
-        return per_layer_attn_metadata
+        return per_group_attn_metadata, per_layer_attn_metadata
 
     def _rebuild_per_group_metadata_for_step(
         self,
@@ -609,7 +617,7 @@ class EagleProposerPatch(VLLMPatch):
         if self.runner is None:
             raise ValueError("runner is not initialized")
 
-        per_layer_attn_metadata = self._build_per_group_metadata(
+        _, per_layer_attn_metadata = self.build_per_group_and_layer_attn_metadata(
             common_attn_metadata,
             draft_index=0,
         )
@@ -875,7 +883,7 @@ class EagleProposerPatch(VLLMPatch):
         if self.runner is None:
             raise ValueError("runner is not initialized")
 
-        per_layer_attn_metadata = self._build_per_group_metadata(
+        _, per_layer_attn_metadata = self.build_per_group_and_layer_attn_metadata(
             common_attn_metadata,
             draft_index=0,
         )

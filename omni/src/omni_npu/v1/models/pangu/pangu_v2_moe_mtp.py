@@ -276,7 +276,7 @@ class PanguV2MTP(nn.Module, SupportsPP):
             routed_experts_prefix="",
         )
 
-        params_dict = dict(self.named_parameters(remove_duplicate=False))
+        params_dict = dict(self.named_parameters())
         loaded_params: set[str] = set()
         for name, loaded_weight in weights:
             if "rotary_emb.inv_freq" in name:

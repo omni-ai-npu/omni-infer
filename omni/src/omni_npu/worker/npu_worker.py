@@ -341,7 +341,8 @@ class NPUWorker(Worker):
             )
 
     def execute_dummy_batch(self) -> None:
-        self.model_runner._dummy_run(1, uniform_decode=True, force_attention=True)
+        num_tokens = getattr(self.model_runner, "uniform_decode_query_len", 1)
+        self.model_runner._dummy_run(num_tokens, uniform_decode=True, force_attention=True)
 
     def execute_model(
         self,

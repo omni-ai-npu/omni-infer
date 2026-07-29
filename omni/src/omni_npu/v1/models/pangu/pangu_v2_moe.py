@@ -207,6 +207,7 @@ class PanguV2MOE(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+        self.prefix = prefix
         self.layer_idx = extract_layer_index(prefix)
         self.tp_size = get_tp_group().world_size
         self.tp_rank = get_tp_group().rank_in_group
@@ -274,7 +275,7 @@ class PanguV2MOE(nn.Module):
             dtype=torch.int32,
         ).unsqueeze(0)
 
-        self.moe_runner = FusedMoE(
+        moe_runner = FusedMoE(
             shared_experts=self.shared_experts,
             num_experts=config.n_routed_experts,
             top_k=config.num_experts_per_tok,
@@ -294,7 +295,7 @@ class PanguV2MOE(nn.Module):
             num_redundant_experts=self.n_redundant_experts,
             is_sequence_parallel=self.is_sequence_parallel,
         )
-        self.experts = self.moe_runner.routed_experts
+        self.experts = moe_runner.routed_experts
         self.n_logical_experts = self.n_routed_experts
  
         if self.enable_eplb:
@@ -690,7 +691,8 @@ class PanguV2MOE(nn.Module):
     def _get_mc2_mask(self, num_tokens: int) -> torch.Tensor | None:
         attn_metadata = get_forward_context().attn_metadata
         if isinstance(attn_metadata, dict):
-            attn_metadata = next(iter(attn_metadata.values()), None) if attn_metadata else None
+            layer_prefix = self.prefix.rsplit(".", 1)[0]
+            attn_metadata = attn_metadata.get(f"{layer_prefix}.self_attn.attn")
         if (
             hasattr(attn_metadata, "decode") and 
             attn_metadata.decode is not None and 
@@ -2336,7 +2338,7 @@ class PanguV2MoEForCausalLM(
             routed_experts_prefix=""
         )
 
-        params_dict: dict[str, torch.nn.Parameter] = dict(self.named_parameters(remove_duplicate=False))
+        params_dict: dict[str, torch.nn.Parameter] = dict(self.named_parameters())
         loaded_params: set[str] = set()
 
         def _skip_weight(name: str) -> bool:
