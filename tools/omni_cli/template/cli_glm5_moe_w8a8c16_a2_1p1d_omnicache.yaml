@@ -80,7 +80,7 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9100
-            ENDPOINT_PORT: $((API_PORT + 100))
+            ENDPOINT_PORT: $((API_PORT + 100 - SERVER_OFFSET))
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_PLATFORM: A2
@@ -191,7 +191,7 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9116
-            ENDPOINT_PORT: $((API_PORT + 100))
+            ENDPOINT_PORT: $((API_PORT + 100 - SERVER_OFFSET))
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_PLATFORM: A2
@@ -302,7 +302,7 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9132
-            ENDPOINT_PORT: $((API_PORT + 100))
+            ENDPOINT_PORT: $((API_PORT + 100 - SERVER_OFFSET))
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_PLATFORM: A2
@@ -413,7 +413,7 @@ all:
           env:
             OMNI_DISABLE_NPU_TOP_K_TOP_P_SAMPLE: 1
             API_PORT: 9148
-            ENDPOINT_PORT: $((API_PORT + 100))
+            ENDPOINT_PORT: $((API_PORT + 100 - SERVER_OFFSET))
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_PLATFORM: A2

@@ -83,7 +83,7 @@ all:
           container_name: glm52_w4_cc
           env:
             API_PORT: 9100
-            ENDPOINT_PORT: $((API_PORT + 100))
+            ENDPOINT_PORT: $((API_PORT + 100 - SERVER_OFFSET))
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
@@ -195,7 +195,7 @@ all:
           container_name: glm52_w4_cc
           env:
             API_PORT: 9116
-            ENDPOINT_PORT: $((API_PORT + 100))
+            ENDPOINT_PORT: $((API_PORT + 100 - SERVER_OFFSET))
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
@@ -306,7 +306,7 @@ all:
           container_name: glm52_w4_cc
           env:
             API_PORT: 9000
-            ENDPOINT_PORT: $((API_PORT + 100))
+            ENDPOINT_PORT: $((API_PORT + 100 - SERVER_OFFSET))
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
@@ -420,7 +420,7 @@ all:
           container_name: glm52_w4_cc
           env:
             API_PORT: 9016
-            ENDPOINT_PORT: $((API_PORT + 100))
+            ENDPOINT_PORT: $((API_PORT + 100 - SERVER_OFFSET))
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: AIV
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
