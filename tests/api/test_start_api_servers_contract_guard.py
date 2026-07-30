@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # test_start_api_servers_contract_guard.py
 #
@@ -21,8 +22,6 @@
 
 import inspect
 import io
-import os
-import subprocess
 import types
 import weakref
 import signal
@@ -32,7 +31,13 @@ from pathlib import Path
 
 def _load_module():
     """相对于当前测试文件加载 start_api_servers 模块"""
-    target_file = Path(__file__).parent.parent.parent / "tools" / "scripts" / "start_api_servers.py"
+    target_file = (
+        Path(__file__).parent.parent.parent
+        / "tools"
+        / "deploy"
+        / "start_server"
+        / "start_api_servers.py"
+    )
     assert target_file.exists(), f"target file not found: {target_file}"
 
     spec = importlib.util.spec_from_file_location("start_api_servers", target_file)
@@ -43,6 +48,17 @@ def _load_module():
 
 
 mod = _load_module()
+
+LAUNCHER_DIR = (
+    Path(__file__).parent.parent.parent
+    / "tools"
+    / "deploy"
+    / "start_server"
+)
+LAUNCHERS = [
+    "pd_run.sh",
+    "pd_run_pangu_ultra_moe.sh",
+]
 
 
 # ==============================================================================
@@ -220,6 +236,7 @@ def test_start_single_node_api_servers_signature_contract():
         "no_enable_prefix_caching",
         "num_speculative_tokens",
         "no_enable_chunked_prefill",
+        "use_inventory_devices",
     ]
 
     assert params["server_offset"].default == 0
@@ -238,6 +255,7 @@ def test_start_single_node_api_servers_signature_contract():
     assert params["no_enable_prefix_caching"].default is False
     assert params["num_speculative_tokens"].default == 1
     assert params["no_enable_chunked_prefill"].default is False
+    assert params["use_inventory_devices"].default is False
 
 
 # ==============================================================================
@@ -389,11 +407,62 @@ def test_start_single_node_api_servers_basic_command_and_env(monkeypatch, tmp_pa
     assert env["VLLM_DP_RANK_LOCAL"] == "1"
     assert env["VLLM_DP_MASTER_IP"] == "10.0.0.1"
     assert env["VLLM_DP_MASTER_PORT"] == "8000"
-    assert env["ASCEND_RT_VISIBLE_DEVICES"] == "0,1"
+    assert env["ASCEND_RT_VISIBLE_DEVICES"] == "0,1,2,3,4,5"
 
     assert len(finalized) == 1
     assert finalized[0][0] is process_manager
     assert callable(finalized[0][1])
+
+
+def test_start_single_node_api_servers_slices_inventory_devices(
+    monkeypatch,
+    tmp_path,
+):
+    spawned_envs = []
+
+    monkeypatch.setattr(mod.os, "makedirs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        mod,
+        "find_available_port",
+        lambda base_port, **kwargs: base_port,
+    )
+    monkeypatch.setattr(
+        mod,
+        "open",
+        lambda *args, **kwargs: io.StringIO(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        mod.subprocess,
+        "Popen",
+        lambda cmd, env, stdout, stderr: (
+            spawned_envs.append(env) or _DummyProc()
+        ),
+    )
+    monkeypatch.setattr(mod.weakref, "finalize", lambda *args: object())
+    monkeypatch.setattr(
+        mod.os,
+        "environ",
+        {"ASCEND_RT_VISIBLE_DEVICES": "4,5,6,7"},
+    )
+
+    mod.start_single_node_api_servers(
+        num_servers=2,
+        model_path="/fake/model",
+        base_api_port=9000,
+        master_ip="10.0.0.1",
+        master_port=8000,
+        total_dp_size=2,
+        gpu_util=0.9,
+        served_model_name="my-model",
+        tp=2,
+        use_inventory_devices=True,
+        log_dir=str(tmp_path),
+    )
+
+    assert [
+        env["ASCEND_RT_VISIBLE_DEVICES"] for env in spawned_envs
+    ] == ["4,5", "6,7"]
 
 
 def test_start_single_node_api_servers_decode_role_adds_dp_flags(monkeypatch, tmp_path):
@@ -437,6 +506,47 @@ def test_start_single_node_api_servers_decode_role_adds_dp_flags(monkeypatch, tm
     assert "2" in cmd   # rank=0 + 4//2
 
 
+def test_start_single_node_api_servers_omni_role_takes_precedence(monkeypatch):
+    spawned = []
+
+    monkeypatch.setattr(mod.os, "makedirs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mod, "find_available_port", lambda *args, **kwargs: 9250)
+    monkeypatch.setattr(
+        mod,
+        "open",
+        lambda *args, **kwargs: io.StringIO(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        mod.subprocess,
+        "Popen",
+        lambda cmd, env, stdout, stderr: (
+            spawned.append(cmd) or _DummyProc(pid=20005)
+        ),
+    )
+    monkeypatch.setattr(mod.weakref, "finalize", lambda obj, func: object())
+    monkeypatch.setattr(
+        mod.os,
+        "environ",
+        {"OMNI_PD_ROLE": "prefill", "ROLE": "decode"},
+    )
+
+    mod.start_single_node_api_servers(
+        num_servers=1,
+        model_path="/fake/model",
+        base_api_port=9000,
+        master_ip="10.0.0.1",
+        master_port=8000,
+        total_dp_size=8,
+        gpu_util=0.9,
+        served_model_name="my-model",
+    )
+
+    cmd = spawned[0]
+    assert "--data-parallel-size" not in cmd
+    assert "--data-parallel-rank" not in cmd
+
+
 def test_start_single_node_api_servers_optional_flags(monkeypatch, tmp_path):
     spawned = []
 
@@ -478,6 +588,7 @@ def test_start_single_node_api_servers_optional_flags(monkeypatch, tmp_path):
     cmd = spawned[0]
 
     assert "--speculative_config" in cmd
+    assert "--speculative-config" not in cmd
     assert '{"method": "mtp", "num_speculative_tokens": 3}' in cmd
 
     assert "--no-enable-prefix-caching" in cmd
@@ -695,3 +806,37 @@ def test_signal_handler_terminates_processes_and_exits(monkeypatch):
 
     assert log1.closed is True
     assert log2.closed is True
+
+
+# ==============================================================================
+# 13. PD launchers（锁定保留的 66d6146 脚本契约）
+# ==============================================================================
+
+@pytest.mark.parametrize("launcher_name", LAUNCHERS)
+def test_pd_launchers_preserve_source_environment_contract(launcher_name):
+    contents = (LAUNCHER_DIR / launcher_name).read_text(encoding="utf-8")
+
+    assert 'OMNI_PD_ROLE="${OMNI_PD_ROLE:-prefill}"' in contents
+    assert 'OMNI_PD_PREFILL_POD_NUM="${OMNI_PD_PREFILL_POD_NUM:-1}"' in contents
+    assert 'OMNI_PD_DECODE_POD_NUM="${OMNI_PD_DECODE_POD_NUM:-1}"' in contents
+    assert "OMNI_PD_ROLE:-${ROLE" not in contents
+    assert 'ROLE="$OMNI_PD_ROLE"' not in contents
+
+    assert "MODEL_EXTRA_CFG_PATH" not in contents
+    assert "--model-extra-cfg-path" not in contents
+    assert "tests/test_config" not in contents
+    assert "/test/test_config" not in contents
+
+    for removed_mock_interface in (
+        "OMNI_MOCK_RANDOM_MODE",
+        "OMNI_MOCK_KV_CACHE_MODE",
+        "OMNI_MOCK_FORWARD_TIME",
+        "--random-mode",
+        "--kv-cache-mod",
+        "--forward-time",
+    ):
+        assert removed_mock_interface not in contents
+
+    # Preserve the source retry loop exactly, including its `cost` typo.
+    assert "cost_time=$((cost + 5))" in contents
+    assert "cost_time=$((cost_time + 5))" not in contents

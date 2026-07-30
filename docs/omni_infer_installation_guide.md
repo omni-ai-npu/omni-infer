@@ -258,11 +258,17 @@ https://e-share.obs-website.cn-north-1.myhuaweicloud.com?v2token=KBL+tPW8sihb1DQ
 
 ![image](./figures/ab1a606f-20cd-417f-a0d6-fec4b3d26d27.png)
 
-ansible 详细说明参考：**omniinfer**/**tools**/**ansible**/**template**/**README.md**。
-在 omniinfer/tools/ansible/ 、 omniinfer/tools/ansible/template/ 和 omniinfer/omni/cli 下面都有 xxx_inventory.yml 和 xxx_server.yml 文件，其中：
-1. omniinfer/tools/ansible/ 路径下这两种文件用于 `CI`；
-2. omniinfer/tools/ansible/template/ 路径下的这两种文件即可用于 `ansible` 一键部署 `omniinfer` 服务，参考**通过 ansible 部署**章节；
-3. omniinfer/omni/cli 路径下的这两种文件即用于 `omni_cli` 一键部署服务，参考 **omni_cli 一键部署**章节。
+Ansible 详细说明参考
+[Ansible 部署文档](../tools/deploy/ansible/README.md)。当前部署框架使用
+`playbooks/` 和 `roles/`：
+
+1. `tools/deploy/ansible/inventory/` 提供 1P1D、2P1D、4P1D 三种拓扑模板；
+2. `tools/deploy/ansible/playbooks/` 保存当前维护的模型部署入口，现支持 DSV32 和
+   PanguV2；
+3. `tools/deploy/ansible/roles/` 保存公共任务和弹性生命周期实现，由 Playbook
+   调用，用户不需要直接执行 Role；
+4. `tools/deploy/omni_cli/` 提供独立的命令行部署流程，与 Ansible Playbook
+   相互独立。
 
 ### 准备密钥文件
 首先介绍执行机和目标机的概念，执行机就是运行 `omni_cli` 和 `ansible` 命令的主机，而目标机就是被 `omni_cli` 和 `ansible` 管理的远程主机，也就是用户部署服务所用到的机器。在使用一键式部署命令前，用户需要在执行机上准备好密钥文件（公钥文件和私钥文件），将公钥文件部署到目标机上，执行机使用 `ansible` 命令时就可以通过私钥文件去登录目标机。密钥文件的生成和部署可以参考如下步骤，如果你已经有登录目标机的密钥文件，就不需要执行下列步骤：
@@ -358,85 +364,96 @@ cd /data/omniinfer/log
 
 #### 环境准备
 
-如果是在执行机的宿主机，需要安装 `ansible` 和 `openssh`:
+在执行机安装 `ansible`、`openssh`：
 
-```
+```bash
 yum install ansible
 yum install openssh-server
 ```
 
 #### 配置文件说明
 
-在 **omniinfer/tools/ansible/template/** 中，有 omni_infer_inventory_used_for_2P1D.yml 和 omni_infer_inventory_used_for_4P1D.yml 两个文件，omni_infer_inventory_used_for_2P1D.yml 用于四机 2P1D 场景，omni_infer_inventory_used_for_4P1D.yml 用于八机 4P1D 场景，其他场景可以参考这两个文件创建新的 inventory 文件；此外还有一个 omni_infer_server_template.yml 文件，这三个
-文件的参数配置说明可以参考 **[omniinfer/tools/ansible/template/README.md](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/template/README.md)**, 以2P1D为例，则修改 omni_infer_inventory_used_for_2P1D.yml 文件，将 `p0/p1/d0/d1/c0` 下面的 `ansible_host:` 值改为机器的 ip，其中p0/p1表示用来部署P的2台A3机器，d0/d1表示用来部署D的2台A3机器，c0表示用来部署globalproxy的机器信息，可以使用p0/p1/d0/d1中的任意一台;
+Ansible 配置由 Inventory 和模型 Playbook 两部分组成。
 
-![image](./figures/79f4a480-e13b-45a3-bc9e-080f27ea3995.png)
+`tools/deploy/ansible/inventory/` 中提供以下拓扑模板：
 
-![image](./figures/4d4eb6e0-2af8-4ce2-8233-b8ccebc7c4a4.png)
+- `omni_infer_inventory_used_for_1P1D.yml`
+- `omni_infer_inventory_used_for_2P1D.yml`
+- `omni_infer_inventory_used_for_4P1D.yml`
 
+建议将所需模板复制到仓库外再填写真实地址和凭据，避免把环境信息提交到代码仓。
+以 2P1D 为例，需要检查 `p0/p1/d0/d1/c0` 下的配置：
+
+- `ansible_host`：Ansible 连接的目标机 IP；
+- `host_ip`：实例所属物理机或 Pod 主节点的 IP；多节点 Decode 的各节点使用
+  Decode 主节点的 `host_ip`；
+- `ansible_user` 和 `ansible_ssh_private_key_file`：SSH 用户和私钥；
+- `ascend_rt_visible_devices`：当前实例使用的 NPU 卡号；
+- `node_rank`、`kv_rank`、`node_port` 和 `api_port`：实例拓扑及端口。
+
+当前维护的模型 Playbook 位于 `tools/deploy/ansible/playbooks/`：
+
+- `omni_infer_server_template_dsv32.yml`：DeepSeek V3.2；
+- `omni_infer_server_template_panguv2.yml`：PanguV2。
+
+执行前需要在选定的 Playbook 中修改 `environment` 下的 `CODE_PATH`、
+`DOCKER_IMAGE_ID`、容器名称、日志路径，以及 `vars` 下的 `model_path`。模型参数、
+容器挂载和 Proxy 参数分别由对应的 `*_profile` 配置。完整字段说明见
+[Ansible 开发与部署指南](../tools/deploy/ansible/DEVELOPMENT_GUIDE.md)。
 
 #### 执行命令
 
-```
-# 进入到文件目录下执行
-cd omniinfer/tools/ansible/template
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml
-```
+以 2P1D 部署 PanguV2 为例：
 
-#### PD分离部署
+```bash
+cd omniinfer/tools/deploy/ansible
 
-相关配置：
+INVENTORY=inventory/omni_infer_inventory_used_for_2P1D.yml
+PLAYBOOK=playbooks/omni_infer_server_template_panguv2.yml
 
-![image](./figures/2160b5d6-6c54-4fab-8ec0-8df5ef0687b9.png)
+# 部署前检查
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --syntax-check
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --list-tags
 
-#### global\_proxy部署
-
-相关配置：
-
-![image](./figures/871cdf50-4402-404a-af8b-01d660b36f5d.png)
-
-#### 代码同步更新
-
-执行机代码存放路径：/data/omniinfer (可以修改成自己的代码路径，下图synchronize操作就是把执行机的代码同步到目标机上)
-
-![image](./figures/07a40404-2aa6-4165-b43d-6e386da57777.png)
-
-#### Task任务
-
-![image](./figures/9c9a720a-8936-43e1-884a-97ee23d1c264.png)
-
-**omni\_infer\_server.yml** 主要放的是自动化的一些操作任务。
-
-通过给 `task` 增加 `tags` 控制管理任务，当前已有的 `tags`:
-
-```
-    - run_docker
-    - ranktable
-    - run_server
-    - run_proxy
-    - sync_code
+# 执行完整部署
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK"
 ```
 
-配置完相关配置信息后拉起服务：
+DSV32 使用
+`playbooks/omni_infer_server_template_dsv32.yml`，Inventory 的选择方式相同。
 
-**第一次拉起环境，执行命令：ansible-playbook -i omni\_infer\_inventory.yml omni\_infer\_server.yml**
+#### 按阶段执行
 
-其他相关操作：
+Role 提供以下常用 tags：
 
+| Tag | 用途 |
+| --- | --- |
+| `run_docker` | 创建或启动容器 |
+| `sync_code` | 将执行机源码同步到目标机和容器 |
+| `pip_install` | 在 Prefill/Decode 容器中安装当前源码 |
+| `stop_server` | 停止已有推理和 Proxy 服务 |
+| `run_server` | 生成启动脚本并拉起 Prefill/Decode 服务 |
+| `proc_bind` | 按 Playbook 配置执行 CPU 绑核；默认关闭 |
+| `run_proxy` | 拉起 Proxy |
+| `fetch_log` | 将远端日志拉取到执行机 |
+
+例如：
+
+```bash
+# 准备容器、同步源码并安装
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK" \
+  --tags run_docker,sync_code,pip_install
+
+# 重启推理服务和 Proxy
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK" \
+  --tags stop_server,run_server,proc_bind,run_proxy
+
+# 拉取日志
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --tags fetch_log
 ```
 
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --》默认按照task全部任务顺序执行
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_docker --》指定镜像创建并启动新的容器实例
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags sync_code --》只执行代码同步更新任务
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags pip_install --》安装 omniinfer 相关包
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags ranktable --》生成ranktable文件
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags stop_server --》停止vllm以及nginx服务
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_server --》只执行pd分离服务拉起
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_proxy --》只执行global_proxy分离服务拉起
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags fetch_log --》将日志存放在执行机指定路径
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --skip-tags sync_code --》过滤sync
-
-```
+Tags 只筛选任务，不会自动补齐前置阶段。单独执行 `run_server` 前，需要确保容器、
+源码和 Python 依赖已经准备完成。
 
 # profiling采集
 profiling采集代码位于omni\adaptors\vllm\worker\npu_worker.py文件。

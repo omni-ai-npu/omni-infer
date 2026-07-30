@@ -3,8 +3,9 @@
 ## 安装
 
 ```bash
-cd omniinfer/tools; python -m build --wheel      # 无wheel包，源码安装
-pip install omni_cli***.wheel --force-reinstall --no-build-isolation --no-deps
+cd omniinfer/tools/deploy
+python -m build --wheel
+pip install dist/omni_cli-*.whl --force-reinstall --no-build-isolation --no-deps
 ```
 
 ---
@@ -394,7 +395,7 @@ omni_cli sync_code --code_path /path/to
 # 开发计划
 
 1. cfg 支持按照特性级别配置，并检查单个服务内配置是否冲突、互斥
-2. 当前设计所有模型、场景默认/最优配置在同一个文件tools/omni_cli/configs/default_profiles.yml，后续要将不同模型最优配置拆分为独立文件
+2. 当前设计所有模型、场景默认/最优配置在同一个文件 `tools/deploy/omni_cli/configs/default_profiles.yml`，后续要将不同模型最优配置拆分为独立文件
 3. 拉起服务调用start命令，需要校验多个服务间的配置是否有差异，防止不同服务特性配置不一致
 4. start命令要支持单独拉P/D/C
 5. ls命令需要返回容器状态

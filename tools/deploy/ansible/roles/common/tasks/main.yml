@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- ansible.builtin.import_tasks: run_docker.yml
+- ansible.builtin.import_tasks: deploy_code.yml
+- ansible.builtin.import_tasks: set_topology.yml
+- ansible.builtin.import_tasks: stop_server.yml
+  tags: stop_server
+- ansible.builtin.import_tasks: manage_mooncake.yml
+- ansible.builtin.import_tasks: run_server.yml
+- ansible.builtin.import_tasks: bind_cpus.yml
+- ansible.builtin.import_tasks: run_proxy.yml
+- ansible.builtin.import_tasks: fetch_logs.yml

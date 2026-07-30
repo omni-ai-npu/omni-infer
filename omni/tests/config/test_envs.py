@@ -198,6 +198,13 @@ def test_custom_model_config_path_legacy_fallback(monkeypatch, caplog):
     )
 
 
+def test_model_extra_cfg_path_is_not_a_compatibility_alias(monkeypatch):
+    monkeypatch.setenv("MODEL_EXTRA_CFG_PATH", "/tmp/model-extra.json")
+    import omni_npu.envs as envs
+
+    assert envs.OMNI_CUSTOM_MODEL_CONFIG_PATH is None
+
+
 @pytest.mark.parametrize(
     ("new_name", "old_name", "value"),
     [

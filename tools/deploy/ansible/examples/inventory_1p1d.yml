@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# Safe topology fixture for syntax, list and check-mode validation only.
+# It uses loopback addresses and a local connection; do not use it for a full
+# deployment because run_docker and lifecycle tags can still modify local Docker.
+all:
+  vars:
+    ansible_connection: local
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    global_port_base: 8000
+    base_api_port: 9000
+    proxy_port: 7000
+    port_offset:
+      P: 0
+      D: 100
+
+  children:
+    P:
+      hosts:
+        p0:
+          ansible_host: 127.0.0.1
+          host_ip: 127.0.0.1
+          node_rank: 0
+          kv_rank: 0
+          node_port: 8501
+          api_port: 9001
+          ascend_rt_visible_devices: "0"
+
+    D:
+      children:
+        D0:
+          hosts:
+            d0:
+              ansible_host: 127.0.0.2
+              host_ip: 127.0.0.2
+              node_rank: 0
+              node_port: 8502
+              api_port: 9101
+              ascend_rt_visible_devices: "1"
+
+    C:
+      hosts:
+        c0:
+          ansible_host: 127.0.0.3
+          host_ip: 127.0.0.3
+          node_rank: 0
+          node_port: 7000

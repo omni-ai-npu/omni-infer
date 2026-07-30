@@ -1,75 +1,69 @@
-[TOC]
+# OmniInfer Ansible 部署
 
-# 脚本介绍
-本目录 (tools/ansible) 下的脚本实现一键式部署多机PD分离服务和 Global Proxy 服务， 用户只需按要求进行部分配置的修改， 即可实现容器自动启动， 自动生成全局 ranktable 以及拉起 vllm 服务和 Proxy 服务。
-脚本文件目录结构如下：
-```bash
-└── ansible
-    ├── omni_infer_inventory.yml
-    ├── omni_infer_server.yml
-    └── README.md
+本目录保存当前维护的 OmniInfer 模型部署脚本。部署框架通过数据化 playbook
+描述模型、容器和服务参数，通过 `common` role 复用通用任务；只有任务序列本身
+存在差异时，才新增专用 role，做法可参考
+[`elastic_server`](roles/elastic_server/README.md)。
+
+开发和扩展前请先阅读：
+
+- [OmniInfer Ansible 开发与部署指南](DEVELOPMENT_GUIDE.md)：目录结构、Inventory、
+  profiles、阶段派生变量、旧版变量迁移、tags、执行顺序和扩展规范。
+
+当前维护的生产 Playbook 只有：
+
+- [PanguV2](playbooks/omni_infer_server_template_panguv2.yml)
+- [DSV32](playbooks/omni_infer_server_template_dsv32.yml)
+
+新增场景可以复制
+[通用 Playbook 示例](examples/omni_infer_server_template_example.yml)。
+该文件不是生产部署入口。
+
+`playbooks/` 和 `roles/` 是部署入口。`inventory/` 保留 1P1D、2P1D 和
+4P1D 的拓扑模板；使用前应复制到仓库外并填写实际连接信息。新增模型场景和公共
+流程应落在 `playbooks/`、`roles/common/` 或对应的专用 role 中。
+
+## 框架运行链路
+
+当前 Ansible 框架从配置解析到容器服务启动的完整文件链路如下：
+
+```text
+inventory.yml
+      +
+模型 Playbook
+      +
+Role defaults/main.yml
+      │
+      ▼
+Role tasks/main.yml
+      │
+      ▼
+具体 tasks/*.yml
+      │
+      ├── 读取 Inventory 拓扑
+      ├── 合并公共默认值与 Playbook Profile
+      ├── 构造 docker run / docker exec
+      └── 调用 templates/*.j2
+              │
+              ▼
+      生成 Shell / JSON / YAML
+              │
+              ▼
+      写入远端 $SCRIPTS_PATH
+              │
+              ▼
+      通过共享挂载进入容器
+              │
+              ▼
+      docker exec 执行生成脚本
+              │
+              ▼
+      Prefill / Decode / Proxy 服务
 ```
 
-# 相关文件解释说明
-## omni_infer_inventory.yml
-该文件作用是定义被管理目标机的配置信息；文件中参数配置说明如下: 
-
-* `ansible_user`: 远程目标机的用户名， 如 user 等。
-
-* `global_port_base`: 基础端口号， 用于作为 `master-port` 的基准。
-
-* `base_api_port`:  API 服务的基础端口号， 用于作为 `base-api-port` 的基准。
-
-* `proxy_port`: global proxy 的监听基础端口号， Global Proxy 实例的端口： `proxy_port + node_rank`
-
-* `port_offset`: 区分 Prefill 实例端口范围和 Decode 实例的端口范围， 避免在同一节点拉起时端口冲突。
-
-* `ansible_host`: 目标机的 IP 。
-
-* `ansible_ssh_private_key_file`: 连接目标机的私钥文件路径。也可以使用密码登录目标机的方式， 则使用 `ansible_password` 字段并将密码填入， 如：`ansible_password: "passwod"` 。
-
-* `node_rank`: Prefill 和 Decode 实例的索引， 一是用于 Prefill 和 Decode 实例的端口区分， 二是用于 prefill 实例 kv_rank 的区分。索引从0开始。
-
-* `node_port`: 即 Prefill 和 Decode 的实际 `master-port`。 
-    Prefill 实例的默认端口: `global_port_base + port_offset.P + node_rank`。
-    Decode 实例的默认端口: `global_port_base + port_offset.D`。
-
-* `api_port`: 多 API Server 的端口号。
-    Prefill 实例的 API Server 默认端口: `base_api_port + port_offset.P + node_rank`。
-    Decode 实例的 API Server 默认端口: `base_api_port + port_offset.D + node_rank`。
-
-* `role`: Decode 实例的角色，如 `M` 表示 Master， `S` 表示 Slave。 
-
-* `ascend_rt_visible_devices`: 每个 Prefill 或 Decode 实例需要使用的卡号， 参数值需要严格按照以下格式: `"x,x,x,x"` (用英文逗号分隔的连续值) ， 不能有多余逗号和空格。
-
-
-## omni_infer_server.yml
-该文件作用是管理目标节点执行相应的任务；文件中参数配置说明如下: 
-
-* `LOG_PATH`: Decode/Prefill/Global Proxy 实例日志的存放的路径。
-
-* `MODEL_PATH`: 加载的模型路径， 要求 Prefill 和 Decode 所有实例所在的节点提前拷贝好模型并且模型路径保持一致。
-
-* `MODEL_LEN_MAX_PREFILL`: Prefill 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为30000。
-
-* `MODEL_LEN_MAX_DECODE`: Decode 侧模型的最大生成长度， 包含 prompt 长度和 generated 长度， 默认值为16384。
-
-* `DOCKER_IMAGE_ID`: omniai 服务实例均在容器里面运行， 用来指定运行的容器镜像， 如: registry-cbu.huawei.com/omni_infer_v1/omni_infer_v1_a3:20250611， registry-cbu.huawei.com/omni_infer_v1/omni_infer_v1_a3 表示镜像仓地址， 20250611 表示镜像版本号， 如果远程目标机没有此容器镜像， ansible 会自动下载。
-
-* `DOCKER_NAME_P`: Prefill 节点的容器别名， 默认前缀 `omni_infer_prefill_`。 如 `omni_infer_prefill_p0` 表示 Prefill 第一个实例的容器名。
-
-* `DOCKER_NAME_D`: Decode 节点的容器别名， 默认前缀 `omni_infer_decode_`。 如 `omni_infer_prefill_d0` 表示 Decode 第一个实例的容器名。
-
-* `DOCKER_NAME_C`: Proxy 节点的容器别名， 默认前缀 `omni_infer_proxy_`。 如 `omni_infer_proxy_c0` 表示 Proxy 第一个实例的容器名。
-
-* `SCRIPTS_PATH`: ansible 运行过程中自动生成的脚本文件存放路径， 用户可以不关注， ansible 执行过程中会自动生成。
-
-* `OMNI_INFER_SCRIPTS`: 容器中 Prefill/Decode/Global Proxy 等拉起服务的脚本文件存放路径。
-
-* `DECODE_TENSOR_PARALLEL_SIZE`: Decode 实例 tensor parallel 参数 tp， 默认值为1。
-
-* `ranktable_save_path`: ansible 运行过程中， Prefill 和 Decode 实例对应的 ranktable 文件以及它们合并生成的 ranktable 文件存放路径。
-
+其中，Inventory 描述目标节点和部署拓扑，模型 Playbook 声明环境与模型差异，
+Role defaults 提供公共默认值，`tasks/main.yml` 决定任务执行顺序，具体 task
+负责计算变量、合并 Profile、渲染模板和执行容器命令。
 
 # 环境准备
 ## 在执行机安装 ansible-playbook
@@ -99,10 +93,12 @@ enabled=1
 gpgcheck=0" > /etc/yum.repos.d/openeuler.repo
 ```
 
+当前 roles 使用 `ansible_env.*` 读取 Play 级环境变量。
+
 ## 在执行机安装 sshpass
 执行 ansible 依赖 sshpass 链接各个目标机，做远程机器管理
 ```bash
-yum install openssh-server
+yum install sshpass
 ```
 
 ## 密钥文件的准备
@@ -123,15 +119,124 @@ yum install openssh-server
     ssh-copy-id -i ~/.ssh/id_ed25519.pub user@remote-host
     ```
 
-# 操作步骤
+## 配置说明
 
-## 修改配置
-在 **omni_infer_inventory.yml** 中， 只需修改以下配置项 `ansible_user / ansible_ssh_private_key_file`; 
-在 **omni_infer_server.yml** 中， 只需修改以下配置项 `MODEL_PATH / DOCKER_IMAGE_ID / OMNI_INFER_SCRIPTS`， 就可拉起 omniai 服务。
+### Inventory
 
-## 执行命令
+仓库不提交包含真实环境信息的生产 Inventory。用户应从
+[`inventory/`](inventory/) 中选择 1P1D、2P1D 或 4P1D 拓扑模板，复制到
+仓库外并填写实际地址与凭据。[本地 1P1D+C fixture](examples/inventory_1p1d.yml)
+仅使用 loopback 地址，可用于语法、任务列表和 check-mode 验证；不能用于完整
+部署。
+
+使用前至少检查以下字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `ansible_user` | Ansible 登录远端节点的用户。 |
+| `ansible_ssh_private_key_file` / `ansible_password` | SSH 凭据，二选一；不要提交真实密码或私钥。 |
+| `global_port_base` / `base_api_port` / `proxy_port` | Prefill、Decode 和 Proxy 的端口基准。 |
+| `port_offset.P` / `port_offset.D` | 区分 Prefill 与 Decode 的端口范围。 |
+| `ansible_host` | 当前 Inventory host 的连接地址。 |
+| `host_ip` | 物理机或 Pod 主实例地址；同一多节点 Prefill Pod 使用相同值。 |
+| `node_rank` | 节点序号，从 0 开始。 |
+| `kv_rank` | Prefill KV rank，从 0 开始。 |
+| `node_port` / `api_port` | 当前实例的 master port 和 API Server 端口。 |
+| `ascend_rt_visible_devices` | 当前实例使用的 NPU 卡号，例如 `"0,1,2,3"`，不能包含空格或多余逗号。 |
+
+Inventory 必须保留顶层 `P`、`D`、`C` 分组。详细的 Inventory 文件用途、
+拓扑规则和全部字段见 [Inventory 约定](DEVELOPMENT_GUIDE.md#5-inventory-约定)。
+
+### Playbook
+
+每个模型 playbook 的 `environment` 保存任务执行环境，`vars` 保存 Ansible
+直接管理的部署参数：
+
+| 字段 | 位置 | 说明 |
+| --- | --- | --- |
+| `LOG_PATH` | `environment` | Prefill、Decode 和 Proxy 在远端节点上的日志根目录。 |
+| `LOG_PATH_IN_EXECUTOR` | `environment` | 日志拉取到执行机后的根目录。 |
+| `CODE_PATH` | `environment` | 执行机和远端宿主机上的代码同步路径。 |
+| `SCRIPTS_PATH` | `environment` | 自动生成的服务启动脚本在宿主机及容器中的共享路径。 |
+| `model` | `vars` | 当前模型或部署场景的名称。 |
+| `model_path` | `vars` | 所有 Prefill、Decode 节点均可访问的模型目录。 |
+| `DOCKER_IMAGE_ID` | `environment` | 部署使用的容器镜像。 |
+| `DOCKER_NAME_P` / `DOCKER_NAME_D` / `DOCKER_NAME_C` | `environment` | 三类容器的名称前缀，实际名称会追加 Inventory host 名。 |
+
+模型环境变量、准备命令和 CLI 参数分别放在对应 profile 中，不要写回公共 task。
+Prefill/Decode 最大模型长度直接配置在各自 profile 的 `args` 中；KV Connector
+通过 `run_server_common_profile.kv_connector` 配置。
+全部 profile 字段见 [Playbook Profile 参考](DEVELOPMENT_GUIDE.md#7-playbook-profile-参考)。
+
+## 使用方式
+
+在本目录执行：
+
 ```bash
-# 进入到文件目录下执行
-cd ./omni_infer/tools/ansible
-ansible-playbook -i omni_infer_inventory.yml omni_infer_server.yml
+cd tools/deploy/ansible
+
+PLAYBOOK=playbooks/omni_infer_server_template_panguv2.yml
+INVENTORY=/path/to/inventory.yml
+
+# 先验证语法和 tags
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --syntax-check
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --list-tags
+
+# 执行完整部署
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK"
+
+# 按阶段执行
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK" \
+  --tags run_docker,sync_code,pip_install
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK" \
+  --tags stop_server,run_server,proc_bind,run_proxy,fetch_log
 ```
+
+Tags 只筛选任务，不改变入口文件定义的执行顺序，也不会自动补齐依赖阶段。
+例如单独执行 `run_server` 时，容器、代码和依赖必须已经准备完成。
+
+提交前可以用安全 fixture 做静态检查：
+
+```bash
+ansible-playbook -i examples/inventory_1p1d.yml "$PLAYBOOK" --syntax-check
+ansible-playbook -i examples/inventory_1p1d.yml "$PLAYBOOK" --list-tasks
+ansible-playbook -i examples/inventory_1p1d.yml "$PLAYBOOK" \
+  --check --tags always
+```
+
+该 fixture 使用本地连接；不要对它执行完整部署、`run_docker` 或弹性生命周期
+tags，否则仍可能操作执行机上的 Docker。
+
+PanguV2 使用 `elastic_server`，还支持 `add_node`、
+`add_node_with_sync_code`、`delete_node` 和 `reload_proxy`；这些生命周期必须通过
+对应 tag 显式执行。扩缩容前应先更新 Inventory，并阅读
+[Tags 说明](DEVELOPMENT_GUIDE.md#8-tags)。
+
+## Playbook 与 roles 不在同一目录
+
+仓库内 playbook 应从 `tools/deploy/ansible` 目录执行，本目录的 `ansible.cfg`
+已配置：
+
+```ini
+[defaults]
+roles_path = roles
+```
+
+如果用户自己的 playbook 位于仓库外，可在单次执行时指定本仓库 roles 的绝对路径：
+
+```bash
+ANSIBLE_ROLES_PATH=/absolute/path/to/omniinfer/tools/deploy/ansible/roles \
+  ansible-playbook -i /path/to/inventory.yml /path/to/model.yml
+```
+
+长期使用时，建议在外部项目的 `ansible.cfg` 中配置：
+
+```ini
+[defaults]
+roles_path = /absolute/path/to/omniinfer/tools/deploy/ansible/roles
+```
+
+如果还需要外部项目自己的 roles，使用冒号连接多个路径。也可以通过
+`ANSIBLE_CONFIG=/absolute/path/to/omniinfer/tools/deploy/ansible/ansible.cfg` 直接复用
+仓库配置。完整说明和检查方式见
+[Playbook 不在仓库内时如何导入 Role](DEVELOPMENT_GUIDE.md#32-playbook-不在仓库内时如何导入-role)。

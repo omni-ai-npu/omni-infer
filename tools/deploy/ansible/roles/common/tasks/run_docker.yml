@@ -1,0 +1,128 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: generate container name.
+  ansible.builtin.set_fact:
+    ACTUAL_DOCKER_NAME_P: "{{ ansible_env.DOCKER_NAME_P }}_{{ inventory_hostname }}"
+    ACTUAL_DOCKER_NAME_D: "{{ ansible_env.DOCKER_NAME_D }}_{{ inventory_hostname }}"
+    ACTUAL_DOCKER_NAME_C: "{{ ansible_env.DOCKER_NAME_C }}_{{ inventory_hostname }}"
+  when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+  tags: always
+
+# Keep this resolved_docker_run_cmd definition identical to
+# roles/elastic_server/tasks/prepare_nodes.yml; update both together.
+- name: Generate the shared docker run command.
+  ansible.builtin.set_fact:
+    resolved_docker_run_cmd: >-
+      {%- set shm_size = run_docker_profile.shm_size | default(run_docker_profile_defaults.shm_size) -%}
+      {%- set envs = run_docker_profile.envs | default(run_docker_profile_defaults.envs) -%}
+      {%- set extra_mounts = run_docker_profile.extra_mounts | default(run_docker_profile_defaults.extra_mounts) -%}
+      docker run -it --shm-size={{ shm_size }}
+      {% for environment in docker_run_base_envs + envs %}-e {{ environment }}
+      {% endfor %}
+      --net=host
+      --privileged=true
+      -u root
+      -w /data
+      --device=/dev/davinci_manager
+      --device=/dev/hisi_hdc
+      --device=/dev/devmm_svm
+      --entrypoint=bash
+      {% for mount in docker_run_base_mounts %}-v {{ mount }}
+      {% endfor %}
+      {% for mount in extra_mounts %}-v {{ mount }}
+      {% endfor %}
+  when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+  tags: run_docker
+
+- name: Check and delete Prefill/Decode group Docker containers.
+  block:
+    - name: Check whether the container exists.
+      ansible.builtin.shell: |
+        docker inspect --format='{{"{{.Name}}"}}' \
+        $DOCKER_NAME_P $DOCKER_NAME_D \
+        2>/dev/null | grep -v '^$'
+      register: existing_containers
+      environment:
+        DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+        DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+      failed_when: false
+      changed_when: false
+
+    - name: Show generated container name.
+      ansible.builtin.debug:
+        msg: "Generated container name: {{ existing_containers.stdout_lines }}"
+
+    - name: Stop containers.
+      ansible.builtin.command: |
+        /bin/bash -c "docker stop {{ existing_containers.stdout_lines | join(' ') }}"
+      when: existing_containers.stdout != ""
+
+    - name: Delete containers.
+      ansible.builtin.command: |
+        /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
+      when: existing_containers.stdout != ""
+  when: "'P' in group_names or 'D' in group_names"
+  tags:
+    - run_docker
+    - clean_up
+
+- name: Check and delete containers used for global proxy server.
+  block:
+    - name: Check whether the container exists.
+      ansible.builtin.shell: |
+        docker inspect --format='{{"{{.Name}}"}}' \
+        $DOCKER_NAME_C \
+        2>/dev/null | grep -v '^$'
+      register: existing_containers
+      environment:
+        DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+      failed_when: false
+      changed_when: false
+
+    - name: Show generated container name.
+      ansible.builtin.debug:
+        msg: "Generated container name: {{ existing_containers.stdout_lines }}"
+
+    - name: Stop containers.
+      ansible.builtin.command: |
+        /bin/bash -c "docker stop {{ existing_containers.stdout_lines | join(' ') }}"
+      when: existing_containers.stdout != ""
+
+    - name: Delete containers.
+      ansible.builtin.command: |
+        /bin/bash -c "docker rm -f {{ existing_containers.stdout_lines | join(' ') }}"
+      when: existing_containers.stdout != ""
+  when: "'C' in group_names"
+  tags:
+    - run_docker
+    - clean_up
+
+- name: Run container for prefill instances.
+  ansible.builtin.command: bash -c "{{ start_docker_cmd_p }}"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  when: "'P' in group_names"
+  tags: run_docker
+
+- name: Run container for decode instances.
+  ansible.builtin.command: bash -c "{{ start_docker_cmd_d }}"
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  when: "'D' in group_names"
+  tags: run_docker
+
+- name: Run container for global proxy server.
+  ansible.builtin.command: bash -c "{{ start_docker_cmd_c }}"
+  environment:
+    NODE_PORT: "{{ node_port }}"
+    DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+  when: "'C' in group_names"
+  tags: run_docker
+
+- name: Create a directory to store the log.
+  ansible.builtin.file:
+    path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
+    state: directory
+  when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+  tags: run_docker
