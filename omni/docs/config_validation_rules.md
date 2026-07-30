@@ -3,14 +3,14 @@
 本文约定如何新增、实现、注册和测试 `ValidationRule`。它是启动校验框架的
 独立开发规范，不定义环境变量、`additional_config` 或
 `ModelExtraConfig` 配置项本身；配置项开发参见
-[配置开发规范](../configuration/README.md)。
+[配置开发规范](config_dev_guide.md)。
 
 源码入口：
 
-- [`validators.py`](../../src/omni_npu/configs/validators.py)：
+- [`validators.py`](../src/omni_npu/configs/validators.py)：
   规则类型、注册表和执行器。
-- [`npu_worker.py`](../../src/omni_npu/worker/npu_worker.py)：启动校验调用点。
-- [`test_validators.py`](../../tests/config/test_validators.py)：框架和内置规则
+- [`npu_worker.py`](../src/omni_npu/worker/npu_worker.py)：启动校验调用点。
+- [`test_validators.py`](../tests/config/test_validators.py)：框架和内置规则
   测试。
 
 ## 1. 定位与执行时机
@@ -172,7 +172,7 @@ additional_config = OmniAdditionalConfig.from_vllm_config(
 
 ## 7. 注册规则
 
-将规则加入 [`validators.py`](../../src/omni_npu/configs/validators.py)
+将规则加入 [`validators.py`](../src/omni_npu/configs/validators.py)
 的 `_ALL_RULES`：
 
 ```python

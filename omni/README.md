@@ -31,11 +31,11 @@ The following entry points are registered:
 
 ## Development
 
-- [Configuration development guide](docs/configuration/README.md): environment
+- [Configuration development guide](docs/config_dev_guide.md): environment
   variables and `OmniAdditionalConfig`
 - [ModelExtraConfig guide](src/omni_npu/model_config/README.md): model-specific
   configuration and best-practice JSON files
-- [ValidationRule development guide](docs/validation/README.md): declarative
+- [ValidationRule development guide](docs/config_validation_rules.md): declarative
   startup validation
 
 Run the configuration tests without NPU hardware:

@@ -6,16 +6,16 @@
 2. 如何在 `OmniAdditionalConfig` 中增加结构化启动配置。
 
 跨配置源或依赖完整启动状态的只读约束，请参阅独立的
-[ValidationRule 开发规范](../validation/README.md)。本文不定义 validator
+[ValidationRule 开发规范](config_validation_rules.md)。本文不定义 validator
 的实现、severity 或测试要求。
 
 `ModelExtraConfig` 字段和模型最佳实践 JSON 的开发及使用，请直接参阅已有的
-[模型配置项自动加载使用说明](../../src/omni_npu/model_config/README.md)。
+[模型配置项自动加载使用说明](../src/omni_npu/model_config/README.md)。
 
 本文是开发规范，不是配置项清单。真实行为以以下代码为准：
 
-- [`envs.py`](../../src/omni_npu/envs.py)：Omni-NPU 自有环境变量的唯一注册表。
-- [`additional_config.py`](../../src/omni_npu/configs/additional_config.py)：
+- [`envs.py`](../src/omni_npu/envs.py)：Omni-NPU 自有环境变量的唯一注册表。
+- [`additional_config.py`](../src/omni_npu/configs/additional_config.py)：
   `vllm_config.additional_config` 中 Omni-NPU 字段的类型和默认值。
 
 ## 1. 先确定配置应放在哪里
@@ -26,7 +26,7 @@
 | --- | --- |
 | vLLM 已提供等价参数或字段 | 直接使用 vLLM CLI 或 `VllmConfig`，不创建 Omni-NPU 副本 |
 | Omni-NPU 自有、需要结构化传入且随服务配置确定 | `--additional-config`，并在 `OmniAdditionalConfig` 中声明 |
-| 与模型、硬件、量化方式或部署形态绑定的最佳实践参数 | [ModelExtraConfig 使用说明](../../src/omni_npu/model_config/README.md) |
+| 与模型、硬件、量化方式或部署形态绑定的最佳实践参数 | [ModelExtraConfig 使用说明](../src/omni_npu/model_config/README.md) |
 | 进程启动前就要生效的部署开关，或诊断、调试、实验开关 | Omni-NPU 环境变量 |
 | 单字段的类型、格式、范围或默认值校验 | 字段所属的 parser、dataclass 或 loader |
 | 单个配置对象构造时即可判断的内部约束 | 所属 dataclass 的 `__post_init__` 或 loader |
@@ -50,7 +50,7 @@ OMNI_<SUBSYSTEM>_<SEMANTIC_NAME>[_<UNIT>]
 
 - 使用大写蛇形命名，统一以 `OMNI_` 开头。
 - 优先按语义域分组，例如 `OMNI_PD_*`、`OMNI_PROFILE_*`、
-  `OMNI_PROFILE_*`。
+  `OMNI_METRICS_*`。
 - 只有语义明确属于 NPU 实现时才使用 `OMNI_NPU_*`；不能仅因为变量位于
   omni-npu 仓库就机械添加 `NPU`。
 - 布尔量使用正向、可读的动词，例如 `ENABLE`、`DISABLE`、`USE`、
@@ -177,7 +177,7 @@ from omni_npu.envs import OMNI_EXAMPLE_ENABLE_FAST_PATH
 
 ## 4. 环境变量测试
 
-测试放在 [`test_envs.py`](../../tests/config/test_envs.py)，并保持为不依赖
+测试放在 [`test_envs.py`](../tests/config/test_envs.py)，并保持为不依赖
 Torch 的纯标准库测试。每个变量根据实际语义覆盖：
 
 - 未设置时的默认值及准确 Python 类型。
@@ -251,7 +251,7 @@ dataclass 类型注解不会自动执行运行时类型校验。需要拒绝 JSO
 - 单字段及同一配置对象内部的依赖在 `__post_init__` 校验。
 
 测试放在
-[`test_additional_config.py`](../../tests/config/test_additional_config.py)：
+[`test_additional_config.py`](../tests/config/test_additional_config.py)：
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
