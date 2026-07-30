@@ -884,12 +884,15 @@ class DeepseekV3ForCausalLM(nn.Module, SupportsPP):
             inputs_embeds = None,
             **kwargs
     ) -> Optional[torch.Tensor]:
+        previous_hidden_states = None
         if model_extra_config.task_config.hardware_platform.startswith(f"A2") and not model_extra_config.operator_opt_config.prefill_moe_all_to_all:
             hidden_states = self.model(input_ids, positions, kv_caches,
                                    attn_metadata, intermediate_tensors)
         else:
             hidden_states = self.model(input_ids, positions, kv_caches,
                                    attn_metadata, intermediate_tensors, self.max_num_token, self.lm_head)
+        if isinstance(hidden_states, tuple):
+            hidden_states, previous_hidden_states = hidden_states
         if get_pp_group().is_last_rank:
             if self.is_ffn_die:
                 logits = torch.zeros(size=(hidden_states.shape[0],
@@ -982,7 +985,10 @@ class DeepseekV3ForCausalLM(nn.Module, SupportsPP):
 
         params_dict = dict(self.named_parameters())
         loaded_params: Set[str] = set()
+        transpose_weight_int4_scale = hasattr(self.config, "index_skip_topk_offset")
         for name, loaded_weight in weights:
+            if transpose_weight_int4_scale and name.endswith(".weight_int4_scale"):
+                loaded_weight = loaded_weight.transpose(0, 1)
             if "rotary_emb.inv_freq" in name:
                 continue
 

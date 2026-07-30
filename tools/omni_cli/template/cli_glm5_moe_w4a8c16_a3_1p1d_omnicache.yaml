@@ -1,0 +1,485 @@
+all:
+  children:
+    C:
+      hosts:
+        c0:
+          DOCKER_IMAGE_ID: registry-cbu.huawei.com/omniai_omniinfer/omniinfer-a3-arm:release_0.7.5-202607230936-vllm
+          ansible_host: 127.0.0.1
+          ansible_ssh_common_args: -o StrictHostKeyChecking=no -o IdentitiesOnly=yes
+          ansible_ssh_private_key_file: /path/to/key
+          ansible_user: root
+          args:
+            decode-lb-sdk: least_conn
+            prefill-lb-sdk: least_conn
+          ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+          container_name: glm52_w4_cc
+          use_omni_proxy: 1
+          env:
+            API_PORT: '7200'
+            CODE_PATH: /workspace/omniinfer
+            LOG_PATH: /tmp/glm5_w4a8
+            ROLE: proxy
+            MODEL_PATH: /data/models/GLM-5.2-W4A8-publish/
+            ACCESS_LOG_FILE: /tmp/glm5_w4a8/nginx/nginx_access.log
+            OMNI_PROXY_PD_POLICY: sequential
+            OMNI_PROXY_MAX_BATCH_NUM_TOKEN: 100000
+            OMNI_PROXY_PREFILL_MAX_NUM_SEQS: 24
+            OMNI_PROXY_DECODE_MAX_NUM_SEQS: 1
+            PYTHONHASHSEED: 123
+
+    D:
+      hosts:
+        d0:
+          DOCKER_IMAGE_ID: registry-cbu.huawei.com/omniai_omniinfer/omniinfer-a3-arm:release_0.7.5-202607230936-vllm
+          ansible_host: 127.0.0.3
+          ansible_ssh_common_args: -o StrictHostKeyChecking=no -o IdentitiesOnly=yes
+          ansible_ssh_private_key_file: /path/to/key
+          ansible_user: root
+          args:
+            additional-config:
+              graph_model_compile_config:
+                level: 1
+                use_ge_graph_cached: true
+            base-api-port: $API_PORT
+            enable-mtp: ''
+            extra-args:
+              disable-log-requests: ''
+              enable-expert-parallel: ''
+              max-num-seqs: 1
+              max-num-batched-tokens: 2
+              preemption-mode: swap
+              swap_space: 32
+              # no-enable-prefix-caching: ''
+              # speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":1}'
+              reasoning-parser: GlmMoe
+              chat-template: ${MODEL_PATH}/chat_template.jinja
+              enable-auto-tool-choice: ''
+              tool-call-parser: GlmMoe
+              tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
+              kv-events-config:
+                enable_kv_cache_events: true
+                publisher: zmq
+                topic: kv-events
+                endpoint: tcp://*:${ENDPOINT_PORT}
+            gpu-util: '0.95'
+            kv-transfer-config:
+              engine_id: 2
+              kv_buffer_device: npu
+              kv_connector: AscendHcclConnectorV1
+              kv_parallel_size: 1
+              kv_rank: $KV_RANK
+              kv_role: kv_consumer
+            log-dir: $LOG_PATH
+            master-ip: $HOST_IP
+            master-port: $MASTER_PORT
+            max-model-len: $MODEL_LEN_MAX_DECODE
+            model-path: $MODEL_PATH
+            num-dp: 32
+            num-servers: 16
+            served-model-name: glmmoedsa
+            server-offset: $SERVER_OFFSET
+            tp: 1
+          ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+          container_name: glm52_w4_cc
+          env:
+            API_PORT: 9100
+            ENDPOINT_PORT: $((API_PORT + 100))
+            ASCEND_GLOBAL_LOG_LEVEL: 3
+            HCCL_OP_EXPANSION_MODE: AIV
+            ASCEND_AICPU_PATH: /usr/local/Ascend/latest
+            ASCEND_HOME_PATH: /usr/local/Ascend/latest
+            ASCEND_LAUNCH_BLOCKING: 0
+            ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
+            ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
+            AUTO_USE_UC_MEMORY: 1
+            CODE_PATH: /workspace/omniinfer
+            DECODE_POD_NUM: 1
+            DECODE_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+            GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
+            GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
+            GLOO_SOCKET_IFNAME: enp23s0f3
+            HCCL_BUFFSIZE: 200
+            HCCL_CONNECT_TIMEOUT: 1800
+            HCCL_EXEC_TIMEOUT: 1800
+            HCCL_INTRA_PCIE_ENABLE: 0
+            HCCL_INTRA_ROCE_ENABLE: 1
+            HOST_IP: 127.0.0.3
+            KV_RANK: 1
+            LCCL_DETERMINISTIC: 0
+            LCCL_PARALLEL: 0
+            LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
+            LOG_PATH: /tmp/glm5_w4a8
+            MASTER_PORT: 8000
+            MODEL_LEN_MAX_DECODE: 262144
+            MODEL_PATH: /data/models/GLM-5.2-W4A8-publish/
+            OMNI_USE_DSV3: 1
+            PREFILL_POD_NUM: 1
+            PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
+            RANKTABLE_SAVE_PATH: /tmp/ranktable_a3
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json)
+            ROLE: decode
+            SERVER_IP_LIST: 127.0.0.3,127.0.0.4
+            SERVER_OFFSET: 0
+            SHLVL: 1
+            SOCKET_IFNAME: enp23s0f3
+            TASK_QUEUE_ENABLE: 2
+            TNG_HOST_COPY: 1
+            TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
+            TP_SOCKET_IFNAME: enp23s0f3
+            USING_LCCL_COM: 0
+            VLLM_ENABLE_MC2: 1
+            VLLM_LLMDATADIST_ZMQ_PORT: 5668
+            VLLM_LOGGING_LEVEL: INFO
+            VLLM_USE_V1: 1
+            VLLM_WORKER_MULTIPROC_METHOD: fork
+            ENABLE_OMNI_CACHE: 1
+            P_NODE_LIST: 127.0.0.1,127.0.0.2
+            TP_NNODES: 1
+            OMNI_CACHE_MEMMAP_PATH: /dev/hugepages/omni_cache
+            MAP_SIZE_BYTES: 858993459200
+            SIZE_BYTES_PER_LAYER: 8589934592
+            ENABLE_APC_EVENT: 1
+          host_ip: 127.0.0.3
+          master_node: d0
+        d1:
+          DOCKER_IMAGE_ID: registry-cbu.huawei.com/omniai_omniinfer/omniinfer-a3-arm:release_0.7.5-202607230936-vllm
+          ansible_host: 127.0.0.4
+          ansible_ssh_common_args: -o StrictHostKeyChecking=no -o IdentitiesOnly=yes
+          ansible_ssh_private_key_file: /path/to/key
+          ansible_user: root
+          args:
+            additional-config:
+              graph_model_compile_config:
+                level: 1
+                use_ge_graph_cached: true
+            base-api-port: $API_PORT
+            enable-mtp: ''
+            extra-args:
+              disable-log-requests: ''
+              enable-expert-parallel: ''
+              max-num-seqs: 1
+              max-num-batched-tokens: 2
+              preemption-mode: swap
+              swap_space: 32
+              # no-enable-prefix-caching: ''
+              # speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":1}'
+              reasoning-parser: GlmMoe
+              chat-template: ${MODEL_PATH}/chat_template.jinja
+              enable-auto-tool-choice: ''
+              tool-call-parser: GlmMoe
+              tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
+              kv-events-config:
+                enable_kv_cache_events: true
+                publisher: zmq
+                topic: kv-events
+                endpoint: tcp://*:${ENDPOINT_PORT}
+            gpu-util: '0.95'
+            kv-transfer-config:
+              engine_id: 2
+              kv_buffer_device: npu
+              kv_connector: AscendHcclConnectorV1
+              kv_parallel_size: 1
+              kv_rank: $KV_RANK
+              kv_role: kv_consumer
+            log-dir: $LOG_PATH
+            master-ip: $HOST_IP
+            master-port: $MASTER_PORT
+            max-model-len: $MODEL_LEN_MAX_DECODE
+            model-path: $MODEL_PATH
+            num-dp: 32
+            num-servers: 16
+            served-model-name: glmmoedsa
+            server-offset: $SERVER_OFFSET
+            tp: 1
+          ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+          container_name: glm52_w4_cc
+          env:
+            API_PORT: 9116
+            ENDPOINT_PORT: $((API_PORT + 100))
+            ASCEND_GLOBAL_LOG_LEVEL: 3
+            HCCL_OP_EXPANSION_MODE: AIV
+            ASCEND_AICPU_PATH: /usr/local/Ascend/latest
+            ASCEND_HOME_PATH: /usr/local/Ascend/latest
+            ASCEND_LAUNCH_BLOCKING: 0
+            ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
+            ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
+            AUTO_USE_UC_MEMORY: 1
+            CODE_PATH: /workspace/omniinfer
+            DECODE_POD_NUM: 1
+            DECODE_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+            GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
+            GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
+            GLOO_SOCKET_IFNAME: enp23s0f3
+            HCCL_BUFFSIZE: 200
+            HCCL_CONNECT_TIMEOUT: 1800
+            HCCL_EXEC_TIMEOUT: 1800
+            HCCL_INTRA_PCIE_ENABLE: 0
+            HCCL_INTRA_ROCE_ENABLE: 1
+            HOST_IP: 127.0.0.3
+            KV_RANK: 1
+            LCCL_DETERMINISTIC: 0
+            LCCL_PARALLEL: 0
+            LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
+            LOG_PATH: /tmp/glm5_w4a8
+            MASTER_PORT: 8000
+            MODEL_LEN_MAX_DECODE: 262144
+            MODEL_PATH: /data/models/GLM-5.2-W4A8-publish/
+            OMNI_USE_DSV3: 1
+            PREFILL_POD_NUM: 1
+            PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
+            RANKTABLE_SAVE_PATH: /tmp/ranktable_a3
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_d/local_*merge.json)
+            ROLE: decode
+            SERVER_IP_LIST: 127.0.0.3,127.0.0.4
+            SERVER_OFFSET: 16
+            SHLVL: 1
+            SOCKET_IFNAME: enp23s0f3
+            TASK_QUEUE_ENABLE: 2
+            TNG_HOST_COPY: 1
+            TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
+            TP_SOCKET_IFNAME: enp23s0f3
+            USING_LCCL_COM: 0
+            VLLM_ENABLE_MC2: 1
+            VLLM_LLMDATADIST_ZMQ_PORT: 5684
+            VLLM_LOGGING_LEVEL: INFO
+            VLLM_USE_V1: 1
+            VLLM_WORKER_MULTIPROC_METHOD: fork
+            ENABLE_OMNI_CACHE: 1
+            P_NODE_LIST: 127.0.0.1,127.0.0.2
+            TP_NNODES: 1
+            OMNI_CACHE_MEMMAP_PATH: /dev/hugepages/omni_cache
+            MAP_SIZE_BYTES: 858993459200
+            SIZE_BYTES_PER_LAYER: 8589934592
+            ENABLE_APC_EVENT: 1
+          host_ip: 127.0.0.3
+          master_node: d0
+    P:
+      hosts:
+        p0:
+          DOCKER_IMAGE_ID: registry-cbu.huawei.com/omniai_omniinfer/omniinfer-a3-arm:release_0.7.5-202607230936-vllm
+          ansible_host: 127.0.0.1
+          ansible_ssh_common_args: -o StrictHostKeyChecking=no -o IdentitiesOnly=yes
+          ansible_ssh_private_key_file: /path/to/key
+          ansible_user: root
+          args:
+            base-api-port: $API_PORT
+            enable-mtp: ''
+            extra-args:
+              disable-log-requests: ''
+              enable-expert-parallel: ''
+              enforce-eager: ''
+              num-gpu-blocks-override: 140000
+              max-num-batched-tokens: 101376
+              max-num-seqs: 24
+              # no-enable-prefix-caching: ''
+              # speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":1}'
+              long-prefill-token-threshold: 33792
+              kv-events-config:
+                enable_kv_cache_events: true
+                publisher: zmq
+                topic: kv-events
+                endpoint: tcp://*:${ENDPOINT_PORT}
+              reasoning-parser: GlmMoe
+              chat-template: ${MODEL_PATH}/chat_template.jinja
+              enable-auto-tool-choice: ''
+              tool-call-parser: GlmMoe
+              tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
+            gpu-util: '0.90'
+            kv-transfer-config:
+              engine_id: 0
+              kv_buffer_device: npu
+              kv_connector: AscendHcclConnectorV1
+              kv_parallel_size: 1
+              kv_rank: $KV_RANK
+              kv_role: kv_producer
+            log-dir: $LOG_PATH
+            master-ip: $HOST_IP
+            master-port: $MASTER_PORT
+            max-model-len: $MODEL_LEN_MAX_PREFILL
+            model-path: $MODEL_PATH
+            num-dp: 1
+            num-servers: 1
+            served-model-name: glmmoedsa
+            server-offset: $SERVER_OFFSET
+            tp: 32
+          ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+          container_name: glm52_w4_cc
+          env:
+            API_PORT: 9000
+            ENDPOINT_PORT: $((API_PORT + 100))
+            ASCEND_GLOBAL_LOG_LEVEL: 3
+            HCCL_OP_EXPANSION_MODE: AIV
+            ASCEND_AICPU_PATH: /usr/local/Ascend/latest
+            ASCEND_HOME_PATH: /usr/local/Ascend/latest
+            ASCEND_LAUNCH_BLOCKING: 0
+            ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
+            ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+            ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
+            AUTO_USE_UC_MEMORY: 1
+            CODE_PATH: /workspace/omniinfer
+            DECODE_POD_NUM: 1
+            GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
+            GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
+            GLOO_SOCKET_IFNAME: enp23s0f3
+            HCCL_BUFFSIZE: 50
+            HCCL_CONNECT_TIMEOUT: 1800
+            HCCL_EXEC_TIMEOUT: 1800
+            HCCL_INTRA_PCIE_ENABLE: 0
+            HCCL_INTRA_ROCE_ENABLE: 1
+            HOST_IP: 127.0.0.1
+            LOCAL_HOST_IP: 127.0.0.1
+            KV_RANK: 0
+            LCCL_DETERMINISTIC: 0
+            LCCL_PARALLEL: 0
+            LOCAL_DECODE_SERVER_IP_LIST: ''
+            LOG_PATH: /tmp/glm5_w4a8
+            MASTER_PORT: 8000
+            MODEL_LEN_MAX_PREFILL: 262144
+            MODEL_PATH: /data/models/GLM-5.2-W4A8-publish/
+            OMNI_USE_DSV3: 1
+            PREFILL_POD_NUM: 1
+            PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+            PREFILL_TENSOR_PARALLEL_SIZE: 32
+            PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
+            RANKTABLE_SAVE_PATH: /tmp/ranktable_a3
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_p/127.0.0.1/local_*merge.json)
+            ROLE: prefill
+            SERVER_IP_LIST: 127.0.0.3,127.0.0.4
+            SERVER_OFFSET: 0
+            SHLVL: 1
+            SOCKET_IFNAME: enp23s0f3
+            TASK_QUEUE_ENABLE: 2
+            TNG_HOST_COPY: 1
+            TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
+            TP_SOCKET_IFNAME: enp23s0f3
+            USING_LCCL_COM: 0
+            VLLM_ENABLE_MC2: 1
+            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            VLLM_LOGGING_LEVEL: INFO
+            VLLM_USE_V1: 1
+            VLLM_WORKER_MULTIPROC_METHOD: fork
+            ENABLE_OMNI_CACHE: 1
+            P_NODE_LIST: 127.0.0.1,127.0.0.2
+            TP_NNODES: 2
+            OMNI_CACHE_MEMMAP_PATH: /dev/hugepages/omni_cache
+            MAP_SIZE_BYTES: 1073741824000
+            SIZE_BYTES_PER_LAYER: 12884901888
+            DEVICE_CACHE_SCALE_RATIO: 2
+            ENABLE_APC_EVENT: 1
+            OMNI_CACHE_PACKED_HBM: 1
+          host_ip: 127.0.0.1
+          master_node: p0
+        p1:
+          DOCKER_IMAGE_ID: registry-cbu.huawei.com/omniai_omniinfer/omniinfer-a3-arm:release_0.7.5-202607230936-vllm
+          ansible_host: 127.0.0.2
+          ansible_ssh_common_args: -o StrictHostKeyChecking=no -o IdentitiesOnly=yes
+          ansible_ssh_private_key_file: /path/to/key
+          ansible_user: root
+          args:
+            base-api-port: $API_PORT
+            enable-mtp: ''
+            extra-args:
+              disable-log-requests: ''
+              enable-expert-parallel: ''
+              enforce-eager: ''
+              num-gpu-blocks-override: 140000
+              max-num-batched-tokens: 101376
+              max-num-seqs: 24
+              # no-enable-prefix-caching: ''
+              # speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":1}'
+              long-prefill-token-threshold: 33792
+              kv-events-config:
+                enable_kv_cache_events: true
+                publisher: zmq
+                topic: kv-events
+                endpoint: tcp://*:${ENDPOINT_PORT}
+              reasoning-parser: GlmMoe
+              chat-template: ${MODEL_PATH}/chat_template.jinja
+              enable-auto-tool-choice: ''
+              tool-call-parser: GlmMoe
+              tool-parser-plugin: /workspace/omniinfer/omni/adaptors/vllm/entrypoints/openai/tool_parsers/glm4_moe_tool_parser.py
+            gpu-util: '0.90'
+            kv-transfer-config:
+              engine_id: 0
+              kv_buffer_device: npu
+              kv_connector: AscendHcclConnectorV1
+              kv_parallel_size: 1
+              kv_rank: $KV_RANK
+              kv_role: kv_producer
+            log-dir: $LOG_PATH
+            master-ip: $HOST_IP
+            master-port: $MASTER_PORT
+            max-model-len: $MODEL_LEN_MAX_PREFILL
+            model-path: $MODEL_PATH
+            num-dp: 1
+            num-servers: 1
+            served-model-name: glmmoedsa
+            server-offset: $SERVER_OFFSET
+            tp: 32
+          ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+          container_name: glm52_w4_cc
+          env:
+            API_PORT: 9016
+            ENDPOINT_PORT: $((API_PORT + 100))
+            ASCEND_GLOBAL_LOG_LEVEL: 3
+            HCCL_OP_EXPANSION_MODE: AIV
+            ASCEND_AICPU_PATH: /usr/local/Ascend/latest
+            ASCEND_HOME_PATH: /usr/local/Ascend/latest
+            ASCEND_LAUNCH_BLOCKING: 0
+            ASCEND_OPP_PATH: /usr/local/Ascend/latest/opp
+            ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+            ASCEND_TOOLKIT_HOME: /usr/local/Ascend/latest
+            AUTO_USE_UC_MEMORY: 1
+            CODE_PATH: /workspace/omniinfer
+            DECODE_POD_NUM: 1
+            GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
+            GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
+            GLOO_SOCKET_IFNAME: enp23s0f3
+            HCCL_BUFFSIZE: 50
+            HCCL_CONNECT_TIMEOUT: 1800
+            HCCL_EXEC_TIMEOUT: 1800
+            HCCL_INTRA_PCIE_ENABLE: 0
+            HCCL_INTRA_ROCE_ENABLE: 1
+            HOST_IP: 127.0.0.1
+            LOCAL_HOST_IP: 127.0.0.2
+            KV_RANK: 0
+            LCCL_DETERMINISTIC: 0
+            LCCL_PARALLEL: 0
+            LOCAL_DECODE_SERVER_IP_LIST: ''
+            LOG_PATH: /tmp/glm5_w4a8
+            MASTER_PORT: 8000
+            MODEL_LEN_MAX_PREFILL: 262144
+            MODEL_PATH: /data/models/GLM-5.2-W4A8-publish/
+            OMNI_USE_DSV3: 1
+            PREFILL_POD_NUM: 1
+            PREFILL_SERVER_LIST: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+            PREFILL_TENSOR_PARALLEL_SIZE: 32
+            PYTORCH_NPU_ALLOC_CONF: expandable_segments:True
+            RANKTABLE_SAVE_PATH: /tmp/ranktable_a3
+            RANK_TABLE_FILE_PATH: $(ls ${RANKTABLE_SAVE_PATH}/global/collect_files_p/127.0.0.1/local_*merge.json)
+            ROLE: prefill
+            SERVER_IP_LIST: 127.0.0.3,127.0.0.4
+            SERVER_OFFSET: 0
+            SHLVL: 1
+            SOCKET_IFNAME: enp23s0f3
+            TASK_QUEUE_ENABLE: 2
+            TNG_HOST_COPY: 1
+            TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
+            TP_SOCKET_IFNAME: enp23s0f3
+            USING_LCCL_COM: 0
+            VLLM_ENABLE_MC2: 1
+            VLLM_LLMDATADIST_ZMQ_PORT: 5584
+            VLLM_LOGGING_LEVEL: INFO
+            VLLM_USE_V1: 1
+            VLLM_WORKER_MULTIPROC_METHOD: fork
+            ENABLE_OMNI_CACHE: 1
+            P_NODE_LIST: 127.0.0.1,127.0.0.2
+            TP_NNODES: 2
+            OMNI_CACHE_MEMMAP_PATH: /dev/hugepages/omni_cache
+            MAP_SIZE_BYTES: 1073741824000
+            SIZE_BYTES_PER_LAYER: 12884901888
+            DEVICE_CACHE_SCALE_RATIO: 2
+            ENABLE_APC_EVENT: 1
+            OMNI_CACHE_PACKED_HBM: 1
+          host_ip: 127.0.0.1
+          master_node: p0

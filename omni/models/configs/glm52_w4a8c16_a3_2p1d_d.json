@@ -17,12 +17,14 @@
       "fa_quant": false,
       "cast_w2_scale_f32": true,
       "control_accept_rate": -1,
-      "use_prefetch": true,
-      "expert_gate_up_prefetch": 50,
+      "use_prefetch": false,
+      "shared_expert_gate_up_prefetch": 0,
+      "shared_expert_down_prefetch": 0,
+      "dense_mlp_prefetch": 0,
+      "lm_head_prefetch": 0,
+      "expert_gate_up_prefetch": 0,
       "expert_down_prefetch": 0,
-      "attn_prefetch": 96,
-      "enable_dsa": true,
-      "decode_experts_pruning": true,
-      "enable_e_score_correction_bias": true
+      "attn_prefetch": 0,
+      "enable_dsa": true
     }
   }

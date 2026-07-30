@@ -391,7 +391,10 @@ class DeepseekV3MTP(nn.Module, SupportsPP):
 
         params_dict = dict(self.named_parameters())
         loaded_params: Set[str] = set()
+        transpose_weight_int4_scale = hasattr(self.config, "index_skip_topk_offset")
         for name, loaded_weight in weights:
+            if transpose_weight_int4_scale and name.endswith(".weight_int4_scale"):
+                loaded_weight = loaded_weight.transpose(0, 1)
             if "rotary_emb.inv_freq" in name:
                 continue
             if self.model.ignore_share_weight and any(
