@@ -53,6 +53,43 @@ def _wrap_call(original_call):
     return _new_call
 
 
+def _patch_piecewise_backend():
+    """Run a precompiled entry when the graph has no symbolic shape input."""
+    import vllm.compilation.piecewise_backend as _piecewise_module
+
+    piecewise_backend = _piecewise_module.PiecewiseBackend
+    if getattr(piecewise_backend, "_omni_npu_static_range_patched", False):
+        return
+
+    original_call = piecewise_backend.__call__
+
+    def _infer_runtime_shape_from_args(args):
+        for arg in args:
+            if isinstance(arg, torch.Tensor) and arg.ndim > 0:
+                return int(arg.shape[0])
+        return None
+
+    @functools.wraps(original_call)
+    def _patched_call(self, *args):
+        if self.sym_shape_indices:
+            return original_call(self, *args)
+
+        runtime_shape = _infer_runtime_shape_from_args(args)
+        assert runtime_shape is not None, (
+            "Cannot infer runtime shape for PiecewiseBackend without SymInt inputs"
+        )
+        range_entry = self._find_range_for_shape(runtime_shape)
+        assert range_entry is not None, (
+            f"Shape {runtime_shape} is outside compile ranges "
+            f"{self.compile_ranges}"
+        )
+        return range_entry.runnable(*args)
+
+    piecewise_backend.__call__ = _patched_call
+    piecewise_backend._omni_npu_static_range_patched = True
+    logger.debug("<<< PiecewiseBackend static range dispatch patched!")
+
+
 def _patched_mark_dynamic():
     """Use maybe_mark_dynamic instead of mark_dynamic for backed dynamic shapes."""
     import torch._dynamo as dynamo
@@ -77,7 +114,7 @@ def patch_compile_decorators():
     global _COMPILE_DECORATORS_PATCHED
     if _COMPILE_DECORATORS_PATCHED:
         return
-
+    _patch_piecewise_backend()
     _patched_mark_dynamic()
     _original_decorator = _dec_mododule._support_torch_compile
 
