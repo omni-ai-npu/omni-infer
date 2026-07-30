@@ -2,7 +2,6 @@
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """A layer that samples the next tokens from the model's outputs."""
-import os
 from typing import Optional, Any
 
 import torch
@@ -14,11 +13,12 @@ from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.sampler import Sampler as SamplerV1
 from vllm.v1.outputs import SamplerOutput as SamplerOutputV1
 
+from omni_npu import envs
 from omni_npu.sample.ops.topk_topp_sampler import NPUTopKTopPSampler
 from omni_npu.layers.utils import named_stream
 
 FP32_EPS = 2 ** -24
-ENABLE_NPU_PENALTY_CACHE = os.getenv("OMNI_NPU_PENALTY_CACHE", "0") == "1"
+ENABLE_NPU_PENALTY_CACHE = envs.OMNI_NPU_PENALTY_CACHE
 
 def _apply_penalties_v1(logits: torch.Tensor, prompt_mask: torch.Tensor,
                     output_mask: torch.Tensor,

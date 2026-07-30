@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-import os
 from contextlib import contextmanager
 from functools import wraps
 from importlib.metadata import entry_points
@@ -13,6 +12,8 @@ from vllm.distributed import GroupCoordinator, get_tp_group
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.utils.math_utils import cdiv
+
+from omni_npu import envs
 
 logger = init_logger(__name__)
 NPU_ATTENTION_BACKEND = {}
@@ -169,7 +170,7 @@ def _is_plugin_disabled(backend: str) -> bool:
     means the decorator will return the original base class for NPUDSA
     and NPUMLA even if a plugin is available.
     """
-    disabled = os.environ.get("DISABLE_PLUGIN_BACKENDS", "")
+    disabled = envs.OMNI_DISABLE_PLUGIN_BACKENDS
     if not disabled:
         return False
     disabled_names = [s.strip() for s in disabled.split(",") if s.strip()]

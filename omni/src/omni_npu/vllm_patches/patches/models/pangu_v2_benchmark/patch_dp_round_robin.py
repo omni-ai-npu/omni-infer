@@ -61,16 +61,14 @@ Caveats
   even if early requests finish before late ones are dispatched.
 """
 
-import os
-
 from vllm.logger import init_logger
 from vllm.v1.engine.core_client import DPLBAsyncMPClient
 
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 logger = init_logger(__name__)
 
-_ENV_FLAG = "OMNI_DP_ROUND_ROBIN"
 _COUNTER_ATTR = "_omni_rr_counter"
 
 _logged_engage = False
@@ -79,7 +77,7 @@ _logged_engage = False
 def _enabled() -> bool:
     # Read at call time, not import/apply time: the flag may be set after vLLM
     # (and this patch) is imported but before serving starts.
-    return os.environ.get(_ENV_FLAG, "").strip() in ("1", "true", "True", "ALL")
+    return envs.OMNI_DP_ROUND_ROBIN
 
 
 @register_patch("DPRoundRobinClient", DPLBAsyncMPClient)

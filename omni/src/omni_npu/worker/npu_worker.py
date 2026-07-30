@@ -47,12 +47,14 @@ from vllm.v1.worker.gpu_worker import Worker
 from vllm.v1.worker.workspace import init_workspace_manager
 
 from omni_npu.model_config.config_loader.loader import load_model_extra_config
+from omni_npu.configs import OmniAdditionalConfig
 from omni_npu.plugin_decorators import load_model_decorator, determine_memory_decorator
 from omni_npu.compilation.acl_graph import (
     consume_aclgraph_recapture,
     set_aclgraph_recapture,
 )
 from omni_npu.v1.utils import on_ascend950, switch_torch_device
+import omni_npu.envs as omni_envs
 
 logger = init_logger(__name__)
 
@@ -110,9 +112,8 @@ class NPUWorker(Worker):
         # RL support: Store world_ranks if provided
         self.world_ranks = kwargs.get("world_ranks", None)
         logger.info(f"[NPUWorker.init] {self.rank=}, {self.local_rank=}, {self.world_ranks=}")
-        additional_config = vllm_config.additional_config or {}
-        self.is_full_async_rl = bool(
-            additional_config.get("enable_full_async_rl", False))
+        omni_add = OmniAdditionalConfig.from_vllm_config(vllm_config)
+        self.is_full_async_rl = omni_add.enable_full_async_rl
         device_config = self.device_config
         if device_config.device_type != "npu":
             raise ValueError(f"Expected device_type 'npu', got '{device_config.device_type}'")
@@ -177,6 +178,19 @@ class NPUWorker(Worker):
                 include_omni=True,
                 hash_only=(self.local_rank != 0),
             )
+
+            # Run declarative validation after the summary so startup errors
+            # can be compared with the emitted configuration.
+            from omni_npu.model_config.config_loader import loader as _omni_loader
+            from omni_npu.configs.validators import (
+                ValidationContext,
+                validate_all,
+            )
+            validate_all(
+                ValidationContext(
+                    model_extra_config=_omni_loader.model_extra_config,
+                    vllm_config=self.vllm_config,
+                ))
 
             # Only initialize the custom layer-parallel communication domain when
             # explicitly enabled by the high-performance launcher script.
@@ -417,15 +431,20 @@ class NPUWorker(Worker):
         self.profile_step = 0
         self.profile_finished = False
         self._requests_seen = 0
-        self._use_token_for_profile = os.getenv("PROFILER_TOKEN_THRESHOLD") is not None
+        self._use_token_for_profile = (
+            omni_envs.OMNI_PROFILE_TOKEN_THRESHOLD is not None
+        )
 
         if self.profiler is not None:
-            self.profiler_token_threshold = int(os.environ.get('PROFILER_TOKEN_THRESHOLD', "1"))
-            self.profiler_stop_step = int(os.environ.get('PROFILER_STOP_STEP', "5"))
-            self.enable_prefill_profiler = (
-                os.environ.get('ENABLE_PREFILL_PROFILER', 'FALSE').lower() == 'true'
+            _token_thr = omni_envs.OMNI_PROFILE_TOKEN_THRESHOLD
+            self.profiler_token_threshold = (
+                _token_thr if _token_thr is not None else 1
             )
-            self.profiler_skip_requests = int(os.environ.get('PROFILER_SKIP_REQUESTS', "0"))
+            self.profiler_stop_step = omni_envs.OMNI_PROFILE_STOP_STEP
+            self.enable_prefill_profiler = (
+                omni_envs.OMNI_ENABLE_PREFILL_PROFILER
+            )
+            self.profiler_skip_requests = omni_envs.OMNI_PROFILE_SKIP_REQUESTS
             torch_profiler_trace_dir = envs.VLLM_TORCH_PROFILER_DIR
             logger.info("Profiling enabled. Traces will be saved to: %s",
                         torch_profiler_trace_dir)

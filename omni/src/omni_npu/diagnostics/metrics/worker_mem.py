@@ -3,15 +3,16 @@
 
 """worker 进程视角显存采样。结果由 kv_transfer 汇入 KVConnectorStats 通道，不用 multiprocess。"""
 
-import os
 from typing import Optional
 
 from vllm.logger import init_logger
 
+from omni_npu import envs
+
 logger = init_logger(__name__)
 
 # 采样节流：显存是慢变量，每多少次采集调用才真读一次。
-SAMPLE_EVERY_N_STEPS = int(os.getenv("OMNI_METRICS_WORKER_MEM_EVERY", "50"))
+SAMPLE_EVERY_N_STEPS = envs.OMNI_METRICS_WORKER_MEM_EVERY
 
 _step = 0
 

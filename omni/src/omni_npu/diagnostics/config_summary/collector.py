@@ -30,6 +30,7 @@ import os
 import socket
 import time
 
+from omni_npu import envs
 from omni_npu.diagnostics.config_summary import classification as cls
 
 logger = logging.getLogger("omni_npu.diagnostics.config_summary")
@@ -50,7 +51,7 @@ _EMITTED_SCOPES: set[str] = set()
 
 
 def is_enabled() -> bool:
-    return os.environ.get("OMNI_CONFIG_SUMMARY", "1") != "0"
+    return envs.OMNI_CONFIG_SUMMARY
 
 
 # --------------------------------------------------------------------------
@@ -290,7 +291,7 @@ def collect_meta(scope: str, rank=None, local_rank=None, dp_rank=None) -> dict:
 
 
 def _detect_role() -> str:
-    role = os.environ.get("ROLE")
+    role = envs.OMNI_PD_ROLE
     if role:
         return role if role in ("prefill", "decode") else f"other:{role}"
     return "hybrid"

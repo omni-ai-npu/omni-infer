@@ -18,19 +18,18 @@ initialised:
 The OMNI_DUMP_ENABLE gate sits at registration time: when disabled, no
 method wrapper is installed at all and the hot path stays untouched.
 """
-import os
-
 from vllm.logger import init_logger
 from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.v1.engine.core import EngineCore
 
+from omni_npu import envs
 from omni_npu.diagnostics.dump import hooks
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from omni_npu.worker.npu_worker import NPUWorker
 
 logger = init_logger(__name__)
 
-if os.environ.get("OMNI_DUMP_ENABLE", "1") == "1":
+if envs.OMNI_DUMP_ENABLE:
     _orig_api_init = AsyncLLM.__init__
 
     @register_patch("ExitDumpApiPatch", AsyncLLM)

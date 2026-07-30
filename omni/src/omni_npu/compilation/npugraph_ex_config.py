@@ -1,6 +1,8 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 from typing import TYPE_CHECKING
 
+from omni_npu.configs import OmniAdditionalConfig
+
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
 
@@ -11,9 +13,10 @@ class AclGraphConfig:
     """
 
     def __init__(self, vllm_config: "VllmConfig"):
-        
         self.additional_config = vllm_config.additional_config if vllm_config.additional_config is not None else {}
-        self.npugraph_ex_config = self.additional_config.get("npugraph_ex_config", {})
+        omni_additional_config = OmniAdditionalConfig.from_vllm_config(
+            vllm_config)
+        self.npugraph_ex_config = omni_additional_config.npugraph_ex_config
         
 _ACLGRAPH_CONFIG: AclGraphConfig | None = None  
 

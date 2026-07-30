@@ -28,6 +28,7 @@ from vllm.model_executor.layers.fused_moe import FusedMoeWeightScaleSupported
 from vllm.distributed import get_world_group
 from vllm.config import get_current_vllm_config
 
+from omni_npu import envs
 from omni_npu.layers.prefetch import PrefetchManager
 from omni_npu.layers.fused_moe.layer import NPUFusedMoE
 from omni_npu.layers.fused_moe.fused_moe import fused_experts_tp
@@ -91,7 +92,7 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
         self.enable_agrs_finalize_metadata_overlap = (
             model_extra_config.operator_opt_config.enable_agrs_finalize_metadata_overlap
         )
-        self.enable_best_ep = os.getenv("BEST_EP", 'False').lower() == 'true'
+        self.enable_best_ep = envs.OMNI_BEST_EP
         device_name = torch_npu.npu.get_device_name(0)
         self.is_a2_device = device_name.startswith("Ascend910B")
         self.enable_round_pipeline_comm = (

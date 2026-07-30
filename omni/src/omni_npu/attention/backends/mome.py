@@ -1,5 +1,4 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-import os
 import copy
 from dataclasses import dataclass
 
@@ -20,6 +19,7 @@ from vllm.v1.attention.backends.utils import (
 )
 from vllm.v1.kv_cache_interface import AttentionSpec
 
+from omni_npu import envs
 from omni_npu.attention.backends.attention import NPUAttentionBackendImpl
 from omni_npu.attention.backends.utils import _maybe_padded_raw_tensor_to_strided_caches, register_attention_backend
 from omni_npu.model_config.config_loader.loader import model_extra_config
@@ -148,7 +148,7 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             and not vllm_config.cache_config.enable_prefix_caching
         )
 
-        self.reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
+        self.reuse_prefilled_tokens = envs.OMNI_REUSE_PREFILLED_TOKENS
         self.use_full_cuda_graph = self.compilation_config.cudagraph_mode.has_full_cudagraphs()
 
         self.decode_cudagraph_max_bs = self.vllm_config.scheduler_config.max_num_seqs * (self.num_spec + 1)
