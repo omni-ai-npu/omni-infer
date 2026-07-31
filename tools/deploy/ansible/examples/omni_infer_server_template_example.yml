@@ -128,11 +128,9 @@
     # Proxy endpoints and listen ports come from Inventory-derived facts.
     # Only model-specific Proxy settings need to be declared here.
     # run_proxy_profile:
-    #   type: omni-proxy
     #   prepare_commands: |-
     #     export NAME=value
-    #   omni-proxy:
-    #     args: []
+    #   args: []
 
     # pip_install_profile:
     #   prefill: "docker exec $DOCKER_NAME_P <install-command>"

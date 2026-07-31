@@ -399,9 +399,6 @@ Mooncake 临时 facts、所有 `resolved_*`、`*_cmd*` 和 `register` 结果属�
 | `MODEL_LEN_MAX_DECODE` | 写成 `run_server_decode_profile.args` 中的 `--max-model-len <值>`。 |
 | `DECODE_TENSOR_PARALLEL_SIZE` | 写成 Decode `args` 中的 `--tp <值>`。 |
 | `KV_CONNECTOR` | 改为 `run_server_common_profile.kv_connector`；使用默认 `LLMDataDistConnector` 时可省略。 |
-| `USE_OMNI_PROXY` | `1` 改为 `run_proxy_profile.type: omni-proxy`，`0` 改为 `global-proxy`。 |
-| `PREFILL_LB_SDK` | 仅 Global Proxy 迁移为 `global-proxy.args` 中的 `--prefill-lb-sdk <值>`。 |
-| `DECODE_LB_SDK` | 仅 Global Proxy 迁移为 `global-proxy.args` 中的 `--decode-lb-sdk <值>`。 |
 | `OMNI_INFER_SCRIPTS` | 通常由 `container_workspace` 和默认 `workdir` 替代；runner 目录特殊时覆盖对应 `workdir`。 |
 
 从历史部署配置迁移且缺少 `CODE_PATH`、`LOG_PATH_IN_EXECUTOR` 时，使用默认
@@ -773,26 +770,18 @@ mooncake_profile:
 
 | 字段 | 说明 |
 | --- | --- |
-| `type` | Proxy 类型；可选 `omni-proxy` 或 `global-proxy`，默认 `omni-proxy`。 |
 | `prepare_commands` | 加载 `.bashrc` 后、启动或 reload Proxy 前执行的 Bash；环境变量使用显式 `export`。 |
-| `omni-proxy.workdir` | Omni Proxy 工作目录。 |
-| `omni-proxy.command` | Omni Proxy 主命令。 |
-| `omni-proxy.args` | Omni Proxy 有序 CLI 参数。 |
-| `global-proxy.workdir` | Global Proxy 工作目录。 |
-| `global-proxy.command` | Global Proxy 主命令。 |
-| `global-proxy.args` | Global Proxy 有序 CLI 参数。 |
+| `workdir` | Omni Proxy 工作目录。 |
+| `command` | Omni Proxy 主命令。 |
+| `args` | Omni Proxy 有序 CLI 参数。 |
 
 默认 Omni Proxy 使用
 `{{ container_workspace }}/omniinfer/components/omni-proxy/omni_proxy/`
-和 `bash omni_proxy.sh`；Global Proxy 保持源配置中的
-`{{ container_workspace }}/omniinfer/tools/scripts` 和
-`bash global_proxy.sh`。
+和 `bash omni_proxy.sh`。
 
-模板渲染时通过 `type` 选择 Proxy 实现，不再依赖运行时环境变量。
-监听端口和 P/D endpoint 参数由公共 J2 根据 `type` 固定生成，不需要写入
-`args`。
+监听端口和 P/D endpoint 参数由公共 J2 固定生成，不需要写入 `args`。
 `prepare_commands` 同时作用于普通启动和 reload。
-`reload_proxy` 只在 `type: omni-proxy` 时执行，并在原 `args` 后追加 `--reload`。
+`reload_proxy` 在原 `args` 后追加 `--reload`。
 当前只有 `elastic_server` 入口导入该任务。
 
 ### 7.10 `proc_bind_profile`
@@ -844,7 +833,7 @@ Inventory 的 P/D 分组中移除目标节点，使 Proxy 按删除后的拓扑�
 | `stop_server` | 停止 Prefill/Decode/Ray，并处理 Mooncake 停止。 | 不删除容器。 |
 | `run_server` | 计算启动命令并启动 Prefill/Decode。 | 假设容器、代码和依赖已经准备好。 |
 | `proc_bind` | 按需执行 CPU 绑核。 | `enabled=false` 时不会执行实际绑核。 |
-| `run_proxy` | 停止旧 Proxy 并启动新 Proxy。 | 依据 `run_proxy_profile.type` 选择实现。 |
+| `run_proxy` | 停止旧 Proxy 并启动新 Omni Proxy。 | 使用 `run_proxy_profile` 配置工作目录、命令和参数。 |
 | `fetch_log` | 拉取日志到执行机。 | 默认创建目录并拉取。 |
 | `reload_proxy` | 重新生成脚本并 reload Omni Proxy。 | 仅 `elastic_server` 支持；带 `never`，必须显式选择。 |
 | `delete_node` | 按删除后的 Inventory 刷新 Proxy，并删除指定节点。 | 带 `never`；先从 P/D 分组移除目标节点，再显式传入 IP。 |

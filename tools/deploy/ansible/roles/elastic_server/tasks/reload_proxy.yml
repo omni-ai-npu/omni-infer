@@ -15,9 +15,7 @@
     src: reload_proxy.sh.j2
     dest: "$SCRIPTS_PATH/reload_proxy_server.sh"
     mode: '0750'
-  when:
-    - "'C' in group_names"
-    - resolved_run_proxy_profile.type == 'omni-proxy'
+  when: "'C' in group_names"
   tags:
     - never
     - reload_proxy
@@ -33,9 +31,7 @@
         /bin/bash -c $SCRIPTS_PATH/reload_proxy_server.sh
   environment:
     DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
-  when:
-    - "'C' in group_names"
-    - resolved_run_proxy_profile.type == 'omni-proxy'
+  when: "'C' in group_names"
   tags:
     - never
     - reload_proxy

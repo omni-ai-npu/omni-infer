@@ -109,7 +109,7 @@ Role 需要 playbook 或 Inventory 提供：
 
 - `LOG_PATH`、`LOG_PATH_IN_EXECUTOR`、`CODE_PATH` 和 `SCRIPTS_PATH`。
 - `DOCKER_IMAGE_ID`、`DOCKER_NAME_P`、`DOCKER_NAME_D` 和 `DOCKER_NAME_C`。
-- `run_proxy_profile.type` 及所选 Proxy 的配置。
+- `run_proxy_profile` 中的 Omni Proxy 配置。
 - 顶层 `P`、`D`、`C` 分组及公共拓扑要求的 host 变量。
 
 上述环境变量和配置必须由 playbook 或 Inventory 明确设置，`elastic_server`

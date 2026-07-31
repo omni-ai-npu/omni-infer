@@ -1,4 +1,3 @@
-{% set proxy = resolved_run_proxy_profile['omni-proxy'] -%}
 #!/bin/bash
 . ~/.bashrc
 
@@ -26,10 +25,10 @@ for var in ${decode_array[@]}; do
   done
 done
 
-cd {{ proxy.workdir }}
-{{ proxy.command }} \
+cd {{ resolved_run_proxy_profile.workdir }}
+{{ resolved_run_proxy_profile.command }} \
     --listen-port "$PROXY_NODE_PORT" \
     --prefill-endpoints "$prefill_result" \
-    --decode-endpoints "$decode_result"{% for argument in proxy.args %} \
+    --decode-endpoints "$decode_result"{% for argument in resolved_run_proxy_profile.args %} \
     {{ argument }}{% endfor %} \
     --reload > ${LOG_PATH}/{{ inventory_hostname }}/run_reload_log.log 2>&1 &

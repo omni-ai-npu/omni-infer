@@ -114,28 +114,16 @@ mooncake_profile_defaults:
 # Playbook 只需在该字典中覆盖与默认值不同的字段。
 mooncake_profile: {}
 
-# run_proxy_profile：控制 Omni Proxy 和 Global Proxy 的启动方式。
+# run_proxy_profile：控制 Omni Proxy 的启动方式。
 run_proxy_profile_defaults:
-  # 当前使用的 Proxy 类型，可选 omni-proxy 或 global-proxy。
-  type: omni-proxy
   # 加载容器 .bashrc 后、启动或 reload Proxy 前原样执行的 Bash 命令。
   prepare_commands: ""
-  # Omni Proxy 配置。
-  omni-proxy:
-    # Omni Proxy 在容器内的工作目录。
-    workdir: "{{ container_workspace }}/omniinfer/components/omni-proxy/omni_proxy/"
-    # 在 workdir 中执行的主命令。
-    command: bash omni_proxy.sh
-    # 按列表顺序追加到主命令的 CLI 参数。
-    args: []
-  # Global Proxy 配置。
-  global-proxy:
-    # Global Proxy 在容器内的工作目录。
-    workdir: "{{ container_workspace }}/omniinfer/tools/scripts"
-    # 在 workdir 中执行的主命令。
-    command: bash global_proxy.sh
-    # 按列表顺序追加到主命令的 CLI 参数。
-    args: []
+  # Omni Proxy 在容器内的工作目录。
+  workdir: "{{ container_workspace }}/omniinfer/components/omni-proxy/omni_proxy/"
+  # 在 workdir 中执行的主命令。
+  command: bash omni_proxy.sh
+  # 按列表顺序追加到主命令的 CLI 参数。
+  args: []
 # Playbook 只需在该字典中覆盖与默认值不同的字段。
 run_proxy_profile: {}
 

@@ -67,7 +67,7 @@
     - run_docker
     - clean_up
 
-- name: Check and delete containers used for global proxy server.
+- name: Check and delete containers used for Proxy server.
   block:
     - name: Check whether the container exists.
       ansible.builtin.shell: |
@@ -112,7 +112,7 @@
   when: "'D' in group_names"
   tags: run_docker
 
-- name: Run container for global proxy server.
+- name: Run container for Proxy server.
   ansible.builtin.command: bash -c "{{ start_docker_cmd_c }}"
   environment:
     NODE_PORT: "{{ node_port }}"

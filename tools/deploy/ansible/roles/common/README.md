@@ -57,11 +57,10 @@
   以及弹性流程中可选的 Proxy 刷新行为。
 - `mooncake_profile` 管理 Mooncake 配置生成、服务启动和停止后的等待时间。
   Mooncake 不常用，并且独立于两个服务启动 profile。
-- `run_proxy_profile` 属于 `run_proxy`。`type` 在模板渲染时选择 `omni-proxy`
-  或 `global-proxy`；每种类型分别管理自己的工作目录、命令和有序 CLI 参数。
-  `elastic_server` 的 Proxy reload 复用同一份配置，其中 `prepare_commands`
-  同时用于普通启动和 reload。模板负责规范化端点，并生成监听端口和 P/D
-  endpoint 参数。
+- `run_proxy_profile` 属于 `run_proxy`，管理 Omni Proxy 的工作目录、命令和
+  有序 CLI 参数。`elastic_server` 的 Proxy reload 复用同一份配置，其中
+  `prepare_commands` 同时用于普通启动和 reload。模板负责规范化端点，并生成
+  监听端口和 P/D endpoint 参数。
 - `proc_bind_profile` 属于 `proc_bind`，用于控制可选的 CPU 绑核。
 - `fetch_log_profile` 属于 `fetch_log`，用于控制执行机日志目录创建和日志收集。
 - 清理脚本的内容属于固定公共行为，因此不作为 profile 输入。

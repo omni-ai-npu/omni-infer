@@ -86,7 +86,7 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
      C:
        hosts:
          c0:
-           ansible_host: "127.0.0.1"  # C0 节点的IP，即 Global Proxy 节点
+           ansible_host: "127.0.0.1"  # C0 节点的 IP，即 Omni Proxy 节点
            ...
 
    ```

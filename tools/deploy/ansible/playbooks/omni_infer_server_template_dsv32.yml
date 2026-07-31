@@ -134,12 +134,10 @@
     run_server_common_profile:
       single_node_prefill_wait_seconds: 0
     run_proxy_profile:
-      type: omni-proxy
       prepare_commands: |-
         export PYTHONHASHSEED=123
         bash {{ container_workspace }}/omniinfer/build/build.sh -m "omni-proxy"
-      omni-proxy:
-        args:
+      args:
         - --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log
         - --log-level notice
         - --access-log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_access.log
@@ -150,17 +148,6 @@
         - --omni-proxy-max-batch-num-token 100000
         - --omni-proxy-prefill-max-num-seqs 32
         - --omni-proxy-decode-max-num-seqs 48
-      global-proxy:
-        args:
-        - --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log
-        - --log-level notice
-        - --access-log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_access.log
-        - --core-num 4
-        - --start-core-index 16
-        - --prefill-lb-sdk pd_score_balance
-        - --decode-lb-sdk pd_score_balance
-        - --prefill-max-num-seqs 32
-        - --decode-max-num-seqs 48
 
   tasks:
   - ansible.builtin.import_role:
