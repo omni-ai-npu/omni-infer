@@ -438,14 +438,13 @@ env_variables: Dict[str, Callable[[], Any]] = {
     # an absolute path is accepted as-is by os.path.join.
     # Highest priority: when set, task_config (PD role / low_latency / etc.)
     # has no effect on JSON selection.
-    # omniinfer's deployment layer historically uses MODEL_EXTRA_CFG_PATH;
-    # both that name and CUSTOM_MODEL_CONFIG_PATH remain compatibility aliases
-    # during the transition to OMNI_CUSTOM_MODEL_CONFIG_PATH.
+    # CUSTOM_MODEL_CONFIG_PATH remains a compatibility alias during the
+    # transition to OMNI_CUSTOM_MODEL_CONFIG_PATH.
     # Consumers: model_config/config_loader/loader.py:337-342.
     "OMNI_CUSTOM_MODEL_CONFIG_PATH":
     lambda: get_env_with_fallback(
         "OMNI_CUSTOM_MODEL_CONFIG_PATH",
-        ["CUSTOM_MODEL_CONFIG_PATH", "MODEL_EXTRA_CFG_PATH"],
+        ["CUSTOM_MODEL_CONFIG_PATH"],
         None,
     ),
 

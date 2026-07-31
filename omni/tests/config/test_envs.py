@@ -23,7 +23,6 @@ def _clean_env(monkeypatch):
                 "PANGU_TOOL_CALL_ENDS_THINKING",
                 "MAX_DISPATCH_COMBINE_THRESHOLD",
                 "PROFILER_STOP_STEP", "KV_DUMP_PATH", "CUSTOM_MODEL_CONFIG_PATH",
-                "MODEL_EXTRA_CFG_PATH",
                 "NPU_TOP_K_TOP_P_SAMPLE_NOT_SUPPORT_FLOAT"}):
             monkeypatch.delenv(k, raising=False)
     import omni_npu.envs as envs
@@ -183,14 +182,8 @@ def test_default_none_for_unset_path_vars():
     assert envs.OMNI_PROFILE_TOKEN_THRESHOLD is None
 
 
-@pytest.mark.parametrize(
-    "legacy_name",
-    ["CUSTOM_MODEL_CONFIG_PATH", "MODEL_EXTRA_CFG_PATH"],
-)
-def test_custom_model_config_path_legacy_fallback(
-    monkeypatch, caplog, legacy_name
-):
-    monkeypatch.setenv(legacy_name, "/tmp/model-extra.json")
+def test_custom_model_config_path_legacy_fallback(monkeypatch, caplog):
+    monkeypatch.setenv("CUSTOM_MODEL_CONFIG_PATH", "/tmp/model-extra.json")
     import omni_npu.envs as envs
 
     with caplog.at_level(logging.WARNING, logger="omni_npu.envs"):
@@ -199,7 +192,8 @@ def test_custom_model_config_path_legacy_fallback(
             == "/tmp/model-extra.json"
         )
     assert any(
-        legacy_name in record.message and "deprecated" in record.message
+        "CUSTOM_MODEL_CONFIG_PATH" in record.message
+        and "deprecated" in record.message
         for record in caplog.records
     )
 
