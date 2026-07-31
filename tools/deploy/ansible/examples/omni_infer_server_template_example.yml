@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# Copy this file to playbooks/ and replace every REPLACE_WITH_* placeholder.
+#
+# This Playbook does not contain Inventory data. The Inventory must provide:
+# - top-level P, D and C groups plus ansible_user and an SSH credential;
+# - P hosts: ansible_host, host_ip, node_rank, kv_rank, node_port, api_port
+#   and ascend_rt_visible_devices;
+# - D hosts: ansible_host, host_ip, node_rank, node_port, api_port and
+#   ascend_rt_visible_devices;
+# - C hosts: ansible_host, node_rank and node_port.
+# In each multi-node Prefill Pod, at least one P host must have
+# ansible_host == host_ip so common can build its Proxy endpoint.
+# If D<number> subgroups are present, every D host must join its intended group.
+#
+# common calculates DECODE_SERVER_*, OMNI_PD_*, NODE_IP_LIST, NNODES and the
+# Proxy endpoint lists from Inventory. Do not duplicate them under vars.
+# See DEVELOPMENT_GUIDE.md sections 4.5 and 4.6 for public derived facts and
+# legacy migration mappings, and section 5 for the Inventory contract.
+- name: deploy an OmniInfer model
+  hosts: all
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  # Required because common tasks and launch templates read ansible_env.*.
+  gather_facts: true
+
+  # Required external inputs; common does not provide defaults for this block.
+  # LOG_PATH_IN_EXECUTOR is used by the default log fetch, while CODE_PATH is
+  # used by the enabled host synchronization below.
+  environment:
+    LOG_PATH: /data/log_path
+    LOG_PATH_IN_EXECUTOR: /data/log_path_in_executor
+    CODE_PATH: /data/local_code_path
+    SCRIPTS_PATH: /tmp/scripts_path
+    DOCKER_IMAGE_ID: "REPLACE_WITH_DOCKER_IMAGE"
+    DOCKER_NAME_P: "omni-infer-prefill"
+    DOCKER_NAME_D: "omni-infer-decode"
+    DOCKER_NAME_C: "omni-infer-proxy"
+
+  vars:
+    model: "REPLACE_WITH_MODEL_NAME"
+    # model_path is mounted into the container and rendered into both P/D
+    # launch scripts, so every service node must see the same absolute path.
+    model_path: "/path/to/model"
+
+    # Override only when the image stores OmniInfer outside /workspace.
+    # container_workspace: /workspace
+
+    # Add only model-specific entries here. Role-owned base envs and mounts
+    # remain active.
+    run_docker_profile:
+      envs: []
+      extra_mounts: []
+
+    # Controller-to-host synchronization. Set enabled to false when the image
+    # already contains all required code.
+    sync_code_profile:
+      host_sync:
+        enabled: true
+        source: "{{ ansible_env.CODE_PATH }}/"
+        destination: "{{ ansible_env.CODE_PATH }}/"
+        delete: false
+
+      # Configure these only when code must be copied from the host into an
+      # already-created container. Each value is a complete Bash command.
+      # container_copy:
+      #   prefill: "docker cp <source> $DOCKER_NAME_P:<destination>"
+      #   decode: "docker cp <source> $DOCKER_NAME_D:<destination>"
+      #   proxy: null
+
+    run_server_prefill_profile:
+      # Use pd_run_pangu_ultra_moe.sh when the model requires the Pangu runner.
+      runner: pd_run.sh
+      # Override only when runner is outside the default start_server directory.
+      # workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
+      docker_envs: {}
+      # Required by run_vllm_prefill.sh.j2. common calculates the right-hand
+      # value from Inventory, but this export must remain in the Playbook.
+      prepare_commands: |-
+        export SERVER_IP_LIST={{
+          DECODE_SERVER_IP_LIST_ALL
+          | replace(' ', '')
+          | trim
+          | quote
+        }}
+        # Add model-specific exports and preparation commands below.
+      # common does not choose model-specific limits or utilization values.
+      # Replace every REPLACE_WITH_* value before running the Playbook.
+      args:
+        - "--max-model-len REPLACE_WITH_PREFILL_MAX_MODEL_LEN"
+        - "--gpu-util REPLACE_WITH_PREFILL_GPU_UTILIZATION"
+        # - >-
+        #   --extra-args '<model-specific vLLM arguments>'
+
+    run_server_decode_profile:
+      # Keep the Prefill and Decode runners from the same model family.
+      runner: pd_run.sh
+      # Override only when runner is outside the default start_server directory.
+      # workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
+      docker_envs: {}
+      # Required by run_vllm_decode.sh.j2. common calculates both right-hand
+      # values from Inventory, but these exports must remain in the Playbook.
+      prepare_commands: |-
+        export DECODE_DATA_PARALLEL_SIZE={{ DECODE_SERVER_BY_GROUP | quote }}
+        export SERVER_IP_LIST={{
+          DECODE_SERVER_IP_LIST_BY_GROUP
+          | replace(' ', '')
+          | trim
+          | quote
+        }}
+        # Add model-specific exports and preparation commands below.
+      # common does not choose model-specific limits, parallelism or
+      # utilization values. Replace every REPLACE_WITH_* value before use.
+      args:
+        - "--max-model-len REPLACE_WITH_DECODE_MAX_MODEL_LEN"
+        - "--tp REPLACE_WITH_DECODE_TENSOR_PARALLEL_SIZE"
+        - "--gpu-util REPLACE_WITH_DECODE_GPU_UTILIZATION"
+        # - >-
+        #   --extra-args '<model-specific vLLM arguments>'
+
+    # The following profiles are optional. Keep them absent when defaults are
+    # sufficient; see DEVELOPMENT_GUIDE.md for their complete contracts.
+
+    # run_server_common_profile:
+    #   kv_connector: LLMDataDistConnector
+
+    # Proxy endpoints and listen ports come from Inventory-derived facts.
+    # Only model-specific Proxy settings need to be declared here.
+    # run_proxy_profile:
+    #   prepare_commands: |-
+    #     export NAME=value
+    #   args: []
+
+    # pip_install_profile:
+    #   prefill: "docker exec $DOCKER_NAME_P <install-command>"
+    #   decode: "docker exec $DOCKER_NAME_D <install-command>"
+    #   proxy: null
+
+    # proc_bind_profile:
+    #   enabled: true
+
+    # Mooncake is uncommon. Configure mooncake_profile only when the selected
+    # KV Connector explicitly requires it. In that case Inventory all.vars
+    # must also define etcd_port, mooncake_master_port,
+    # mooncake_metrics_port and proxy_port, with at least one C host.
+
+  tasks:
+    # Use elastic_server instead when the Playbook needs its scaling lifecycle.
+    # Its delete_node tag additionally requires delete_node_profile.ips through
+    # extra vars; do not store production node IPs in this Playbook.
+    - ansible.builtin.import_role:
+        name: common

@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: Generate a script to kill all nginx processes in the container.
+  ansible.builtin.copy:
+    content: |
+      #!/bin/bash
+
+      ps aux | grep "nginx" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+    dest: "$SCRIPTS_PATH/kill_nginx_processes.sh"
+    mode: '0750'
+  when: "'C' in group_names"
+  tags: run_proxy
+
+- name: Kill all Python processes in the container of proxy.
+  ansible.builtin.command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c $SCRIPTS_PATH/kill_nginx_processes.sh"
+  environment:
+    DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+  failed_when: false
+  no_log: true
+  when: "'C' in group_names"
+  tags: run_proxy
+
+- name: Resolve the run_proxy profile.
+  ansible.builtin.set_fact:
+    resolved_run_proxy_profile: >-
+      {{ run_proxy_profile_defaults | combine(run_proxy_profile, recursive=true) }}
+  when: "'C' in group_names"
+  tags: run_proxy
+
+- name: Generate the Proxy docker start command.
+  ansible.builtin.set_fact:
+    resolved_run_proxy_cmd_c: >-
+      {{ docker_exec_cmd }}
+      -d $DOCKER_NAME_C
+      /bin/bash -c $SCRIPTS_PATH/run_proxy_server.sh
+  when: "'C' in group_names"
+  tags: run_proxy
+
+- name: Generate the Proxy launch script.
+  ansible.builtin.template:
+    src: run_proxy.sh.j2
+    dest: "$SCRIPTS_PATH/run_proxy_server.sh"
+    mode: '0750'
+  when: "'C' in group_names"
+  tags: run_proxy
+
+- name: Start the Proxy.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_run_proxy_cmd_c }}"
+  environment:
+    DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+  when: "'C' in group_names"
+  tags: run_proxy

@@ -30,19 +30,27 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
 
 ### 使用ansible一键部署
 
-详见[ansible部署文档](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/README.md)。以下为快速部署示例。
+详见 [Ansible 部署文档](../tools/deploy/ansible/README.md)。以下为快速部署示例。
 
 #### 环境准备
 
-安装ansible，参考[文档](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md#%E7%8E%AF%E5%A2%83%E5%87%86%E5%A4%87-1)。
+安装 Ansible，参考
+[安装指南](./omni_infer_installation_guide.md#环境准备-1)。
 
 #### 修改配置文件
 
-需要修改`omni_infer_inventory_used_for_xP1D.yml`和 `omni_infer_server_template` 两处配置文件，位于`omniinfer/tools/ansible/templete/`路径下。以2P1D为例:
+部署配置由 Inventory 和模型 Playbook 两部分组成。Inventory 模板位于
+`omniinfer/tools/deploy/ansible/inventories/`，当前提供 1P1D、2P1D 和 4P1D
+三种拓扑。模型 Playbook 位于 `omniinfer/tools/deploy/ansible/playbooks/`。
+本节以 2P1D 部署 PanguV2 为例。
 
 1. **omni_infer_inventory_used_for_2P1D.yml**
 
-   将`p0/p1/d0/d1/c0`下面的`ansible_host` 与 `host_ip` 值改为对应的IP。<span style="color:red; font-weight:bold">对于多机组 D 的场景，所有 D 节点的 `host_ip` 为主节点 d0 的 IP。</span>
+   建议先将
+   `inventories/omni_infer_inventory_used_for_2P1D.yml` 复制到仓库外，再填写真实
+   地址和凭据。将 `p0/p1/d0/d1/c0` 下的 `ansible_host` 与 `host_ip`
+   改为对应 IP。<span style="color:red; font-weight:bold">对于多节点 D 场景，
+   所有 D 节点的 `host_ip` 均为主节点 d0 的 IP。</span>
 
 
    ```YAML
@@ -78,12 +86,14 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
      C:
        hosts:
          c0:
-           ansible_host: "127.0.0.1"  # C0 节点的IP，即 Global Proxy 节点
+           ansible_host: "127.0.0.1"  # C0 节点的 IP，即 Omni Proxy 节点
            ...
 
    ```
 
-   生成私钥文件，参考[文档](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/README.md#%E5%AF%86%E9%92%A5%E6%96%87%E4%BB%B6%E7%9A%84%E5%87%86%E5%A4%87)。将`ansible_ssh_private_key_file:`修改为私钥文件路径：
+   生成私钥文件，参考
+   [Ansible 部署文档](../tools/deploy/ansible/README.md#密钥文件的准备)。将
+   `ansible_ssh_private_key_file` 修改为私钥路径：
 
    ```YAML
     all:
@@ -93,32 +103,42 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
         ...
    ```
 
-2. **omni_infer_server_template.yml**
+2. **omni_infer_server_template_panguv2.yml**
 
-    修改以下环境变量
-    ```yaml
-    environment:
-        # Global Configuration
-        LOG_PATH: "/data/log_path"
-        MODEL_PATH: "/data/models/DeepSeek-R1-w8a8"  #模型文件路径
-        LOG_PATH_IN_EXECUTOR: "/data/log_path_in_executor"
-        CODE_PATH: "/data/local_code_path"  # omniinfer本地代码路径
-        HTTP_PROXY: ""  # 下载nginx的HTTP代理地址，如果不需要代理可以留空
+   修改 `playbooks/omni_infer_server_template_panguv2.yml` 中的环境路径、镜像、
+   容器名称和模型路径：
 
-        # Configuration for containers
-        DOCKER_IMAGE_ID: "REPOSITORY:TAG" #镜像与标签
-        DOCKER_NAME_P: "you_name_omni_infer_prefill" # P容器名称
-        DOCKER_NAME_D: "you_name_omni_infer_decode"  # D容器名称
-        DOCKER_NAME_C: "you_name_omni_infer_proxy"   # Proxy 容器名称
-    ```
+   ```yaml
+   environment:
+     LOG_PATH: /data/log_path
+     LOG_PATH_IN_EXECUTOR: /data/log_path_in_executor
+     CODE_PATH: /data/local_code_path
+     DOCKER_IMAGE_ID: "REPOSITORY:TAG"
+     DOCKER_NAME_P: "you_name_omni_infer_prefill"
+     DOCKER_NAME_D: "you_name_omni_infer_decode"
+     DOCKER_NAME_C: "you_name_omni_infer_proxy"
+     SCRIPTS_PATH: /tmp/scripts_path
 
-配置文件详细解释说明请参考[文档](https://gitee.com/omniai/omniinfer/blob/master/tools/ansible/template/README.md#%E7%9B%B8%E5%85%B3%E6%96%87%E4%BB%B6%E8%A7%A3%E9%87%8A%E8%AF%B4%E6%98%8E)。
+   vars:
+     model: pangu-v2-92b
+     model_path: /data/models/Pangu-V2-92B
+   ```
+
+   同时检查 `run_docker_profile.extra_mounts` 是否覆盖模型和源码使用的宿主机
+   路径。服务参数分别由 `run_server_prefill_profile`、
+   `run_server_decode_profile` 和 `run_proxy_profile` 配置。详细字段说明见
+   [Ansible 开发与部署指南](../tools/deploy/ansible/DEVELOPMENT_GUIDE.md)。
 
 #### 执行命令
 
 ```bash
-cd omniinfer/tools/ansible/template
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml
+cd omniinfer/tools/deploy/ansible
+
+INVENTORY=inventories/omni_infer_inventory_used_for_2P1D.yml
+PLAYBOOK=playbooks/omni_infer_server_template_panguv2.yml
+
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --syntax-check
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK"
 ```
 
 #### curl 测试
@@ -126,12 +146,13 @@ ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_tem
 拉起成功后，可以通过curl命令进行测试：
 
 ```bash
-curl -X POST http://127.0.0.1:7000/v1/completions -H "Content-Type:application/json" -d '{"model": "deepseek","temperature":0,"max_tokens":50,"prompt": "how are you?", "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}'
+curl -X POST http://127.0.0.1:7000/v1/completions -H "Content-Type:application/json" -d '{"model": "pangu-v2-92b","temperature":0,"max_tokens":50,"prompt": "how are you?", "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}'
 ```
 
 #### 注意事项
 
-- ansible 每次执行时，会对vllm代码进行`checkout -f`，若修改代码，请确保代码已提交或暂存。
+- `sync_code` 会将 `CODE_PATH` 下的源码同步到目标机并复制进容器。执行前请确认
+  `CODE_PATH` 指向本次需要部署的工作区，且目标路径中没有需要单独保留的同名文件。
 
 ## 更高性能
 
@@ -142,23 +163,33 @@ curl -X POST http://127.0.0.1:7000/v1/completions -H "Content-Type:application/j
 首次启动服务时，模型会从头编译。建议首次成功启动后，重新执行以下命令以启用图缓存，提升性能：
 
 ```bash
-cd omniinfer/tools/ansible/template
-ansible-playbook -i omni_infer_inventory_used_for_2P1D.yml omni_infer_server_template.yml --tags run_server
+cd omniinfer/tools/deploy/ansible
+ansible-playbook \
+  -i inventories/omni_infer_inventory_used_for_2P1D.yml \
+  playbooks/omni_infer_server_template_panguv2.yml \
+  --tags run_server
 ```
 
 
 **2. 调整 proxy batch size**
 
-当前的默认值为 25。建议根据每个 die 的平均并发量大小(n)进行调整。推荐值为(n+1)。进入proxy容器，在 /usr/local/nginx/conf/nginx.conf 文件中修改该值，然后执行 `nginx -c /usr/local/nginx/conf/nginx.conf -s reload` 以应用更改。
+在 PanguV2 Playbook 的 `run_proxy_profile` 中调整
+`--omni-proxy-prefill-max-num-seqs` 和
+`--omni-proxy-decode-max-num-seqs`。修改后使用 `--tags run_proxy`
+重新生成配置并拉起 Proxy；不要直接修改容器内的 nginx 配置，否则后续部署会覆盖
+这些修改。
 
 
 
 **3. 增加 batch size**
 
-ansible部署默认开启 MTP 以优化性能。如需调整 `--max-num-seqs`（batch size），需同步修改omniinfer本地代码路径下 omniinfer/tests/test_config/test_config_decode.json中`decode_gear_list` 的值：
+在 PanguV2 Playbook 的 Prefill/Decode profile 中调整 `--max-num-seqs`
+（batch size）。如果同时将 `--num-speculative-tokens` 调整为大于 0 以启用 MTP，
+还需要同步修改 OmniInfer 源码中对应模型配置的 `decode_gear_list`：
 
 ```JSON
 "decode_gear_list": [batch_size * (1+num_speculative_tokens)]
 ```
 
- 以MTP 1为例，`--max-num-seqs`设置为32，`"decode_gear_list":[64]`。
+以 MTP 1 为例，`--max-num-seqs` 设置为 32 时，
+`decode_gear_list` 应包含 64。具体配置文件由所用模型决定。

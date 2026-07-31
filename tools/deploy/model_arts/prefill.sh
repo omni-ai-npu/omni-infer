@@ -93,7 +93,6 @@ export LCCL_PARALLEL=${LCCL_PARALLEL:-0}
 export LOCAL_DECODE_SERVER_IP_LIST=${LOCAL_DECODE_SERVER_IP_LIST:-}
 export MASTER_PORT=${MASTER_PORT:-8000}
 
-export OMNI_USE_DSV3=${OMNI_USE_DSV3:-1}
 export OMNI_REUSE_PREFILLED_TOKENS=${OMNI_REUSE_PREFILLED_TOKENS:-1}
 export OMNI_SKIP_DECODE_TOKENIZE=${OMNI_SKIP_DECODE_TOKENIZE:-1}
 export PYTORCH_NPU_ALLOC_CONF=${PYTORCH_NPU_ALLOC_CONF:-expandable_segments:True}
@@ -165,7 +164,7 @@ export ENABLE_OVERWRITE_REQ_IDS=${ENABLE_OVERWRITE_REQ_IDS:-0}
 export HCCL_CONNECT_TIMEOUT=${HCCL_CONNECT_TIMEOUT:-2200}
 export HCCL_BUFFSIZE=${HCCL_BUFFSIZE:-100}
 
-echo "MODEL_EXTRA_CFG_PATH is ${MODEL_EXTRA_CFG_PATH}, reasoning_parser is '${reasoning_parser}', gpu_util is ${gpu_util}, max_model_len is ${max_model_len}, max_batch_tokens is ${max_num_batched_tokens}, speculative_config is '${speculative_config}', additional_config is '${additional_config}'" >> ${LOG_PATH}/server.log 2>&1
+echo "reasoning_parser is '${reasoning_parser}', gpu_util is ${gpu_util}, max_model_len is ${max_model_len}, max_batch_tokens is ${max_num_batched_tokens}, speculative_config is '${speculative_config}', additional_config is '${additional_config}'" >> ${LOG_PATH}/server.log 2>&1
 
 if [ ! -e "/usr/local/Ascend/latest" ]; then
     mkdir -p /usr/local/Ascend/latest
@@ -332,4 +331,3 @@ else
     echo "${cmd[@]}" >> ${LOG_PATH}/server.log 2>&1
     "${cmd[@]}" >> ${LOG_PATH}/server.log 2>&1 &
 fi
-
