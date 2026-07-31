@@ -292,7 +292,6 @@ export PYTHONPATH=/usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHO
 export VLLM_USE_V1=1
 export VLLM_WORKER_MULTIPROC_METHOD=fork
 export USING_LCCL_COM=0
-export OMNI_USE_DSV3=1
 export VLLM_ENABLE_MC2
 
 # Turn on these two variables to enable proc_bind

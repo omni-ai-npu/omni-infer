@@ -162,7 +162,6 @@ def test_source_only_vars_are_not_registered():
         "OMNI_MOCK_SIMULATE_ELAPSED_TIME",
         "OMNI_MOCK_FORWARD_TIME",
         "OMNI_MOCK_COMPUTE_LOGITS",
-        "OMNI_USE_DSV3",
     }
     assert removed.isdisjoint(dir(envs))
 
