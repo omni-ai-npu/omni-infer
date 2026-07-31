@@ -19,7 +19,7 @@
 [通用 Playbook 示例](examples/omni_infer_server_template_example.yml)。
 该文件不是生产部署入口。
 
-`playbooks/` 和 `roles/` 是部署入口。`inventory/` 保留 1P1D、2P1D 和
+`playbooks/` 和 `roles/` 是部署入口。`inventories/` 保留 1P1D、2P1D 和
 4P1D 的拓扑模板；使用前应复制到仓库外并填写实际连接信息。新增模型场景和公共
 流程应落在 `playbooks/`、`roles/common/` 或对应的专用 role 中。
 
@@ -124,7 +124,7 @@ yum install sshpass
 ### Inventory
 
 仓库不提交包含真实环境信息的生产 Inventory。用户应从
-[`inventory/`](inventory/) 中选择 1P1D、2P1D 或 4P1D 拓扑模板，复制到
+[`inventories/`](inventories/) 中选择 1P1D、2P1D 或 4P1D 拓扑模板，复制到
 仓库外并填写实际地址与凭据。[本地 1P1D+C fixture](examples/inventory_1p1d.yml)
 仅使用 loopback 地址，可用于语法、任务列表和 check-mode 验证；不能用于完整
 部署。

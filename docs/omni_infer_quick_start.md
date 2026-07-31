@@ -40,14 +40,14 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
 #### 修改配置文件
 
 部署配置由 Inventory 和模型 Playbook 两部分组成。Inventory 模板位于
-`omniinfer/tools/deploy/ansible/inventory/`，当前提供 1P1D、2P1D 和 4P1D
+`omniinfer/tools/deploy/ansible/inventories/`，当前提供 1P1D、2P1D 和 4P1D
 三种拓扑。模型 Playbook 位于 `omniinfer/tools/deploy/ansible/playbooks/`。
 本节以 2P1D 部署 PanguV2 为例。
 
 1. **omni_infer_inventory_used_for_2P1D.yml**
 
    建议先将
-   `inventory/omni_infer_inventory_used_for_2P1D.yml` 复制到仓库外，再填写真实
+   `inventories/omni_infer_inventory_used_for_2P1D.yml` 复制到仓库外，再填写真实
    地址和凭据。将 `p0/p1/d0/d1/c0` 下的 `ansible_host` 与 `host_ip`
    改为对应 IP。<span style="color:red; font-weight:bold">对于多节点 D 场景，
    所有 D 节点的 `host_ip` 均为主节点 d0 的 IP。</span>
@@ -134,7 +134,7 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
 ```bash
 cd omniinfer/tools/deploy/ansible
 
-INVENTORY=inventory/omni_infer_inventory_used_for_2P1D.yml
+INVENTORY=inventories/omni_infer_inventory_used_for_2P1D.yml
 PLAYBOOK=playbooks/omni_infer_server_template_panguv2.yml
 
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --syntax-check
@@ -165,7 +165,7 @@ curl -X POST http://127.0.0.1:7000/v1/completions -H "Content-Type:application/j
 ```bash
 cd omniinfer/tools/deploy/ansible
 ansible-playbook \
-  -i inventory/omni_infer_inventory_used_for_2P1D.yml \
+  -i inventories/omni_infer_inventory_used_for_2P1D.yml \
   playbooks/omni_infer_server_template_panguv2.yml \
   --tags run_server
 ```

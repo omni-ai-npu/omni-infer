@@ -24,7 +24,7 @@ Playbook 写法、Inventory 约定、Profile、Tags 和 Role 扩展方式。
 `elastic_server` 一样新增对应 role，并按需要复用已有阶段。
 
 旧的单文件 Playbook 已移除。新模型和部署流程统一使用 `playbooks/`、
-`roles/`；1P1D、2P1D 和 4P1D 的拓扑模板保存在 `inventory/`。
+`roles/`；1P1D、2P1D 和 4P1D 的拓扑模板保存在 `inventories/`。
 
 ## 2. 目录结构
 
@@ -35,7 +35,7 @@ tools/deploy/ansible/
 ├── examples/
 │   ├── inventory_1p1d.yml             # 仅供本地解析/check 的安全拓扑 fixture
 │   └── omni_infer_server_template_example.yml  # 可复制的通用 Playbook 示例
-├── inventory/
+├── inventories/
 │   ├── omni_infer_inventory_used_for_1P1D.yml
 │   ├── omni_infer_inventory_used_for_2P1D.yml
 │   └── omni_infer_inventory_used_for_4P1D.yml
@@ -457,16 +457,16 @@ vars:
 ### 5.1 当前 Inventory 文件
 
 仓库不提交包含真实环境信息的生产 Inventory。用户应参考本节字段结构，从
-`inventory/` 复制对应拓扑到仓库外，再填写实际地址和凭据。仓库提供的
+`inventories/` 复制对应拓扑到仓库外，再填写实际地址和凭据。仓库提供的
 `examples/inventory_1p1d.yml` 只包含 loopback 地址和本地连接，用于
 `--syntax-check`、任务列表及受控的 check-mode 验证。
 
 | 文件 | 用途和兼容性 |
 | --- | --- |
 | `examples/inventory_1p1d.yml` | 当前 roles 可解析的安全 1P1D+C fixture；仅用于语法、列表和 check-mode 验证，不能完整部署。 |
-| `inventory/omni_infer_inventory_used_for_1P1D.yml` | 1P1D 拓扑模板。 |
-| `inventory/omni_infer_inventory_used_for_2P1D.yml` | 2P1D 拓扑模板，也可用于验证新增 Prefill 节点后的拓扑。 |
-| `inventory/omni_infer_inventory_used_for_4P1D.yml` | 4P1D 拓扑模板。 |
+| `inventories/omni_infer_inventory_used_for_1P1D.yml` | 1P1D 拓扑模板。 |
+| `inventories/omni_infer_inventory_used_for_2P1D.yml` | 2P1D 拓扑模板，也可用于验证新增 Prefill 节点后的拓扑。 |
+| `inventories/omni_infer_inventory_used_for_4P1D.yml` | 4P1D 拓扑模板。 |
 
 Inventory 中的 IP、密码和私钥路径都属于环境数据。实际部署 Inventory 应保存在
 仓库外；不要把真实环境地址或凭据提交到仓库。

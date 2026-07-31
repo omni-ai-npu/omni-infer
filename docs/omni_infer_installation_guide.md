@@ -262,7 +262,7 @@ Ansible 详细说明参考
 [Ansible 部署文档](../tools/deploy/ansible/README.md)。当前部署框架使用
 `playbooks/` 和 `roles/`：
 
-1. `tools/deploy/ansible/inventory/` 提供 1P1D、2P1D、4P1D 三种拓扑模板；
+1. `tools/deploy/ansible/inventories/` 提供 1P1D、2P1D、4P1D 三种拓扑模板；
 2. `tools/deploy/ansible/playbooks/` 保存当前维护的模型部署入口，现支持 DSV32 和
    PanguV2；
 3. `tools/deploy/ansible/roles/` 保存公共任务和弹性生命周期实现，由 Playbook
@@ -375,7 +375,7 @@ yum install openssh-server
 
 Ansible 配置由 Inventory 和模型 Playbook 两部分组成。
 
-`tools/deploy/ansible/inventory/` 中提供以下拓扑模板：
+`tools/deploy/ansible/inventories/` 中提供以下拓扑模板：
 
 - `omni_infer_inventory_used_for_1P1D.yml`
 - `omni_infer_inventory_used_for_2P1D.yml`
@@ -408,7 +408,7 @@ Ansible 配置由 Inventory 和模型 Playbook 两部分组成。
 ```bash
 cd omniinfer/tools/deploy/ansible
 
-INVENTORY=inventory/omni_infer_inventory_used_for_2P1D.yml
+INVENTORY=inventories/omni_infer_inventory_used_for_2P1D.yml
 PLAYBOOK=playbooks/omni_infer_server_template_panguv2.yml
 
 # 部署前检查
