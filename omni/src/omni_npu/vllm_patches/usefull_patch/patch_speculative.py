@@ -11,7 +11,7 @@ from vllm.config.utils import config
 from vllm.config.speculative import SpeculativeConfig
 from vllm.config import speculative
 from vllm.utils.import_utils import LazyLoader
-import os
+
 if TYPE_CHECKING:
     from transformers import PretrainedConfig
 
@@ -23,6 +23,7 @@ else:
         "model_executor", globals(), "vllm.model_executor.layers.quantization"
     )
 
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 
@@ -62,7 +63,7 @@ class PanguV2MoeSpeculativeConfigPatch(VLLMPatch):
 
         # patch start: for openpangu_v2_mtp
         is_openpangu_vl = hf_config.model_type in ("openpangu_v2_vl_moe", "openpangu_v2_omni_moe")
-        patch_dirs = os.getenv("OMNI_NPU_PATCHES_DIR", "")
+        patch_dirs = envs.OMNI_NPU_PATCHES_DIR
         has_pangu_v2_moe_patch = "pangu_v2_moe" in {item.strip() for item in patch_dirs.split(",")}
         is_pangu_v2_moe_vl = is_openpangu_vl and has_pangu_v2_moe_patch
         is_openpangu_mtp_vl = is_openpangu_vl and not has_pangu_v2_moe_patch

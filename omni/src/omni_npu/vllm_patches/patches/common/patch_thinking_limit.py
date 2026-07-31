@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from typing import Any
 
 import torch
@@ -28,6 +27,7 @@ from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 from vllm.v1.worker.gpu_input_batch import InputBatch
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
+from omni_npu import envs
 from omni_npu.v1.config import ReasoningConfig
 from omni_npu.v1.sample.thinking_ban_state import (
     maybe_create_thinking_ban_state_holder,
@@ -75,16 +75,16 @@ def _coerce_reasoning_config(value: Any) -> ReasoningConfig | None:
 # Environment variable mirroring ``--reasoning-config``. 
 # when the CLI flag is absent (or when ``EngineArgs`` is constructed
 # programmatically without ``from_cli_args``). The environment variable always wins.
-_REASONING_CONFIG_ENV = "REASONING_CONFIG"
+_REASONING_CONFIG_ENV = "OMNI_REASONING_CONFIG"
 
 
 def _reasoning_config_from_env() -> ReasoningConfig | None:
-    """Resolve a ``ReasoningConfig`` from the ``REASONING_CONFIG`` env var.
+    """Resolve a ``ReasoningConfig`` from ``OMNI_REASONING_CONFIG``.
 
     The value must be the same JSON string accepted by ``--reasoning-config``.
     Returns ``None`` when the variable is unset/empty or fails to parse.
     """
-    raw = os.environ.get(_REASONING_CONFIG_ENV)
+    raw = envs.OMNI_REASONING_CONFIG
     if not raw:
         return None
     try:

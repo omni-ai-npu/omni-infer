@@ -31,8 +31,6 @@ Tuning:
                                               (default 20)
 """
 
-import os
-
 import torch
 from torch.distributed import ProcessGroup, ReduceOp
 
@@ -40,19 +38,14 @@ from vllm.config import ParallelConfig
 from vllm.logger import init_logger
 from vllm.v1.engine.core import DPEngineCoreProc
 
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 logger = init_logger(__name__)
 
 
 def _bench_aligned_decode_threshold() -> int:
-    try:
-        return int(os.environ.get("OMNI_NPU_BENCH_ALIGNED_DECODE_THRESHOLD", "20"))
-    except ValueError:
-        logger.warning(
-            "Invalid OMNI_NPU_BENCH_ALIGNED_DECODE_THRESHOLD, falling back to 20"
-        )
-        return 20
+    return envs.OMNI_NPU_BENCH_ALIGNED_DECODE_THRESHOLD
 
 
 @register_patch("BenchAlignedDecodeParallelConfigPatch", ParallelConfig)

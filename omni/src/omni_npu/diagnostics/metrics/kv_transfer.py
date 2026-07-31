@@ -8,7 +8,6 @@
 worker 每步 collect() 塞入 connector 的 stats，经 aggregate 汇到前端单进程 observe 发射。
 """
 
-import os
 import threading
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -19,12 +18,13 @@ from vllm.distributed.kv_transfer.kv_connector.v1.metrics import (
 )
 from vllm.logger import init_logger
 
+from omni_npu import envs
 from omni_npu.diagnostics.metrics import worker_mem
 
 logger = init_logger(__name__)
 
 # OMNI_METRICS_KV_TRANSFER_SELFTEST=1 时 DecodeWorker 启动注入一次合成失败，供 smoke test。
-_SELFTEST = os.getenv("OMNI_METRICS_KV_TRANSFER_SELFTEST", "0") == "1"
+_SELFTEST = envs.OMNI_METRICS_KV_TRANSFER_SELFTEST
 
 _lock = threading.Lock()
 _counts: dict[str, int] = {}  # kind -> 累计失败数（自上次 drain）

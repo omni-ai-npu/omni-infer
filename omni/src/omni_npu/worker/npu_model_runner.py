@@ -67,6 +67,7 @@ from omni_npu.compilation.acl_graph import (
     reset_stale_aclgraph_resources,
     set_graph_params,
 )
+from omni_npu.configs import OmniAdditionalConfig
 from omni_npu.model_config.config_loader.loader import model_extra_config
 from omni_npu.sample.sampler import NPUSamplerV1, ENABLE_NPU_PENALTY_CACHE
 from omni_npu.sample.rejection_sampler import NPURejectionSampler
@@ -135,17 +136,10 @@ class NPUModelRunner(GPUModelRunner):
         if vllm_config.additional_config is not None:
             from omni_npu.compilation.npugraph_ex_config import init_aclgraph_config
             init_aclgraph_config(vllm_config)
-            self.use_rejection_sampler = vllm_config.additional_config.get("use_rejection_sampler", False)
-            self.use_penalty = vllm_config.additional_config.get("use_penalty", False)
-            self.total_step = vllm_config.additional_config.get("multi_step", 1)
-            self.combine_block = vllm_config.additional_config.get("combine_block", 1)
-            self.use_process_before_sample = vllm_config.additional_config.get("use_process_before_sample", False)
+            omni_add = OmniAdditionalConfig.from_vllm_config(vllm_config)
+            self.combine_block = omni_add.combine_block
         else:
-            self.use_rejection_sampler = False
-            self.use_penalty = False
-            self.total_step = 1
             self.combine_block = 1
-            self.use_process_before_sample = False
         self.use_spec_decode = False
         num_tokens_per_reqs_decode = (
             1 if not self.use_spec_decode

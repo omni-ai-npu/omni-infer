@@ -10,7 +10,6 @@
 # See ``_streaming_relay.py`` for the full rationale.
 
 
-import os
 from collections.abc import Sequence
 
 from vllm.reasoning.deepseek_r1_reasoning_parser import DeepSeekR1ReasoningParser
@@ -19,6 +18,7 @@ from vllm.tokenizers import TokenizerLike
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.logger import logger
 
+from omni_npu import envs
 from omni_npu.v1.parsers._streaming_relay import stash_reasoning_from
 
 
@@ -44,16 +44,16 @@ class PanguReasoningParser(DeepSeekR1ReasoningParser):
         self.delta_token_ids = []
         self.is_reasoning_end_count = 0
         # Optional implicit-end signal; None unless opted-in via env var
-        # PANGU_TOOL_CALL_ENDS_THINKING=1, or when the tokenizer doesn't
+        # OMNI_PANGU_TOOL_CALL_ENDS_THINKING=1, or when the tokenizer doesn't
         # carry the marker. Default (env unset) matches pre-9c14d17e.
         self.tool_call_start_token_id = (
             self.vocab.get(self.tool_call_start_token)
             if self.tool_call_start_token is not None
             else None
         )
-        if os.environ.get("PANGU_TOOL_CALL_ENDS_THINKING", "0") == "1":
+        if envs.OMNI_PANGU_TOOL_CALL_ENDS_THINKING:
             logger.info(
-                "PANGU_TOOL_CALL_ENDS_THINKING=1: tool-call-start marker %r "
+                "OMNI_PANGU_TOOL_CALL_ENDS_THINKING=1: tool-call-start marker %r "
                 "will implicitly end reasoning", self.tool_call_start_token
             )
         chat_kwargs = kwargs.get("chat_template_kwargs", {}) or {}
@@ -79,10 +79,10 @@ class PanguReasoningParser(DeepSeekR1ReasoningParser):
     @property
     def tool_call_start_token(self) -> str | None:
         """The active tool-call-start token as an implicit reasoning-end marker.
-        Returns None unless opted in via env var PANGU_TOOL_CALL_ENDS_THINKING=1.
+        Returns None unless opted in via OMNI_PANGU_TOOL_CALL_ENDS_THINKING=1.
         Default behavior (env unset) matches pre-9c14d17e: marker is ignored.
         """
-        if os.environ.get("PANGU_TOOL_CALL_ENDS_THINKING", "0") != "1":
+        if not envs.OMNI_PANGU_TOOL_CALL_ENDS_THINKING:
             return None
         if self.vocab.get("<|tool_call_start|>"):
             return "<|tool_call_start|>"

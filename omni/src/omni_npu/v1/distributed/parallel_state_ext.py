@@ -31,6 +31,8 @@ from vllm.distributed.parallel_state import (
 )
 from vllm.logger import init_logger
 
+from omni_npu import envs
+
 logger = init_logger(__name__)
 
 _DIE_PER_NODE_910C = 16
@@ -147,7 +149,7 @@ def initialize_local_world_group(backend: str | None = None) -> None:
 
     if local_size is None:
         # Dev/mock: infer local size from visible devices when cluster env is absent.
-        if int(os.getenv("NO_NPU_MOCK", "0")):
+        if envs.OMNI_NO_NPU_MOCK:
             visible = os.getenv("ASCEND_RT_VISIBLE_DEVICES", "")
             local_size = len(visible.split(",")) if visible else 1
         else:

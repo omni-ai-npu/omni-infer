@@ -17,8 +17,10 @@ from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.distributed.parallel_state import get_world_group
 from vllm.logger import init_logger
 
+from omni_npu import envs
+
 logger = init_logger(__name__)
-_kv_dump_path: str = os.environ.get("KV_DUMP_PATH", "")
+_kv_dump_path: str = envs.OMNI_KV_DUMP_PATH
 
 
 def _make_run_id() -> str:

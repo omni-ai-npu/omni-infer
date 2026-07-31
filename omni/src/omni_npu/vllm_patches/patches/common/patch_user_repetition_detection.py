@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import enum
 import json
-import os
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -33,6 +32,7 @@ from vllm.v1.core.sched.scheduler import Scheduler as OriginScheduler
 import vllm.v1.engine as engine_module
 import vllm.v1.request as request_module
 
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from omni_npu.vllm_patches.patches.common.patch_thinking_limit import (
     ChatCompletionRequestPatch as _UpstreamChatCompletionRequestPatch,
@@ -128,16 +128,16 @@ def _coerce_repetition_detection(
 # Environment variable mirroring ``--repetition-detection``. Used as a fallback
 # when the CLI flag is absent (or when ``EngineArgs`` is constructed
 # programmatically without ``from_cli_args``). The CLI flag always wins.
-_REPETITION_CONFIG_ENV = "REPETITION_DETECTION_CONFIG"
+_REPETITION_CONFIG_ENV = "OMNI_REPETITION_DETECTION_CONFIG"
 
 
 def _repetition_config_from_env() -> RepetitionDetectionParams | None:
-    """Resolve a ``repetition_detection`` from the ``REPETITION_DETECTION_CONFIG`` env var.
+    """Resolve repetition detection from ``OMNI_REPETITION_DETECTION_CONFIG``.
 
     The value must be the same JSON string accepted by ``--repetition-detection``.
     Returns ``None`` when the variable is unset/empty or fails to parse.
     """
-    raw = os.environ.get(_REPETITION_CONFIG_ENV)
+    raw = envs.OMNI_REPETITION_DETECTION_CONFIG
     if not raw:
         return None
     try:

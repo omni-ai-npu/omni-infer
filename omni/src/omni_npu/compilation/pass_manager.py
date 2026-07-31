@@ -6,6 +6,7 @@ from vllm.compilation.passes.inductor_pass import get_pass_context
 from vllm.compilation.passes.pass_manager import PostGradPassManager
 from vllm.compilation.passes.vllm_inductor_pass import VllmInductorPass
 
+from omni_npu.configs import OmniAdditionalConfig
 from omni_npu.logger import update_configure_vllm_root_logger
 
 
@@ -37,9 +38,10 @@ class GraphPassManager(PostGradPassManager):
         self.passes.append(pass_)
 
     def configure(self, config: VllmConfig):
-        additional_config = config.additional_config or {}
-        self.npugraph_ex_config: dict = additional_config.get(
-            "npugraph_ex_config", {}
+        self.npugraph_ex_config: dict = (
+            OmniAdditionalConfig.from_vllm_config(
+                config
+            ).npugraph_ex_config
         )
         if self.npugraph_ex_config.get("merge_dynamic_quant", False):
             from omni_npu.compilation.passes.merge_dynamic_quant_pass import (

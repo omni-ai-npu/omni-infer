@@ -16,7 +16,6 @@ Two patches are registered here and applied automatically by the patch manager:
     `EngineHangError` into a 503 JSON response.
 """
 
-import os
 from http import HTTPStatus
 
 from fastapi.responses import JSONResponse
@@ -26,6 +25,7 @@ from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.v1.engine.output_processor import OutputProcessor
 import vllm.entrypoints.serve.instrumentator.health as health_mod
 
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from omni_npu.diagnostics.watchdog import heartbeat
 
@@ -48,7 +48,7 @@ class EngineHangError(Exception):
 
 def _hang_config() -> float:
     """Hang-detection threshold in seconds."""
-    return float(os.getenv("OMNI_HEALTH_HANG_SEC", "240"))
+    return float(envs.OMNI_HEALTH_HANG_SEC)
 
 
 # Capture the community check_health at import time (before the patch manager

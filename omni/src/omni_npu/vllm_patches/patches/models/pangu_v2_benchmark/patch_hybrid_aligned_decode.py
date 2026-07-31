@@ -83,8 +83,6 @@ pressure / exhaust KV cache). The gate is one-shot: once released it stays open
 for the lifetime of the engine.
 """
 
-import os
-
 import torch
 from torch.distributed import ProcessGroup, ReduceOp
 
@@ -94,6 +92,7 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.engine.core import DPEngineCoreProc
 
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 logger = init_logger(__name__)
@@ -102,8 +101,6 @@ logger = init_logger(__name__)
 # is applied) so we delegate to them instead of re-implementing their bodies.
 _ORIG_SCHEDULE = Scheduler.schedule
 
-_ENV_FLAG = "OMNI_HYBRID_ALIGNED_DECODE"
-_ENV_THRESHOLD = "OMNI_HYBRID_ALIGNED_DECODE_THRESHOLD"
 _RELEASED_ATTR = "hybrid_aligned_decode_released"
 
 _logged_engage = False
@@ -112,17 +109,11 @@ _logged_engage = False
 def _hybrid_aligned_decode_enabled() -> bool:
     # Read at call time, not import/apply time: the flag may be set after vLLM
     # (and this patch) is imported but before serving starts.
-    return os.environ.get(_ENV_FLAG, "").strip() in ("1", "true", "True", "ALL")
+    return envs.OMNI_HYBRID_ALIGNED_DECODE
 
 
 def _hybrid_aligned_decode_threshold() -> int:
-    try:
-        return int(os.environ.get(_ENV_THRESHOLD, "16"))
-    except ValueError:
-        logger.warning(
-            "Invalid %s, falling back to 16", _ENV_THRESHOLD
-        )
-        return 16
+    return envs.OMNI_HYBRID_ALIGNED_DECODE_THRESHOLD
 
 
 def _ready_for_decode(request) -> bool:

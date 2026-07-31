@@ -19,7 +19,6 @@ import argparse
 import itertools
 import json
 import multiprocessing
-import os
 from collections.abc import Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -55,6 +54,8 @@ else:
     torch = LazyLoader("torch", globals(), "torch")
 
 from vllm.v1.structured_output import StructuredOutputManager
+
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from omni_npu.vllm_patches.patches.common.patch_user_repetition_detection import (
     EngineArgsPatch as _UpstreamEngineArgsPatch,
@@ -638,7 +639,7 @@ def _parse_structured_output_config_cli(
 # Environment variable mirroring ``--structured-output-config``. Used as a
 # fallback when the CLI flag is absent (or when ``EngineArgs`` is constructed
 # programmatically without ``from_cli_args``). The Environment variable flag always wins.
-_STRUCTURED_OUTPUT_CONFIG_ENV = "STRUCTURED_OUTPUT_CONFIG"
+_STRUCTURED_OUTPUT_CONFIG_ENV = "OMNI_STRUCTURED_OUTPUT_CONFIG"
 
 
 def _structured_output_config_from_env() -> StructuredOutputRequestConfig | None:
@@ -647,7 +648,7 @@ def _structured_output_config_from_env() -> StructuredOutputRequestConfig | None
     The value must be the same JSON string accepted by ``--structured-output-config``.
     Returns ``None`` when the variable is unset/empty or fails to parse.
     """
-    raw = os.environ.get(_STRUCTURED_OUTPUT_CONFIG_ENV)
+    raw = envs.OMNI_STRUCTURED_OUTPUT_CONFIG
     if not raw:
         return None
     try:
