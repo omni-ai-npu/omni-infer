@@ -25,7 +25,6 @@
 # That mechanism is orthogonal (kv_transfer_params), but both target the same method;
 # if both must be active, compose them via a relay patch (see patch_serving_apc.py).
 
-import os
 import difflib
 from typing import Any, Callable, List, Optional
 
@@ -55,6 +54,7 @@ from vllm.tokenizers import TokenizerLike
 from vllm.tool_parsers import ToolParser
 from vllm.logger import init_logger
 
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from omni_npu.vllm_patches.patches.common.patch_prefilled_token_skip_tokenize import (
     OpenAIServingChatPreprocessPatch as _PrefilledPreprocessPatch,
@@ -94,8 +94,8 @@ _FIELD_REGISTERED = _register_input_ids_field()
 logger.info(
     "<<< InputIdsPiggyback: patch module loaded "
     "(enable=%s, validate=%s, input_ids_field_registered=%s, fast_path_available=%s)",
-    os.getenv("OMNI_PIGGYBACK_INPUT_IDS", "0"),
-    os.getenv("OMNI_VALIDATE_PIGGYBACK_INPUT_IDS", "0"),
+    int(envs.OMNI_PIGGYBACK_INPUT_IDS),
+    int(envs.OMNI_VALIDATE_PIGGYBACK_INPUT_IDS),
     _FIELD_REGISTERED,
     parse_chat_messages_futures is not None,
 )
@@ -147,14 +147,14 @@ class InputIdsPiggybackPatch(VLLMPatch):
         tool_parser: Callable[[TokenizerLike], ToolParser] | None = None,
         add_special_tokens: bool = False,
     ):
-        enabled = os.getenv("OMNI_PIGGYBACK_INPUT_IDS", "0") == "1"
+        enabled = envs.OMNI_PIGGYBACK_INPUT_IDS
         if enabled:
-            assert os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "0") == "0", (
+            assert not envs.OMNI_SKIP_DECODE_TOKENIZE, (
                 "OMNI_PIGGYBACK_INPUT_IDS=1 requires OMNI_SKIP_DECODE_TOKENIZE=0, "
                 "but OMNI_SKIP_DECODE_TOKENIZE is currently set to "
-                f"'{os.getenv('OMNI_SKIP_DECODE_TOKENIZE')}'"
+                f"'{int(envs.OMNI_SKIP_DECODE_TOKENIZE)}'"
             )
-        validate_enabled = os.getenv("OMNI_VALIDATE_PIGGYBACK_INPUT_IDS", "0") == "1"
+        validate_enabled = envs.OMNI_VALIDATE_PIGGYBACK_INPUT_IDS
 
         caller_ids = _caller_input_ids(request) if enabled else None
 

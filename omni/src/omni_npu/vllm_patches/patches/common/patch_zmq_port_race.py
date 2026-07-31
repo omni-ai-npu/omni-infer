@@ -14,7 +14,6 @@
 import copy
 import multiprocessing
 import multiprocessing.connection
-import os
 import time
 import weakref
 
@@ -30,13 +29,14 @@ from vllm.v1.engine import EngineCoreOutputs, EngineCoreRequestType
 from vllm.v1.serial_utils import MsgpackDecoder
 from vllm.v1.utils import get_engine_client_zmq_addr, shutdown
 
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 logger = init_logger(__name__)
 
 
 def _patch_enabled_in_env(patch_name: str) -> bool:
-    patches = os.environ.get("OMNI_NPU_VLLM_PATCHES", "").strip()
+    patches = envs.OMNI_NPU_VLLM_PATCHES.strip()
     if not patches or patches == "ALL":
         return True
     return patch_name in {item.strip() for item in patches.split(",") if item.strip()}

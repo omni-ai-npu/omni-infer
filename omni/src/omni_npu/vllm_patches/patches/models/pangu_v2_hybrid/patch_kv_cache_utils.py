@@ -11,7 +11,6 @@ Patches for vllm.v1.core.kv_cache_utils (Pangu V2 hybrid):
    (v0.14.0 only counted groups[0] → EngineCore livelock on near-max requests).
 """
 
-import os
 from collections import defaultdict
 
 from typing import Callable
@@ -21,6 +20,8 @@ from vllm.utils.mem_utils import format_gib
 from vllm.v1.core import kv_cache_utils
 from vllm.v1.core.kv_cache_utils import logger, create_kv_cache_group_specs
 from vllm.v1.kv_cache_interface import KVCacheSpec
+
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 
@@ -66,7 +67,7 @@ def _get_kv_cache_groups_uniform_page_size_patched(
         # (12 sw, 24 full). 1.25 is just a magic number to avoid too many
         # padding layers.
         group_size = max_num_layers
-    if (override_group_size := int(os.getenv("HYBRID_ATTN_GROUP_SIZE", "0"))) > 0:
+    if (override_group_size := envs.OMNI_HYBRID_ATTN_GROUP_SIZE) > 0:
         logger.warning(
             "Overriding hybrid attention group size from %d to %d.",
             group_size,

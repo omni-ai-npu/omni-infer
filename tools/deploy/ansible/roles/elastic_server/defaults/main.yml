@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# delete_node_profile：控制 delete_node 生命周期要删除的节点。
+delete_node_profile_defaults:
+  # 待删除节点的 IPv4 地址列表；执行 delete_node 时不能为空。
+  ips: []
+# 建议通过 extra vars 临时传入，避免在 Playbook 中保存生产 IP。
+delete_node_profile: {}

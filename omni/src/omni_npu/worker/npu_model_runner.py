@@ -67,6 +67,7 @@ from omni_npu.compilation.acl_graph import (
     reset_stale_aclgraph_resources,
     set_graph_params,
 )
+from omni_npu.configs import OmniAdditionalConfig
 from omni_npu.model_config.config_loader.loader import model_extra_config
 from omni_npu.sample.sampler import NPUSamplerV1, ENABLE_NPU_PENALTY_CACHE
 from omni_npu.sample.rejection_sampler import NPURejectionSampler
@@ -135,17 +136,10 @@ class NPUModelRunner(GPUModelRunner):
         if vllm_config.additional_config is not None:
             from omni_npu.compilation.npugraph_ex_config import init_aclgraph_config
             init_aclgraph_config(vllm_config)
-            self.use_rejection_sampler = vllm_config.additional_config.get("use_rejection_sampler", False)
-            self.use_penalty = vllm_config.additional_config.get("use_penalty", False)
-            self.total_step = vllm_config.additional_config.get("multi_step", 1)
-            self.combine_block = vllm_config.additional_config.get("combine_block", 1)
-            self.use_process_before_sample = vllm_config.additional_config.get("use_process_before_sample", False)
+            omni_add = OmniAdditionalConfig.from_vllm_config(vllm_config)
+            self.combine_block = omni_add.combine_block
         else:
-            self.use_rejection_sampler = False
-            self.use_penalty = False
-            self.total_step = 1
             self.combine_block = 1
-            self.use_process_before_sample = False
         self.use_spec_decode = False
         num_tokens_per_reqs_decode = (
             1 if not self.use_spec_decode
@@ -1012,11 +1006,16 @@ class NPUModelRunner(GPUModelRunner):
 
         attn_metadata: PerLayerAttnMetadata | None = None
 
+        # Match attn metadata sizing: only FULL cudagraph pads attn to the
+        # DP-padded token count. Otherwise create unpadded slots so indexer
+        # k/slot lengths stay aligned when MoE hs is DP-padded.
+        pad_attn = cudagraph_runtime_mode == CUDAGraphMode.FULL
+        slot_num_tokens = num_tokens_padded if pad_attn else num_tokens_unpadded
         slot_mappings_by_group, slot_mappings = self._get_slot_mappings(
-            num_tokens_padded=num_tokens_padded,
+            num_tokens_padded=slot_num_tokens,
             num_reqs_padded=num_reqs_padded,
             num_tokens_unpadded=num_tokens_unpadded,
-            ubatch_slices=ubatch_slices_padded,
+            ubatch_slices=(ubatch_slices_padded if pad_attn else ubatch_slices),
         )
 
         # Dummy runs have no real slot assignments — fill with -1 so
@@ -1064,7 +1063,6 @@ class NPUModelRunner(GPUModelRunner):
                 # requests can corrupt Mamba state.
                 self.input_batch.block_table.commit_block_table(num_reqs_padded)
 
-                pad_attn = cudagraph_runtime_mode == CUDAGraphMode.FULL
                 attn_metadata, _ = self._build_attention_metadata(
                     num_tokens=num_tokens_unpadded,
                     num_tokens_padded=num_tokens_padded if pad_attn else None,
@@ -1239,58 +1237,7 @@ class NPUModelRunner(GPUModelRunner):
         kv_cache_config: KVCacheConfig,
         is_profiling: bool = False,
     ) -> None:
-        """
-        Initialize KV cache based on `kv_cache_config`.
-        Args:
-            kv_cache_config: Configuration for the KV cache, including the KV
-            cache size of each layer
-        """
-        kv_cache_config = deepcopy(kv_cache_config)
-        self.kv_cache_config = kv_cache_config
-        self._mamba_bufs = None
-        self.may_add_encoder_only_layers_to_kv_cache_config()
-        self.maybe_add_kv_sharing_layers_to_kv_cache_groups(kv_cache_config)
-        self.initialize_attn_backend(kv_cache_config, is_profiling=is_profiling)
-        initialize_mamba_ssu_backend(
-            self.vllm_config.mamba_config, self.kv_cache_config
-        )
-        # The kernel block size for all KV cache groups. For example, if
-        # kv_cache_manager uses block_size 256 for a given group, but the attention
-        # backends for that group only supports block_size 64, we will return
-        # kernel_block_size 64 and split the 256-token-block to 4 blocks with 64
-        # tokens each.
-        kernel_block_sizes = prepare_kernel_block_sizes(
-            kv_cache_config, self.attn_groups
-        )
-        self._kernel_block_sizes = kernel_block_sizes
-
-        # create metadata builders
-        self.initialize_metadata_builders(kv_cache_config, kernel_block_sizes)
-
-        # Reinitialize need to after initialize_attn_backend
-        self.may_reinitialize_input_batch(kv_cache_config, kernel_block_sizes)
-        kv_caches = self.initialize_kv_cache_tensors(
-            kv_cache_config, kernel_block_sizes
-        )
-
-        # patch start: fix mtp do not support hybrid attention
-        if self.speculative_config and get_pp_group().is_last_rank and self.speculative_config.use_eagle():
-            assert isinstance(self.drafter, EagleProposer)
-            # validate all draft model layers belong to the same kv cache
-            # group
-            self.drafter.validate_same_kv_cache_group(kv_cache_config)
-        # patch end
-
-        if has_kv_transfer_group() and not is_profiling:
-            kv_transfer_group = get_kv_transfer_group()
-            if self.cross_layers_kv_cache is not None:
-                assert self.cross_layers_attn_backend is not None
-                kv_transfer_group.register_cross_layers_kv_cache(
-                    self.cross_layers_kv_cache, self.cross_layers_attn_backend
-                )
-            else:
-                kv_transfer_group.register_kv_caches(kv_caches)
-            kv_transfer_group.set_host_xfer_buffer_ops(copy_kv_blocks)
+        super().initialize_kv_cache(kv_cache_config, is_profiling)
 
         # patch start
         if self.model_config.enable_return_routed_experts:

@@ -4,13 +4,13 @@
 
 """HYBRID_ATTN_GROUP_SIZE override for ``_get_kv_cache_groups_uniform_page_size``."""
 
-import os
 from collections import defaultdict
 
 from vllm.utils.math_utils import cdiv
 from vllm.v1.core import kv_cache_utils
 from vllm.v1.core.kv_cache_utils import logger, create_kv_cache_group_specs
 from vllm.v1.kv_cache_interface import KVCacheSpec
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 
@@ -56,7 +56,7 @@ def _get_kv_cache_groups_uniform_page_size_patched(
         # layers while accommodating speculative decoding drafters that add
         # extra layers to one attention type.
         group_size = max_num_layers
-    if (override_group_size := int(os.getenv("HYBRID_ATTN_GROUP_SIZE", "0"))) > 0:
+    if (override_group_size := envs.OMNI_HYBRID_ATTN_GROUP_SIZE) > 0:
         logger.warning(
             "Overriding hybrid attention group size from %d to %d.",
             group_size,

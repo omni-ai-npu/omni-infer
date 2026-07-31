@@ -17,6 +17,7 @@ process role:
 import logging
 import os
 
+from omni_npu import envs
 from omni_npu.diagnostics.dump import constants, engine_stats, exit_dump
 
 logger = logging.getLogger(__name__)
@@ -27,11 +28,11 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------
 
 def enabled():
-    return os.environ.get(constants.ENV_ENABLE, "1") == "1"
+    return envs.OMNI_DUMP_ENABLE
 
 
 def default_dump_dir():
-    return os.environ.get(constants.ENV_DUMP_DIR, constants.DEFAULT_DUMP_DIR)
+    return envs.OMNI_DUMP_DIR
 
 
 def guarded_install(role, dump_dir=None, rank=None, stats_fn=None):

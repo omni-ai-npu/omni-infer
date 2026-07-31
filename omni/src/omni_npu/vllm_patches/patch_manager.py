@@ -4,8 +4,9 @@
 
 
 import logging
-import os
 from typing import Dict, List
+
+from omni_npu import envs
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class PatchManager:
 
         example: OMNI_NPU_VLLM_PATCHES="PatchA,PatchB"
         """
-        patches_from_env = os.environ.get('OMNI_NPU_VLLM_PATCHES', '').strip()
+        patches_from_env = envs.OMNI_NPU_VLLM_PATCHES.strip()
 
         if not patches_from_env:
             logger.info("no patches specified in env OMNI_NPU_VLLM_PATCHES")
@@ -65,7 +66,7 @@ class PatchManager:
             self.apply_patch(patch_name)
 
     def apply_patches(self):
-        apply_all_env = os.environ.get('OMNI_NPU_VLLM_PATCHES', '').strip()
+        apply_all_env = envs.OMNI_NPU_VLLM_PATCHES.strip()
 
         # New logic: apply all patches when unset, empty, or 'ALL'
         if not apply_all_env or apply_all_env == 'ALL':

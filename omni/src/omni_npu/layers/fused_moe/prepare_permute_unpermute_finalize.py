@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Union
@@ -21,6 +20,7 @@ from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.utils.math_utils import cdiv
 
+from omni_npu import envs
 from omni_npu.layers.utils import named_stream
 from omni_npu.model_config.config_loader.loader import model_extra_config
 from omni_npu.v1.utils import on_ascend950
@@ -31,8 +31,6 @@ from omni_npu.v1.distributed.parallel_state_ext import (
 )
 
 logger = init_logger(__name__)
-
-DEFAULT_MAX_DISPATCH_COMBINE_THRESHOLD = 64
 
 
 @dataclass(kw_only=True)
@@ -773,9 +771,7 @@ class CommunicationStrategySelector:
         self.tp_size = get_tensor_model_parallel_world_size()
         self.dp_size = get_dp_group().world_size
 
-        self.max_dispatch_combine_threshold = int(
-            os.getenv("MAX_DISPATCH_COMBINE_THRESHOLD", DEFAULT_MAX_DISPATCH_COMBINE_THRESHOLD)
-        )
+        self.max_dispatch_combine_threshold = envs.OMNI_MAX_DISPATCH_COMBINE_THRESHOLD
         if self.is_a2_device:
             assert self.max_dispatch_combine_threshold <= 256, (
                 f"{self.max_dispatch_combine_threshold=} should be no larger than 256 on A2 devices."

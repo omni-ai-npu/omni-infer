@@ -1,0 +1,201 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# common owns the generic Docker execution primitives consumed by its stages.
+# Family-specific or fixed playbooks may still override these variables.
+
+container_workspace: /workspace
+
+docker_run_base_envs:
+  - LOG_PATH=$LOG_PATH
+
+docker_run_base_mounts:
+  - /data:/data
+  - /usr/local/Ascend/driver:/usr/local/Ascend/driver
+  - /usr/local/dcmi:/usr/local/dcmi
+  - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
+  - /etc/ascend_install.info:/etc/ascend_install.info
+  - /usr/local/sbin:/usr/local/sbin
+  - /etc/hccn.conf:/etc/hccn.conf
+  - /usr/bin/hccn_tool:/usr/bin/hccn_tool
+  - '$LOG_PATH:$LOG_PATH'
+  - '{{ model_path }}:{{ model_path }}'
+  - '$SCRIPTS_PATH:$SCRIPTS_PATH'
+  - /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime
+
+# run_docker_profile：控制 Prefill、Decode 和 Proxy 容器的公共创建参数。
+run_docker_profile_defaults:
+  # Docker 共享内存大小，对应 docker run --shm-size。
+  shm_size: 500g
+  # 创建容器时通过 -e 传入的 NAME=value 环境变量列表。
+  envs: []
+  # 追加到公共挂载后的 source:destination 挂载列表。
+  extra_mounts: []
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+run_docker_profile: {}
+
+# sync_code_profile：控制执行机到远端宿主机的同步，以及宿主机到容器的复制。
+sync_code_profile_defaults:
+  # 执行机到远端宿主机的 rsync 配置。
+  host_sync:
+    # 是否执行宿主机代码同步。
+    enabled: true
+    # rsync 源路径；默认取执行机环境中的 CODE_PATH。
+    source: "{{ ansible_env.CODE_PATH }}/"
+    # rsync 目标路径；默认取远端宿主机环境中的 CODE_PATH。
+    destination: "{{ ansible_env.CODE_PATH }}/"
+    # 是否删除目标端中源端不存在的文件。
+    delete: true
+    # 是否递归同步目录。
+    recursive: true
+    # 传给 rsync 的额外参数列表。
+    rsync_opts: []
+    # 同步任务的并发上限；0 表示使用 Ansible 默认值。
+    throttle: 0
+# 还可配置 container_copy.prefill、decode、proxy；值为宿主机执行的完整命令或 null。
+sync_code_profile: {}
+
+# pip_install_profile 不设置公共默认值，仅在需要安装或编译时声明。
+# prefill、decode、proxy 分别是宿主机执行的完整命令；缺省或为 null 时跳过。
+
+# run_server_prefill_profile：控制 Prefill 启动脚本的生成与执行。
+run_server_prefill_profile_defaults:
+  # workdir 下执行的 Prefill runner 文件名。
+  runner: pd_run_pangu_ultra_moe.sh
+  # runner 在容器内的工作目录。
+  workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
+  # 通过 docker exec -e 注入启动进程的环境变量字典。
+  docker_envs: {}
+  # 加载容器 .bashrc 后、调用 runner 前原样执行的 Bash 命令。
+  prepare_commands: ""
+  # 多节点 Prefill 使用的执行后端；null 表示不追加后端参数。
+  multi_node_backend: ray
+  # 按列表顺序追加到 runner 的 CLI 参数。
+  args: []
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+run_server_prefill_profile: {}
+
+# run_server_decode_profile：控制 Decode 启动脚本的生成与执行。
+run_server_decode_profile_defaults:
+  # workdir 下执行的 Decode runner 文件名。
+  runner: pd_run_pangu_ultra_moe.sh
+  # runner 在容器内的工作目录。
+  workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
+  # 通过 docker exec -e 注入启动进程的环境变量字典。
+  docker_envs: {}
+  # 加载容器 .bashrc 后、调用 runner 前原样执行的 Bash 命令。
+  prepare_commands: ""
+  # 按列表顺序追加到 runner 的 CLI 参数。
+  args: []
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+run_server_decode_profile: {}
+
+# run_server_common_profile：控制 Prefill 和 Decode 之间的等待及联动行为。
+run_server_common_profile_defaults:
+  # Prefill 和 Decode 共用的 KV Connector。
+  kv_connector: LLMDataDistConnector
+  # 多节点 Prefill 启动后、启动 Decode 前的等待秒数。
+  multi_node_prefill_wait_seconds: 20
+  # Decode 启动后、启动单节点 Prefill 前的等待秒数。
+  single_node_prefill_wait_seconds: 0
+  # elastic_server 执行 run_server 时是否同时重启 Proxy。
+  restart_proxy: false
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+run_server_common_profile: {}
+
+# mooncake_profile：控制 Mooncake 配置和服务；普通部署通常无需覆盖。
+mooncake_profile_defaults:
+  # 是否生成 Mooncake 和 LMCache 配置文件。
+  generate_config: true
+  # 是否在 Proxy 容器中启动 etcd 和 Mooncake master。
+  start_services: false
+  # 停止 Mooncake 相关进程后的等待秒数。
+  wait_seconds: 0
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+mooncake_profile: {}
+
+# run_proxy_profile：控制 Omni Proxy 的启动方式。
+run_proxy_profile_defaults:
+  # 加载容器 .bashrc 后、启动或 reload Proxy 前原样执行的 Bash 命令。
+  prepare_commands: ""
+  # Omni Proxy 在容器内的工作目录。
+  workdir: "{{ container_workspace }}/omniinfer/components/omni-proxy/omni_proxy/"
+  # 在 workdir 中执行的主命令。
+  command: bash omni_proxy.sh
+  # 按列表顺序追加到主命令的 CLI 参数。
+  args: []
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+run_proxy_profile: {}
+
+# fetch_log_profile：控制执行机日志目录创建和远端日志拉取。
+fetch_log_profile_defaults:
+  # 是否在执行机创建每个 inventory host 对应的日志目录。
+  create_directory: true
+  # 是否从远端宿主机拉取日志到执行机。
+  fetch: true
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+fetch_log_profile: {}
+
+# proc_bind_profile：控制 Prefill 和 Decode 服务启动后的 CPU 绑核。
+proc_bind_profile_defaults:
+  # 是否等待服务就绪并执行 bind_cpu.sh。
+  enabled: false
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+proc_bind_profile: {}
+
+docker_exec_cmd: 'docker exec \
+
+  '
+
+start_docker_cmd_p: '{{ resolved_docker_run_cmd }} -d --name $DOCKER_NAME_P $DOCKER_IMAGE_ID
+
+  '
+start_docker_cmd_d: '{{ resolved_docker_run_cmd }} -d --name $DOCKER_NAME_D $DOCKER_IMAGE_ID
+
+  '
+start_docker_cmd_c: '{{ resolved_docker_run_cmd }} -e PROXY_NODE_PORT=$NODE_PORT -d --name $DOCKER_NAME_C $DOCKER_IMAGE_ID
+
+  '
+
+generate_mooncake_config_json: |
+  {
+    "metadata_server": "etcd://{{ ETCD_IP }}:{{ ETCD_PORT }}",
+    "local_hostname": "{{ HOST_IP }}",
+    "protocol": "tcp",
+    "transfer_timeout": 60,
+    "global_segment_size": 17179869184,
+    "master_server_address": "{{ MOONCAKE_MASTER_IP }}:{{ MOONCAKE_MASTER_PORT }}"
+  }
+
+generate_lmcache_mooncake_config_yml: |
+  # 256 Tokens per kV Chunk
+  chunk_size: 256
+  # Enable CPU memory backend
+  local_cpu: false # default
+  # 5GB of Pinned CPU memory
+  max_local_cpu_size: 5.0 # default
+
+  remote_url: "mooncakestore://{{ MOONCAKE_MASTER_IP }}:{{ MOONCAKE_MASTER_PORT }}"
+  remote_serde: "naive"
+  external_lookup_client: "mooncakestore://{{ MOONCAKE_MASTER_IP }}:{{ MOONCAKE_MASTER_PORT }}"
+
+  extra_config:
+    retmote_enable_mla_worker_id_as0: true
+
+docker_start_etcd_cmd: >-
+  {{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c
+  'nohup etcd
+  --listen-client-urls http://{{ ETCD_IP }}:{{ ETCD_PORT }}
+  --advertise-client-urls http://{{ ETCD_IP }}:{{ ETCD_PORT }}
+  &> ${LOG_PATH}/etcd.log &'
+docker_start_mooncake_master_cmd: >-
+  {{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c
+  'source ~/.bashrc &&
+  nohup mooncake_master
+  -rpc_address={{ MOONCAKE_MASTER_IP }}
+  -rpc_port={{ MOONCAKE_MASTER_PORT }}
+  -metrics_port={{ MOONCAKE_METRICS_PORT }}
+  -v 2
+  -eviction_high_watermark_ratio=0.8
+  -eviction_ratio=0.1
+  &> ${LOG_PATH}/mooncake_master.log &'

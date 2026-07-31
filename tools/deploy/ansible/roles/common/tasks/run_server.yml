@@ -1,0 +1,189 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: Detect the service communication interface.
+  ansible.builtin.shell: ip -4 route list 0/0 | awk '{print $5}' | head -1
+  register: default_interface_result
+  changed_when: false
+  tags: run_server
+
+- name: Register the service communication interface.
+  ansible.builtin.set_fact:
+    default_interface: "{{ default_interface_result.stdout }}"
+  when: default_interface_result.stdout != ""
+  tags: run_server
+
+- name: Resolve the Prefill run_server profile.
+  ansible.builtin.set_fact:
+    resolved_run_server_prefill_profile: >-
+      {{
+        run_server_prefill_profile_defaults
+        | combine(run_server_prefill_profile, recursive=true)
+      }}
+  when: "'P' in group_names"
+  tags: run_server
+
+- name: Generate the resolved Prefill vLLM docker start command.
+  ansible.builtin.set_fact:
+    resolved_run_server_vllm_cmd_p: >-
+      {{ docker_exec_cmd }}
+      -e NNODES={{ NNODES | quote }}
+      -e NODE_RANK={{ node_rank | quote }}
+      -e NODE_IP_LIST={{ NODE_IP_LIST | quote }}
+      -e SOCKET_IFNAME={{ default_interface | quote }}
+      -e IP={{ ansible_host | quote }}
+      -e HOST_IP={{ host_ip | quote }}
+      -e MASTER_PORT={{ node_port | quote }}
+      -e API_PORT={{ api_port | quote }}
+      -e OMNI_PD_PREFILL_POD_NUM={{ OMNI_PD_PREFILL_POD_NUM | quote }}
+      -e OMNI_PD_DECODE_POD_NUM={{ OMNI_PD_DECODE_POD_NUM | quote }}
+      {% for name, value in resolved_run_server_prefill_profile.docker_envs.items() %}
+      -e {{ name }}={{ value | quote }}
+      {% endfor %}
+      -d $DOCKER_NAME_P
+      /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
+  when: "'P' in group_names"
+  tags: run_server
+
+- name: Resolve the Decode run_server profile.
+  ansible.builtin.set_fact:
+    resolved_run_server_decode_profile: >-
+      {{
+        run_server_decode_profile_defaults
+        | combine(run_server_decode_profile, recursive=true)
+      }}
+  when: "'D' in group_names"
+  tags: run_server
+
+- name: Generate the resolved Decode vLLM docker start command.
+  ansible.builtin.set_fact:
+    resolved_run_server_vllm_cmd_d: >-
+      {{ docker_exec_cmd }}
+      -e SOCKET_IFNAME={{ default_interface | quote }}
+      -e HOST_IP={{ host_ip | quote }}
+      -e MASTER_PORT={{ node_port | quote }}
+      -e API_PORT={{ api_port | quote }}
+      -e HOST={{ inventory_hostname | quote }}
+      -e OMNI_PD_PREFILL_POD_NUM={{ OMNI_PD_PREFILL_POD_NUM | quote }}
+      -e OMNI_PD_DECODE_POD_NUM={{ OMNI_PD_DECODE_POD_NUM | quote }}
+      {% for name, value in resolved_run_server_decode_profile.docker_envs.items() %}
+      -e {{ name }}={{ value | quote }}
+      {% endfor %}
+      -d $DOCKER_NAME_D
+      /bin/bash -c $SCRIPTS_PATH/vllm_run_for_d.sh
+  when: "'D' in group_names"
+  tags: run_server
+
+- name: Remove proc_trace.txt from service nodes.
+  ansible.builtin.file:
+    path: /tmp/process/proc_trace.txt
+    state: absent
+  when: "'P' in group_names or 'D' in group_names"
+  tags: run_server
+
+- name: Validate the Prefill launch profile.
+  ansible.builtin.assert:
+    that:
+      - resolved_run_server_prefill_profile.workdir is string
+      - resolved_run_server_prefill_profile.workdir | length > 0
+      - resolved_run_server_prefill_profile.docker_envs is mapping
+      - resolved_run_server_prefill_profile.prepare_commands is string
+      - resolved_run_server_prefill_profile.args is sequence
+      - resolved_run_server_prefill_profile.args is not string
+      - resolved_run_server_prefill_profile.runner | length > 0
+    fail_msg: "The Prefill launch profile for {{ model }} is incomplete."
+  when: "'P' in group_names"
+  tags: run_server
+
+- name: Generate the Prefill launch script.
+  ansible.builtin.template:
+    src: run_vllm_prefill.sh.j2
+    dest: "$SCRIPTS_PATH/vllm_run_for_p.sh"
+    mode: '0750'
+  when: "'P' in group_names"
+  tags: run_server
+
+- name: Validate the Decode launch profile.
+  ansible.builtin.assert:
+    that:
+      - resolved_run_server_decode_profile.workdir is string
+      - resolved_run_server_decode_profile.workdir | length > 0
+      - resolved_run_server_decode_profile.docker_envs is mapping
+      - resolved_run_server_decode_profile.prepare_commands is string
+      - resolved_run_server_decode_profile.args is sequence
+      - resolved_run_server_decode_profile.args is not string
+      - resolved_run_server_decode_profile.runner | length > 0
+    fail_msg: "The Decode launch profile for {{ model }} is incomplete."
+  when: "'D' in group_names"
+  tags: run_server
+
+- name: Generate the Decode launch script.
+  ansible.builtin.template:
+    src: run_vllm_decode.sh.j2
+    dest: "$SCRIPTS_PATH/vllm_run_for_d.sh"
+    mode: '0750'
+  vars:
+    server_offset_dict: "{{ DECODE_SERVER_OFFSET_BY_GROUP }}"
+  when: "'D' in group_names"
+  tags: run_server
+
+- name: Start a multi-node Prefill instance.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_run_server_vllm_cmd_p }}"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  when: "'P' in group_names and (NODE_IP_LIST | string).split(',') | length >= 2"
+  tags: run_server
+
+- name: Wait before starting Decode for a multi-node Prefill topology.
+  ansible.builtin.pause:
+    seconds: "{{ resolved_run_server_common_profile.multi_node_prefill_wait_seconds }}"
+  vars:
+    resolved_run_server_common_profile: >-
+      {{
+        run_server_common_profile_defaults
+        | combine(run_server_common_profile, recursive=true)
+      }}
+  when:
+    - resolved_run_server_common_profile.multi_node_prefill_wait_seconds | int > 0
+    - "(NODE_IP_LIST | default('') | string).split(',') | length >= 2"
+  tags: run_server
+
+- name: Start a Decode instance.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_run_server_vllm_cmd_d }}"
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  when: "'D' in group_names"
+  tags: run_server
+
+- name: Wait before starting a single-node Prefill instance.
+  ansible.builtin.pause:
+    seconds: "{{ resolved_run_server_common_profile.single_node_prefill_wait_seconds }}"
+  vars:
+    resolved_run_server_common_profile: >-
+      {{
+        run_server_common_profile_defaults
+        | combine(run_server_common_profile, recursive=true)
+      }}
+  when:
+    - resolved_run_server_common_profile.single_node_prefill_wait_seconds | int > 0
+    - "(NODE_IP_LIST | default('') | string).split(',') | length == 1"
+  tags: run_server
+
+- name: Start a single-node Prefill instance.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_run_server_vllm_cmd_p }}"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  when: "'P' in group_names and (NODE_IP_LIST | string).split(',') | length == 1"
+  tags: run_server

@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 # Default parameters
@@ -8,18 +8,14 @@ GLOBAL_RANK_TABLE_FILE_PATH="1p1d_save_dir/global_ranktable_merge.json"
 RANK_TABLE_FILE_PATH="save_dir_64/local_ranktable_7.242.108.64_0123.json"
 LOCAL_DECODE_SERVER_IP_LIST="7.242.108.196"
 GLOBAL_DECODE_SERVER_IP_LIST="7.242.108.196"
-ROLE="prefill"
-PREFILL_POD_NUM=1
-DECODE_POD_NUM=1
+OMNI_PD_ROLE="${OMNI_PD_ROLE:-prefill}"
+OMNI_PD_PREFILL_POD_NUM="${OMNI_PD_PREFILL_POD_NUM:-1}"
+OMNI_PD_DECODE_POD_NUM="${OMNI_PD_DECODE_POD_NUM:-1}"
 VLLM_LLMDATADIST_ZMQ_PORT="5568"
 # Ascend-specific parameters
 HCCL_INTRA_ROCE_ENABLE=1
 HCCL_INTRA_PCIE_ENABLE=0
 ascend_rt_set=0
-# mockModel configuration parameters
-#RANDOM_MODE=0
-#KV_CACHE_MOD=0
-#FORWARD_TIME=0
 # Multi-API Server specific parameters
 NUM_SERVERS=1
 NUM_DP=1
@@ -47,7 +43,6 @@ KV_RANK=0
 KV_ENGINE_ID=0
 KV_PARALLEL_SIZE=2
 
-MODEL_EXTRA_CFG_PATH="/workspace/omni_infer/test/test_config/test_config_prefill.json"
 GPU_UTIL=0.9
 EXTRA_ARGS=""
 ADDITIONAL_CONFIG=""
@@ -65,16 +60,13 @@ print_help() {
     echo "  --rank-table-path                llmdatadist-specific: Local rank table file path for P or D instances. Usually local_ranktable_{IP}_rank.json; for cross-machine D instances, use local_ranktable_merge*.json (default: $RANK_TABLE_FILE_PATH)"
     echo "  --local-decode-server-ip-list    llmdatadist-specific: IP list of current D instance. Separate multiple IPs with commas, maintaining same order as ranktable (default: $LOCAL_DECODE_SERVER_IP_LIST)"
     echo "  --global-decode-server-ip-list   llmdatadist-specific: IP list of all D instances. Combination of all d instances' LOCAL_DECODE_SERVER_IP_LIST, separated by ';'. For 1d scenarios, same as LOCAL_DECODE_SERVER_IP_LIST (default: $GLOBAL_DECODE_SERVER_IP_LIST)"
-    echo "  --role                           llmdatadist-specific: Instance role type. Use 'prefill' for P, 'decode' for D (default: $ROLE)"
-    echo "  --prefill-pod-num                llmdatadist-specific: Number of P instances (default: $PREFILL_POD_NUM)"
-    echo "  --decode-pod-num                 llmdatadist-specific: Number of D instances (default: $DECODE_POD_NUM)"
+    echo "  --role                           llmdatadist-specific: Instance role type. Use 'prefill' for P, 'decode' for D (default: $OMNI_PD_ROLE)"
+    echo "  --prefill-pod-num                llmdatadist-specific: Number of P instances (default: $OMNI_PD_PREFILL_POD_NUM)"
+    echo "  --decode-pod-num                 llmdatadist-specific: Number of D instances (default: $OMNI_PD_DECODE_POD_NUM)"
     echo "  --vllm-llmdatadist-zmq-port      llmdatadist-specific: ZMQ port for llmdatadist connector (must be string) (default: $VLLM_LLMDATADIST_ZMQ_PORT)"
     echo "  --hcc-intra-roce-enable          Ascend-specific: Set to 1 for A3, enable intra-HCCL ROCE (default: $HCCL_INTRA_ROCE_ENABLE)"
     echo "  --hcc-intra-pcie-enable          Ascend-specific: Set to 0 for A3, enable intra-HCCL PCIE (default: $HCCL_INTRA_PCIE_ENABLE)"
     echo "  --ascend-rt-visible-devices      Ascend-specific: Visible physical devices for the instance. (default: $ASCEND_RT_VISIBLE_DEVICES)"
-    echo "  --random-mode                    mockModel configuration: Enable mock model when set to 1 (default: $RANDOM_MODE)"
-    echo "  --kv-cache-mod                   mockModel configuration: Enable mock model when set to 1 (default: $KV_CACHE_MOD)"
-    echo "  --forward-time                   mockModel configuration: Forward time in ms (default: $FORWARD_TIME)"
     echo "  --num-servers                    Multi-API Server: Number of API servers (default: $NUM_SERVERS)"
     echo "  --num-dp                         Multi-API Server: Data parallel size (≥ number of servers) (default: $NUM_DP)"
     echo "  --server-offset                  Multi-API Server: Server offset for multi-node setup. For dual-node A3, set to 16 on d_2 instance (default: $SERVER_OFFSET)"
@@ -123,13 +115,13 @@ parse_long_option() {
             GLOBAL_DECODE_SERVER_IP_LIST="$2"
             ;;
         --role)
-            ROLE="$2"
+            OMNI_PD_ROLE="$2"
             ;;
         --prefill-pod-num)
-            PREFILL_POD_NUM="$2"
+            OMNI_PD_PREFILL_POD_NUM="$2"
             ;;
         --decode-pod-num)
-            DECODE_POD_NUM="$2"
+            OMNI_PD_DECODE_POD_NUM="$2"
             ;;
         --vllm-llmdatadist-zmq-port)
             VLLM_LLMDATADIST_ZMQ_PORT="$2"
@@ -143,15 +135,6 @@ parse_long_option() {
         --ascend-rt-visible-devices)
             ASCEND_RT_VISIBLE_DEVICES="$2"
             ascend_rt_set=1
-            ;;
-        --random-mode)
-            RANDOM_MODE="$2"
-            ;;
-        --kv-cache-mod)
-            KV_CACHE_MOD="$2"
-            ;;
-        --forward-time)
-            FORWARD_TIME="$2"
             ;;
         --num-servers)
             NUM_SERVERS="$2"
@@ -225,9 +208,6 @@ parse_long_option() {
         --extra-args)
             EXTRA_ARGS="$2"
             ;;
-        --model-extra-cfg-path)
-            MODEL_EXTRA_CFG_PATH="$2"
-            ;;
         --gpu-util)
             GPU_UTIL="$2"
             ;;
@@ -291,14 +271,10 @@ export GLOBAL_RANK_TABLE_FILE_PATH
 export RANK_TABLE_FILE_PATH
 export LOCAL_DECODE_SERVER_IP_LIST
 export GLOBAL_DECODE_SERVER_IP_LIST
-export ROLE
-export PREFILL_POD_NUM
-export DECODE_POD_NUM
+export OMNI_PD_ROLE
+export OMNI_PD_PREFILL_POD_NUM
+export OMNI_PD_DECODE_POD_NUM
 export VLLM_LLMDATADIST_ZMQ_PORT
-
-#export RANDOM_MODE
-#export KV_CACHE_MOD
-#export FORWARD_TIME
 
 export HCCL_INTRA_ROCE_ENABLE
 export HCCL_INTRA_PCIE_ENABLE
@@ -312,17 +288,15 @@ export VLLM_LOGGING_LEVEL
 export VLLM_USE_V1
 export VLLM_WORKER_MULTIPROC_METHOD
 export SERVER_OFFSET
-export MODEL_EXTRA_CFG_PATH
 export PYTHONPATH=/usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
 export VLLM_USE_V1=1
 export VLLM_WORKER_MULTIPROC_METHOD=fork
 export USING_LCCL_COM=0
-export OMNI_USE_DSV3=1
 export VLLM_ENABLE_MC2
 
 # Turn on these two variables to enable proc_bind
 # export CPU_AFFINITY_CONF=2
-# export PROFILING_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml
+# export OMNI_PROFILE_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml
 
 if [ -n "$HCCL_OP_EXPANSION_MODE" ]; then
     export HCCL_OP_EXPANSION_MODE
@@ -349,15 +323,12 @@ echo "GLOBAL_RANK_TABLE_FILE_PATH: $GLOBAL_RANK_TABLE_FILE_PATH"
 echo "RANK_TABLE_FILE_PATH: $RANK_TABLE_FILE_PATH"
 echo "LOCAL_DECODE_SERVER_IP_LIST: $LOCAL_DECODE_SERVER_IP_LIST"
 echo "GLOBAL_DECODE_SERVER_IP_LIST: $GLOBAL_DECODE_SERVER_IP_LIST"
-echo "ROLE: $ROLE"
-echo "PREFILL_POD_NUM: $PREFILL_POD_NUM"
-echo "DECODE_POD_NUM: $DECODE_POD_NUM"
+echo "OMNI_PD_ROLE: $OMNI_PD_ROLE"
+echo "OMNI_PD_PREFILL_POD_NUM: $OMNI_PD_PREFILL_POD_NUM"
+echo "OMNI_PD_DECODE_POD_NUM: $OMNI_PD_DECODE_POD_NUM"
 echo "VLLM_LLMDATADIST_ZMQ_PORT: $VLLM_LLMDATADIST_ZMQ_PORT"
 echo "HCCL_INTRA_ROCE_ENABLE: $HCCL_INTRA_ROCE_ENABLE"
 echo "HCCL_INTRA_PCIE_ENABLE: $HCCL_INTRA_PCIE_ENABLE"
-echo "RANDOM_MODE: $RANDOM_MODE"
-echo "KV_CACHE_MOD: $KV_CACHE_MOD"
-echo "FORWARD_TIME: $FORWARD_TIME"
 echo "NUM_SERVERS: $NUM_SERVERS"
 echo "NUM_DP: $NUM_DP"
 echo "SERVER_OFFSET: $SERVER_OFFSET"
@@ -377,7 +348,6 @@ echo "SERVED_MODEL_NAME: $SERVED_MODEL_NAME"
 echo "LOG_DIR: $LOG_DIR"
 echo "KV_TRANSFER_CONFIG: $KV_TRANSFER_CONFIG"
 echo "EXTRA_ARGS: $EXTRA_ARGS"
-echo "MODEL_EXTRA_CFG_PATH: $MODEL_EXTRA_CFG_PATH"
 echo "GPU_UTIL: $GPU_UTIL"
 echo "ADDITIONAL_CONFIG: $ADDITIONAL_CONFIG"
 echo "VLLM_ENABLE_MC2: $VLLM_ENABLE_MC2"

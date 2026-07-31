@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import base64
-import os
 import time
 import zlib
 from collections import defaultdict
@@ -53,6 +52,7 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from omni_npu.plugin_decorators import update_from_output_decorator
 
@@ -108,7 +108,7 @@ def _set_pd_flags(
         reader.is_pd_prefill = kv_transfer_config.is_kv_producer
         return
 
-    role = os.getenv("ROLE")
+    role = envs.OMNI_PD_ROLE
     if role == "prefill":
         reader.is_pd_disaggregation = True
         reader.is_pd_prefill = True
@@ -1085,7 +1085,7 @@ def _is_prefill_node(serving: Any) -> bool:
         ):
             return False
 
-    role = os.getenv("ROLE")
+    role = envs.OMNI_PD_ROLE
     if role == "prefill":
         return True
     if role == "decode":
@@ -1342,7 +1342,7 @@ class ExpertIdServingCompletionFinal(VLLMPatch):
         request_metadata: Any,
     ):
         # --- skip_tokenize P-side: set prompt_token_ids for D-side relay ---
-        skip_decode = os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "0") == "1"
+        skip_decode = envs.OMNI_SKIP_DECODE_TOKENIZE
         if skip_decode and _is_prefill_node(self) and final_res_batch:
             first_res = final_res_batch[0]
             if first_res.kv_transfer_params is None:

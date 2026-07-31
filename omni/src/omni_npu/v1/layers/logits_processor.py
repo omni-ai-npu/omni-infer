@@ -2,8 +2,6 @@
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 """A layer that compute logits from hidden_states."""
 
-import os
-
 import torch
 
 from vllm.distributed import (
@@ -13,6 +11,7 @@ from vllm.distributed import (
 from vllm.model_executor.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 
+from omni_npu import envs
 from omni_npu.v1.distributed.parallel_state_ext import get_local_world_group
 
 
@@ -48,7 +47,7 @@ class NPULogitsProcessor(LogitsProcessor):
             comm_group = (
                 get_local_world_group() if use_local_comm else get_dp_group()
             )
-            if os.environ.get("OMNI_NPU_USE_DEVICE_COMM_A2A", "0") == "1":
+            if envs.OMNI_NPU_USE_DEVICE_COMM_A2A:
                 logits = comm_group.device_communicator.all_to_all(
                     logits, scatter_dim=0, gather_dim=-1,
                 )[:local_n]

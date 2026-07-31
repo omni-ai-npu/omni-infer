@@ -1,0 +1,213 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: Delete temporary script files.
+  ansible.builtin.command: /bin/bash -c "rm -rf ${SCRIPTS_PATH}/*"
+  register: cmd_result
+  when: "('P' in group_names or 'D' in group_names) and existing_containers.stdout == ''"
+
+# This is a static import so every topology task is visible under --tags never.
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: set_topology
+  when: "'P' in group_names or 'D' in group_names"
+
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: stop_server
+  when: "('P' in group_names or 'D' in group_names) and existing_containers.stdout == ''"
+
+- name: Set mooncake & etcd configuration.
+  ansible.builtin.set_fact:
+    ETCD_IP: "{{ hostvars[groups['C'][0]]['ansible_host'] }}"
+    ETCD_PORT: "{{ etcd_port }}"
+    MOONCAKE_MASTER_IP: "{{ hostvars[groups['C'][0]]['ansible_host'] }}"
+    MOONCAKE_MASTER_PORT: "{{ mooncake_master_port }}"
+    MOONCAKE_METRICS_PORT: "{{ mooncake_metrics_port }}"
+    PROXY_PORT: "{{ proxy_port }}"
+  when: >-
+    ('P' in group_names or 'D' in group_names) and
+    existing_containers.stdout == '' and
+    etcd_port is defined and mooncake_master_port is defined and
+    mooncake_metrics_port is defined
+
+- name: Generate a mooncake config json.
+  ansible.builtin.copy:
+    content: "{{ generate_mooncake_config_json }}"
+    dest: "$SCRIPTS_PATH/mooncake_config.json"
+    mode: '0750'
+  vars:
+    HOST_IP: "{{ ansible_host }}"
+    resolved_mooncake_profile: >-
+      {{ mooncake_profile_defaults | combine(mooncake_profile, recursive=true) }}
+  when:
+    - resolved_mooncake_profile.generate_config | bool
+    - >-
+      ('P' in group_names or 'D' in group_names) and
+      existing_containers.stdout == '' and
+      etcd_port is defined and mooncake_master_port is defined and
+      mooncake_metrics_port is defined
+
+- name: Generate a lmcahce + mooncake config yaml.
+  ansible.builtin.copy:
+    content: "{{ generate_lmcache_mooncake_config_yml }}"
+    dest: "$SCRIPTS_PATH/lmcache_mooncake_config.yml"
+    mode: '0750'
+  vars:
+    resolved_mooncake_profile: >-
+      {{ mooncake_profile_defaults | combine(mooncake_profile, recursive=true) }}
+  when:
+    - resolved_mooncake_profile.generate_config | bool
+    - >-
+      ('P' in group_names or 'D' in group_names) and
+      existing_containers.stdout == '' and
+      etcd_port is defined and mooncake_master_port is defined and
+      mooncake_metrics_port is defined
+
+- name: Remove proc_trace.txt if it exists (P & D nodes)
+  ansible.builtin.file:
+    path: /tmp/process/proc_trace.txt
+    state: absent
+  when: "('P' in group_names or 'D' in group_names) and existing_containers.stdout == ''"
+
+- name: Generate a script to run the vllm server for the prefill instances.
+  ansible.builtin.copy:
+    content: >-
+      {{ lookup('ansible.builtin.template', role_path ~ '/../common/templates/run_vllm_prefill.sh.j2') }}
+    dest: "$SCRIPTS_PATH/vllm_run_for_p.sh"
+    mode: '0750'
+  vars:
+    resolved_run_server_prefill_profile:
+      runner: >-
+        {{ run_server_prefill_profile.runner
+           | default(run_server_prefill_profile_defaults.runner) }}
+      workdir: >-
+        {{ run_server_prefill_profile.workdir
+           | default(run_server_prefill_profile_defaults.workdir) }}
+      prepare_commands: >-
+        {{ run_server_prefill_profile.prepare_commands
+           | default(run_server_prefill_profile_defaults.prepare_commands) }}
+      multi_node_backend: >-
+        {{ run_server_prefill_profile.multi_node_backend
+           | default(run_server_prefill_profile_defaults.multi_node_backend) }}
+      args: >-
+        {{ run_server_prefill_profile.args
+           | default(run_server_prefill_profile_defaults.args) }}
+  when: "'P' in group_names and existing_containers.stdout == ''"
+
+- name: Generate a script to run the vllm server for the decode instances.
+  ansible.builtin.copy:
+    content: >-
+      {{ lookup('ansible.builtin.template', role_path ~ '/../common/templates/run_vllm_decode.sh.j2') }}
+    dest: "$SCRIPTS_PATH/vllm_run_for_d.sh"
+    mode: '0750'
+  vars:
+    resolved_run_server_decode_profile:
+      runner: >-
+        {{ run_server_decode_profile.runner
+           | default(run_server_decode_profile_defaults.runner) }}
+      workdir: >-
+        {{ run_server_decode_profile.workdir
+           | default(run_server_decode_profile_defaults.workdir) }}
+      prepare_commands: >-
+        {{ run_server_decode_profile.prepare_commands
+           | default(run_server_decode_profile_defaults.prepare_commands) }}
+      args: >-
+        {{ run_server_decode_profile.args
+           | default(run_server_decode_profile_defaults.args) }}
+    server_offset_dict: "{{ DECODE_SERVER_OFFSET_BY_GROUP }}"
+  when: "'D' in group_names and existing_containers.stdout == ''"
+
+- name: Get socket name for communication between prefill instances and decode instances.
+  ansible.builtin.shell: |
+    ip -4 route list 0/0 | awk '{print $5}' | head -1
+  register: default_interface_result
+  changed_when: false
+  when: "'P' in group_names or 'D' in group_names"
+
+- name: Use a variable to store the socket name.
+  ansible.builtin.set_fact:
+    default_interface: "{{ default_interface_result.stdout }}"
+  when:
+    - "'P' in group_names or 'D' in group_names"
+    - default_interface_result.stdout != ""
+
+- name: Run the Omniai service for decode instances.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_run_server_vllm_cmd_d }}"
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  vars:
+    resolved_run_server_decode_profile: >-
+      {{
+        run_server_decode_profile_defaults
+        | combine(run_server_decode_profile, recursive=true)
+      }}
+    resolved_run_server_vllm_cmd_d: |
+      {{ docker_exec_cmd }}{% for name, value in resolved_run_server_decode_profile.docker_envs.items() %} -e {{ name }}={{ value | quote }}{% endfor %} -d $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/vllm_run_for_d.sh
+  when: "'D' in group_names and existing_containers.stdout == ''"
+
+- name: Run the Omniai service for prefill instances.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_run_server_vllm_cmd_p }}"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  vars:
+    resolved_run_server_prefill_profile: >-
+      {{
+        run_server_prefill_profile_defaults
+        | combine(run_server_prefill_profile, recursive=true)
+      }}
+    resolved_run_server_vllm_cmd_p: |
+      {{ docker_exec_cmd }}{% for name, value in resolved_run_server_prefill_profile.docker_envs.items() %} -e {{ name }}={{ value | quote }}{% endfor %} -d $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
+  when: "'P' in group_names and existing_containers.stdout == ''"
+
+- name: Ensure bind_cpu.sh is executable in the container
+  ansible.builtin.shell:
+    cmd: >-
+      docker exec $DOCKER_NAME_P chmod +x
+      {{ container_workspace }}/omniinfer/tools/deploy/ansible/scripts/bind_cpu.sh
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  when: "'P' in group_names and existing_containers.stdout == ''"
+
+- name: Ensure bind_cpu.sh is executable in the container
+  ansible.builtin.shell:
+    cmd: >-
+      docker exec $DOCKER_NAME_D chmod +x
+      {{ container_workspace }}/omniinfer/tools/deploy/ansible/scripts/bind_cpu.sh
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  when: "'D' in group_names and existing_containers.stdout == ''"
+
+- name: Prefill cpu_pin
+  ansible.builtin.command: >-
+    /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c
+    {{ container_workspace }}/omniinfer/tools/deploy/ansible/scripts/bind_cpu.sh"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+    SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+    ROLE: "P"
+  become: true
+  when:
+    - "'P' in group_names and existing_containers.stdout == ''"
+    - (proc_bind_profile_defaults | combine(proc_bind_profile, recursive=true)).enabled | bool
+
+- name: Decode cpu_pin
+  ansible.builtin.command: >-
+    /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c
+    {{ container_workspace }}/omniinfer/tools/deploy/ansible/scripts/bind_cpu.sh"
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+    SCRIPTS_PATH: "{{ ansible_env.SCRIPTS_PATH }}"
+    ROLE: "D"
+  become: true
+  when:
+    - "'D' in group_names and existing_containers.stdout == ''"
+    - (proc_bind_profile_defaults | combine(proc_bind_profile, recursive=true)).enabled | bool

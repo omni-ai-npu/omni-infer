@@ -12,6 +12,9 @@ import torch_npu
 # import logging
 from vllm.logger import init_logger
 
+from omni_npu import envs
+from omni_npu.configs import OmniAdditionalConfig
+
 from .features import (
     apply_eager_mode_config,
     apply_omni_cache,
@@ -28,13 +31,14 @@ def load_model_extra_config(model_config, vllm_config, scheduler_config):
     model_name, quant_type= parse_hf_config(model_config.hf_config)
     is_pd_disaggregation = False
     is_prefill_node = None
-    if os.getenv('ROLE', None):
+    if envs.OMNI_PD_ROLE:
         is_pd_disaggregation = True
-        is_prefill_node = True if os.getenv('ROLE', None)=='prefill' else False
+        is_prefill_node = True if envs.OMNI_PD_ROLE == 'prefill' else False
     if vllm_config.additional_config is not None:
-        enable_pd_elastic_scaling = vllm_config.additional_config.get("enable_pd_elastic_scaling", False)
-        enable_low_latency=vllm_config.additional_config.get("enable_low_latency", False)
-        enable_omni_cache = vllm_config.additional_config.get("enable_omni_cache", False)
+        omni_add = OmniAdditionalConfig.from_vllm_config(vllm_config)
+        enable_pd_elastic_scaling = omni_add.enable_pd_elastic_scaling
+        enable_low_latency = omni_add.enable_low_latency
+        enable_omni_cache = omni_add.enable_omni_cache
     else:
         enable_pd_elastic_scaling = False
         enable_low_latency = False
@@ -68,8 +72,8 @@ def load_model_extra_config(model_config, vllm_config, scheduler_config):
         is_pd_disaggregation = is_pd_disaggregation,
         is_prefill_node = is_prefill_node,
         quant_type = quant_type,
-        prefill_node_num = int(os.getenv("PREFILL_POD_NUM", 1)),
-        decode_node_num = int(os.getenv("DECODE_POD_NUM", 1)),
+        prefill_node_num = envs.OMNI_PD_PREFILL_POD_NUM,
+        decode_node_num = envs.OMNI_PD_DECODE_POD_NUM,
         enable_eplb = enable_eplb,
         enable_chunked_prefill = enable_chunked_prefill,
         enable_low_latency = enable_low_latency,
@@ -176,7 +180,7 @@ class ModelOperatorOptConfig:
     enable_mtp_invariant: bool = False # 是否使能MTP一致性
 
     gmm_fr_token_threshold: int = 0 # 开启gmm_fr的token数阈值，小于等于阈值时开启，默认不开启
-    if int(os.getenv("ENABLE_OMNI_CACHE", "0")):
+    if envs.OMNI_ENABLE_OMNI_CACHE:
         moe_seq_split_length: int = 128 * 10 # omni-cache 开启时使用该配置
     else:
         moe_seq_split_length: int = 10**9 # 开启chunk moe的token数阈值，大于阈值会触发chunk moe, 默认不开启
@@ -203,7 +207,7 @@ class ModelOperatorOptConfig:
             self.shared_expert_down_prefetch = 0
             logger.warning(f"[WARNING] When enable_prefetch is false, prefetch_Mb must be set to 0.")
 
-        if os.getenv("ENABLE_OMNI_CACHE", "0") == "1":
+        if envs.OMNI_ENABLE_OMNI_CACHE:
             self.use_omni_cache = True
 
         # Check for mutually exclusive configuration options
@@ -327,9 +331,11 @@ def parse_hf_config(hf_config):
 
 def _init_model_extra_config(task_config):
 
-    custom_model_config_path = os.environ.get("CUSTOM_MODEL_CONFIG_PATH", None)
+    custom_model_config_path = envs.OMNI_CUSTOM_MODEL_CONFIG_PATH
     if custom_model_config_path:
-        logger.info(f"Get custom_model_config_path from environ: {os.environ.get('CUSTOM_MODEL_CONFIG_PATH')}")
+        logger.info(
+            f"Get custom_model_config_path from environ: {custom_model_config_path}"
+        )
         # load best_pratice_model_config_path from os.environ
         best_practice_model_config_path = os.path.join(default_config_path, custom_model_config_path)
         config_data = _loader_configs_data(best_practice_model_config_path)

@@ -66,8 +66,6 @@ export OMNI_USE_DSV3=1
 export USING_LCCL_COM=0
 export VLLM_ENABLE_MC2=0
 
-MODEL_EXTRA_CFG_PATH="$(realpath ../../tests/test_config/test_config_pd_hybrid_a2.json)"
-export MODEL_EXTRA_CFG_PATH
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export HCCL_OP_EXPANSION_MODE="AIV"
 export ASCEND_PLATFORM="A2"

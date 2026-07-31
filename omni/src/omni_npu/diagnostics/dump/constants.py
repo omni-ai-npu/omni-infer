@@ -2,8 +2,8 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 """OMNI-DUMP internal constants.
 
-The only deployment-facing knobs are the two environment variables below;
-everything else is fixed by design.
+Deployment-facing settings ``OMNI_DUMP_ENABLE`` and ``OMNI_DUMP_DIR``,
+including their defaults and parsing, are defined in ``omni_npu.envs``.
 """
 import signal
 
@@ -36,7 +36,3 @@ DEVICE_MEM_PROBE_TIMEOUT_SEC = 2.0
 ROLE_WORKER = "worker"
 ROLE_ENGINE = "engine"
 ROLE_API = "api"
-
-ENV_ENABLE = "OMNI_DUMP_ENABLE"
-ENV_DUMP_DIR = "OMNI_DUMP_DIR"
-DEFAULT_DUMP_DIR = "/var/log/omni-npu/dump"

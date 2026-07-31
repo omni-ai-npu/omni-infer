@@ -22,6 +22,8 @@ from vllm.forward_context import BatchDescriptor, get_forward_context
 from vllm.logger import logger
 from vllm.platforms import current_platform
 
+from omni_npu.configs import OmniAdditionalConfig
+
 global_recapture = False
 
 
@@ -189,9 +191,8 @@ class ACLGraphWrapper:
         self.attn_layer_names = attn_layer_names
 
         self.is_debugging_mode = envs.VLLM_LOGGING_LEVEL == "DEBUG"
-        self.npugraph_ex_config = (self.vllm_config.additional_config or {}).get(
-            "npugraph_ex_config", {}
-        )
+        omni_add = OmniAdditionalConfig.from_vllm_config(self.vllm_config)
+        self.npugraph_ex_config = omni_add.npugraph_ex_config
         self.need_super_kernel_optimize = False
         self.need_static_compile = False
         if self.npugraph_ex_config.get("enable", False):

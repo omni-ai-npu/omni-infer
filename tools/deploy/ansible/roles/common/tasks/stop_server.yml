@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: Generate a script to kill all Python processes in the container.
+  ansible.builtin.copy:
+    content: |
+      #!/bin/bash
+
+      ps aux | grep "VLLM" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+      ps aux | grep "vllm" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+      ps aux | grep "python" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+    dest: "$SCRIPTS_PATH/kill_python_processes.sh"
+    mode: '0750'
+  when: "'P' in group_names or 'D' in group_names"
+
+- name: Generate a script to kill all Ray processes in the container.
+  ansible.builtin.copy:
+    content: |
+      #!/bin/bash
+
+      ps aux | grep "ray" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+    dest: "$SCRIPTS_PATH/kill_ray_processes.sh"
+    mode: '0750'
+  when: "'P' in group_names or 'D' in group_names"
+
+- name: Kill all Python processes in the container of prefill.
+  ansible.builtin.command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  failed_when: false
+  no_log: true
+  when: "'P' in group_names"
+
+- name: Kill all Ray processes in the container of prefill.
+  ansible.builtin.command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/kill_ray_processes.sh"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  failed_when: false
+  no_log: true
+  when: "'P' in group_names"
+
+- name: Kill all Python processes in the container of decode.
+  ansible.builtin.command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  failed_when: false
+  no_log: true
+  when: "'D' in group_names"
+
+- name: Kill all Ray processes in the container of decode.
+  ansible.builtin.command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/kill_ray_processes.sh"
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  failed_when: false
+  no_log: true
+  when: "'D' in group_names"

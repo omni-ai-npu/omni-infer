@@ -3,7 +3,6 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from dataclasses import replace
 from typing import Optional
-import os
 import torch
 import torch_npu
 
@@ -22,6 +21,7 @@ from vllm.v1.sample.rejection_sampler import (
 from vllm.v1.sample.sampler import Sampler
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 
+from omni_npu import envs
 from omni_npu.model_config.config_loader.loader import model_extra_config
 from omni_npu.sample.ops.topk_topp_sampler import apply_top_k_top_p_npu
 from omni_npu.v1.utils import on_ascend950
@@ -43,7 +43,9 @@ class NPURejectionSampler(RejectionSampler):
             model_extra_config.operator_opt_config.disable_npu_top_k_top_p_sample
             or on_ascend950()
         )
-        self.not_support_float = os.environ.get("NPU_TOP_K_TOP_P_SAMPLE_NOT_SUPPORT_FLOAT", "0") == "1"
+        self.not_support_float = (
+            envs.OMNI_NPU_TOP_K_TOP_P_SAMPLE_NOT_SUPPORT_FLOAT
+        )
         self.rollback_dummy = None
 
 

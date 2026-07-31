@@ -5,9 +5,9 @@
 # ExpertIdServingChatStream,ExpertIdServingCompletionStream"
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
+from omni_npu import envs
 import time
 from typing import Optional, List, Tuple
-import os
 import logging
 import importlib
 import inspect
@@ -25,7 +25,7 @@ from vllm.v1.engine.core import EngineCore
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-namelist_path = os.getenv("PROFILING_NAMELIST")
+namelist_path = envs.OMNI_PROFILE_NAMELIST
 
 
 # This class is registered during auto_import_patches(), but is instantiated
@@ -41,8 +41,8 @@ class ProfilerDynamicPatch(VLLMPatch):
             logger.info("<<< ProfilerDynamicPatch: Trace disabled, PROFILING_NAMELIST environment variable is not set.")
             return
 
-        patches_all = os.getenv("OMNI_NPU_VLLM_PATCHES", "").strip()
-        enabled_patches = os.getenv("OMNI_NPU_VLLM_PATCHES", "")
+        patches_all = envs.OMNI_NPU_VLLM_PATCHES.strip()
+        enabled_patches = envs.OMNI_NPU_VLLM_PATCHES
         enabled_patch_list = [p.strip() for p in enabled_patches.split(",") if p.strip()]
 
         if patches_all == "ALL":
@@ -202,7 +202,7 @@ class RequestStatusPatch(VLLMPatch):
                 f"<<<Action: Add need pulling sequence; "
                 f"Timestamp:{time.time()}; "
                 f"RequestID:{self.request_id}; "
-                f"Role:{os.getenv('ROLE', 'unknown_role')}_{ip_str}"
+                f"Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}"
             )
 
     status = property(status, status_set)
@@ -228,15 +228,15 @@ if namelist_path:
                     pass
                 elif yield_count == 2:
                     # Second chat_completion_stream_generator yield.
-                    safe_print(trace_output_directory, f"<<<Action: First decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+                    safe_print(trace_output_directory, f"<<<Action: First decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE}_{ip_str}")
                 elif yield_count == 3:
                     # Third chat_completion_stream_generator yield.
-                    safe_print(trace_output_directory, f"<<<Action: Second decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+                    safe_print(trace_output_directory, f"<<<Action: Second decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE}_{ip_str}")
                 elif yield_count == 4:
                     # Fourth chat_completion_stream_generator yield.
-                    safe_print(trace_output_directory, f"<<<Action: Third decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+                    safe_print(trace_output_directory, f"<<<Action: Third decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE}_{ip_str}")
                 if item == "data: [DONE]\n\n":
-                    safe_print(trace_output_directory, f"<<<Action: Finish decode pickle and start response; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+                    safe_print(trace_output_directory, f"<<<Action: Finish decode pickle and start response; Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE}_{ip_str}")
                 yield item
 
 
@@ -261,16 +261,16 @@ if namelist_path:
                 elif yield_count == 2:
                     # Second completion_stream_generator yield.
                     safe_print(trace_output_directory, f"<<<Action: First decode output token; "
-                               f"Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+                               f"Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE}_{ip_str}")
                 elif yield_count == 3:
                     # Third completion_stream_generator yield.
                     safe_print(trace_output_directory, f"<<<Action: Second decode output token; "
-                               f"Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+                               f"Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE}_{ip_str}")
                 elif yield_count == 4:
                     # Fourth completion_stream_generator yield.
                     safe_print(trace_output_directory, f"<<<Action: Third decode output token; "
-                               f"Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+                               f"Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE}_{ip_str}")
                 if item == "data: [DONE]\n\n":
                     safe_print(trace_output_directory, f"<<<Action: Finish decode pickle and start response; "
-                               f"Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+                               f"Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE}_{ip_str}")
                 yield item

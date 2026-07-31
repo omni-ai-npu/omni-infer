@@ -4,7 +4,6 @@
 # This patch is used for reuse prefilled tokens
 
 import asyncio
-import os
 from collections.abc import AsyncIterator, Mapping
 from typing import Any, AsyncGenerator, Optional, Callable
 
@@ -28,6 +27,7 @@ from vllm.entrypoints.openai.serving_engine import OpenAIServing
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.engine.async_llm import AsyncLLM
 
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 _original_chat_completion_full_generator = OpenAIServingChat.chat_completion_full_generator
@@ -124,8 +124,8 @@ class OpenAIServingChatPatch(VLLMPatch):
 
         assert final_res is not None, "result_generator should yield at least one RequestOutput."
 
-        reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
-        skip_decode_tokenize = os.getenv("OMNI_SKIP_DECODE_TOKENIZE", "0") == "1"
+        reuse_prefilled_tokens = envs.OMNI_REUSE_PREFILLED_TOKENS
+        skip_decode_tokenize = envs.OMNI_SKIP_DECODE_TOKENIZE
 
         if reuse_prefilled_tokens:
             prefilled_token_ids = getattr(request, "_omni_prefilled_token_ids", None)
@@ -187,7 +187,7 @@ class OpenAIServingChatPatch(VLLMPatch):
                 kv_transfer_config, "is_kv_producer", False
             ):
                 is_prefill_node = True
-        elif os.getenv("ROLE") == "prefill":
+        elif envs.OMNI_PD_ROLE == "prefill":
             is_prefill_node = True
 
         if is_prefill_node:
@@ -271,8 +271,7 @@ class OpenAIServingChatPreprocessPatch(VLLMPatch):
             continue_final_message, tool_dicts, documents,
             chat_template_kwargs, default_chat_template_kwargs, tool_parser,
             add_special_tokens)
-        reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS",
-                                           "0") == "1"
+        reuse_prefilled_tokens = envs.OMNI_REUSE_PREFILLED_TOKENS
         for attr in (
                 "_omni_prefilled_token_ids",
                 "_omni_prefilled_text",
@@ -360,7 +359,7 @@ class SchedulerPatch(VLLMPatch):
     _attr_names_to_apply = ['_update_waiting_for_remote_kv']
 
     def _update_waiting_for_remote_kv(self, request: Request) -> bool:
-        reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
+        reuse_prefilled_tokens = envs.OMNI_REUSE_PREFILLED_TOKENS
         if (reuse_prefilled_tokens and
                 request.request_id in self.finished_recving_kv_req_ids and
                 request.request_id not in self.failed_recving_kv_req_ids):
@@ -417,7 +416,7 @@ class AsyncLLMPatch(VLLMPatch):
                 result.append(new_item)
             return result
 
-        reuse_prefilled_tokens = os.getenv("OMNI_REUSE_PREFILLED_TOKENS", "0") == "1"
+        reuse_prefilled_tokens = envs.OMNI_REUSE_PREFILLED_TOKENS
         pending_prefilled_output = None
         if reuse_prefilled_tokens:
             prefilled_token_ids: list[int] = []
