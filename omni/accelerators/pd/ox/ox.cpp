@@ -2,7 +2,10 @@
 // Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 #include <set>
+#include <array>
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <exception>
 #include <msgpack.hpp>
@@ -25,6 +28,38 @@ using asio::detached;
 using asio::experimental::concurrent_channel;
 using asio::ip::tcp;
 using namespace boost::asio::experimental::awaitable_operators;
+
+static bool ox_env_enabled(const char *name)
+{
+    const char *value = std::getenv(name);
+    return value != nullptr &&
+           (std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
+               std::strcmp(value, "TRUE") == 0 || std::strcmp(value, "yes") == 0 ||
+               std::strcmp(value, "YES") == 0 || std::strcmp(value, "on") == 0 ||
+               std::strcmp(value, "ON") == 0);
+}
+
+static bool ox_statistics_log_enabled()
+{
+    static const bool enabled = ox_env_enabled("OX_STATISTICS_LOG");
+    return enabled;
+}
+
+static bool ox_request_trace_enabled()
+{
+    static const bool enabled = ox_env_enabled("OX_REQUEST_TRACE");
+    return enabled;
+}
+
+template <typename... Args>
+static void ox_trace(Args &&...args)
+{
+    if (!ox_request_trace_enabled()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_output_mutex);
+    (std::cout << ... << args) << std::endl;
+}
 
 struct RequestMessage {
     request_id_t request_id;
@@ -68,55 +103,61 @@ public:
 
     asio::awaitable<void> run()
     {
+        const char *phase = "connect";
+        size_t src_block_count = 0;
+        size_t dst_block_count = 0;
         try {
+            phase = "connect";
             co_await socket.async_connect(addr, asio::use_awaitable);
             optimize_tcp_socket(socket);
 
             while (true) {
+                phase = "receive_request";
                 auto [request_id, table_id, src_ids, dst_ids] = co_await request.async_receive(asio::use_awaitable);
-
+                src_block_count = src_ids.size();
+                dst_block_count = dst_ids.size();
                 if (src_ids.empty()) {
                     // no task, return empty immediately
                     co_await upstream.async_send(
                         boost::system::error_code{}, std::make_tuple(request_id, dst_ids), asio::use_awaitable);
                     continue;
                 }
-
-                // Target buffer follows dst_ids; send src_ids to P-side server.
-                // auto bufs = bt.get_buffers(table_id, dst_ids, rank);
-
-                // auto bufs = bt.get_buffers_interleaved(table_id, dst_ids, rank);
                 auto bufs = bt.get_buffers_layerwise(table_id, dst_ids, rank);
-                // for (auto id : src_ids) {
-                //     std::cout << "Request for ID:" << id << std::endl;
-                // }
-                // for (auto id : dst_ids) {
-                //     std::cout << "Save to ID:" << id << std::endl;
-                // }
-                // std::cout << "Buf size:" << bufs.size()/dst_ids.size() << std::endl;
 
+                const uint32_t block_count_network = htonl(static_cast<uint32_t>(src_ids.size()));
+                std::array<asio::const_buffer, 2> request_buffers = {
+                    asio::buffer(&block_count_network, sizeof(block_count_network)),
+                    asio::buffer(src_ids.data(), src_ids.size() * sizeof(block_id_t))};
+                ox_trace("OX trace: request=", request_id, " event=p_transfer_start peer=", addr.address(),
+                    ":", addr.port(), " rank=", rank, " table=", table_id, " src_blocks=", src_ids.size(),
+                    " dst_blocks=", dst_ids.size());
+                phase = "write_request_read_kv";
                 co_await (asio::async_write(socket,
-                              asio::buffer(src_ids.data(), src_ids.size() * sizeof(block_id_t)),
+                              request_buffers,
                               asio::use_awaitable) &&
                           asio::async_read(socket, bufs, asio::use_awaitable));
-
-                // #ifdef CONTENT_CHECK
-                //                 for (size_t i = 0; i < src_ids.size(); i++)
-                //                 {
-                //                     int64_t *data = static_cast<int64_t *>(bufs[i].data());
-                //                     std::cerr << "Check content: " << *data << " : " << src_ids[i] << "\n";
-                //                     assert(*data == src_ids[i]);
-                //                 }
-                // #endif
+                ox_trace("OX trace: request=", request_id, " event=p_transfer_done peer=", addr.address(),
+                    ":", addr.port(), " rank=", rank, " dst_blocks=", dst_ids.size());
 
                 global_stats_update(dst_ids.size() * bt.block_tp_size());
 
                 // return finished dst_ids
+                phase = "report_completion";
                 co_await upstream.async_send(
                     boost::system::error_code{}, std::make_tuple(request_id, dst_ids), asio::use_awaitable);
             }
+        } catch (const boost::system::system_error &e) {
+            std::cerr << "OX D transport error: peer=" << addr.address() << ":" << addr.port()
+                      << " phase=" << phase << " src_blocks=" << src_block_count
+                      << " dst_blocks=" << dst_block_count << " ec=" << e.code().value()
+                      << " category=" << e.code().category().name() << " message=" << e.code().message()
+                      << std::endl;
+            print_ox_backtrace(std::cerr);
         } catch (const std::exception &e) {
-            std::cerr << "Connection " << addr.address() << ":" << addr.port() << " error: " << e.what() << "\n";
+            std::cerr << "OX D request error: peer=" << addr.address() << ":" << addr.port()
+                      << " phase=" << phase << " src_blocks=" << src_block_count
+                      << " dst_blocks=" << dst_block_count << " message=" << e.what() << std::endl;
+            print_ox_backtrace(std::cerr);
         }
     }
 
@@ -223,6 +264,8 @@ public:
 
         size_t base_count = total_ids / num_conns;
         size_t remainder = total_ids % num_conns;
+        ox_trace("OX trace: request=", req.request_id, " event=shard_dispatch rank=", rank,
+            " src_blocks=", req.src_block_ids.size(), " dst_blocks=", total_ids, " connections=", num_conns);
         auto it_src = req.src_block_ids.begin();
         auto it_dst = req.dst_block_ids.begin();
 
@@ -237,6 +280,8 @@ public:
             std::advance(it_dst, count);
 
             size_t conn_index = last;
+            ox_trace("OX trace: request=", req.request_id, " event=connection_dispatch rank=", rank,
+                " connection=", conn_index, " blocks=", count);
             co_spawn(co_await asio::this_coro::executor,
                 connections[conn_index]->submit_request(req.request_id, req.table_id, src_ids, dst_ids),
                 detached);
@@ -256,6 +301,8 @@ public:
             }
 
             if (task_status[request_id].empty()) {
+                ox_trace("OX trace: request=", request_id, " event=shard_complete rank=", rank,
+                    " completed_blocks=", ids.size());
                 task_status.erase(request_id);
                 requests_mutex.unlock();
                 co_await upstream.async_send(
@@ -336,7 +383,6 @@ public:
                 [table_id, block_id, request_id, &failed, this]() -> boost::asio::awaitable<void> {
                     void *ptr = bt.block_addr(table_id, block_id);
 
-                    // auto start = std::chrono::high_resolution_clock::now();
                     void *buf = malloc(this->block_size);
                     if (buf == nullptr) {
                         failed = true;
@@ -345,13 +391,8 @@ public:
                     }
                     memcpy(buf, ptr, this->block_size);
 
-                    // auto duration1 =
-                    // std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() -
-                    // start).count(); auto ms =
-                    // std::chrono::duration_cast<std::chrono::milliseconds>(end.time_since_epoch()).count();
                     this->merger.merge_shards(static_cast<const short *>(buf), static_cast<short *>(ptr));
                     free(buf);
-                    // std::cout << pthread_self() << std::endl;
                     co_return;
                 },
                 boost::asio::use_awaitable));
@@ -390,19 +431,15 @@ public:
                     rank_finished[static_cast<size_t>(rank)] = true;
                 }
 
-                // std::cout << "Finished to pull kv for request " << request_id << " from TP-rank-" << rank <<
-                // std::endl;
-
                 if (std::all_of(rank_finished.begin(), rank_finished.end(), [](bool b) { return b; })) {
+                    ox_trace("OX trace: request=", request_id, " event=request_complete rank=", rank,
+                        " blocks=", block_ids.size());
                     requests_status.erase(request_id);
                     requests_mutex.unlock();
 
                     client_id_t cid = client_id;
-                    // std::cout << "Send response: " << request_id << std::endl;
                     co_await upstream.async_send(
                         boost::system::error_code{}, std::make_tuple(cid, request_id, true), asio::use_awaitable);
-                    // requests_mutex.unlock();
-                    // co_spawn(co_await asio::this_coro::executor, merge_and_response(request_id), detached);
                 } else {
                     requests_mutex.unlock();
                 }
@@ -419,6 +456,10 @@ public:
         int cid = req.cluster_id;
         if (cid < 0 || static_cast<size_t>(cid) >= clusters.size())
             cid = 0;
+
+        ox_trace("OX trace: request=", req.request_id, " event=request_dispatch cluster=", cid,
+            " table=", req.table_id, " src_blocks=", req.src_block_ids.size(), " dst_blocks=",
+            req.dst_block_ids.size(), " shards=", clusters[cid].size());
 
         {
             std::unique_lock<std::shared_mutex> lock(requests_mutex);
@@ -467,19 +508,9 @@ asio::awaitable<void> response_sender(ZmqCoroutineSocket &router_socket, ZMQChan
             response_messages.emplace_back(client_id.data(), client_id.size());
             response_messages.emplace_back(response_data.data(), response_data.size());
 
-            // auto [num_ids, start] = time_record[request_id];
-            // auto end = std::chrono::high_resolution_clock::now();
-            // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-
-            // auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end.time_since_epoch()).count();
-
-            // std::cout << "Finished: " << request_id
-            //           << "Num blocks: " << num_ids
-            //           << " Duration:" << duration << " ms"
-            //           << " per block:" << ((float)duration * 1.0) / (num_ids * 1.0)
-            //              << " End: " << ms << std::endl;
             global_stats_update_running(-1);
             co_await router_socket.async_send_multipart(std::move(response_messages));
+            ox_trace("OX trace: request=", request_id, " event=response_sent success=", success);
         }
     } catch (const std::exception &e) {
         std::cout << "Response sender stopped: " << e.what() << std::endl;
@@ -506,12 +537,15 @@ asio::awaitable<void> router_receiver(ZmqCoroutineSocket &router_socket, TPGroup
                 auto start = std::chrono::high_resolution_clock::now();
                 time_record[request.request_id] = make_tuple(request.src_block_ids.size(), start);
 
-                // std::cout << "Start to pull kv for request " << request.request_id << std::endl;
+                ox_trace("OX trace: request=", request.request_id, " event=request_received cluster=",
+                    request.cluster_id, " table=", request.table_id, " src_blocks=", request.src_block_ids.size(),
+                    " dst_blocks=", request.dst_block_ids.size());
+
                 global_stats_update_running(1);
 
                 co_spawn(co_await asio::this_coro::executor, group.gather(client_id, request), detached);
             } else {
-                // std::cout << "Wrong msg: " << msg->size() << std::endl;
+                std::cout << "Wrong msg: " << msg->size() << std::endl;
             }
         } catch (const std::exception &e) {
             std::cerr << "Receiver error: " << e.what() << std::endl;
@@ -554,7 +588,10 @@ int main(int argc, char *argv[])
             co_spawn(io_context, tp_group->run(), detached);
             co_spawn(io_context, router_receiver(zmq_router, *tp_group), detached);
             co_spawn(io_context, response_sender(zmq_router, response_channel), detached);
-            co_spawn(io_context, print_statistics(), detached);
+
+            if (ox_statistics_log_enabled()) {
+                co_spawn(io_context, print_statistics(), detached);
+            }
 
             std::cout << "Omni Xfer started. ZMQ: " << address << std::endl;
         }

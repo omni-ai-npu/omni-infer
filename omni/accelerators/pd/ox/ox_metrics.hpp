@@ -39,7 +39,7 @@ awaitable<void> print_statistics()
             std::cout << "\nGlobal bandwidth: " << global_bandwidth_mbps
                       << " MB | Total data: " << g_total_bytes_received / (1024 * 1024) << " MB"
                       << " Running: " << g_running << " Total: " << g_total
-                      << std::flush;
+                      << std::endl;
         }
     }
 }

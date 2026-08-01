@@ -12,10 +12,15 @@
 #include <boost/asio/experimental/concurrent_channel.hpp>
 #include <boost/asio/experimental/awaitable_operators.hpp>
 
+#include <arpa/inet.h>
+#include <execinfo.h>
+#include <cstdlib>
 #include <iostream>
+#include <string>
 #include <vector>
 #include <cstdint>
-#include <array>
+#include <limits>
+#include <stdexcept>
 #include <ox_block_table.hpp>
 
 namespace asio = boost::asio;
@@ -25,6 +30,25 @@ using asio::use_awaitable;
 using asio::experimental::concurrent_channel;
 using asio::ip::tcp;
 using namespace boost::asio::experimental::awaitable_operators;
+
+inline constexpr uint32_t k_ox_max_block_ids_per_message = 8192;
+
+inline void print_ox_backtrace(std::ostream &out)
+{
+    void *frames[64];
+    const int frame_count = backtrace(frames, static_cast<int>(sizeof(frames) / sizeof(frames[0])));
+    char **symbols = backtrace_symbols(frames, frame_count);
+
+    out << "OX backtrace (" << frame_count << " frames):" << std::endl;
+    if (symbols == nullptr) {
+        out << "  backtrace_symbols failed" << std::endl;
+        return;
+    }
+    for (int i = 0; i < frame_count; ++i) {
+        out << "  " << symbols[i] << std::endl;
+    }
+    std::free(symbols);
+}
 
 inline void optimize_tcp_socket(tcp::socket &socket)
 {
@@ -56,37 +80,49 @@ public:
 private:
     asio::awaitable<void> process_connection()
     {
+        const char *phase = "read_block_count";
+        uint32_t block_count = 0;
         try {
-            std::array<uint64_t, 8192> recv_buffer;
-
             while (true) {
-                std::size_t bytes_read = co_await socket_.async_read_some(asio::buffer(recv_buffer), use_awaitable);
+                uint32_t block_count_network = 0;
+                phase = "read_block_count";
+                co_await asio::async_read(
+                    socket_, asio::buffer(&block_count_network, sizeof(block_count_network)), use_awaitable);
 
-                size_t num_blocks = bytes_read / sizeof(int64_t);
-
-                if (num_blocks > 0) {
-                    block_list_t block_list;
-                    block_list.assign(recv_buffer.begin(), recv_buffer.begin() + num_blocks);
-
-                    // #ifdef CONTENT_CHECK
-                    //                     auto bufs = bt.get_buffers(0, block_list, 0);
-                    //                     for (std::size_t i = 0; i < block_list.size(); ++i)
-                    //                     {
-                    //                         int64_t *data = static_cast<int64_t *>(bufs[i].data());
-                    //                         *data = block_list[i];
-                    //                         std::cerr << "Check content: " << *data << " : " << block_list[i] <<
-                    //                         "\n";
-                    //                     }
-                    // #endif
-                    // for (std::size_t i = 0; i < block_list.size(); ++i) {
-                    //     std::cout << "Send block: " << block_list[i] << "\n";
-                    // }
-                    co_await asio::async_write(socket_, bt.get_buffers_layerwise(0, block_list, 0), use_awaitable);
+                block_count = ntohl(block_count_network);
+                if (block_count == 0 || block_count > k_ox_max_block_ids_per_message) {
+                    throw std::out_of_range("invalid block count: " + std::to_string(block_count));
                 }
+
+                block_list_t block_list(block_count);
+                phase = "read_block_ids";
+                co_await asio::async_read(socket_,
+                    asio::buffer(block_list.data(), block_list.size() * sizeof(block_id_t)), use_awaitable);
+
+                phase = "write_kv";
+                co_await asio::async_write(socket_, bt.get_buffers_layerwise(0, block_list, 0), use_awaitable);
             }
+        } catch (const boost::system::system_error &e) {
+            std::cerr << "OX P transport error: peer=" << peer() << " phase=" << phase
+                      << " block_count=" << block_count << " ec=" << e.code().value()
+                      << " category=" << e.code().category().name() << " message=" << e.code().message()
+                      << std::endl;
+            print_ox_backtrace(std::cerr);
         } catch (const std::exception &e) {
-            std::cerr << "Connection closed: " << e.what() << std::endl;
+            std::cerr << "OX P request error: peer=" << peer() << " phase=" << phase
+                      << " block_count=" << block_count << " message=" << e.what() << std::endl;
+            print_ox_backtrace(std::cerr);
         }
+    }
+
+    std::string peer() const
+    {
+        boost::system::error_code ec;
+        const auto endpoint = socket_.remote_endpoint(ec);
+        if (ec) {
+            return "unavailable(" + ec.message() + ")";
+        }
+        return endpoint.address().to_string() + ":" + std::to_string(endpoint.port());
     }
 
     tcp::socket socket_;
@@ -100,6 +136,11 @@ public:
         : acceptor_(io_context, ep), bt(bt)
     {
         std::cout << "OX Listening Port:" << ep.port() << std::endl;
+    }
+
+    uint16_t port() const
+    {
+        return acceptor_.local_endpoint().port();
     }
 
     asio::awaitable<void> run()
