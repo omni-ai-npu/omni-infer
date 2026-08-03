@@ -15,6 +15,7 @@ from typing import Any, ClassVar, Optional, Tuple, TypeVar, TYPE_CHECKING
 
 import torch
 import torch_npu
+from typing_extensions import deprecated
 
 from vllm.config import VllmConfig, get_current_vllm_config
 from vllm.distributed import get_tp_group
@@ -113,7 +114,7 @@ class NPUDSABackend(AttentionBackend):
             dtypes = (torch.bfloat16, torch.int8, torch.float16)
         else:
             shapes = ((576,), (128,))
-            dtypes = (model_extra_config.dtype, model_extra_config.dtype)
+            dtypes = (kv_cache_spec.dtype, kv_cache_spec.dtype)
 
         return _maybe_padded_raw_tensor_to_strided_caches(
             raw_tensor,
@@ -503,6 +504,11 @@ class NPUDSAImpl(SparseMLAAttentionImpl[NPUDSAMetadata]):
         )
         return attn_out, None
 
+    @deprecated(
+        "Legacy vLLM 0.14 sparse MLA entry point. vLLM 0.25.1 dispatches "
+        "sparse MLA through do_kv_cache_update() and forward_mqa(). "
+        "PanguV2 uses npu_pangu_forward()."
+    )
     def forward(
         self,
         layer: AttentionLayer,
@@ -515,6 +521,11 @@ class NPUDSAImpl(SparseMLAAttentionImpl[NPUDSAMetadata]):
         output_scale: Optional[torch.Tensor] = None,
         output_block_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """Deprecated vLLM 0.14 monolithic sparse-MLA implementation.
+
+        This method is not called by the vLLM 0.25.1 sparse-MLA pipeline. It
+        is retained temporarily as a migration reference, not as a fallback.
+        """
         assert output is not None, "Output tensor must be provided."
 
         if output_scale is not None or output_block_scale is not None:

@@ -10,10 +10,11 @@ import and use it. We can iterate later with true MLA specialization.
 
 import math
 from dataclasses import dataclass
-from typing import ClassVar, Optional, Tuple, TypeVar, TYPE_CHECKING
+from typing import ClassVar, Optional, Tuple, TYPE_CHECKING
 
 import torch
 import torch_npu
+from typing_extensions import deprecated
 
 from vllm.platforms import current_platform
 from vllm.forward_context import get_forward_context
@@ -180,9 +181,6 @@ class NPUMLAMetadata(MLACommonMetadata[NPUMLADecodeMetadata]):
     get_slot_mapping_2d = lambda: None
 
 
-M = TypeVar("M", bound=NPUMLAMetadata)
-
-
 class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
     _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.ALWAYS
     supports_uniform_spec_as_decode: ClassVar[bool] = True
@@ -276,19 +274,23 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
 
         prefill_metadata = None
         if num_prefills > 0:
-            # MLA_SYNC_FIX[1/4]: reuse existing CPU data instead of
-            # compute_num_computed_tokens().cpu(), which triggers a GPU->CPU sync.
-            query_lens_cpu = (
-                common_attn_metadata.query_start_loc_cpu[1:]
-                - common_attn_metadata.query_start_loc_cpu[:-1]
-            )
-            num_computed_tokens_cpu = (
-                common_attn_metadata.seq_lens_cpu - query_lens_cpu
-            )
-
             reqs_start = num_decodes  # prefill_start
 
-            context_lens_cpu = num_computed_tokens_cpu[reqs_start:num_reqs]
+            # vLLM 0.25.1 provides a CPU upper bound that is exact for
+            # prefill rows. Prefer it over the deprecated ``seq_lens_cpu``
+            # property, which may introduce a device-to-host synchronization.
+            seq_lens_cpu = common_attn_metadata.seq_lens_cpu_upper_bound
+            if seq_lens_cpu is None:
+                # Keep compatibility with unit tests and callers that do not
+                # populate the 0.25.1 upper-bound buffer.
+                seq_lens_cpu = common_attn_metadata.seq_lens_cpu
+            prefill_query_lens_cpu = (
+                query_start_loc_cpu[reqs_start + 1 : num_reqs + 1]
+                - query_start_loc_cpu[reqs_start:num_reqs]
+            )
+            context_lens_cpu = (
+                seq_lens_cpu[reqs_start:num_reqs] - prefill_query_lens_cpu
+            )
             max_context_len_cpu = context_lens_cpu.max().item()
             num_prefills_with_context_cpu = (context_lens_cpu > 0).sum().item()
             prefill_query_start_loc = (
@@ -718,6 +720,20 @@ class NPUMLAImpl(MLAAttentionImpl[NPUMLAMetadata]):
         self.sink_k_pe = sink_k_pe.unsqueeze(1)
         self.sink_compressed_kv = sink_compressed_kv.unsqueeze(1)
         self.sink_len = sink_compressed_kv.shape[0]
+
+    def do_kv_cache_update(
+        self,
+        kv_c_normed: torch.Tensor,
+        k_pe: torch.Tensor,
+        kv_cache: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        kv_cache_dtype: str,
+        k_scale: torch.Tensor,
+    ) -> None:
+        raise NotImplementedError(
+            "NPUMLAImpl does not support vLLM's generic MLA KV-cache update. "
+            "PanguV2 updates its split KV cache in npu_pangu_forward."
+        )
 
     def _v_up_proj(self, x: torch.Tensor):
         x = x.view(self.num_heads, -1, self.kv_lora_rank)
@@ -1319,6 +1335,11 @@ class NPUMLAImpl(MLAAttentionImpl[NPUMLAMetadata]):
 
         return output
 
+    @deprecated(
+        "Legacy vLLM 0.14 MLA entry point. vLLM 0.25.1 dispatches through "
+        "do_kv_cache_update(), forward_mha(), and forward_mqa(). "
+        "PanguV2 uses npu_pangu_forward()."
+    )
     def forward(
         self,
         layer: AttentionLayer,
@@ -1331,6 +1352,12 @@ class NPUMLAImpl(MLAAttentionImpl[NPUMLAMetadata]):
         output_scale: Optional[torch.Tensor] = None,
         output_block_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """Deprecated vLLM 0.14 monolithic MLA implementation.
+
+        This method is not called by the vLLM 0.25.1 MLA pipeline. It is
+        temporarily retained as a migration reference and must not be treated
+        as a fallback for the generic MLA path.
+        """
         assert output is not None, "Output tensor must be provided."
 
         if output_scale is not None or output_block_scale is not None:
@@ -1456,25 +1483,31 @@ class NPUMLAImpl(MLAAttentionImpl[NPUMLAMetadata]):
 
     def forward_mha(
         self,
-        layer_name: str,
-        hidden_states: torch.Tensor,
-        kv_cache: tuple[torch.Tensor],
-        attn_metadata: M,
-        need_gather_q_kv: bool = False,
-        output: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        raise NotImplementedError("forward_mha is not supported for MLA attention. Use forward() instead.")
+        q: torch.Tensor,
+        kv_c_normed: torch.Tensor,
+        k_pe: torch.Tensor,
+        kv_c_and_k_pe_cache: torch.Tensor,
+        attn_metadata: NPUMLAMetadata,
+        k_scale: torch.Tensor,
+        output: torch.Tensor,
+        output_scale: torch.Tensor | None = None,
+    ) -> None:
+        raise NotImplementedError(
+            "NPUMLAImpl.forward_mha is intentionally unsupported. PanguV2 "
+            "prefill uses the npu_pangu_forward direct path."
+        )
 
     def forward_mqa(
         self,
-        layer_name: str,
-        hidden_states: torch.Tensor,
-        kv_cache: tuple[torch.Tensor],
-        attn_metadata: M,
-        need_gather_q_kv: bool = False,
-        output: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        raise NotImplementedError("forward_mqa is not supported for MLA attention. Use forward() instead.")
+        q: torch.Tensor | tuple[torch.Tensor, torch.Tensor],
+        kv_c_and_k_pe_cache: torch.Tensor,
+        attn_metadata: NPUMLAMetadata,
+        layer: AttentionLayer,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        raise NotImplementedError(
+            "NPUMLAImpl.forward_mqa is intentionally unsupported. PanguV2 "
+            "decode uses the npu_pangu_forward direct path."
+        )
 
 
 class NPUMLAPrefillBackend(MLAPrefillBackend):
