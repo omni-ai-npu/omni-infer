@@ -1021,7 +1021,9 @@ class DecodeOmniCache(BaseOmniCache):
         self.selection_topk_block_size = 1
         selection_max_seq_len = topk * self.selection_topk_block_size
 
-        if int(os.getenv("ENABLE_HOST_MAPPING", "0")) and model_extra_config.operator_opt_config.enable_dsa:
+        if (int(os.getenv("ENABLE_HOST_MAPPING", "0")) and
+                not int(os.getenv("DISABLE_GATHER_SELECTION", "0")) and
+                model_extra_config.operator_opt_config.enable_dsa):
             s_max_block_num = (selection_max_seq_len + s_block_size - 1) // s_block_size
 
             self.selection_k_rope = [
@@ -1111,7 +1113,12 @@ class DecodeOmniCache(BaseOmniCache):
             for block_id in block_ids:
                 layers = []
                 for layer_name in layer_indices:
-                    if model_extra_config.operator_opt_config.enable_dsa:
+                    if (int(os.getenv("ENABLE_HOST_MAPPING", "0")) and
+                            model_extra_config.operator_opt_config.enable_dsa):
+                        layers.append((
+                            self.device_cache[layer_name][0][block_id].data_ptr(),
+                        ))
+                    elif model_extra_config.operator_opt_config.enable_dsa:
                         layers.append(
                             (
                                 self.device_cache[layer_name][0][block_id].data_ptr(),

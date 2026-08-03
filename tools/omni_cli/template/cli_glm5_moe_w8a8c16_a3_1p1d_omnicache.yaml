@@ -47,8 +47,8 @@ all:
               enable-expert-parallel: ''
               max-num-seqs: 1
               max-num-batched-tokens: 2
-              preemption-mode: swap
-              swap_space: 32
+              preemption-mode: recompute
+              swap_space: 0
               # no-enable-prefix-caching: ''
               # speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":1}'
               reasoning-parser: GlmMoe
@@ -133,6 +133,8 @@ all:
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OMNI_CACHE: 1
+            ENABLE_HOST_MAPPING: 1
+            DISABLE_GATHER_SELECTION: 1
             P_NODE_LIST: 127.0.0.1,127.0.0.2
             TP_NNODES: 1
             OMNI_CACHE_MEMMAP_PATH: /dev/hugepages/omni_cache
@@ -159,8 +161,8 @@ all:
               enable-expert-parallel: ''
               max-num-seqs: 1
               max-num-batched-tokens: 2
-              preemption-mode: swap
-              swap_space: 32
+              preemption-mode: recompute
+              swap_space: 0
               # no-enable-prefix-caching: ''
               # speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":1}'
               reasoning-parser: GlmMoe
@@ -245,6 +247,8 @@ all:
             VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OMNI_CACHE: 1
+            ENABLE_HOST_MAPPING: 1
+            DISABLE_GATHER_SELECTION: 1
             P_NODE_LIST: 127.0.0.1,127.0.0.2
             TP_NNODES: 1
             OMNI_CACHE_MEMMAP_PATH: /dev/hugepages/omni_cache

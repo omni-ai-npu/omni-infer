@@ -658,7 +658,9 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                     raise RuntimeError("self._num_decode_tokens must be divisible by self._num_decodes")
                 num_tokens_per_req = self._num_decode_tokens // self._num_decodes
 
-                if int(os.getenv("ENABLE_HOST_MAPPING", "0")) and model_extra_config.operator_opt_config.enable_dsa and model_extra_config.operator_opt_config.use_omni_cache:
+                if (not int(os.getenv("DISABLE_GATHER_SELECTION", "0")) and
+                        model_extra_config.operator_opt_config.enable_dsa and
+                        model_extra_config.operator_opt_config.use_omni_cache):
                     time0 = time.perf_counter()
                     req_ids_update_mapping = self.runner.input_batch.req_id_to_index
                     req_ids_update = [req_id for req_id, _ in sorted(req_ids_update_mapping.items(), key=lambda item: item[1])]

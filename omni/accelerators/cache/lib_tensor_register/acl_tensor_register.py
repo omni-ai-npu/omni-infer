@@ -47,5 +47,7 @@ class NPUTensorRegister:
         if dev_ptr.value is None:
             raise RuntimeError("Register tensor failed: native returned null device pointer")
         
-        _, npu_tensor = zero_copy_npu.register_hugepage_as_npu_tensor(host_tensor, device_id)
+        npu_tensor = zero_copy_npu.wrap_registered_host_tensor(
+            host_tensor, dev_ptr.value, device_id
+        )
         return host_tensor, npu_tensor

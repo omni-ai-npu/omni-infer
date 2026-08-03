@@ -182,14 +182,8 @@ class KVCacheMemoryPool:
             for i, (tensor, shape) in enumerate(zip(self.kvi_tensors, self.shapes)):
                 self.kvi_tensors[i] = tensor.view([self.num_layers] + list(shape))
         else:
+            self.shared_tensor.zero_()
             logger.warning(f"<<< {model_extra_config.operator_opt_config.enable_dsa=}")
-            if int(os.getenv("ENABLE_HOST_MAPPING", "0")) and model_extra_config.operator_opt_config.enable_dsa:
-                logger.warning(f"<<< {model_extra_config.operator_opt_config.enable_dsa=}, before host_swap_device")
-                ptr = self.shared_tensor.data_ptr()
-                assert ptr % REGIST_SIZE == 0, f"Address 0x{ptr:x} not 4K aligned!"
-                self.shared_tensor_swap = self.host_swap_device(self.shared_tensor)
-            else:
-                self.shared_tensor_swap = self.shared_tensor
             cnt = self.size_total // self.element_size
             if cnt % self.head_total_slices != 0:
                 raise ValueError(f"Expected total elements divisible by {self.head_total_slices}, got {cnt}.")
@@ -197,9 +191,15 @@ class KVCacheMemoryPool:
             self.kvi_tensors = list(torch.split(self.shared_tensor, split_sizes))
             for i, (tensor, shape) in enumerate(zip(self.kvi_tensors, self.shapes)):
                 self.kvi_tensors[i] = tensor.view([self.num_layers] + list(shape))
-            self.kvi_tensors_swap = list(torch.split(self.shared_tensor_swap, split_sizes))
-            for i, (tensor, shape) in enumerate(zip(self.kvi_tensors_swap, self.shapes)):
-                self.kvi_tensors_swap[i] = tensor.view([self.num_layers] + list(shape))
+
+            self.kvi_tensors_swap = self.kvi_tensors.copy()
+            if int(os.getenv("ENABLE_HOST_MAPPING", "0")):
+                logger.warning(f"<<< {model_extra_config.operator_opt_config.enable_dsa=}, before host_swap_device")
+                for i in range(2):
+                    ptr = self.kvi_tensors[i].data_ptr()
+                    assert ptr % REGIST_SIZE == 0, f"Address 0x{ptr:x} not 4K aligned!"
+                    self.kvi_tensors_swap[i] = self.host_swap_device(self.kvi_tensors[i])
+                    self.kvi_tensors_swap[i] = torch_npu.npu_format_cast(self.kvi_tensors_swap[i], 2)
             shared_tensor_list = []
             for kvi_tensor in self.kvi_tensors_swap:
                 tensor_list_swap = list(kvi_tensor.unsqueeze(-2).unbind(dim=0))

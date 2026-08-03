@@ -1376,7 +1376,9 @@ class DeepseekMLA(nn.Module):
                                         kv_cache=kv_cache, is_prefill=False)
                 topk_indices = self._write_topk_buffer(topk_indices)
 
-            if int(os.getenv("ENABLE_HOST_MAPPING", "0")) and model_extra_config.operator_opt_config.use_omni_cache and attn_metadata and attn_metadata.omni_cache:
+            if (not int(os.getenv("DISABLE_GATHER_SELECTION", "0")) and
+                    model_extra_config.operator_opt_config.use_omni_cache and
+                    attn_metadata and attn_metadata.omni_cache):
                 kv_actual_seqlen = torch_npu.npu_gather_selection_kv_cache(
                     selection_k_rope=attn_metadata.omni_cache.selection_k_rope[self.layer_idx],
                     selection_kv_cache=attn_metadata.omni_cache.selection_kv_cache[self.layer_idx],
