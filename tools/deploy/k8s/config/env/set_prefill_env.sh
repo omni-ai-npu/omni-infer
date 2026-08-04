@@ -41,7 +41,6 @@ set_env_from_arg_or_default "MAX_NUM_BATCHED_TOKENS" "--max-num-batched-tokens" 
 set_env_from_arg_or_default "MAX_NUM_SEQS" "--max-num-seqs" 8 "$@"
 set_env_from_arg_or_default "MODEL_PATH" "--model-path" "/home/mind/model" "$@"
 set_env_from_arg_or_default "TP" "--tp" "${role_device_size}" "$@"
-set_env_from_arg_or_default "VLLM_ENABLE_MC2" "--vllm-enable-mc2" 1 "$@"
 set_env_from_arg_or_default "VLLM_LOGGING_LEVEL" "--vllm-logging-level" "INFO" "$@"
 set_env_from_arg_or_default "KV_CONNECTOR" "--kv-connector" "LLMDataDistConnector" "$@"
 

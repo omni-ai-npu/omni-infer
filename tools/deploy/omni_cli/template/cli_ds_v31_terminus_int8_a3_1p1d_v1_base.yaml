@@ -203,10 +203,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5569
+            OMNI_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
@@ -392,10 +390,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3 
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5569
+            OMNI_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
@@ -581,10 +577,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3 
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5569
+            OMNI_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
@@ -770,10 +764,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3 
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5569
+            OMNI_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
@@ -895,10 +887,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
@@ -1018,10 +1008,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
@@ -1141,10 +1129,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
@@ -1264,10 +1250,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp23s0f3
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             OMNI_NPU_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches

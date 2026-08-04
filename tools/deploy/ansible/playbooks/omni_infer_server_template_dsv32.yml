@@ -59,7 +59,6 @@
         KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
         export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
 
-        # export VLLM_TORCH_PROFILER_DIR=/home/profiling
         # export OMNI_PROFILE_TOKEN_THRESHOLD=50
         # export OMNI_PROFILE_STOP_STEP=3
         # export OMNI_ENABLE_PREFILL_PROFILER=True
@@ -72,7 +71,6 @@
       args:
       - --max-model-len 33792
       - --gpu-util 0.9
-      - --vllm-enable-mc2 1
       - >-
         --extra-args "--max-num-batched-tokens 33792 --enforce-eager
         --enable-expert-parallel --max-num-seqs 4
@@ -104,13 +102,8 @@
         # export VLLM_PLUGINS="omni-npu,omni_npu_patches"
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 
-        # export VLLM_TORCH_PROFILER_DIR=/home/profiling
         # export OMNI_PROFILE_TOKEN_THRESHOLD=1
         # export OMNI_PROFILE_STOP_STEP=5
-
-        # export VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY=False
-        # export VLLM_TORCH_PROFILER_WITH_STACK=False
-        # export VLLM_TORCH_PROFILER_WITH_FLOPS=False
 
         # install omni_placement
         pip uninstall omni_placement -y
@@ -119,7 +112,6 @@
       - --max-model-len 64000
       - --tp 1
       - --gpu-util 0.9
-      - --vllm-enable-mc2 1
       - >-
         --extra-args '--enable-expert-parallel --disable-log-requests
         --max-num-seqs 4 --no-enable-prefix-caching

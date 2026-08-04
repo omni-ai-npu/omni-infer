@@ -126,10 +126,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 1
-            VLLM_LLMDATADIST_ZMQ_PORT: 5671
+            OMNI_LLMDATADIST_ZMQ_PORT: 5671
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             OMNI_USE_QWEN: 1
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -245,9 +243,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             OMNI_USE_QWEN: 1
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -360,9 +357,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5569
+            OMNI_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             OMNI_USE_QWEN: 1
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1
@@ -475,9 +471,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5570
+            OMNI_LLMDATADIST_ZMQ_PORT: 5570
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             OMNI_USE_QWEN: 1
             OMNI_REUSE_PREFILLED_TOKENS: 1
             OMNI_SKIP_DECODE_TOKENIZE: 1

@@ -73,7 +73,6 @@
       - --max-model-len 524288
       - '--additional-config ''{"enable_low_latency": true}'''
       - --gpu-util 0.8
-      - --vllm-enable-mc2 1
       - >-
         --extra-args '--no-disable-hybrid-kv-cache-manager
         --max-num-batched-tokens 16384 --enable-expert-parallel
@@ -100,11 +99,7 @@
         export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
         export OMNI_NPU_VLLM_PATCHES="ALL"
         export ENABLE_DP_LB=false
-        export VLLM_DATA_PARALLEL_EXTERNAL_LB=false
         export VLLM_CACHE_ROOT='./graph_cache'
-        export VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY=False
-        export VLLM_TORCH_PROFILER_WITH_STACK=False
-        export VLLM_TORCH_PROFILER_WITH_FLOPS=False
         export TASK_QUEUE_ENABLE=1
         export LOCAL_WORLD_SIZE=16
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
@@ -125,7 +120,6 @@
       - --tp 1
       - '--additional-config ''{"enable_low_latency": true, "npugraph_ex_config":{"enable": true, "super_kernel_optimize": false, "static_kernel_compile": false}}'''
       - --gpu-util 0.82
-      - --vllm-enable-mc2 1
       - >-
         --extra-args '--no-disable-hybrid-kv-cache-manager
         --enable-expert-parallel --disable-log-requests
