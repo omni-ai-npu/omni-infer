@@ -38,16 +38,11 @@ from vllm.entrypoints.chat_utils import (
 # defensively: the loader (import_patches_from_dir) has no error handling, so a
 # missing symbol here would abort the whole common-patch sweep. If absent, the fast
 # path is simply disabled and every request falls back to normal tokenization.
-# v0.25.1: parse_chat_messages_futures → parse_chat_messages (sync), moved from
-# vllm.entrypoints.chat_utils.  resolve_chat_template_content_format moved from
-# chat_utils → vllm.renderers.hf.  Both return (conv, mm_data, mm_uuids) directly;
-# mm_data is a resolved dict, not a Future.
 try:
     from vllm.entrypoints.chat_utils import parse_chat_messages
 except ImportError:  # noqa: BLE001
     parse_chat_messages = None
 
-# resolve_chat_template_content_format moved from chat_utils to renderers.hf in v0.25.1
 try:
     from vllm.renderers.hf import resolve_chat_template_content_format
 except ImportError:  # noqa: BLE001
