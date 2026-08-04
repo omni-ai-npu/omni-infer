@@ -49,6 +49,7 @@ bash {{ profile.workdir }}/{{ profile.runner }} \
   --base-api-port ${API_PORT} \
   --tp ${PREFILL_TENSOR_PARALLEL_SIZE} \
   --ascend-rt-visible-devices {{ ascend_rt_visible_devices | quote }} \
+  --use-inventory-devices 1 \
   --kv-rank {{ kv_rank | quote }} \
   --kv-engine-id {{ kv_rank | quote }} \
   --kv-parallel-size ${KV_PARALLEL_SIZE} \

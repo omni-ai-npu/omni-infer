@@ -41,6 +41,8 @@ bash {{ profile.workdir }}/{{ profile.runner }} \
   --kv-role "kv_consumer" \
   --master-port ${MASTER_PORT} \
   --base-api-port ${API_PORT} \
+  --ascend-rt-visible-devices {{ ascend_rt_visible_devices | quote }} \
+  --use-inventory-devices 1 \
   --kv-rank ${OMNI_PD_PREFILL_POD_NUM} \
   --kv-engine-id ${OMNI_PD_PREFILL_POD_NUM} \
   --kv-parallel-size ${KV_PARALLEL_SIZE} \

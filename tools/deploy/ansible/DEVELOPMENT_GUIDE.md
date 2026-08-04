@@ -36,6 +36,7 @@ tools/deploy/ansible/
 │   ├── inventory_1p1d.yml             # 仅供本地解析/check 的安全拓扑 fixture
 │   └── omni_infer_server_template_example.yml  # 可复制的通用 Playbook 示例
 ├── inventories/
+│   ├── omni_infer_inventory_used_for_1P1D_single_node.yml
 │   ├── omni_infer_inventory_used_for_1P1D.yml
 │   ├── omni_infer_inventory_used_for_2P1D.yml
 │   └── omni_infer_inventory_used_for_4P1D.yml
@@ -460,7 +461,8 @@ vars:
 
 | 文件 | 用途和兼容性 |
 | --- | --- |
-| `examples/inventory_1p1d.yml` | 当前 roles 可解析的安全 1P1D+C fixture；仅用于语法、列表和 check-mode 验证，不能完整部署。 |
+| `examples/inventory_1p1d.yml` | 当前 roles 可解析的安全单机 1P1D+C fixture；仅用于语法、列表和 check-mode 验证，不能完整部署。 |
+| `inventories/omni_infer_inventory_used_for_1P1D_single_node.yml` | P、D、C 共用一个连接地址，并将 16 张物理卡均分给 P/D 的单机 1P1D 模板。 |
 | `inventories/omni_infer_inventory_used_for_1P1D.yml` | 1P1D 拓扑模板。 |
 | `inventories/omni_infer_inventory_used_for_2P1D.yml` | 2P1D 拓扑模板，也可用于验证新增 Prefill 节点后的拓扑。 |
 | `inventories/omni_infer_inventory_used_for_4P1D.yml` | 4P1D 拓扑模板。 |
@@ -522,9 +524,15 @@ all:
           node_port: "{{ proxy_port + node_rank }}"
 ```
 
-同一物理机可以同时承载 P 和 C，方法是让两个 Inventory host 使用相同的
+同一物理机可以同时承载 P、D 和 C，方法是让多个 Inventory host 使用相同的
 `ansible_host`，但 host 名称仍必须唯一。不要把 P、D、C 合并为同一个 Inventory
-host，因为公共 tasks 通过组成员身份决定容器和服务类型。
+host，因为公共 tasks 通过组成员身份决定容器和服务类型。同一 `ansible_host` 上
+所有 P/D host 的 `ascend_rt_visible_devices` 必须互不重叠。单机 1P1D 的完整结构见
+`inventories/omni_infer_inventory_used_for_1P1D_single_node.yml`。
+
+拓扑中的 Pod 数量按唯一 `host_ip` 计算，因此不能只把 2P1D 或 4P1D 模板的所有
+地址改成同一个值。需要在一台机器上均分 P/D 设备时，应使用一个 P host 和一个 D
+host；两者共享地址、使用独立容器名和端口，并分配互斥的物理卡列表。
 
 ### 5.2 固定分组
 
@@ -572,7 +580,7 @@ Decode Pod 数量；同一多节点 Pod 的所有 Inventory host 必须配置相
 | `kv_rank` | 是 | 否 | 否 | Prefill KV rank，从 0 开始。 |
 | `node_port` | 是 | 是 | 是 | Prefill/Decode master port 或 Proxy 监听端口。 |
 | `api_port` | 是 | 是 | 否 | Prefill/Decode API Server 起始端口。 |
-| `ascend_rt_visible_devices` | 是 | 是 | 否 | 当前实例使用的 NPU，例如 `"0,1,2,3"`；不要包含空格或多余逗号。 |
+| `ascend_rt_visible_devices` | 是 | 是 | 否 | 当前实例使用的物理 NPU，例如 `"0,1,2,3"`；启动器会按 API Server 的 TP/PP 切片。同一宿主机的 P/D 列表不能重叠，也不要包含空格或多余逗号。 |
 
 容器实际名称由 playbook 环境中的基础名称加 Inventory host 名组成：
 
@@ -640,6 +648,8 @@ playbook 中的其他列表自动拼接；playbook 一旦设置该字段，就�
 `host_sync` 控制执行机到远端宿主机的 rsync：
 
 公共和弹性同步 task 保持使用 `ansible.builtin.synchronize`。
+当多个 Inventory host 使用相同的 `ansible_host` 时，Role 按 P、D、C 的顺序选择
+一个 host 作为同步 owner，同一物理机只执行一次 rsync；后续容器复制仍按角色执行。
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |

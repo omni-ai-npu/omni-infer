@@ -59,6 +59,15 @@ LAUNCHERS = [
     "pd_run.sh",
     "pd_run_pangu_ultra_moe.sh",
 ]
+ANSIBLE_TEMPLATE_DIR = (
+    Path(__file__).parent.parent.parent
+    / "tools"
+    / "deploy"
+    / "ansible"
+    / "roles"
+    / "common"
+    / "templates"
+)
 
 
 # ==============================================================================
@@ -809,7 +818,7 @@ def test_signal_handler_terminates_processes_and_exits(monkeypatch):
 
 
 # ==============================================================================
-# 13. PD launchers（锁定保留的 66d6146 脚本契约）
+# 13. PD launchers（启动接口契约）
 # ==============================================================================
 
 @pytest.mark.parametrize("launcher_name", LAUNCHERS)
@@ -837,6 +846,21 @@ def test_pd_launchers_preserve_source_environment_contract(launcher_name):
     ):
         assert removed_mock_interface not in contents
 
+    assert "USE_INVENTORY_DEVICES=0" in contents
+    assert "--use-inventory-devices)" in contents
+    assert 'inventory_devices_args="--use-inventory-devices"' in contents
+
     # Preserve the source retry loop exactly, including its `cost` typo.
     assert "cost_time=$((cost + 5))" in contents
     assert "cost_time=$((cost_time + 5))" not in contents
+
+
+@pytest.mark.parametrize(
+    "template_name",
+    ["run_vllm_prefill.sh.j2", "run_vllm_decode.sh.j2"],
+)
+def test_ansible_pd_templates_forward_inventory_devices(template_name):
+    contents = (ANSIBLE_TEMPLATE_DIR / template_name).read_text(encoding="utf-8")
+
+    assert "--ascend-rt-visible-devices {{ ascend_rt_visible_devices | quote }}" in contents
+    assert "--use-inventory-devices 1" in contents

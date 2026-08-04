@@ -16,6 +16,7 @@ OMNI_LLMDATADIST_ZMQ_PORT="${VLLM_LLMDATADIST_ZMQ_PORT:-${OMNI_LLMDATADIST_ZMQ_P
 HCCL_INTRA_ROCE_ENABLE=1
 HCCL_INTRA_PCIE_ENABLE=0
 ascend_rt_set=0
+USE_INVENTORY_DEVICES=0
 # Multi-API Server specific parameters
 NUM_SERVERS=1
 NUM_DP=1
@@ -65,6 +66,7 @@ print_help() {
     echo "  --hcc-intra-roce-enable          Ascend-specific: Set to 1 for A3, enable intra-HCCL ROCE (default: $HCCL_INTRA_ROCE_ENABLE)"
     echo "  --hcc-intra-pcie-enable          Ascend-specific: Set to 0 for A3, enable intra-HCCL PCIE (default: $HCCL_INTRA_PCIE_ENABLE)"
     echo "  --ascend-rt-visible-devices      Ascend-specific: Visible physical devices for the instance. (default: $ASCEND_RT_VISIBLE_DEVICES)"
+    echo "  --use-inventory-devices          Ascend-specific: Set to 1 to slice the inventory devices per API server (default: $USE_INVENTORY_DEVICES)"
     echo "  --num-servers                    Multi-API Server: Number of API servers (default: $NUM_SERVERS)"
     echo "  --num-dp                         Multi-API Server: Data parallel size (≥ number of servers) (default: $NUM_DP)"
     echo "  --server-offset                  Multi-API Server: Server offset for multi-node setup. For dual-node A3, set to 16 on d_2 instance (default: $SERVER_OFFSET)"
@@ -131,6 +133,9 @@ parse_long_option() {
         --ascend-rt-visible-devices)
             ASCEND_RT_VISIBLE_DEVICES="$2"
             ascend_rt_set=1
+            ;;
+        --use-inventory-devices)
+            USE_INVENTORY_DEVICES="$2"
             ;;
         --num-servers)
             NUM_SERVERS="$2"
@@ -341,6 +346,7 @@ echo "AUTO_USE_UC_MEMORY: $AUTO_USE_UC_MEMORY"
 echo "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: $RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"
 echo "RAY_CGRAPH_get_timeout: $RAY_CGRAPH_get_timeout"
 echo "TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
+echo "USE_INVENTORY_DEVICES: $USE_INVENTORY_DEVICES"
 echo "=================="
 
 EXTRA_ARGS="$EXTRA_ARGS"
@@ -350,6 +356,10 @@ common_operations() {
   local mtp_args=""
   if [ "$NUM_SPECULATIVE_TOKENS" -ne 0 ]; then
     mtp_args="--enable-mtp"
+  fi
+  local inventory_devices_args=""
+  if [ "$USE_INVENTORY_DEVICES" = "1" ]; then
+    inventory_devices_args="--use-inventory-devices"
   fi
   python start_api_servers.py \
     --num-servers "$NUM_SERVERS" \
@@ -368,6 +378,7 @@ common_operations() {
     --gpu-util "$GPU_UTIL" \
     --additional-config "$ADDITIONAL_CONFIG" \
     $mtp_args \
+    $inventory_devices_args \
     --num-speculative-tokens "$NUM_SPECULATIVE_TOKENS" \
     --extra-args "$EXTRA_ARGS"
 }
