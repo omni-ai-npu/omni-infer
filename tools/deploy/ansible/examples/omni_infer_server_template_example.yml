@@ -140,11 +140,6 @@
     # proc_bind_profile:
     #   enabled: true
 
-    # Mooncake is uncommon. Configure mooncake_profile only when the selected
-    # KV Connector explicitly requires it. In that case Inventory all.vars
-    # must also define etcd_port, mooncake_master_port,
-    # mooncake_metrics_port and proxy_port, with at least one C host.
-
   tasks:
     # Use elastic_server instead when the Playbook needs its scaling lifecycle.
     # Its delete_node tag additionally requires delete_node_profile.ips through

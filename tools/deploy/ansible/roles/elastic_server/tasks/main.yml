@@ -16,9 +16,6 @@
   tags: stop_server
 - ansible.builtin.import_role:
     name: common
-    tasks_from: manage_mooncake
-- ansible.builtin.import_role:
-    name: common
     tasks_from: run_server
 - ansible.builtin.import_tasks: prepare_nodes.yml
   tags:

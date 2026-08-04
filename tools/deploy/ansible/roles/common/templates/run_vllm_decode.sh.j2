@@ -20,11 +20,6 @@ declare -A config_dict=(
     {% endfor %}
 )
 
-{% if common_profile.kv_connector == "LMCacheConnectorV1" -%}
-export MOONCAKE_CONFIG_PATH={{ ansible_env.SCRIPTS_PATH }}/mooncake_config.json
-export LMCACHE_CONFIG_FILE={{ ansible_env.SCRIPTS_PATH }}/lmcache_mooncake_config.yml
-{% endif %}
-
 cd {{ profile.workdir }}
 bash {{ profile.workdir }}/{{ profile.runner }} \
   --local-decode-server-ip-list "$SERVER_IP_LIST" \
