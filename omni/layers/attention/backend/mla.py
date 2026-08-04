@@ -658,34 +658,27 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
                     raise RuntimeError("self._num_decode_tokens must be divisible by self._num_decodes")
                 num_tokens_per_req = self._num_decode_tokens // self._num_decodes
 
-                if (not int(os.getenv("DISABLE_GATHER_SELECTION", "0")) and
+                if (int(os.getenv("ENABLE_HOST_MAPPING", "0")) and
+                        not int(os.getenv("DISABLE_GATHER_SELECTION", "0")) and
                         model_extra_config.operator_opt_config.enable_dsa and
                         model_extra_config.operator_opt_config.use_omni_cache):
                     time0 = time.perf_counter()
                     req_ids_update_mapping = self.runner.input_batch.req_id_to_index
                     req_ids_update = [req_id for req_id, _ in sorted(req_ids_update_mapping.items(), key=lambda item: item[1])]
                     req_ids_record = getattr(omni_cache, 'req_ids_record', None)
-                    if req_ids_record is None:
-                        req_ids_record = req_ids_update.copy()
 
                     if req_ids_record != req_ids_update:
                         # update selection_kv_block_status
-                        original_shape = omni_cache.selection_kv_block_status.shape
-                        num_layers = omni_cache.selection_kv_block_status.shape[0]
-                        head_num = omni_cache.selection_kv_block_status.shape[-2]
-                        topk_plus_1 = omni_cache.selection_kv_block_status.shape[-1]
-
-                        reshaped_view = omni_cache.selection_kv_block_status.view(
-                            num_layers, -1, num_tokens_per_req, head_num, topk_plus_1
+                        reshaped_view = omni_cache.selection_kv_block_status.view_as(
+                            omni_cache.selection_kv_block_status_buffer
                         )
                         self._update_status_buffered(
                             omni_cache, reshaped_view, req_ids_record, req_ids_update, fill_value=-1
                         )
 
                         # update selection_kv_block_table
-                        s_max_block_num = omni_cache.selection_kv_block_table.shape[-1]
-                        reshaped_table_view = omni_cache.selection_kv_block_table.view(
-                            -1, num_tokens_per_req, s_max_block_num
+                        reshaped_table_view = omni_cache.selection_kv_block_table.view_as(
+                            omni_cache.selection_kv_block_table_buffer
                         )
                         self._reorder_block_table_only(
                             omni_cache, reshaped_table_view, req_ids_record, req_ids_update
@@ -762,7 +755,7 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         if not new_req_ids:
             return
 
-        L, B, T, H, K = reshaped_status.shape
+        B = reshaped_status.shape[1]
         work_buffer = omni_cache.selection_kv_block_status_buffer
         if work_buffer.shape != reshaped_status.shape:
             work_buffer = torch.empty_like(reshaped_status)
@@ -797,13 +790,33 @@ class AscendMLAMetadataBuilder(DummyAttentionMetadataBuilder):
         new_req_ids: List[str],
         B: int) -> Tuple[List[int], int]:
         M = min(len(old_req_ids), B)
-        old_eff = old_req_ids[:M]
-        old_id2idx = {rid: i for i, rid in enumerate(old_eff)}
-        kept = [old_id2idx[r] for r in new_req_ids if r in old_id2idx]
-        remaining = [i for i, r in enumerate(old_eff) if r not in set(new_req_ids)]
-        perm_eff = kept + remaining
+        if M == 0:
+            return np.array([], dtype=np.int64), 0
+
+        old_arr = np.array(old_req_ids[:M])
+        new_arr = np.array(new_req_ids)
+
+        sorter = np.argsort(old_arr)
+        search_pos = np.searchsorted(old_arr, new_arr, sorter=sorter)
+        search_pos = np.minimum(search_pos, M - 1)
+        old_indices = sorter[search_pos]
+        is_shared = old_arr[old_indices] == new_arr
+
+        perm_eff = np.empty(M, dtype=np.int64)
+
+        new_pos = np.arange(len(new_arr))
+        shared_within = is_shared & (new_pos < M)
+        perm_eff[new_pos[shared_within]] = old_indices[shared_within]
+
+        used_mask = np.zeros(M, dtype=bool)
+        used_mask[old_indices[is_shared]] = True
+        filled_mask = np.zeros(M, dtype=bool)
+        filled_mask[new_pos[shared_within]] = True
+
+        perm_eff[~filled_mask] = np.where(~used_mask)[0]
+
         assert len(perm_eff) == M
-        assert sorted(perm_eff) == list(range(M))
+        assert np.array_equal(np.sort(perm_eff), np.arange(M))
         return perm_eff, M
 
     def _reorder_block_table_only(

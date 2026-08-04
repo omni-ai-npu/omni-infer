@@ -1377,33 +1377,54 @@ class DeepseekMLA(nn.Module):
                 topk_indices = self._write_topk_buffer(topk_indices)
 
             if (not int(os.getenv("DISABLE_GATHER_SELECTION", "0")) and
+                    int(os.getenv("ENABLE_HOST_MAPPING", "0")) and
                     model_extra_config.operator_opt_config.use_omni_cache and
                     attn_metadata and attn_metadata.omni_cache):
-                kv_actual_seqlen = torch_npu.npu_gather_selection_kv_cache(
-                    selection_k_rope=attn_metadata.omni_cache.selection_k_rope[self.layer_idx],
-                    selection_kv_cache=attn_metadata.omni_cache.selection_kv_cache[self.layer_idx],
-                    selection_kv_block_table=attn_metadata.omni_cache.selection_kv_block_table,
-                    selection_kv_block_status=attn_metadata.omni_cache.selection_kv_block_status_list[self.layer_idx],
-                    selection_topk_indices=topk_indices.unsqueeze(1),
-                    full_k_rope=k_rope.squeeze(-2),
-                    full_kv_cache=k_nope.squeeze(-2),
-                    full_kv_block_table=attn_metadata.decode.block_table,
-                    full_kv_actual_seq=attn_metadata.decode.seq_lens.to(torch.int32),
-                    full_q_actual_seq=self.actual_seq_lengths[bsz].to(torch.int32),
-                    selection_topk_block_size=attn_metadata.omni_cache.selection_topk_block_size)
+                
+                selection_k_rope = attn_metadata.omni_cache.selection_k_rope[self.layer_idx]
+                selection_kv_cache_npu = attn_metadata.omni_cache.selection_kv_cache[self.layer_idx]
+                selection_kv_block_table_npu = attn_metadata.omni_cache.selection_kv_block_table
+                selection_kv_block_status_npu = attn_metadata.omni_cache.selection_kv_block_status_list[self.layer_idx]
+                selection_topk_indices_npu = topk_indices + 0
 
-                selection_topk_indices = attn_metadata.omni_cache.selection_topk_indices.clone()
-                bsz_seq_t, num_head_t, topk_len_t = selection_topk_indices.shape
-                kv_actual_seqlen_t = kv_actual_seqlen.view(bsz_seq_t, num_head_t, 1)
-                indices_t = torch.arange(topk_len_t, device=selection_topk_indices.device).view(1, 1, topk_len_t)
-                mask_t = indices_t >= kv_actual_seqlen_t
-                selection_topk_indices = torch.where(mask_t, -1, selection_topk_indices)
+                full_kv_cache_npu = k_nope.squeeze(-2)
+                full_k_rope_npu = k_rope.squeeze(-2)
+                # fake TND --> TND
+                full_kv_block_table_npu = torch.index_select(attn_metadata.decode.block_table, dim=0, index=attn_metadata.omni_cache.mtp_idx)
+                full_kv_actual_seq_npu = torch.index_select(attn_metadata.decode.seq_lens, dim=0, index=attn_metadata.omni_cache.mtp_idx).to(torch.int32)
+                full_q_actual_seq_npu = attn_metadata.omni_cache.cu_q_len
 
-                kv_dsa = attn_metadata.omni_cache.selection_kv_cache[self.layer_idx].unsqueeze(-2)
-                topk_indices_dsa = selection_topk_indices
-                block_table_dsa = attn_metadata.omni_cache.selection_kv_block_table
-                kv_actual_seqlen_dsa = kv_actual_seqlen
-                key_rope_dsa = attn_metadata.omni_cache.selection_k_rope[self.layer_idx].unsqueeze(-2)
+                selection_kwargs = {
+                    "selection_k_rope": selection_k_rope,
+                    "selection_kv_cache": selection_kv_cache_npu,
+                    "selection_kv_block_table": selection_kv_block_table_npu,
+                    "selection_kv_block_status": selection_kv_block_status_npu,
+                    "selection_topk_indices": selection_topk_indices_npu,
+                    "full_k_rope": full_k_rope_npu,
+                    "full_kv_cache": full_kv_cache_npu,
+                    "full_kv_block_table": full_kv_block_table_npu,
+                    "full_kv_actual_seq": full_kv_actual_seq_npu,
+                    "full_q_actual_seq": full_q_actual_seq_npu,
+                    "selection_topk_block_size": 1
+                }
+                
+                reusedNum = torch_npu.npu_gather_selection_kv_cache(**selection_kwargs)
+                # if self.layer_idx ==10:
+                #     tng.ops.npu_print("hello, reusedNum:", reusedNum)
+                # # #     tng.ops.npu_print("hello, topk_indices:", topk_indices)
+                # # #     tng.ops.npu_print("hello, selection_topk_indices_npu:", selection_topk_indices_npu)
+                #     tng.ops.npu_print("hello, full_kv_actual_seq_npu:", full_kv_actual_seq_npu)
+                #     tng.ops.npu_print("hello, full_q_actual_seq_npu:", full_q_actual_seq_npu)
+                #     tng.ops.npu_print("hello, full_kv_block_table_npu:", full_kv_block_table_npu)
+                #     tng.ops.npu_print("hello, selection_kv_block_table_npu:", selection_kv_block_table_npu)
+                key_rope_dsa = selection_k_rope.unsqueeze(-2)
+                kv_dsa = selection_kv_cache_npu.unsqueeze(-2)
+                topk_indices_dsa = selection_topk_indices_npu
+
+                # TND --> fake-TND
+                block_table_dsa = selection_kv_block_table_npu.repeat_interleave(attn_metadata.omni_cache.num_tokens_per_reqs_decode, dim=0)
+                kv_actual_seqlen_dsa = attn_metadata.decode.seq_lens.to(torch.int32)
+
             else:
                 kv_dsa = k_nope
                 topk_indices_dsa = topk_indices

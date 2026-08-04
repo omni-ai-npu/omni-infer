@@ -21,6 +21,7 @@ from omni.models.config_loader.loader import model_extra_config
 import ctypes
 from ctypes import pythonapi, py_object
 from omni.accelerators.cache.kv_mem_pool import KVCacheMemoryPool
+from omni.accelerators.cache.gather_selection import register_gather_selection_ops
 from concurrent.futures import ThreadPoolExecutor, Future
 
 
@@ -1017,27 +1018,36 @@ class DecodeOmniCache(BaseOmniCache):
         s_block_size = 128
         k_rope_sz = 64
         kvcache_sz = 512
-        topk = 2048
-        self.selection_topk_block_size = 1
-        selection_max_seq_len = topk * self.selection_topk_block_size
 
         if (int(os.getenv("ENABLE_HOST_MAPPING", "0")) and
                 not int(os.getenv("DISABLE_GATHER_SELECTION", "0")) and
                 model_extra_config.operator_opt_config.enable_dsa):
-            s_max_block_num = (selection_max_seq_len + s_block_size - 1) // s_block_size
 
+            self.GATHER_SELECTION_POOL_SIZE = 8192
+            self.s_block_size = s_block_size
+
+            self.cu_q_len = torch.arange(1, batch_size+1, dtype=torch.int32).npu() * num_tokens_per_reqs_decode
+            self.cu_q_len = self.cu_q_len.to(torch.int32)
+            self.mtp_idx = self.cu_q_len - 1
+            self.num_tokens_per_reqs_decode = num_tokens_per_reqs_decode
+
+            register_gather_selection_ops()
+            print(f"{bsz_seq=}, {batch_size=}, {seq_len=}, {self.s_max_block_num=}, {self.selection_state_size=}",flush=True)
+            if bsz_seq != batch_size * seq_len:
+                raise ValueError(
+                    f"bsz_seq ({bsz_seq}) != batch_size * seq_len ({batch_size} * {seq_len} = {batch_size * seq_len})"
+                )
             self.selection_k_rope = [
                 torch.zeros(
-                    [s_max_block_num * bsz_seq * headnum, s_block_size, k_rope_sz],
+                    [self.s_max_block_num * batch_size * headnum, s_block_size, k_rope_sz],
                     dtype=torch.bfloat16,
                     device=self.device,
                 ).contiguous()
                 for _ in range(self.num_layers)
             ]
-
             self.selection_kv_cache = [
                 torch.zeros(
-                    [s_max_block_num * bsz_seq * headnum, s_block_size, kvcache_sz],
+                    [self.s_max_block_num * batch_size * headnum, s_block_size, kvcache_sz],
                     dtype=torch.bfloat16,
                     device=self.device,
                 ).contiguous()
@@ -1046,13 +1056,13 @@ class DecodeOmniCache(BaseOmniCache):
 
             # allocate full tensor for all layers to make it update faster
             self.selection_kv_block_table = torch.arange(
-                bsz_seq * headnum * s_max_block_num,
+                batch_size * headnum * self.s_max_block_num,
                 dtype=torch.int32,
                 device=self.device,
-            ).view(bsz_seq * headnum, s_max_block_num).contiguous()
+            ).view(batch_size, headnum * self.s_max_block_num).contiguous()
 
             self.selection_kv_block_status = -torch.ones(
-                            [self.num_layers, bsz_seq, 1, headnum, (topk + 1)],
+                            [self.num_layers, batch_size, headnum * self.selection_state_size],
                             dtype=torch.int32,
                             device=self.device,
                         ).contiguous()
@@ -1060,22 +1070,15 @@ class DecodeOmniCache(BaseOmniCache):
 
             # work buffers initialization for reordering and updating in faster behavior
             self.selection_kv_block_table_buffer = torch.empty(
-                            [batch_size, seq_len, s_max_block_num],
+                            [batch_size, 1, self.s_max_block_num],
                             dtype=torch.int32,
                             device=self.device,
                         ).contiguous()
             self.selection_kv_block_status_buffer = torch.empty(
-                            [self.num_layers, batch_size, seq_len, headnum, (topk + 1)],
+                            [self.num_layers, batch_size, 1, headnum * self.selection_state_size],
                             dtype=torch.int32,
                             device=self.device,
                         ).contiguous()
-            self.index_buffer = torch.empty(batch_size, dtype=torch.long, device=self.device)
-
-            self.selection_topk_indices = torch.arange(
-                                    topk,
-                                    dtype=torch.int32,
-                                    device=self.device,
-                                ).expand(bsz_seq, headnum, topk).contiguous()
 
         for i, kv_cache_group in enumerate(kv_cache_config.kv_cache_groups):
             kv_cache_spec = kv_cache_group.kv_cache_spec
@@ -1186,6 +1189,22 @@ class DecodeOmniCache(BaseOmniCache):
     
     def synchronize_d2h(self, key_states: torch.Tensor, value_states: torch.Tensor, slot_mapping: torch.Tensor, layer_idx: int, kv_event: torch.npu.Event) -> None:
         raise NotImplementedError
+
+    @property
+    def selection_state_size(self) -> int:
+        return self.GATHER_SELECTION_POOL_SIZE * 2
+
+    @property
+    def s_max_block_num(self) -> int:
+        # NOTE(runze): for DSA, all heads share the same topK indices
+        # so we hardcode head_num to be 1 here
+        head_num = 1
+        bs = self.s_block_size
+        return (
+            self.GATHER_SELECTION_POOL_SIZE
+            + head_num * bs
+            - 1
+        ) // (head_num * bs)
 
 
 def divide_or_raise(a: int, b: int):
