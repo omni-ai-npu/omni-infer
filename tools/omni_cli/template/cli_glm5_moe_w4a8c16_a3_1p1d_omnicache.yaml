@@ -20,10 +20,10 @@ all:
             LOG_PATH: /tmp/glm5_w4a8
             ROLE: proxy
             MODEL_PATH: /data/models/GLM-5.2-W4A8-publish/
-            ACCESS_LOG_FILE: /tmp/glm5_w4a8/nginx/nginx_access.log
+            ACCESS_LOG_FILE: ${LOG_PATH}/nginx/nginx_access.log
             OMNI_PROXY_PD_POLICY: sequential
             OMNI_PROXY_MAX_BATCH_NUM_TOKEN: 100000
-            OMNI_PROXY_PREFILL_MAX_NUM_SEQS: 24
+            OMNI_PROXY_PREFILL_MAX_NUM_SEQS: 16
             OMNI_PROXY_DECODE_MAX_NUM_SEQS: 1
             PYTHONHASHSEED: 123
 
@@ -45,12 +45,12 @@ all:
             extra-args:
               disable-log-requests: ''
               enable-expert-parallel: ''
-              max-num-seqs: 1
-              max-num-batched-tokens: 2
-              preemption-mode: swap
-              swap_space: 32
+              max-num-seqs: 4
+              max-num-batched-tokens: 32
+              preemption-mode: recompute
+              swap_space: 0
               # no-enable-prefix-caching: ''
-              # speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":1}'
+              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
               reasoning-parser: GlmMoe
               chat-template: ${MODEL_PATH}/chat_template.jinja
               enable-auto-tool-choice: ''
@@ -61,7 +61,7 @@ all:
                 publisher: zmq
                 topic: kv-events
                 endpoint: tcp://*:${ENDPOINT_PORT}
-            gpu-util: '0.95'
+            gpu-util: '0.92'
             kv-transfer-config:
               engine_id: 2
               kv_buffer_device: npu
@@ -98,7 +98,7 @@ all:
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp23s0f3
-            HCCL_BUFFSIZE: 200
+            HCCL_BUFFSIZE: 300
             HCCL_CONNECT_TIMEOUT: 1800
             HCCL_EXEC_TIMEOUT: 1800
             HCCL_INTRA_PCIE_ENABLE: 0
@@ -110,7 +110,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/glm5_w4a8
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_DECODE: 262144
+            MODEL_LEN_MAX_DECODE: 524288
             MODEL_PATH: /data/models/GLM-5.2-W4A8-publish/
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 1
@@ -136,8 +136,10 @@ all:
             P_NODE_LIST: 127.0.0.1,127.0.0.2
             TP_NNODES: 1
             OMNI_CACHE_MEMMAP_PATH: /dev/hugepages/omni_cache
-            MAP_SIZE_BYTES: 858993459200
-            SIZE_BYTES_PER_LAYER: 8589934592
+            MAP_SIZE_BYTES: 1073741824000
+            SIZE_BYTES_PER_LAYER: 12884901888
+            ENABLE_HOST_MAPPING: 1
+            DISABLE_GATHER_SELECTION: 0
             ENABLE_APC_EVENT: 1
           host_ip: 127.0.0.3
           master_node: d0
@@ -157,12 +159,12 @@ all:
             extra-args:
               disable-log-requests: ''
               enable-expert-parallel: ''
-              max-num-seqs: 1
-              max-num-batched-tokens: 2
-              preemption-mode: swap
-              swap_space: 32
+              max-num-seqs: 4
+              max-num-batched-tokens: 32
+              preemption-mode: recompute
+              swap_space: 0
               # no-enable-prefix-caching: ''
-              # speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":1}'
+              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
               reasoning-parser: GlmMoe
               chat-template: ${MODEL_PATH}/chat_template.jinja
               enable-auto-tool-choice: ''
@@ -173,7 +175,7 @@ all:
                 publisher: zmq
                 topic: kv-events
                 endpoint: tcp://*:${ENDPOINT_PORT}
-            gpu-util: '0.95'
+            gpu-util: '0.92'
             kv-transfer-config:
               engine_id: 2
               kv_buffer_device: npu
@@ -210,7 +212,7 @@ all:
             GLOBAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             GLOBAL_RANK_TABLE_FILE_PATH: ${RANKTABLE_SAVE_PATH}/global/global_ranktable_merge.json
             GLOO_SOCKET_IFNAME: enp23s0f3
-            HCCL_BUFFSIZE: 200
+            HCCL_BUFFSIZE: 300
             HCCL_CONNECT_TIMEOUT: 1800
             HCCL_EXEC_TIMEOUT: 1800
             HCCL_INTRA_PCIE_ENABLE: 0
@@ -222,7 +224,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/glm5_w4a8
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_DECODE: 262144
+            MODEL_LEN_MAX_DECODE: 524288
             MODEL_PATH: /data/models/GLM-5.2-W4A8-publish/
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 1
@@ -248,8 +250,10 @@ all:
             P_NODE_LIST: 127.0.0.1,127.0.0.2
             TP_NNODES: 1
             OMNI_CACHE_MEMMAP_PATH: /dev/hugepages/omni_cache
-            MAP_SIZE_BYTES: 858993459200
-            SIZE_BYTES_PER_LAYER: 8589934592
+            MAP_SIZE_BYTES: 1073741824000
+            SIZE_BYTES_PER_LAYER: 12884901888
+            ENABLE_HOST_MAPPING: 1
+            DISABLE_GATHER_SELECTION: 0
             ENABLE_APC_EVENT: 1
           host_ip: 127.0.0.3
           master_node: d0
@@ -269,10 +273,10 @@ all:
               enable-expert-parallel: ''
               enforce-eager: ''
               num-gpu-blocks-override: 140000
-              max-num-batched-tokens: 101376
-              max-num-seqs: 24
+              max-num-batched-tokens: 81920
+              max-num-seqs: 46
               # no-enable-prefix-caching: ''
-              # speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":1}'
+              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
               long-prefill-token-threshold: 33792
               kv-events-config:
                 enable_kv_cache_events: true
@@ -334,7 +338,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/glm5_w4a8
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 262144
+            MODEL_LEN_MAX_PREFILL: 524288
             MODEL_PATH: /data/models/GLM-5.2-W4A8-publish/
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 1
@@ -383,10 +387,10 @@ all:
               enable-expert-parallel: ''
               enforce-eager: ''
               num-gpu-blocks-override: 140000
-              max-num-batched-tokens: 101376
-              max-num-seqs: 24
+              max-num-batched-tokens: 81920
+              max-num-seqs: 46
               # no-enable-prefix-caching: ''
-              # speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":1}'
+              speculative-config: '{"method":"deepseek_mtp","num_speculative_tokens":3}'
               long-prefill-token-threshold: 33792
               kv-events-config:
                 enable_kv_cache_events: true
@@ -448,7 +452,7 @@ all:
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/glm5_w4a8
             MASTER_PORT: 8000
-            MODEL_LEN_MAX_PREFILL: 262144
+            MODEL_LEN_MAX_PREFILL: 524288
             MODEL_PATH: /data/models/GLM-5.2-W4A8-publish/
             OMNI_USE_DSV3: 1
             PREFILL_POD_NUM: 1

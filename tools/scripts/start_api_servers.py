@@ -357,32 +357,68 @@ def signal_handler(sig, frame):
         print(f"Closed log file for server {i}")
     sys.exit(0)
 
-if __name__ == "__main__":
-    
-    # Check if ENABLE_OMNI_CACHE is set to "1" and run appropriate setup script based on MEMMAP_PATH
-    if os.environ.get("ENABLE_OMNI_CACHE") == "1":
+def run_omni_cache_setup(env, runner=subprocess.run, script_dir=None):
+    """Run the OmniCache backing-store setup script (shm or hugetlbfs).
+
+    Reads OmniCache-related env vars from ``env`` and invokes the matching
+    setup shell script via ``runner``. ``runner`` is injected so tests can
+    capture the subprocess call instead of actually spawning ``bash``.
+
+    Args:
+        env: mapping to read config from (normally ``os.environ``).
+        runner: callable with the ``subprocess.run`` signature.
+        script_dir: directory holding the setup scripts; defaults to the
+            directory of this file.
+
+    Returns:
+        (cmd, setup_env) if the setup script ran, or None if it was skipped
+        (ENABLE_OMNI_CACHE disabled or script missing). Exits the process on
+        setup failure via ``check=True`` re-raising ``CalledProcessError``.
+    """
+    if env.get("ENABLE_OMNI_CACHE") != "1":
+        return None
+
+    if script_dir is None:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        memmap_path = os.environ.get("OMNI_CACHE_MEMMAP_PATH", "/dev/hugepages/omni_cache")
-        map_size = os.environ.get("MAP_SIZE_BYTES", "214748364800")  # 默认 200GB
+    memmap_path = env.get("OMNI_CACHE_MEMMAP_PATH", "/dev/hugepages/omni_cache")
+    map_size = env.get("MAP_SIZE_BYTES", "214748364800")  # 默认 200GB
+    # Safety margin forwarded to the setup script's SAFETY_MARGIN env var.
+    # Left unset -> the shell script falls back to its internal default (0.85).
+    safety_margin = env.get("OMNI_CACHE_SAFETY_MARGIN")
 
-        # Determine which setup script to run based on MEMMAP_PATH
-        if memmap_path == "/dev/shm/omni_cache":
-            setup_script = os.path.join(script_dir, "setup_shm_1MB.sh")
-            print(f"MEMMAP_PATH is {memmap_path}, running {setup_script}")
-        else:
-            # Default to hugetlbfs for /dev/hugepages/omni_cache or any other path
-            setup_script = os.path.join(script_dir, "setup_hugetlbfs_2MB.sh")
-            print(f"MEMMAP_PATH is {memmap_path}, running {setup_script}")
+    # Determine which setup script to run based on MEMMAP_PATH
+    if memmap_path == "/dev/shm/omni_cache":
+        setup_script = os.path.join(script_dir, "setup_shm_1MB.sh")
+        print(f"MEMMAP_PATH is {memmap_path}, running {setup_script}")
+    else:
+        # Default to hugetlbfs for /dev/hugepages/omni_cache or any other path
+        setup_script = os.path.join(script_dir, "setup_hugetlbfs_2MB.sh")
+        print(f"MEMMAP_PATH is {memmap_path}, running {setup_script}")
 
-        if os.path.exists(setup_script):
-            cmd = ["bash", setup_script]
-            if map_size:
-                cmd.append(map_size)
-                print(f"Passing MAP_SIZE_BYTES={map_size} to setup script")
-            subprocess.run(cmd, check=True)
-        else:
-            print(f"WARNING: {setup_script} not found, skipping setup")
+    if not os.path.exists(setup_script):
+        print(f"WARNING: {setup_script} not found, skipping setup")
+        return None
 
+    cmd = ["bash", setup_script]
+    # Build the subprocess env explicitly instead of relying on inheritance,
+    # since schedulers (K8s/Ray/CI) may sanitize the environment.
+    setup_env = os.environ.copy()
+    if map_size:
+        cmd.append(map_size)
+        print(f"Passing MAP_SIZE_BYTES={map_size} to setup script")
+    if safety_margin:
+        setup_env["SAFETY_MARGIN"] = safety_margin
+        print(f"Passing SAFETY_MARGIN={safety_margin} to setup script")
+    runner(cmd, check=True, env=setup_env)
+    return cmd, setup_env
+
+
+if __name__ == "__main__":
+
+    # Check if ENABLE_OMNI_CACHE is set to "1" and run appropriate setup script based on MEMMAP_PATH
+    run_omni_cache_setup(os.environ)
+
+    if os.environ.get("ENABLE_OMNI_CACHE") == "1":
         # Configure MTU for Jumbo Frames when OmniCache is enabled
         # Priority: env variable > auto-detect
         mtu_interface = os.environ.get("OMNI_CACHE_MTU_INTERFACE")

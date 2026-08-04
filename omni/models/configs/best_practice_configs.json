@@ -932,5 +932,15 @@
     "pd_disaggregation": true,
     "prefill_config_file": "ds_v3.2_w4a8c16_a2_1p1d_p.json",
     "decode_config_file": "ds_v3.2_w4a8c16_a2_1p1d_d.json"
+  },
+  {
+    "model": "deepseek_v32",
+    "hardware": "A2",
+    "precision": "w4a8",
+    "prefill_node_num": 2,
+    "decode_node_num": 1,
+    "pd_disaggregation": true,
+    "prefill_config_file": "ds_v3.2_w4a8c16_a2_1p1d_p.json",
+    "decode_config_file": "ds_v3.2_w4a8c16_a2_1p1d_d.json"
   }
 ]
