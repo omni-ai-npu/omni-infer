@@ -11,6 +11,7 @@ all:
           args:
             decode-lb-sdk: least_conn
             prefill-lb-sdk: least_conn
+            subrequest-output-buffer-size: 10M
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7
           container_name: minimax_2p1d_c0
           use_omni_proxy: true

@@ -87,6 +87,7 @@ def process_results(results, inventory, inv_file, cloud_mode=False):
         args: Dict[str, Any] = vars.get("args", {}) or {}
         prefill_lb_sdk = args.get('prefill-lb-sdk', 'pd_score_balance')
         decode_lb_sdk = args.get('decode-lb-sdk', 'pd_score_balance')
+        subrequest_output_buffer_size = args.get('subrequest-output-buffer-size', '1M')
 
         # use_omni_proxy
         use_omni_proxy = vars.get('use_omni_proxy', False)
@@ -141,6 +142,7 @@ def process_results(results, inventory, inv_file, cloud_mode=False):
               --omni-proxy-model-path {model_path} \\\n\
               --omni-proxy-max-batch-num-token {omni_proxy_max_batch_num_token} \\\n\
               --omni-proxy-prefill-max-num-seqs {omni_proxy_prefill_max_num_seqs} \\\n\
+              --subrequest-output-buffer-size {subrequest_output_buffer_size} \\\n\
               --omni-proxy-decode-max-num-seqs {omni_proxy_decode_max_num_seqs}\n\n")
             if not cloud_mode:
                 tf.write("EOF\n")
