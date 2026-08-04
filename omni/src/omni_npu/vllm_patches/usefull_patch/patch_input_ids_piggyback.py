@@ -38,11 +38,16 @@ from vllm.entrypoints.chat_utils import (
 # defensively: the loader (import_patches_from_dir) has no error handling, so a
 # missing symbol here would abort the whole common-patch sweep. If absent, the fast
 # path is simply disabled and every request falls back to normal tokenization.
+# v0.25.1: parse_chat_messages_futures → parse_chat_messages (sync), moved from
+# vllm.entrypoints.chat_utils.  resolve_chat_template_content_format moved from
+# chat_utils → vllm.renderers.hf.  Both return (conv, mm_data, mm_uuids) directly;
+# mm_data is a resolved dict, not a Future.
 try:
     from vllm.entrypoints.chat_utils import parse_chat_messages
 except ImportError:  # noqa: BLE001
     parse_chat_messages = None
 
+# resolve_chat_template_content_format moved from chat_utils to renderers.hf in v0.25.1
 try:
     from vllm.renderers.hf import resolve_chat_template_content_format
 except ImportError:  # noqa: BLE001
@@ -204,6 +209,16 @@ class InputIdsPiggybackPatch(VLLMPatch):
                     )
                     vllm_ids = orig_engine_inputs[0].get("prompt_token_ids", [])
 
+                    logger.debug(
+                        "<<< InputIdsPiggyback original-path output (for comparison):\n"
+                        "  _orig_conversation=%s\n"
+                        "  orig_engine_inputs[0].prompt_token_ids=%s\n"
+                        "  orig_engine_inputs[0].type=%s",
+                        _orig_conversation,
+                        vllm_ids,
+                        orig_engine_inputs[0].get("type"),
+                    )
+
                     if caller_ids != vllm_ids:
                         caller_tokens = (
                             [tokenizer.decode([tid]) for tid in caller_ids]
@@ -283,6 +298,18 @@ class InputIdsPiggybackPatch(VLLMPatch):
                 # max_model_len validation runs later in get_max_tokens().
                 cache_salt = getattr(request, "cache_salt", None)
                 engine_input = tokens_input(caller_ids, cache_salt=cache_salt)
+
+                logger.debug(
+                    "<<< InputIdsPiggyback fast-path output:\n"
+                    "  conversation=%s\n"
+                    "  engine_input.prompt_token_ids=%s\n"
+                    "  engine_input.cache_salt=%s\n"
+                    "  engine_input.type=%s",
+                    conversation,
+                    engine_input.get("prompt_token_ids"),
+                    engine_input.get("cache_salt"),
+                    engine_input.get("type"),
+                )
 
                 return conversation, [engine_input]
 
