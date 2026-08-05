@@ -5,49 +5,27 @@ from torch import nn
 from vllm.model_executor.layers.attention.attention import Attention
 from vllm.model_executor.layers.attention.mla_attention import MLAAttention
 from vllm.config import ModelConfig
-from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizeMethodBase,
 )
+from vllm.model_executor.layers.fused_moe.runner.moe_runner import MoERunner
 
 import vllm.model_executor.model_loader.utils as model_loader_utils
 import vllm.model_executor.model_loader.base_loader as base_loader_module
-from vllm.model_executor.layers.fused_moe.runner.moe_runner import MoERunner
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from omni_npu.v1.layers.attention.npu_pangu import NPUPanguSparseAttention
 from omni_npu.layers.mhc.npu_mhc import NPUmHC
 from omni_npu.layers.npu_rms_norm import NPURMSNorm
 
-logger = init_logger(__name__)
-
 
 def _patched_process_weights_after_loading(
     model: nn.Module, model_config: ModelConfig, target_device: torch.device
 ) -> None:
-    if getattr(model, "process_weights_after_loading_already_called", False):
-        # In case `process_weights_after_loading` is called multiple times
-        # we'll skip it at later times
-        logger.debug_once(
-            "process_weights_after_loading already called for model %s", model
-        )
-        return
-
-    # vLLM <0.25 used online_quantization; 0.25+ moved reload metadata
-    # recording into initialize_model() via record_metadata_for_reloading().
-    try:
-        from vllm.model_executor.model_loader.online_quantization import (
-            maybe_save_metadata_and_attributes_for_weight_reloading,
-        )
-
-        maybe_save_metadata_and_attributes_for_weight_reloading(model, model_config)
-    except ModuleNotFoundError:
-        pass
-
     for _, module in model.named_modules():
         if isinstance(module, MoERunner):
-            # Weights are owned by module.routed_experts; processing the
-            # runner again would double-apply transposes/NPU layout casts.
+            # The runner shares weights with routed_experts. Processing both
+            # would apply NPU layout conversion twice.
             continue
         quant_method = getattr(module, "quant_method", None)
         if isinstance(quant_method, QuantizeMethodBase):
@@ -59,7 +37,7 @@ def _patched_process_weights_after_loading(
             with model_loader_utils.device_loading_context(module, target_device):
                 quant_method.process_weights_after_loading(module)
 
-    # Initialize post-load attention weights for both Attention and MLA.
+    # Initialize post-load attention weights after quantized modules.
     # NOTE: Happens after other modules so we can easily decompress weights.
     for _, module in model.named_modules():
         if isinstance(module, (Attention, MLAAttention)) and hasattr(
@@ -67,14 +45,15 @@ def _patched_process_weights_after_loading(
         ):
             # TODO(lucas): see if there is a way to unify the signatures
             # of process_weights_after_loading
-            module.process_weights_after_loading(model_config.dtype)
+            with model_loader_utils.device_loading_context(module, target_device):
+                module.process_weights_after_loading(model_config.dtype)
 
+    for _, module in model.named_modules():
         if isinstance(module, (NPUPanguSparseAttention, NPUmHC, NPURMSNorm)) and hasattr(
             module, "process_weights_after_loading"
         ):
-            # TODO(lucas): see if there is a way to unify the signatures
-            # of process_weights_after_loading
-            module.process_weights_after_loading()
+            with model_loader_utils.device_loading_context(module, target_device):
+                module.process_weights_after_loading()
 
 
 @register_patch("PanguV2MoeProcessWeightsUtilsPatch", model_loader_utils)
