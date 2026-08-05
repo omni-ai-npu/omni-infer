@@ -93,7 +93,6 @@ vllm serve $MODEL_PATH \
   --data-parallel-size-local 8 \
   --data-parallel-address $MASTER_IP \
   --data-parallel-rpc-port 9001 \
-  --disable-log-requests \
   --gpu-memory-utilization 0.9 \
   --max-num-seqs 32 \
   --max-model-len 4096 \

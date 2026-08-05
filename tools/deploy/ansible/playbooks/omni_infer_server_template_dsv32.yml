@@ -113,11 +113,11 @@
       - --tp 1
       - --gpu-util 0.9
       - >-
-        --extra-args '--enable-expert-parallel --disable-log-requests
+        --extra-args '--enable-expert-parallel
         --max-num-seqs 4 --no-enable-prefix-caching
         --distributed-executor-backend mp --dtype bfloat16
         --max-num-batched-tokens 256 --compilation-config
-        {"level": 3, "cudagraph_mode": "FULL_DECODE_ONLY",
+        {"mode": 3, "cudagraph_mode": "FULL_DECODE_ONLY",
         "cudagraph_capture_sizes":[4], "backend":"eager",
         "compile_sizes":[4]}'
       - --hccl-buffsize 400

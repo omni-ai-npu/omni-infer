@@ -46,9 +46,9 @@ set_env_from_arg_or_default "KV_CONNECTOR" "--kv-connector" "LLMDataDistConnecto
 
 set_env_from_arg_or_default "ADD_ARGS" "--add-args" "" "$@"
 if [[ ${ROLE_POD_SIZE} != "1" ]]; then
-    set_env_from_arg_or_default "EXTRA_ARGS" "--extra-args" "--max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs ${MAX_NUM_SEQS} --no-enable-chunked-prefill --dtype bfloat16 --long-prefill-token-threshold ${LONG_PREFILL_TOKEN_THRESHOLD} --distributed-executor-backend ray ${ADD_ARGS}" "$@"
+    set_env_from_arg_or_default "EXTRA_ARGS" "--extra-args" "--max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} --enforce-eager --enable-expert-parallel --max-num-seqs ${MAX_NUM_SEQS} --no-enable-chunked-prefill --dtype bfloat16 --long-prefill-token-threshold ${LONG_PREFILL_TOKEN_THRESHOLD} --distributed-executor-backend ray ${ADD_ARGS}" "$@"
 else
-    set_env_from_arg_or_default "EXTRA_ARGS" "--extra-args" "--max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} --enforce-eager --enable-expert-parallel --disable-log-requests --max-num-seqs ${MAX_NUM_SEQS} --no-enable-chunked-prefill --dtype bfloat16 --long-prefill-token-threshold ${LONG_PREFILL_TOKEN_THRESHOLD} ${ADD_ARGS}" "$@"
+    set_env_from_arg_or_default "EXTRA_ARGS" "--extra-args" "--max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} --enforce-eager --enable-expert-parallel --max-num-seqs ${MAX_NUM_SEQS} --no-enable-chunked-prefill --dtype bfloat16 --long-prefill-token-threshold ${LONG_PREFILL_TOKEN_THRESHOLD} ${ADD_ARGS}" "$@"
 fi
 
 visible_devices=$(seq 0 $((LOCAL_DEVICE_SIZE - 1)) | tr '\n' ',' | sed 's/,$//')

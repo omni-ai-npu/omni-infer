@@ -170,13 +170,13 @@ def test_process_extra_args_contract():
 def test_process_space_split_for_compilation_config():
     out = []
     ret = mod.process_space_split(
-        '--compilation-config {"level":1,"backend":"inductor"}',
+        '--compilation-config {"mode":1,"backend":"inductor"}',
         out,
     )
     assert ret is out
     assert out == [
         "--compilation-config",
-        '{"level":1,"backend":"inductor"}',
+        '{"mode":1,"backend":"inductor"}',
     ]
 
 
@@ -188,12 +188,12 @@ def test_process_space_split_general_case():
 
 
 def test_process_extra_args_general_case():
-    s = "--enable-expert-parallel --max-num-seqs 256 --disable-log-requests"
+    s = "--enable-expert-parallel --max-num-seqs 256 --enable-log-requests"
     out = mod.process_extra_args(s)
     assert out == [
         "--enable-expert-parallel",
         "--max-num-seqs", "256",
-        "--disable-log-requests",
+        "--enable-log-requests",
     ]
 
 

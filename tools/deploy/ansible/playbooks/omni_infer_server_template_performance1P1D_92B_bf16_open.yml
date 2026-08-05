@@ -133,11 +133,11 @@
         rm -rf /usr/local/Ascend/cann-9.1.0-beta.1/opp/static_kernel
         rm -rf graph_cache/
         EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --enable-expert-parallel"
-        EXTRA_ARGS="${EXTRA_ARGS} --disable-log-requests --max-num-seqs 3"
+        EXTRA_ARGS="${EXTRA_ARGS} --max-num-seqs 3"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-prefix-caching --enable-chunked-prefill"
         EXTRA_ARGS="${EXTRA_ARGS} --distributed-executor-backend mp"
         EXTRA_ARGS="${EXTRA_ARGS} --dtype bfloat16"
-        COMPILATION_CONFIG='{"level": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[12], "backend":"", "compile_sizes":[12]}'
+        COMPILATION_CONFIG='{"mode": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[12], "backend":"", "compile_sizes":[12]}'
         EXTRA_ARGS="${EXTRA_ARGS} --compilation-config ${COMPILATION_CONFIG}"
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-parser pangu"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-auto-tool-choice --tool-call-parser pangu"
