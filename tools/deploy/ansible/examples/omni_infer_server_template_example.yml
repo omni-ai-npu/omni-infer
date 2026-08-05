@@ -70,7 +70,6 @@
       #   proxy: null
 
     run_server_prefill_profile:
-      # Use pd_run_pangu_ultra_moe.sh when the model requires the Pangu runner.
       runner: pd_run.sh
       # Override only when runner is outside the default start_server directory.
       # workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"

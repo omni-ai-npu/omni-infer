@@ -61,7 +61,7 @@ sync_code_profile: {}
 # run_server_prefill_profile：控制 Prefill 启动脚本的生成与执行。
 run_server_prefill_profile_defaults:
   # workdir 下执行的 Prefill runner 文件名。
-  runner: pd_run_pangu_ultra_moe.sh
+  runner: pd_run.sh
   # runner 在容器内的工作目录。
   workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
   # 通过 docker exec -e 注入启动进程的环境变量字典。
@@ -78,7 +78,7 @@ run_server_prefill_profile: {}
 # run_server_decode_profile：控制 Decode 启动脚本的生成与执行。
 run_server_decode_profile_defaults:
   # workdir 下执行的 Decode runner 文件名。
-  runner: pd_run_pangu_ultra_moe.sh
+  runner: pd_run.sh
   # runner 在容器内的工作目录。
   workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
   # 通过 docker exec -e 注入启动进程的环境变量字典。

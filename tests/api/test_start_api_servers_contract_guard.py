@@ -57,7 +57,6 @@ LAUNCHER_DIR = (
 )
 LAUNCHERS = [
     "pd_run.sh",
-    "pd_run_pangu_ultra_moe.sh",
 ]
 ANSIBLE_TEMPLATE_DIR = (
     Path(__file__).parent.parent.parent
@@ -849,6 +848,13 @@ def test_pd_launchers_preserve_source_environment_contract(launcher_name):
     assert "USE_INVENTORY_DEVICES=0" in contents
     assert "--use-inventory-devices)" in contents
     assert 'inventory_devices_args="--use-inventory-devices"' in contents
+
+    assert 'PP=1' in contents
+    assert '--pp)' in contents
+    assert '--pp "$PP"' in contents
+    assert 'SERVED_MODEL_NAME="pangu_v2_moe"' in contents
+    assert 'VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-INFO}"' in contents
+    assert '"kv_port": $OMNI_LLMDATADIST_ZMQ_PORT' in contents
 
     # Preserve the source retry loop exactly, including its `cost` typo.
     assert "cost_time=$((cost + 5))" in contents

@@ -5,9 +5,9 @@
 # Default parameters
 # llmdatadist-specific parameters
 GLOBAL_RANK_TABLE_FILE_PATH="1p1d_save_dir/global_ranktable_merge.json"
-RANK_TABLE_FILE_PATH="save_dir_64/local_ranktable_7.242.108.64_0123.json"
-LOCAL_DECODE_SERVER_IP_LIST="7.242.108.196"
-GLOBAL_DECODE_SERVER_IP_LIST="7.242.108.196"
+RANK_TABLE_FILE_PATH="save_dir_64/local_ranktable_127.0.0.1_0123.json"
+LOCAL_DECODE_SERVER_IP_LIST="127.0.0.1"
+GLOBAL_DECODE_SERVER_IP_LIST="127.0.0.1"
 OMNI_PD_ROLE="${OMNI_PD_ROLE:-prefill}"
 OMNI_PD_PREFILL_POD_NUM="${OMNI_PD_PREFILL_POD_NUM:-1}"
 OMNI_PD_DECODE_POD_NUM="${OMNI_PD_DECODE_POD_NUM:-1}"
@@ -21,18 +21,18 @@ USE_INVENTORY_DEVICES=0
 NUM_SERVERS=1
 NUM_DP=1
 SERVER_OFFSET=0
-MASTER_IP="7.242.108.64"
+MASTER_IP="127.0.0.1"
 MASTER_PORT=8503
 BASE_API_PORT=9001
 # vLLM framework parameters
 GLOO_SOCKET_IFNAME="enp23s0f3"
 TP_SOCKET_IFNAME="enp23s0f3"
-VLLM_LOGGING_LEVEL="INFO"
+VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-INFO}"
 VLLM_WORKER_MULTIPROC_METHOD="fork"
-MODEL_PATH="/home/dsv3/models/DeepSeek-V3-w8a8-0423"
+MODEL_PATH=""
 TP=4
 PP=1
-SERVED_MODEL_NAME="deepseek"
+SERVED_MODEL_NAME="pangu_v2_moe"
 MAX_MODEL_LEN=4096
 LOG_DIR="apiserverlog"
 # PD separation parameters
@@ -66,7 +66,7 @@ print_help() {
     echo "  --hcc-intra-roce-enable          Ascend-specific: Set to 1 for A3, enable intra-HCCL ROCE (default: $HCCL_INTRA_ROCE_ENABLE)"
     echo "  --hcc-intra-pcie-enable          Ascend-specific: Set to 0 for A3, enable intra-HCCL PCIE (default: $HCCL_INTRA_PCIE_ENABLE)"
     echo "  --ascend-rt-visible-devices      Ascend-specific: Visible physical devices for the instance. (default: $ASCEND_RT_VISIBLE_DEVICES)"
-    echo "  --use-inventory-devices          Ascend-specific: Set to 1 to slice the inventory devices per API server (default: $USE_INVENTORY_DEVICES)"
+    echo "  --use-inventory-devices          Ascend-specific: Set to 1 to derive each server's ASCEND_RT_VISIBLE_DEVICES by slicing the inherited (inventory) ascend_rt_visible_devices per rank, so vLLM can start from arbitrary physical devices instead of always 0,1 (default: $USE_INVENTORY_DEVICES)"
     echo "  --num-servers                    Multi-API Server: Number of API servers (default: $NUM_SERVERS)"
     echo "  --num-dp                         Multi-API Server: Data parallel size (≥ number of servers) (default: $NUM_DP)"
     echo "  --server-offset                  Multi-API Server: Server offset for multi-node setup. For dual-node A3, set to 16 on d_2 instance (default: $SERVER_OFFSET)"
@@ -256,7 +256,8 @@ KV_TRANSFER_CONFIG=$(cat <<EOF
     "kv_connector": "$KV_CONNECTOR",
     "kv_role": "$KV_ROLE",
     "kv_rank": $KV_RANK,
-    "kv_parallel_size": $KV_PARALLEL_SIZE
+    "kv_parallel_size": $KV_PARALLEL_SIZE,
+    "kv_port": $OMNI_LLMDATADIST_ZMQ_PORT
 }
 EOF
 )
@@ -283,7 +284,6 @@ export VLLM_LOGGING_LEVEL
 export VLLM_WORKER_MULTIPROC_METHOD
 export SERVER_OFFSET
 export PYTHONPATH=/usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
-export VLLM_WORKER_MULTIPROC_METHOD=fork
 export USING_LCCL_COM=0
 # Turn on these two variables to enable proc_bind
 # export CPU_AFFINITY_CONF=2
@@ -304,6 +304,7 @@ export HCCL_EXEC_TIMEOUT=120
 export TNG_HOST_COPY=1
 # 使能双页表 pd 分离
 export AUTO_USE_UC_MEMORY=1
+# export TASK_QUEUE_ENABLE=2
 
 # enable to overwrite request IDs
 export ENABLE_OVERWRITE_REQ_IDS=1

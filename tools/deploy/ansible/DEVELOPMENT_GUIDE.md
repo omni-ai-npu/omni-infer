@@ -690,7 +690,7 @@ playbook 中声明空 profile。
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `runner` | `pd_run_pangu_ultra_moe.sh` | `workdir` 下的 Prefill 启动脚本文件名。 |
+| `runner` | `pd_run.sh` | `workdir` 下的 Prefill 启动脚本文件名。 |
 | `workdir` | `{{ container_workspace }}/omniinfer/tools/deploy/start_server` | 容器内启动脚本目录。 |
 | `docker_envs` | `{}` | 通过 `docker exec -e` 传入启动进程的环境变量。 |
 | `prepare_commands` | `""` | 加载 `.bashrc` 后、CLI 启动前执行的 Bash；环境变量使用显式 `export`。 |
@@ -701,7 +701,7 @@ playbook 中声明空 profile。
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `runner` | `pd_run_pangu_ultra_moe.sh` | `workdir` 下的 Decode 启动脚本文件名。 |
+| `runner` | `pd_run.sh` | `workdir` 下的 Decode 启动脚本文件名。 |
 | `workdir` | `{{ container_workspace }}/omniinfer/tools/deploy/start_server` | 容器内启动脚本目录。 |
 | `docker_envs` | `{}` | 通过 `docker exec -e` 传入启动进程的环境变量。 |
 | `prepare_commands` | `""` | 加载 `.bashrc` 后、CLI 启动前执行的 Bash；环境变量使用显式 `export`。 |
