@@ -7,7 +7,7 @@ In a data-parallel decode deployment, requests finish receiving their remote KV
 at different times on different DP ranks. Without coordination, each rank starts
 decoding as soon as its own first request is ready, which produces ragged
 batches across ranks. This patch holds every rank back until *all* DP ranks have
-accumulated at least ``OMNI_NPU_BENCH_ALIGNED_DECODE_THRESHOLD`` finished KV
+accumulated at least ``OMNI_PD_BENCH_ALIGNED_DECODE_THRESHOLD`` finished KV
 receptions, then releases everywhere at once so the first decode step runs with a
 fuller, balanced batch — giving aligned, comparable batches for benchmarking.
 
@@ -21,13 +21,13 @@ so it composes with other patches that wrap ``_update_waiting_for_remote_kv``.
 
 Enabling: this patch lives in its own ``pd_bench_aligned_decode`` model-patch
 directory, so it is only imported/registered when that directory is selected via
-``OMNI_NPU_PATCHES_DIR`` (e.g. ``OMNI_NPU_PATCHES_DIR="..., pd_bench_aligned_decode"``).
+``OMNI_VLLM_PATCHES_DIR`` (e.g. ``OMNI_VLLM_PATCHES_DIR="..., pd_bench_aligned_decode"``).
 That makes it independently toggleable from any model's patch set. Note this is a
 benchmarking aid: gating decode start until a batch accumulates inflates TTFT and
 is not intended for production serving.
 
 Tuning:
-    OMNI_NPU_BENCH_ALIGNED_DECODE_THRESHOLD - per-rank ready count required
+    OMNI_PD_BENCH_ALIGNED_DECODE_THRESHOLD - per-rank ready count required
                                               (default 20)
 """
 
@@ -45,7 +45,7 @@ logger = init_logger(__name__)
 
 
 def _bench_aligned_decode_threshold() -> int:
-    return envs.OMNI_NPU_BENCH_ALIGNED_DECODE_THRESHOLD
+    return envs.OMNI_PD_BENCH_ALIGNED_DECODE_THRESHOLD
 
 
 @register_patch("BenchAlignedDecodeParallelConfigPatch", ParallelConfig)

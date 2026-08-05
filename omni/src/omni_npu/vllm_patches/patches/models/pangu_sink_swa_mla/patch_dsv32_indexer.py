@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # This patch is used for enable_eplb fix in ParallelConfig and FusedMoE
-# Please use this patch by adding VLLM_PLUGINS="omni-npu,omni_npu_patches" OMNI_NPU_VLLM_PATCHES="EPLBParallelConfig,EPLBFusedMoE" before vllm serve
+# Please use this patch by adding VLLM_PLUGINS="omni-npu,omni_npu_patches" OMNI_VLLM_PATCHES="EPLBParallelConfig,EPLBFusedMoE" before vllm serve
 
 from typing import Optional
 

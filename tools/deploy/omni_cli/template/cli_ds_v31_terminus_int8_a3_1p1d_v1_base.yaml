@@ -206,7 +206,7 @@ all:
             OMNI_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES: "ALL"
+            OMNI_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.5
           master_node: d0
@@ -393,7 +393,7 @@ all:
             OMNI_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES: "ALL"
+            OMNI_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.5
           master_node: d0
@@ -580,7 +580,7 @@ all:
             OMNI_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES: "ALL"
+            OMNI_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.5
           master_node: d0
@@ -767,7 +767,7 @@ all:
             OMNI_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES: "ALL"
+            OMNI_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.5
           master_node: d0
@@ -890,7 +890,7 @@ all:
             OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES: "ALL"
+            OMNI_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.1
           master_node: p0
@@ -1011,7 +1011,7 @@ all:
             OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES: "ALL"
+            OMNI_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.2
           master_node: p1
@@ -1132,7 +1132,7 @@ all:
             OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES: "ALL"
+            OMNI_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.3
           master_node: p2
@@ -1253,7 +1253,7 @@ all:
             OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
             VLLM_WORKER_MULTIPROC_METHOD: fork
-            OMNI_NPU_VLLM_PATCHES: "ALL"
+            OMNI_VLLM_PATCHES: "ALL"
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.4
           master_node: p3

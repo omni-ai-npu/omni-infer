@@ -113,8 +113,8 @@ export VLLM_WORKER_MULTIPROC_METHOD=${VLLM_WORKER_MULTIPROC_METHOD:-fork}
 
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/Ascend/ascend-toolkit/latest/aarch64-linux/lib64
 export HCCL_OP_RETRY_ENABLE=${HCCL_OP_RETRY_ENABLE:-"L0:0, L1:0, L2:0"}
-export OMNI_NPU_PATCHES_DIR=${OMNI_NPU_PATCHES_DIR:-"pangu_v2_hybrid_vl"}
-export OMNI_NPU_VLLM_PATCHES=${OMNI_NPU_VLLM_PATCHES:-"ALL"}
+export OMNI_VLLM_PATCHES_DIR=${OMNI_VLLM_PATCHES_DIR:-${OMNI_NPU_PATCHES_DIR:-"pangu_v2_hybrid_vl"}}
+export OMNI_VLLM_PATCHES=${OMNI_VLLM_PATCHES:-${OMNI_NPU_VLLM_PATCHES:-"ALL"}}
 export VLLM_PLUGINS=${VLLM_PLUGINS:-"omni-npu,omni_npu_patches,omni_pangu_models,omni_custom_models"}
 
 export HYBRID_ATTN_GROUP_SIZE=${HYBRID_ATTN_GROUP_SIZE:-16}

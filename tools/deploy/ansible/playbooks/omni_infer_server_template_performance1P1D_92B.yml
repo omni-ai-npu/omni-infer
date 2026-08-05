@@ -74,8 +74,8 @@
         export TASK_QUEUE_ENABLE=2
         export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
         export OMNI_HYBRID_ATTN_GROUP_SIZE=16
-        export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
-        export OMNI_NPU_VLLM_PATCHES="ALL"
+        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+        export OMNI_VLLM_PATCHES="ALL"
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
         EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager"
         EXTRA_ARGS="${EXTRA_ARGS} --max-num-batched-tokens 65536"
@@ -105,8 +105,8 @@
         export HCCL_OP_EXPANSION_MODE="AIV"
         export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
         export OMNI_HYBRID_ATTN_GROUP_SIZE=16
-        export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
-        export OMNI_NPU_VLLM_PATCHES="ALL"
+        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+        export OMNI_VLLM_PATCHES="ALL"
         export ENABLE_DP_LB=false
         export VLLM_CACHE_ROOT='./graph_cache'
         export TASK_QUEUE_ENABLE=1

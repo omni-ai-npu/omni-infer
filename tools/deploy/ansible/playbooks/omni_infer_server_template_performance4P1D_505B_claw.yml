@@ -78,8 +78,8 @@
         export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
         export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
         export OMNI_HYBRID_ATTN_GROUP_SIZE=18
-        export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
-        export OMNI_NPU_VLLM_PATCHES="ALL"
+        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+        export OMNI_VLLM_PATCHES="ALL"
         EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --max-num-batched-tokens 92160"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-expert-parallel --max-num-seqs 4"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-prompt-tokens-details --enable-chunked-prefill"
@@ -123,8 +123,8 @@
         export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
         export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
         export OMNI_HYBRID_ATTN_GROUP_SIZE=18
-        export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
-        export OMNI_NPU_VLLM_PATCHES="ALL"
+        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+        export OMNI_VLLM_PATCHES="ALL"
         export ENABLE_DP_LB=false
         export VLLM_CACHE_ROOT='./graph_cache'
         export TASK_QUEUE_ENABLE=1

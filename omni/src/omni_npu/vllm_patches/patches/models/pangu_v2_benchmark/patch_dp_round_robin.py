@@ -41,7 +41,7 @@ An explicit per-request rank (``request.data_parallel_rank``, set via the
 Enabling
 --------
 Lives in the shared ``pangu_v2_benchmark`` model-patch directory, imported only
-when that dir is selected via ``OMNI_NPU_PATCHES_DIR``. It additionally engages
+when that dir is selected via ``OMNI_VLLM_PATCHES_DIR``. It additionally engages
 only when ``OMNI_DP_ROUND_ROBIN=1`` -- otherwise the hook delegates to the genuine
 upstream greedy LB, so the directory is safe to leave loaded. Orthogonal to (and
 bundled with) ``hybrid_aligned_decode`` in the same directory: they patch

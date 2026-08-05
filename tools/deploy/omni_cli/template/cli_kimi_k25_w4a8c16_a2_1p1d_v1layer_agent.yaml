@@ -134,8 +134,8 @@ all:
             LCCL_DETERMINISTIC: 0
             LCCL_PARALLEL: 0
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
-            OMNI_NPU_VLLM_PATCHES: ALL
-            OMNI_NPU_PATCHES_DIR: kimi
+            OMNI_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES_DIR: kimi
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
@@ -266,8 +266,8 @@ all:
             LCCL_DETERMINISTIC: 0
             LCCL_PARALLEL: 0
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
-            OMNI_NPU_VLLM_PATCHES: ALL
-            OMNI_NPU_PATCHES_DIR: kimi
+            OMNI_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES_DIR: kimi
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
@@ -398,8 +398,8 @@ all:
             LCCL_DETERMINISTIC: 0
             LCCL_PARALLEL: 0
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
-            OMNI_NPU_VLLM_PATCHES: ALL
-            OMNI_NPU_PATCHES_DIR: kimi
+            OMNI_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES_DIR: kimi
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
@@ -530,8 +530,8 @@ all:
             LCCL_DETERMINISTIC: 0
             LCCL_PARALLEL: 0
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
-            OMNI_NPU_VLLM_PATCHES: ALL
-            OMNI_NPU_PATCHES_DIR: kimi
+            OMNI_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES_DIR: kimi
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
@@ -655,8 +655,8 @@ all:
             LCCL_DETERMINISTIC: 0
             LCCL_PARALLEL: 0
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
-            OMNI_NPU_VLLM_PATCHES: ALL
-            OMNI_NPU_PATCHES_DIR: kimi
+            OMNI_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES_DIR: kimi
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
@@ -780,8 +780,8 @@ all:
             LCCL_DETERMINISTIC: 0
             LCCL_PARALLEL: 0
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
-            OMNI_NPU_VLLM_PATCHES: ALL
-            OMNI_NPU_PATCHES_DIR: kimi
+            OMNI_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES_DIR: kimi
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000

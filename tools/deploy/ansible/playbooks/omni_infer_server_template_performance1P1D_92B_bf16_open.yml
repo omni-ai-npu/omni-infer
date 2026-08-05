@@ -77,8 +77,8 @@
         export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
         export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
         export OMNI_HYBRID_ATTN_GROUP_SIZE=17
-        export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
-        export OMNI_NPU_VLLM_PATCHES="ALL"
+        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+        export OMNI_VLLM_PATCHES="ALL"
         export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_92B_xp1d_p_open.json"
         export OMNI_PANGU_TOOL_CALL_ENDS_THINKING=1
         export TORCH_COMPILE_DISABLE=1
@@ -118,8 +118,8 @@
         export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
         export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
         export OMNI_HYBRID_ATTN_GROUP_SIZE=17
-        export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
-        export OMNI_NPU_VLLM_PATCHES="ALL"
+        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+        export OMNI_VLLM_PATCHES="ALL"
         export ENABLE_DP_LB=false
         export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_92B_xp1d_d_open.json"
         export OMNI_PANGU_TOOL_CALL_ENDS_THINKING=1

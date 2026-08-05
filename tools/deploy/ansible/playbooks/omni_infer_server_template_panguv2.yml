@@ -58,8 +58,8 @@
         export ASCEND_GLOBAL_LOG_LEVEL=3
         export TASK_QUEUE_ENABLE=2
         export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
-        export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
-        export OMNI_NPU_VLLM_PATCHES="ALL"
+        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+        export OMNI_VLLM_PATCHES="ALL"
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
         export HCCL_BUFFSIZE=100
         export OMNI_REUSE_PREFILLED_TOKENS=1
@@ -96,8 +96,8 @@
         export ASCEND_GLOBAL_LOG_LEVEL=3
         export HCCL_OP_EXPANSION_MODE="AI_CPU"
         export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
-        export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
-        export OMNI_NPU_VLLM_PATCHES="ALL"
+        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+        export OMNI_VLLM_PATCHES="ALL"
         export ENABLE_DP_LB=false
         export VLLM_CACHE_ROOT='./graph_cache'
         export TASK_QUEUE_ENABLE=1

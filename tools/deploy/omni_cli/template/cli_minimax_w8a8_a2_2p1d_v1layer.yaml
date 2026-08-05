@@ -67,9 +67,8 @@ all:
             OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
             VLLM_DISABLE_COMPILE_CACHE: 1
-            OMNI_NPU_VLLM_PATCHES_ALL: 1
             ASCEND_PLATFORM: A2
-            OMNI_NPU_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES: ALL
             API_PORT: 9100
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: "AIV"
@@ -161,9 +160,8 @@ all:
             OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
             VLLM_DISABLE_COMPILE_CACHE: 1
-            OMNI_NPU_VLLM_PATCHES_ALL: 1
             ASCEND_PLATFORM: A2
-            OMNI_NPU_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES: ALL
             API_PORT: 9000
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: "AIV"
@@ -255,9 +253,8 @@ all:
             OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
             VLLM_DISABLE_COMPILE_CACHE: 1
-            OMNI_NPU_VLLM_PATCHES_ALL: 1
             ASCEND_PLATFORM: A2
-            OMNI_NPU_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES: ALL
             API_PORT: 9016
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: "AIV"
