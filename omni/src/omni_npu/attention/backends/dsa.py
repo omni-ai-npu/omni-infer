@@ -14,8 +14,6 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Optional, Tuple, TypeVar, TYPE_CHECKING
 
 import torch
-import torch_npu
-from typing_extensions import deprecated
 
 from vllm.config import VllmConfig, get_current_vllm_config
 from vllm.distributed import get_tp_group
@@ -380,10 +378,6 @@ class NPUDSAImpl(SparseMLAAttentionImpl[NPUDSAMetadata]):
         self.supports_quant_query_input = False
         self.dcp_world_size = -1
 
-        self.chunked_prefill_workspace_size = MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size(
-            get_current_vllm_config()
-        )
-
         unsupported_features = [alibi_slopes, sliding_window, logits_soft_cap]
         if any(unsupported_features):
             raise NotImplementedError(
@@ -399,15 +393,6 @@ class NPUDSAImpl(SparseMLAAttentionImpl[NPUDSAMetadata]):
         self.sink_len = sink_compressed_kv.shape[0]
         self.sink_k_nope = sink_compressed_kv.unsqueeze(1).contiguous()
         self.sink_kv = torch.cat([sink_compressed_kv.unsqueeze(1), sink_k_pe.unsqueeze(1)], dim=-1).contiguous()
-
-    def _v_up_proj(self, x: torch.Tensor, out: torch.Tensor):
-        x = x.transpose(0, 1)
-        x = x.view(self.num_heads, -1, self.kv_lora_rank)
-
-        # Multiply (N, B, L) x (N, L, V) -> (N, B, V)
-        out2 = torch.bmm(x, self.W_UV)
-        out_new = out2.transpose(0, 1).contiguous().view(-1, self.num_heads * self.v_head_dim)
-        out.copy_(out_new)  # Copy result
 
     def _absorb_prolog(
         self,
@@ -503,87 +488,6 @@ class NPUDSAImpl(SparseMLAAttentionImpl[NPUDSAMetadata]):
             q_nope, q_pe, kv_c_and_k_pe_cache, attn_metadata
         )
         return attn_out, None
-
-    @deprecated(
-        "Legacy vLLM 0.14 sparse MLA entry point. vLLM 0.25.1 dispatches "
-        "sparse MLA through do_kv_cache_update() and forward_mqa(). "
-        "PanguV2 uses npu_pangu_forward()."
-    )
-    def forward(
-        self,
-        layer: AttentionLayer,
-        q: torch.Tensor,
-        k_c_normed: torch.Tensor,  # key in unified attn
-        k_pe: torch.Tensor,  # value in unified attn
-        kv_cache: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-        attn_metadata: NPUDSAMetadata,
-        output: Optional[torch.Tensor] = None,
-        output_scale: Optional[torch.Tensor] = None,
-        output_block_scale: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Deprecated vLLM 0.14 monolithic sparse-MLA implementation.
-
-        This method is not called by the vLLM 0.25.1 sparse-MLA pipeline. It
-        is retained temporarily as a migration reference, not as a fallback.
-        """
-        assert output is not None, "Output tensor must be provided."
-
-        if output_scale is not None or output_block_scale is not None:
-            raise NotImplementedError("fused output quantization is not yet supported for NPUDSAImpl")
-
-        if attn_metadata is None:
-            # During the profile run try to simulate to worse case output size
-            # for `self.kv_b_proj(kv_c_normed)` in `_compute_prefill_context`
-            # since this can be large
-            _ = torch.empty(
-                (
-                    self.chunked_prefill_workspace_size,
-                    self.num_heads,
-                    self.qk_nope_head_dim + self.v_head_dim,
-                ),
-                device=k_c_normed.device,
-                dtype=k_c_normed.dtype,
-            )
-
-            # The zero fill is required when used with DP + EP
-            # to ensure all ranks within a DP group compute the
-            # same expert outputs.
-            return output.fill_(0)
-
-        num_actual_toks = attn_metadata.num_actual_tokens
-        assert isinstance(kv_cache, (list, tuple)), f"{type(kv_cache)=}."
-        assert len(kv_cache) == 3, f"{len(kv_cache)=}."
-        k_nope, k_rope, _ = kv_cache
-        assert isinstance(k_nope, torch.Tensor) and isinstance(k_rope, torch.Tensor), (
-            f"{type(k_nope)=}, {type(k_rope)=}."
-        )
-        assert k_nope.numel() > 0 and k_rope.numel() > 0, f"{k_nope.shape=}, {k_rope.shape=}"
-
-        # Inputs and outputs may be padded for CUDA graphs
-        output_padded = output
-        output = output[:num_actual_toks, ...]
-        q = q[:num_actual_toks, ...]
-
-        assert (
-            attn_metadata.num_decodes is not None
-            and attn_metadata.num_prefills is not None
-            and attn_metadata.num_decode_tokens is not None
-        )
-
-        # write the latent and rope to kv cache
-        if k_nope.numel() > 0:
-            slots = attn_metadata.slot_mapping.view(-1, 1)
-            torch_npu.npu_scatter_nd_update_(k_nope.view(-1, k_nope.shape[-1]), slots, k_c_normed)
-            torch_npu.npu_scatter_nd_update_(k_rope.view(-1, k_rope.shape[-1]), slots, k_pe.squeeze(1))
-
-        # do attn absorb prolog
-        q_nope, q_pe = self._absorb_prolog(q)
-        # call attn
-        attn_out = self._apply_sparse_attention(q_nope, q_pe, kv_cache, attn_metadata)
-        # v_up projection
-        self._v_up_proj(attn_out, out=output)
-
-        return output_padded
 
     @staticmethod
     def get_args_from_attn_metadata(attn_metadata: NPUDSAMetadata):
