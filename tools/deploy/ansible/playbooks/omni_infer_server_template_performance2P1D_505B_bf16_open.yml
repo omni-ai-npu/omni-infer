@@ -66,6 +66,7 @@
     run_server_prefill_profile:
       prepare_commands: |-
         export SERVER_IP_LIST={{ DECODE_SERVER_IP_LIST_ALL | replace(' ', '') | trim | quote }}
+        export VLLM_DISABLE_PYNCCL=1
         export HCCL_BUFFSIZE=100
         export HCCL_CONNECT_TIMEOUT=1800
         export HCCL_EXEC_TIMEOUT=1800
@@ -111,6 +112,7 @@
       prepare_commands: |-
         export DECODE_DATA_PARALLEL_SIZE={{ DECODE_SERVER_BY_GROUP | quote }}
         export SERVER_IP_LIST={{ DECODE_SERVER_IP_LIST_BY_GROUP | replace(' ', '') | trim | quote }}
+        export VLLM_DISABLE_PYNCCL=1
         export HCCL_BUFFSIZE=1200
         export HCCL_CONNECT_TIMEOUT=1800
         export HCCL_EXEC_TIMEOUT=1800
