@@ -66,7 +66,6 @@ Proxy 端点时，应在节点激活成功后单独执行 `reload_proxy`。
 - `run_server_prefill_profile`
 - `run_server_decode_profile`
 - `run_server_common_profile`
-- `mooncake_profile`
 - `run_proxy_profile`
 - `proc_bind_profile`
 - `fetch_log_profile`

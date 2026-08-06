@@ -6,7 +6,6 @@
 - ansible.builtin.import_tasks: set_topology.yml
 - ansible.builtin.import_tasks: stop_server.yml
   tags: stop_server
-- ansible.builtin.import_tasks: manage_mooncake.yml
 - ansible.builtin.import_tasks: run_server.yml
 - ansible.builtin.import_tasks: bind_cpus.yml
 - ansible.builtin.import_tasks: run_proxy.yml

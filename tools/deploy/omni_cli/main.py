@@ -245,7 +245,7 @@ def _verify_and_fix_env_vars(
     Detect port conflicts per machine (same IP). If conflicts found, bump by `offset` repeatedly until unique.
     """
     print(f"{INFO} verifying and fixing environment variables...")
-    port_vars = ["API_PORT", "MASTER_PORT", "VLLM_LLMDATADIST_ZMQ_PORT"]
+    port_vars = ["API_PORT", "MASTER_PORT", "OMNI_LLMDATADIST_ZMQ_PORT"]
     offset: int = 16
     all_hosts = _walk_hosts(inventory.get("all", inventory))  # {host: {vars}}
 

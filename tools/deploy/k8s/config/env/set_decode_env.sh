@@ -38,7 +38,7 @@ set_env_from_arg_or_default "TORCHAIR_CACHE_PATH" "--torchair-cache-path" "" "$@
 set_env_from_arg_or_default "TRANSFER_TORCHAIR_CACHE" "--transfer-torchair-cache" 0 "$@"
 
 # 启动参数使用的环境变量
-set_env_from_arg_or_default "ADDITIONAL_CONFIG" "--additional-config" '{"compilation-config": {"level": 3, "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16], "backend":"eager", "compile_sizes":[1,2,8]}}' "$@"
+set_env_from_arg_or_default "ADDITIONAL_CONFIG" "--additional-config" '{"compilation-config": {"mode": 3, "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16], "backend":"eager", "compile_sizes":[1,2,8]}}' "$@"
 set_env_from_arg_or_default "dp" "--num-dp" "${role_device_size}" "$@"
 set_env_from_arg_or_default "GPU_UTIL" "--gpu-util" 0.92 "$@"
 set_env_from_arg_or_default "HCCL_BUFFSIZE" "--hccl-buffsize" 400 "$@"
@@ -50,12 +50,11 @@ set_env_from_arg_or_default "MAX_NUM_SEQS" "--max-num-seqs" 8 "$@"
 set_env_from_arg_or_default "MODEL_PATH" "--model-path" "/home/mind/model" "$@"
 set_env_from_arg_or_default "SERVER_OFFSET" "--server-offset" "$((role_node_rank * LOCAL_DEVICE_SIZE))" "$@"
 set_env_from_arg_or_default "TP" "--tp" 1 "$@"
-set_env_from_arg_or_default "VLLM_ENABLE_MC2" "--vllm-enable-mc2" 1 "$@"
 set_env_from_arg_or_default "VLLM_LOGGING_LEVEL" "--vllm-logging-level" "INFO" "$@"
 set_env_from_arg_or_default "KV_CONNECTOR" "--kv-connector" "LLMDataDistConnector" "$@"
 
 set_env_from_arg_or_default "ADD_ARGS" "--add-args" "" "$@"
-set_env_from_arg_or_default "EXTRA_ARGS" "--extra-args" "--enable-expert-parallel --disable-log-requests --max-num-seqs ${MAX_NUM_SEQS} --no-enable-chunked-prefill --dtype bfloat16 --distributed-executor-backend mp " "$@"
+set_env_from_arg_or_default "EXTRA_ARGS" "--extra-args" "--enable-expert-parallel --max-num-seqs ${MAX_NUM_SEQS} --no-enable-chunked-prefill --dtype bfloat16 --distributed-executor-backend mp " "$@"
 
 # vLLM使用的其它环境变量
 set_env_from_arg_or_default "CPU_AFFINITY_CONF" "--cpu-affinity-conf" 2 "$@"

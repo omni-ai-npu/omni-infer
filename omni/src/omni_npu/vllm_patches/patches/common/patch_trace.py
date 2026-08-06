@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-# export OMNI_NPU_VLLM_PATCHES="ProfilerDynamicPatch,RequestStatusPatch,
+# export OMNI_VLLM_PATCHES="ProfilerDynamicPatch,RequestStatusPatch,
 # ExpertIdServingChatStream,ExpertIdServingCompletionStream"
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
@@ -41,16 +41,16 @@ class ProfilerDynamicPatch(VLLMPatch):
             logger.info("<<< ProfilerDynamicPatch: Trace disabled, PROFILING_NAMELIST environment variable is not set.")
             return
 
-        patches_all = envs.OMNI_NPU_VLLM_PATCHES.strip()
-        enabled_patches = envs.OMNI_NPU_VLLM_PATCHES
+        patches_all = envs.OMNI_VLLM_PATCHES.strip()
+        enabled_patches = envs.OMNI_VLLM_PATCHES
         enabled_patch_list = [p.strip() for p in enabled_patches.split(",") if p.strip()]
 
         if patches_all == "ALL":
-            logger.info("<<< ProfilerDynamicPatch: Trace enabled, OMNI_NPU_VLLM_PATCHES is set to ALL.")
+            logger.info("<<< ProfilerDynamicPatch: Trace enabled, OMNI_VLLM_PATCHES is set to ALL.")
         elif "ProfilerDynamicPatch" in enabled_patch_list:
-            logger.info("<<< ProfilerDynamicPatch: Trace enabled, found in OMNI_NPU_VLLM_PATCHES.")
+            logger.info("<<< ProfilerDynamicPatch: Trace enabled, found in OMNI_VLLM_PATCHES.")
         else:
-            logger.info("<<< ProfilerDynamicPatch: Trace disabled, not found in OMNI_NPU_VLLM_PATCHES and OMNI_NPU_VLLM_PATCHES is not ALL.")
+            logger.info("<<< ProfilerDynamicPatch: Trace disabled, not found in OMNI_VLLM_PATCHES and OMNI_VLLM_PATCHES is not ALL.")
             return
 
         namelist_file = Path(namelist_path)

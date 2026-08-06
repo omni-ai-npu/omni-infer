@@ -67,7 +67,7 @@ def get_model_type_from_config(model_path: Path) -> str:
 def _find_patch_dir_exact(model_type: str, models_root: Path) -> list[Path]:
     """
     Exact matching: Strictly match the lowercase model type with lowercase subdirectory name.
-    Applicable: User manually sets OMNI_NPU_PATCHES_DIR environment variable.
+    Applicable: User manually sets OMNI_VLLM_PATCHES_DIR environment variable.
 
     Supports comma-separated multiple directories (e.g., "pangu_v2_base,pangu_sink_swa_mla").
 
