@@ -138,7 +138,7 @@ all:
               enforce-eager: ''
               max-num-batched-tokens: 102400
               max-num-seqs: 8
-            gpu-util: '0.84'
+            gpu-util: '0.80'
             kv-transfer-config:
               engine_id: "0"
               kv_buffer_device: npu
@@ -233,7 +233,7 @@ all:
               enforce-eager: ''
               max-num-batched-tokens: 102400
               max-num-seqs: 8
-            gpu-util: '0.84'
+            gpu-util: '0.80'
             kv-transfer-config:
               engine_id: "1"
               kv_buffer_device: npu
