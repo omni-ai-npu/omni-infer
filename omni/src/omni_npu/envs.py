@@ -293,10 +293,13 @@ env_variables: Dict[str, Callable[[], Any]] = {
     # Env-var fallback for the --repetition-detection CLI flag. Value must be
     # the same JSON string the CLI accepts (e.g.
     # '{"max_pattern_size":10,"min_pattern_size":2,"min_count":3}').
-    # Priority: env > CLI > disabled. A valid env value overwrites the CLI
-    # value. JSON parse failure logs an error and leaves the CLI value in place,
-    # or leaves the feature disabled when no CLI value was supplied (no raise).
-    # Consumers: patch_user_repetition_detection.py:131-155.
+    # Priority: request body > env > CLI > disabled. A valid env value overwrites
+    # the CLI value. JSON parse failure logs an error and leaves the CLI value in
+    # place, or leaves the feature disabled when no CLI value was supplied (no
+    # raise -- a bad env var must not take down a node that was otherwise
+    # launched correctly, whereas a bad CLI value does fail the launch).
+    # Consumers: usefull_patch/patch_repetition_detection_config.py,
+    # patches/common/patch_user_repetition_detection.py:131-155 (superseded).
     "OMNI_REPETITION_DETECTION_CONFIG":
     lambda: get_env_with_fallback(
         "OMNI_REPETITION_DETECTION_CONFIG", ["REPETITION_DETECTION_CONFIG"], None),
