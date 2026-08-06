@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import torch
 import torch.nn as nn
 
-from omni.v1.models.pangu import pangu_ultra_moe as ultra_mod
+from omni_npu.v1.models.pangu import pangu_ultra_moe as ultra_mod
 
 
 class TestPanguUltraMoeDecoderLayer(unittest.TestCase):

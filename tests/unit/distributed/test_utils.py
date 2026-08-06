@@ -1,12 +1,12 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 """
-Unit tests for omni.v1.distributed.utils.
+Unit tests for omni_npu.v1.distributed.utils.
 """
 
 import pytest
 
-from omni.v1.distributed.utils import (
+from omni_npu.v1.distributed.utils import (
     generate_round_swap_schedule,
     get_round_swap_perm,
 )

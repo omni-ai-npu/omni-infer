@@ -8,7 +8,7 @@ import torch.fx as fx
 import pytest
 from unittest.mock import patch, MagicMock, ANY
 
-from omni.compilation.npugraph_ex import NpuGraphExAdaptor
+from omni_npu.compilation.npugraph_ex import NpuGraphExAdaptor
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ class TestNpuGraphExAdaptor:
     def test_compile_with_tuple_output(self, default_npugraph_ex_adaptor, mock_inputs, mock_npugraph_ex_module):
         """Test graph_returns_tuple output is tuple"""
         with patch("torch._inductor.compile_fx.graph_returns_tuple") as mock_graph_returns_tuple:
-            with patch("omni.compilation.npugraph_ex_config.get_aclgraph_config") as mock_get_aclgraph_config:
+            with patch("omni_npu.compilation.npugraph_ex_config.get_aclgraph_config") as mock_get_aclgraph_config:
                 mock_graph_returns_tuple.return_value = True
 
                 graph, example_inputs, compiler_config = mock_inputs
@@ -68,7 +68,7 @@ class TestNpuGraphExAdaptor:
     def test_compile_with_non_tuple_output(self, default_npugraph_ex_adaptor, mock_inputs, mock_npugraph_ex_module):
         """Test graph_returns_tuple output is not tuple"""
         with patch("torch._inductor.compile_fx.graph_returns_tuple") as mock_graph_returns_tuple:
-            with patch("omni.compilation.npugraph_ex_config.get_aclgraph_config") as mock_get_aclgraph_config:
+            with patch("omni_npu.compilation.npugraph_ex_config.get_aclgraph_config") as mock_get_aclgraph_config:
                 # Trigger the logic for rewriting the FX Graph
                 mock_graph_returns_tuple.return_value = False
 
@@ -109,7 +109,7 @@ class TestNpuGraphExAdaptor:
 
     def test_compile_with_enable_false(self, default_npugraph_ex_adaptor, mock_inputs):
         """Test when npugraph_ex_config.enable is False"""
-        with patch("omni.compilation.npugraph_ex_config.get_aclgraph_config") as mock_get_aclgraph_config:
+        with patch("omni_npu.compilation.npugraph_ex_config.get_aclgraph_config") as mock_get_aclgraph_config:
             graph, example_inputs, compiler_config = mock_inputs
 
             mock_config = MagicMock()
@@ -128,7 +128,7 @@ class TestNpuGraphExAdaptor:
     def test_compile_with_multiple_config_options(self, default_npugraph_ex_adaptor, mock_inputs, mock_npugraph_ex_module):
         """Test with multiple configuration options set"""
         with patch("torch._inductor.compile_fx.graph_returns_tuple") as mock_graph_returns_tuple:
-            with patch("omni.compilation.npugraph_ex_config.get_aclgraph_config") as mock_get_aclgraph_config:
+            with patch("omni_npu.compilation.npugraph_ex_config.get_aclgraph_config") as mock_get_aclgraph_config:
                 mock_graph_returns_tuple.return_value = True
 
                 graph, example_inputs, compiler_config = mock_inputs

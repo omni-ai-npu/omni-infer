@@ -71,7 +71,7 @@ def npu_mm_encoder_attention_module(monkeypatch):
         fake_module,
     )
 
-    module_name = "omni.layers.attention.mm_encoder_attention"
+    module_name = "omni_npu.layers.attention.mm_encoder_attention"
     sys.modules.pop(module_name, None)
     module_path = (
         Path(__file__).resolve().parents[3]

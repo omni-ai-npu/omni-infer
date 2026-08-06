@@ -5,7 +5,7 @@ import pytest
 
 pytest.importorskip("vllm")
 
-from omni.vllm_patches.patches.common.patch_user_repetition_detection import (
+from omni_npu.vllm_patches.patches.common.patch_user_repetition_detection import (
     RepetitionDetectionParams,
     _coerce_repetition_detection,
     _parse_repetition_detection_cli,

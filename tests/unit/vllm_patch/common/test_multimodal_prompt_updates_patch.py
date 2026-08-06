@@ -20,8 +20,8 @@ from vllm.multimodal.processing import (
 )
 from vllm.tokenizers import TokenizerLike
 
-from omni.vllm_patches.patches.common import patch_multimodal_prompt_updates as patch_mpu
-from omni.vllm_patches.patches.common.patch_multimodal_prompt_updates import (
+from omni_npu.vllm_patches.patches.common import patch_multimodal_prompt_updates as patch_mpu
+from omni_npu.vllm_patches.patches.common.patch_multimodal_prompt_updates import (
     MultimodalPromptUpdatesPatch,
     _apply_token_matches_with_placeholders,
 )

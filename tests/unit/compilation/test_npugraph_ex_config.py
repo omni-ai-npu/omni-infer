@@ -2,13 +2,13 @@
 import pytest
 from unittest.mock import MagicMock
 
-from omni.compilation.npugraph_ex_config import AclGraphConfig, init_aclgraph_config, get_aclgraph_config, _ACLGRAPH_CONFIG
+from omni_npu.compilation.npugraph_ex_config import AclGraphConfig, init_aclgraph_config, get_aclgraph_config, _ACLGRAPH_CONFIG
 
 
 @pytest.fixture(autouse=True)
 def reset_aclgraph_config():
     """Reset the global _ACLGRAPH_CONFIG before each test."""
-    import omni.compilation.npugraph_ex_config as config_module
+    import omni_npu.compilation.npugraph_ex_config as config_module
     original_config = config_module._ACLGRAPH_CONFIG
     config_module._ACLGRAPH_CONFIG = None
     yield

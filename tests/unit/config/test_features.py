@@ -4,7 +4,7 @@
 import pytest
 from types import SimpleNamespace
 
-from omni.model_config.config_loader.features import apply_eager_mode_config
+from omni_npu.model_config.config_loader.features import apply_eager_mode_config
 
 
 pytestmark = pytest.mark.unit

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from omni.configs.additional_config import OmniAdditionalConfig
+from omni_npu.configs.additional_config import OmniAdditionalConfig
 
 
 def _vllm(additional_config):

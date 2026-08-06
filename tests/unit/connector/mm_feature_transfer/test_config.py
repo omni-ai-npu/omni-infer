@@ -4,7 +4,7 @@ import json
 import pytest
 from unittest.mock import Mock, patch
 
-from omni.connector.mm_feature_transfer.config import (
+from omni_npu.connector.mm_feature_transfer.config import (
     DiskConnectorConfig, 
     NetworkConnectorConfig, 
     MMFeatureTransferConfig, 

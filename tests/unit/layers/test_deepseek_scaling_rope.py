@@ -6,7 +6,7 @@
 import pytest
 import torch
 
-import omni.layers.rotary_embedding.deepseek_scaling_rope as deepseek_scaling_rope_module
+import omni_npu.layers.rotary_embedding.deepseek_scaling_rope as deepseek_scaling_rope_module
 from vllm import platforms
 from vllm.platforms import current_platform
 from vllm.model_executor.layers.rotary_embedding.common import (
@@ -16,8 +16,8 @@ from vllm.model_executor.layers.rotary_embedding.common import (
     yarn_linear_ramp_mask,
 )
 
-from omni.platform import NPUPlatform
-from omni.layers.rotary_embedding.deepseek_scaling_rope import (
+from omni_npu.platform import NPUPlatform
+from omni_npu.layers.rotary_embedding.deepseek_scaling_rope import (
     NPUDeepseekScalingRotaryEmbedding,
 )
 

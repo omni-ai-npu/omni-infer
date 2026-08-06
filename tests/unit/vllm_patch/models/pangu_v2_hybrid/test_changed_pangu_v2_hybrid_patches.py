@@ -109,7 +109,7 @@ def _install_core_stubs(monkeypatch):
 
 def _load_module(monkeypatch, module_name: str):
     package_name = (
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid")
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid")
     if module_name.startswith(package_name + ".") and package_name not in sys.modules:
         package = types.ModuleType(package_name)
         package.__path__ = [str(Path(__file__).resolve().parents[5] / "src" /
@@ -125,7 +125,7 @@ def test_pangu_kv_cache_specs_page_sizes_and_validation(monkeypatch):
     _install_core_stubs(monkeypatch)
     mod = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_kv_cache_interface",
     )
 
@@ -182,7 +182,7 @@ def test_pangu_uniform_type_supports_mome_specs(monkeypatch):
     _install_core_stubs(monkeypatch)
     mod = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_kv_cache_interface",
     )
     spec_a = mod.MomeSpec(
@@ -248,12 +248,12 @@ def test_pangu_mome_and_share_kv_managers(monkeypatch):
     _install_manager_stubs(monkeypatch)
     iface_mod = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_kv_cache_interface",
     )
     mgr_mod = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_single_type_kv_cache_manager",
     )
 
@@ -294,12 +294,12 @@ def test_pangu_hybrid_coordinator_converges_to_shorter_hit(monkeypatch):
     _install_manager_stubs(monkeypatch)
     iface_mod = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_kv_cache_interface",
     )
     mgr_mod = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_single_type_kv_cache_manager",
     )
 
@@ -351,7 +351,7 @@ def test_pangu_kv_cache_group_size_override(monkeypatch):
 
     mod = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_kv_cache_utils",
     )
     monkeypatch.setenv("HYBRID_ATTN_GROUP_SIZE", "2")
@@ -396,7 +396,7 @@ def test_pangu_model_arch_convertor_and_speculative_mapping(monkeypatch):
 
     modelconfig = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_modelconfig",
     )
     cfg = types.SimpleNamespace(model_type="openpangu_v2", kv_lora_rank=128,
@@ -427,7 +427,7 @@ def test_pangu_model_arch_convertor_and_speculative_mapping(monkeypatch):
 
     spec_mod = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_speculative",
     )
 
@@ -487,7 +487,7 @@ def test_pangu_models_config_aligns_hybrid_page_size(monkeypatch):
 
     mod = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_models_config",
     )
 
@@ -586,7 +586,7 @@ def test_pangu_models_config_dsa_and_runai_edges(monkeypatch):
 
     mod = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_models_config",
     )
 
@@ -674,7 +674,7 @@ def test_pangu_worker_utils_bind_kv_cache(monkeypatch):
 
     mod = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_worker_utils",
     )
 
@@ -703,7 +703,7 @@ def test_pangu_scheduler_updates_output_with_speculative_margin(monkeypatch):
     request_mod.Request = type("Request", (), {})
     stop_mod = _stub_module(
         monkeypatch,
-        "omni.vllm_patches.patches.common.patch_user_repetition_detection")
+        "omni_npu.vllm_patches.patches.common.patch_user_repetition_detection")
 
     calls = []
 
@@ -714,7 +714,7 @@ def test_pangu_scheduler_updates_output_with_speculative_margin(monkeypatch):
     stop_mod.check_stop = check_stop
     mod = _load_module(
         monkeypatch,
-        "omni.vllm_patches.patches.models.pangu_v2_hybrid."
+        "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid."
         "patch_scheduler",
     )
 

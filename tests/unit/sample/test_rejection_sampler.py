@@ -91,7 +91,7 @@ def rejection_mod(monkeypatch):
         raising=False,
     )
 
-    import omni.sample.rejection_sampler as mod
+    import omni_npu.sample.rejection_sampler as mod
 
     mod = importlib.reload(mod)
     monkeypatch.setattr(

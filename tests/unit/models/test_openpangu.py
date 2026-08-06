@@ -11,13 +11,13 @@ from unittest.mock import MagicMock, patch
 import torch
 import torch.nn as nn
 
-from omni.vllm_patches.patches.models.pangu_v2_base.patch_mla import mlaPatch
+from omni_npu.vllm_patches.patches.models.pangu_v2_base.patch_mla import mlaPatch
 mlaPatch.apply()
 
-from omni.vllm_patches.patches.models.pangu_sink_swa_mla.patch_static_sink_attention import StaticSinkAttentionPatch
+from omni_npu.vllm_patches.patches.models.pangu_sink_swa_mla.patch_static_sink_attention import StaticSinkAttentionPatch
 StaticSinkAttentionPatch.apply()
 
-from omni.vllm_patches.patches.models.pangu_sink_swa_mla.patch_mome import MoMEPatch
+from omni_npu.vllm_patches.patches.models.pangu_sink_swa_mla.patch_mome import MoMEPatch
 MoMEPatch.apply()
 
 import omni_models.models.pangu.openpangu as openpangu_mod

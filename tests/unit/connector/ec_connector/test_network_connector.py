@@ -17,7 +17,7 @@ from vllm.distributed.ec_transfer.ec_connector.base import ECConnectorRole
 from vllm.multimodal.inputs import MultiModalFeatureSpec, PlaceholderRange
 from vllm.v1.core.sched.output import SchedulerOutput
 
-from omni.connector.ec_connector.network_connector import (
+from omni_npu.connector.ec_connector.network_connector import (
     STATUS,
     ZMQ_EMPTY_FRAME,
     SERVER_REQUEST_MIN_FRAMES,
@@ -88,16 +88,16 @@ def make_mock_vllm_config(is_producer=True, ec_ip="127.0.0.1", ec_port=5000,
 def _make_connector_patches():
     """Return context manager patches required for ECNetworkConnector construction."""
     return [
-        patch('omni.connector.ec_connector.network_connector.get_tensor_model_parallel_rank',
+        patch('omni_npu.connector.ec_connector.network_connector.get_tensor_model_parallel_rank',
               return_value=0),
-        patch('omni.connector.ec_connector.network_connector._get_local_ip',
+        patch('omni_npu.connector.ec_connector.network_connector._get_local_ip',
               return_value='127.0.0.1'),
-        patch('omni.connector.ec_connector.network_connector.make_zmq_path',
+        patch('omni_npu.connector.ec_connector.network_connector.make_zmq_path',
               side_effect=lambda scheme, host, port: f'{scheme}://{host}:{port}'),
-        patch('omni.connector.ec_connector.network_connector.make_zmq_socket',
+        patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket',
               return_value=MagicMock()),
         patch('zmq.Context.instance', return_value=MagicMock()),
-        patch('omni.connector.ec_connector.network_connector.envs',
+        patch('omni_npu.connector.ec_connector.network_connector.envs',
               VLLM_RPC_TIMEOUT=5000),
     ]
 
@@ -408,7 +408,7 @@ class TestSerializeDeserialize:
     def test_deserialize_returns_tensor(self):
         tensor = torch.randn(5, 10)
         serialized = _serialize_cache(tensor)
-        with patch('omni.connector.ec_connector.network_connector.current_platform') as mock_platform:
+        with patch('omni_npu.connector.ec_connector.network_connector.current_platform') as mock_platform:
             mock_platform.device_type = 'cpu'
             restored = _deserialize_cache(serialized)
         assert isinstance(restored, torch.Tensor)
@@ -416,7 +416,7 @@ class TestSerializeDeserialize:
     def test_serialize_deserialize_roundtrip(self):
         original = torch.randn(8, 512)
         serialized = _serialize_cache(original)
-        with patch('omni.connector.ec_connector.network_connector.current_platform') as mock_platform:
+        with patch('omni_npu.connector.ec_connector.network_connector.current_platform') as mock_platform:
             mock_platform.device_type = 'cpu'
             restored = _deserialize_cache(serialized)
         assert torch.equal(original.cpu(), restored.cpu())
@@ -432,7 +432,7 @@ class TestSerializeDeserialize:
         ]
         for tensor in test_tensors:
             serialized = _serialize_cache(tensor)
-            with patch('omni.connector.ec_connector.network_connector.current_platform') as m:
+            with patch('omni_npu.connector.ec_connector.network_connector.current_platform') as m:
                 m.device_type = 'cpu'
                 restored = _deserialize_cache(serialized)
             assert torch.equal(tensor.cpu(), restored.cpu())
@@ -536,24 +536,24 @@ class TestECNetworkConnectorInit:
 
 class TestInitRankAndSize:
     def test_scheduler_role_does_not_call_tp_rank(self):
-        with patch('omni.connector.ec_connector.network_connector.get_tensor_model_parallel_rank') as mock_tp_rank, \
-             patch('omni.connector.ec_connector.network_connector._get_local_ip', return_value='127.0.0.1'), \
-             patch('omni.connector.ec_connector.network_connector.make_zmq_path', return_value='tcp://127.0.0.1:5000'), \
-             patch('omni.connector.ec_connector.network_connector.make_zmq_socket', return_value=MagicMock()), \
+        with patch('omni_npu.connector.ec_connector.network_connector.get_tensor_model_parallel_rank') as mock_tp_rank, \
+             patch('omni_npu.connector.ec_connector.network_connector._get_local_ip', return_value='127.0.0.1'), \
+             patch('omni_npu.connector.ec_connector.network_connector.make_zmq_path', return_value='tcp://127.0.0.1:5000'), \
+             patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket', return_value=MagicMock()), \
              patch('zmq.Context.instance', return_value=MagicMock()), \
-             patch('omni.connector.ec_connector.network_connector.envs', VLLM_RPC_TIMEOUT=5000):
+             patch('omni_npu.connector.ec_connector.network_connector.envs', VLLM_RPC_TIMEOUT=5000):
             config = make_mock_vllm_config(is_producer=True)
             ECNetworkConnector(vllm_config=config, role=ECConnectorRole.SCHEDULER)
             mock_tp_rank.assert_not_called()
 
     def test_worker_role_calls_tp_rank(self):
-        with patch('omni.connector.ec_connector.network_connector.get_tensor_model_parallel_rank',
+        with patch('omni_npu.connector.ec_connector.network_connector.get_tensor_model_parallel_rank',
                    return_value=0) as mock_tp_rank, \
-             patch('omni.connector.ec_connector.network_connector._get_local_ip', return_value='127.0.0.1'), \
-             patch('omni.connector.ec_connector.network_connector.make_zmq_path', return_value='tcp://127.0.0.1:5000'), \
-             patch('omni.connector.ec_connector.network_connector.make_zmq_socket', return_value=MagicMock()), \
+             patch('omni_npu.connector.ec_connector.network_connector._get_local_ip', return_value='127.0.0.1'), \
+             patch('omni_npu.connector.ec_connector.network_connector.make_zmq_path', return_value='tcp://127.0.0.1:5000'), \
+             patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket', return_value=MagicMock()), \
              patch('zmq.Context.instance', return_value=MagicMock()), \
-             patch('omni.connector.ec_connector.network_connector.envs', VLLM_RPC_TIMEOUT=5000):
+             patch('omni_npu.connector.ec_connector.network_connector.envs', VLLM_RPC_TIMEOUT=5000):
             config = make_mock_vllm_config(is_producer=True)
             connector = ECNetworkConnector(vllm_config=config, role=ECConnectorRole.WORKER)
             connector._server_running.clear()
@@ -565,13 +565,13 @@ class TestInitRankAndSize:
         config.parallel_config.data_parallel_size = 4
         config.parallel_config.tensor_parallel_size = 2
 
-        with patch('omni.connector.ec_connector.network_connector.get_tensor_model_parallel_rank',
+        with patch('omni_npu.connector.ec_connector.network_connector.get_tensor_model_parallel_rank',
                    return_value=1), \
-             patch('omni.connector.ec_connector.network_connector._get_local_ip', return_value='127.0.0.1'), \
-             patch('omni.connector.ec_connector.network_connector.make_zmq_path', return_value='tcp://127.0.0.1:5000'), \
-             patch('omni.connector.ec_connector.network_connector.make_zmq_socket', return_value=MagicMock()), \
+             patch('omni_npu.connector.ec_connector.network_connector._get_local_ip', return_value='127.0.0.1'), \
+             patch('omni_npu.connector.ec_connector.network_connector.make_zmq_path', return_value='tcp://127.0.0.1:5000'), \
+             patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket', return_value=MagicMock()), \
              patch('zmq.Context.instance', return_value=MagicMock()), \
-             patch('omni.connector.ec_connector.network_connector.envs', VLLM_RPC_TIMEOUT=5000):
+             patch('omni_npu.connector.ec_connector.network_connector.envs', VLLM_RPC_TIMEOUT=5000):
             connector = ECNetworkConnector(vllm_config=config, role=ECConnectorRole.WORKER)
             connector._server_running.clear()
             assert connector.dp_rank == 2
@@ -744,7 +744,7 @@ class TestTPLeaderHelpers:
         c.ec_async_flag = True
         assert c._ec_use_tp_leader_zmq() is False
 
-    @patch('omni.connector.ec_connector.network_connector.torch.distributed.is_initialized',
+    @patch('omni_npu.connector.ec_connector.network_connector.torch.distributed.is_initialized',
            return_value=True)
     def test_ec_use_tp_leader_zmq_all_conditions_met(self, mock_init, consumer_worker_connector):
         c = consumer_worker_connector
@@ -772,7 +772,7 @@ class TestTPLeaderHelpers:
         c.ec_async_flag = False
         assert c._ec_use_tp_leader_zmq_async() is False
 
-    @patch('omni.connector.ec_connector.network_connector.torch.distributed.is_initialized',
+    @patch('omni_npu.connector.ec_connector.network_connector.torch.distributed.is_initialized',
            return_value=True)
     def test_ec_use_tp_leader_zmq_async_all_conditions_met(self, mock_init, consumer_worker_connector):
         c = consumer_worker_connector
@@ -794,8 +794,8 @@ class TestStartServer:
         existing_socket = MagicMock()
         connector._server_socket = existing_socket
 
-        with patch('omni.connector.ec_connector.network_connector.make_zmq_socket') as mock_make, \
-             patch('omni.connector.ec_connector.network_connector.envs', VLLM_RPC_TIMEOUT=5000):
+        with patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket') as mock_make, \
+             patch('omni_npu.connector.ec_connector.network_connector.envs', VLLM_RPC_TIMEOUT=5000):
             connector._start_server()
             mock_make.assert_not_called()
 
@@ -807,9 +807,9 @@ class TestStartServer:
         connector._endpoint = "tcp://127.0.0.1:5000"
 
         mock_sock = MagicMock()
-        with patch('omni.connector.ec_connector.network_connector.make_zmq_socket',
+        with patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket',
                    return_value=mock_sock), \
-             patch('omni.connector.ec_connector.network_connector.envs', VLLM_RPC_TIMEOUT=5000):
+             patch('omni_npu.connector.ec_connector.network_connector.envs', VLLM_RPC_TIMEOUT=5000):
             connector._start_server()
 
         assert connector._server_socket is mock_sock
@@ -837,7 +837,7 @@ class TestServerLoop:
         mock_poller.poll.return_value = {mock_socket: zmq.POLLIN}
         mock_socket.recv_multipart.side_effect = [messages] + [zmq.Again()]
 
-        with patch('omni.connector.ec_connector.network_connector.zmq.Poller',
+        with patch('omni_npu.connector.ec_connector.network_connector.zmq.Poller',
                    return_value=mock_poller):
             connector._server_loop()
 
@@ -937,7 +937,7 @@ class TestServerLoop:
         mock_poller.poll.return_value = {mock_socket: zmq.POLLIN}
         mock_socket.recv_multipart.side_effect = zmq.Again()
 
-        with patch('omni.connector.ec_connector.network_connector.zmq.Poller',
+        with patch('omni_npu.connector.ec_connector.network_connector.zmq.Poller',
                    return_value=mock_poller):
             connector._server_loop()
 
@@ -975,7 +975,7 @@ class TestServerLoop:
         mock_poller = MagicMock()
         mock_poller.poll.return_value = {}
 
-        with patch('omni.connector.ec_connector.network_connector.zmq.Poller',
+        with patch('omni_npu.connector.ec_connector.network_connector.zmq.Poller',
                    return_value=mock_poller):
             connector._server_loop()
 
@@ -1105,9 +1105,9 @@ class TestClientSocketManagement:
         connector = producer_scheduler_connector
         endpoint = "tcp://127.0.0.1:9999"
         new_mock = MagicMock()
-        with patch('omni.connector.ec_connector.network_connector.make_zmq_socket',
+        with patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket',
                    return_value=new_mock), \
-             patch('omni.connector.ec_connector.network_connector.envs',
+             patch('omni_npu.connector.ec_connector.network_connector.envs',
                    VLLM_RPC_TIMEOUT=5000):
             result = connector._ensure_client_socket(endpoint)
         assert result is new_mock
@@ -1117,9 +1117,9 @@ class TestClientSocketManagement:
         connector = producer_scheduler_connector
         endpoints = ["tcp://127.0.0.1:6001", "tcp://127.0.0.1:6002"]
         mock_sock = MagicMock()
-        with patch('omni.connector.ec_connector.network_connector.make_zmq_socket',
+        with patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket',
                    return_value=mock_sock), \
-             patch('omni.connector.ec_connector.network_connector.envs',
+             patch('omni_npu.connector.ec_connector.network_connector.envs',
                    VLLM_RPC_TIMEOUT=5000):
             result = connector._ensure_client_socket(endpoints)
         assert result is None
@@ -1135,9 +1135,9 @@ class TestClientSocketManagement:
         connector = producer_scheduler_connector
         endpoint = "tcp://127.0.0.1:7000"
         mock_sock = MagicMock()
-        with patch('omni.connector.ec_connector.network_connector.make_zmq_socket',
+        with patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket',
                    return_value=mock_sock), \
-             patch('omni.connector.ec_connector.network_connector.envs',
+             patch('omni_npu.connector.ec_connector.network_connector.envs',
                    VLLM_RPC_TIMEOUT=5000):
             connector._create_client_socket(endpoint)
         assert mock_sock.setsockopt.call_count >= 2
@@ -1222,9 +1222,9 @@ class TestClientRequest:
         mock_sock.recv_multipart.return_value = [b"", msgspec.msgpack.encode(response)]
         connector._client_sockets[specific_endpoint] = mock_sock
 
-        with patch('omni.connector.ec_connector.network_connector.make_zmq_socket',
+        with patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket',
                    return_value=mock_sock), \
-             patch('omni.connector.ec_connector.network_connector.envs',
+             patch('omni_npu.connector.ec_connector.network_connector.envs',
                    VLLM_RPC_TIMEOUT=5000):
             result = connector._client_request(STATUS.HAS, "special_hash")
         assert result.status == STATUS.HIT
@@ -1236,7 +1236,7 @@ class TestClientRequest:
         mock_sock.send_multipart.side_effect = zmq.Again()
         connector._client_sockets[endpoint] = mock_sock
 
-        with patch('omni.connector.ec_connector.network_connector.logger') as mock_logger:
+        with patch('omni_npu.connector.ec_connector.network_connector.logger') as mock_logger:
             connector._client_request(STATUS.HAS, "test_hash")
             mock_logger.warning.assert_called_once()
 
@@ -1251,9 +1251,9 @@ class TestAsyncClientRequest:
         mock_socket = MagicMock()
         mock_socket.recv_multipart.return_value = [ZMQ_EMPTY_FRAME, encoded]
 
-        with patch('omni.connector.ec_connector.network_connector.make_zmq_socket',
+        with patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket',
                    return_value=mock_socket), \
-             patch('omni.connector.ec_connector.network_connector.envs',
+             patch('omni_npu.connector.ec_connector.network_connector.envs',
                    VLLM_RPC_TIMEOUT=5000):
             result = c._async_client_request(STATUS.GET, "h1")
 
@@ -1266,11 +1266,11 @@ class TestAsyncClientRequest:
         mock_socket = MagicMock()
         mock_socket.send_multipart.side_effect = zmq.Again()
 
-        with patch('omni.connector.ec_connector.network_connector.make_zmq_socket',
+        with patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket',
                    return_value=mock_socket), \
-             patch('omni.connector.ec_connector.network_connector.envs',
+             patch('omni_npu.connector.ec_connector.network_connector.envs',
                    VLLM_RPC_TIMEOUT=5000), \
-             patch('omni.connector.ec_connector.network_connector.logger') as mock_logger:
+             patch('omni_npu.connector.ec_connector.network_connector.logger') as mock_logger:
             result = c._async_client_request(STATUS.GET, "h1")
 
         assert result.status == STATUS.ERROR
@@ -1282,9 +1282,9 @@ class TestAsyncClientRequest:
         mock_socket = MagicMock()
         mock_socket.send_multipart.side_effect = RuntimeError("boom")
 
-        with patch('omni.connector.ec_connector.network_connector.make_zmq_socket',
+        with patch('omni_npu.connector.ec_connector.network_connector.make_zmq_socket',
                    return_value=mock_socket), \
-             patch('omni.connector.ec_connector.network_connector.envs',
+             patch('omni_npu.connector.ec_connector.network_connector.envs',
                    VLLM_RPC_TIMEOUT=5000):
             with pytest.raises(RuntimeError):
                 c._async_client_request(STATUS.GET, "h1")
@@ -1400,7 +1400,7 @@ class TestStartLoadCaches:
         connector._client_request = Mock(return_value=mock_response)
 
         encoder_cache = {}
-        with patch('omni.connector.ec_connector.network_connector.current_platform') as m:
+        with patch('omni_npu.connector.ec_connector.network_connector.current_platform') as m:
             m.device_type = 'cpu'
             connector.start_load_caches(encoder_cache)
 
@@ -1480,7 +1480,7 @@ class TestStartLoadCaches:
             return_value=ECNetworkResponse(status=STATUS.OK, payload=payload))
 
         encoder_cache = {}
-        with patch('omni.connector.ec_connector.network_connector.current_platform') as m:
+        with patch('omni_npu.connector.ec_connector.network_connector.current_platform') as m:
             m.device_type = 'cpu'
             connector.start_load_caches(encoder_cache)
 
@@ -1500,7 +1500,7 @@ class TestStartLoadCaches:
             return_value=ECNetworkResponse(status=STATUS.OK, payload=payload))
 
         encoder_cache = {}
-        with patch('omni.connector.ec_connector.network_connector.current_platform') as m:
+        with patch('omni_npu.connector.ec_connector.network_connector.current_platform') as m:
             m.device_type = 'cpu'
             connector.start_load_caches(encoder_cache)
 
@@ -1512,7 +1512,7 @@ class TestStartLoadCaches:
 
         encoder_cache = {}
         with patch.object(connector, '_get_connector_metadata', return_value=None):
-            with patch('omni.connector.ec_connector.network_connector.logger') as mock_logger:
+            with patch('omni_npu.connector.ec_connector.network_connector.logger') as mock_logger:
                 connector.start_load_caches(encoder_cache)
                 mock_logger.warning.assert_called_once()
 
@@ -1605,7 +1605,7 @@ class TestAsyncSubmitLoads:
 
         assert c._mm_hash_endpoints["h1"] == "tcp://10.0.0.1:5000"
 
-    @patch('omni.connector.ec_connector.network_connector.torch.distributed.is_initialized',
+    @patch('omni_npu.connector.ec_connector.network_connector.torch.distributed.is_initialized',
            return_value=True)
     def test_tp_leader_async_skips_non_rank0(self, mock_init, consumer_worker_connector):
         c = consumer_worker_connector
@@ -1640,7 +1640,7 @@ class TestAsyncLoadSingle:
         encoder_cache = {}
 
         with patch.object(c, '_async_client_request', return_value=resp), \
-             patch('omni.connector.ec_connector.network_connector.current_platform') as m:
+             patch('omni_npu.connector.ec_connector.network_connector.current_platform') as m:
             m.device_type = 'cpu'
             c._async_load_single(encoder_cache, "h1", device="cpu")
 
@@ -1675,7 +1675,7 @@ class TestAsyncLoadSingle:
         assert "h1" in c._failed_ec_loads
         assert "h1" not in c._pending_ec_loads
 
-    @patch('omni.connector.ec_connector.network_connector.torch.distributed.is_initialized',
+    @patch('omni_npu.connector.ec_connector.network_connector.torch.distributed.is_initialized',
            return_value=True)
     def test_tp_leader_async_adds_to_broadcast_queue(self, mock_init, consumer_worker_connector):
         c = consumer_worker_connector
@@ -1737,11 +1737,11 @@ class TestWaitForPendingLoads:
         c.ec_async_flag = True
         c._pending_ec_loads.add("h1")
 
-        with patch('omni.connector.ec_connector.network_connector.logger') as mock_logger:
+        with patch('omni_npu.connector.ec_connector.network_connector.logger') as mock_logger:
             c.wait_for_pending_loads({}, timeout=0.01)
             mock_logger.error.assert_called_once()
 
-    @patch('omni.connector.ec_connector.network_connector.torch.distributed.is_initialized',
+    @patch('omni_npu.connector.ec_connector.network_connector.torch.distributed.is_initialized',
            return_value=True)
     def test_delegates_to_broadcast_when_tp_leader_async(self, mock_init, consumer_worker_connector):
         c = consumer_worker_connector
@@ -1979,8 +1979,8 @@ class TestSyncLoadWithTPBroadcast:
         c.tp_size = 2
         return c
 
-    @patch('omni.connector.ec_connector.network_connector.get_tp_group')
-    @patch('omni.connector.ec_connector.network_connector.dist')
+    @patch('omni_npu.connector.ec_connector.network_connector.get_tp_group')
+    @patch('omni_npu.connector.ec_connector.network_connector.dist')
     def test_all_ranks_have_cache_skips(self, mock_dist, mock_get_tp):
         c = self._make_tp_connector()
         c.tp_rank = 0
@@ -1995,8 +1995,8 @@ class TestSyncLoadWithTPBroadcast:
 
         mock_tp.broadcast_object.assert_not_called()
 
-    @patch('omni.connector.ec_connector.network_connector.get_tp_group')
-    @patch('omni.connector.ec_connector.network_connector.dist')
+    @patch('omni_npu.connector.ec_connector.network_connector.get_tp_group')
+    @patch('omni_npu.connector.ec_connector.network_connector.dist')
     def test_rank0_fetches_and_broadcasts(self, mock_dist, mock_get_tp):
         c = self._make_tp_connector()
         c.tp_rank = 0
@@ -2013,15 +2013,15 @@ class TestSyncLoadWithTPBroadcast:
         mock_tp.broadcast_tensor_dict.return_value = {"h1": tensor}
 
         encoder_cache = {}
-        with patch('omni.connector.ec_connector.network_connector.current_platform') as m:
+        with patch('omni_npu.connector.ec_connector.network_connector.current_platform') as m:
             m.device_type = 'cpu'
             c._sync_load_with_tp_broadcast("h1", encoder_cache, device="cpu")
 
         assert "h1" in encoder_cache
         mock_tp.broadcast_tensor_dict.assert_called_once()
 
-    @patch('omni.connector.ec_connector.network_connector.get_tp_group')
-    @patch('omni.connector.ec_connector.network_connector.dist')
+    @patch('omni_npu.connector.ec_connector.network_connector.get_tp_group')
+    @patch('omni_npu.connector.ec_connector.network_connector.dist')
     def test_rank0_cache_hit_in_encoder_cache(self, mock_dist, mock_get_tp):
         c = self._make_tp_connector()
         c.tp_rank = 0
@@ -2038,8 +2038,8 @@ class TestSyncLoadWithTPBroadcast:
 
         assert "h1" in encoder_cache
 
-    @patch('omni.connector.ec_connector.network_connector.get_tp_group')
-    @patch('omni.connector.ec_connector.network_connector.dist')
+    @patch('omni_npu.connector.ec_connector.network_connector.get_tp_group')
+    @patch('omni_npu.connector.ec_connector.network_connector.dist')
     def test_rank0_cache_miss_from_server(self, mock_dist, mock_get_tp):
         c = self._make_tp_connector()
         c.tp_rank = 0
@@ -2057,8 +2057,8 @@ class TestSyncLoadWithTPBroadcast:
 
         assert "h1" not in encoder_cache
 
-    @patch('omni.connector.ec_connector.network_connector.get_tp_group')
-    @patch('omni.connector.ec_connector.network_connector.dist')
+    @patch('omni_npu.connector.ec_connector.network_connector.get_tp_group')
+    @patch('omni_npu.connector.ec_connector.network_connector.dist')
     def test_non_rank0_receives_broadcast(self, mock_dist, mock_get_tp):
         c = self._make_tp_connector()
         c.tp_rank = 1
@@ -2088,8 +2088,8 @@ class TestWaitAndBroadcastPending:
         c.ec_async_flag = True
         return c
 
-    @patch('omni.connector.ec_connector.network_connector.current_platform')
-    @patch('omni.connector.ec_connector.network_connector.get_tp_group')
+    @patch('omni_npu.connector.ec_connector.network_connector.current_platform')
+    @patch('omni_npu.connector.ec_connector.network_connector.get_tp_group')
     def test_rank0_broadcasts_tensors(self, mock_get_tp, mock_platform):
         c = self._make_tp_connector()
         c.tp_rank = 0
@@ -2110,8 +2110,8 @@ class TestWaitAndBroadcastPending:
         assert "h1" in c._finished_ec_loads
         assert "h1" not in c._tp_broadcast_queue
 
-    @patch('omni.connector.ec_connector.network_connector.current_platform')
-    @patch('omni.connector.ec_connector.network_connector.get_tp_group')
+    @patch('omni_npu.connector.ec_connector.network_connector.current_platform')
+    @patch('omni_npu.connector.ec_connector.network_connector.get_tp_group')
     def test_empty_hash_list_clears_pending(self, mock_get_tp, mock_platform):
         c = self._make_tp_connector()
         c.tp_rank = 0
@@ -2126,8 +2126,8 @@ class TestWaitAndBroadcastPending:
         assert len(c._pending_ec_loads) == 0
         mock_tp.broadcast_tensor_dict.assert_not_called()
 
-    @patch('omni.connector.ec_connector.network_connector.current_platform')
-    @patch('omni.connector.ec_connector.network_connector.get_tp_group')
+    @patch('omni_npu.connector.ec_connector.network_connector.current_platform')
+    @patch('omni_npu.connector.ec_connector.network_connector.get_tp_group')
     def test_non_rank0_receives_broadcast(self, mock_get_tp, mock_platform):
         c = self._make_tp_connector()
         c.tp_rank = 1
@@ -2145,8 +2145,8 @@ class TestWaitAndBroadcastPending:
         assert "h1" in encoder_cache
         assert "h1" in c._finished_ec_loads
 
-    @patch('omni.connector.ec_connector.network_connector.current_platform')
-    @patch('omni.connector.ec_connector.network_connector.get_tp_group')
+    @patch('omni_npu.connector.ec_connector.network_connector.current_platform')
+    @patch('omni_npu.connector.ec_connector.network_connector.get_tp_group')
     def test_rank0_waits_for_pending_to_clear(self, mock_get_tp, mock_platform):
         c = self._make_tp_connector()
         c.tp_rank = 0
@@ -2179,10 +2179,10 @@ class TestWaitAndBroadcastPending:
 # =================== Tests: _sync_load_caches with tp_broadcast =================== #
 
 class TestSyncLoadCachesWithTPBroadcast:
-    @patch('omni.connector.ec_connector.network_connector.torch.distributed.is_initialized',
+    @patch('omni_npu.connector.ec_connector.network_connector.torch.distributed.is_initialized',
            return_value=True)
-    @patch('omni.connector.ec_connector.network_connector.get_tp_group')
-    @patch('omni.connector.ec_connector.network_connector.dist')
+    @patch('omni_npu.connector.ec_connector.network_connector.get_tp_group')
+    @patch('omni_npu.connector.ec_connector.network_connector.dist')
     def test_sync_load_delegates_to_tp_broadcast(self, mock_dist, mock_get_tp, mock_init):
         config = make_mock_vllm_config(is_producer=False)
         config.parallel_config.tensor_parallel_size = 2

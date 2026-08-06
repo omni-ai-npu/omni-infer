@@ -6,8 +6,8 @@ from unittest.mock import Mock, AsyncMock, patch
 import torch
 import zmq
 
-from omni.connector.mm_feature_transfer.config import NetworkConnectorConfig
-from omni.connector.mm_feature_transfer.mm_feature_connector.network_connector import (
+from omni_npu.connector.mm_feature_transfer.config import NetworkConnectorConfig
+from omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector import (
     NetworkMMFeatureConnector,
     BaseMMFeatureConnector,
     NetworkTransportFactory,
@@ -86,7 +86,7 @@ class TestZmqAsyncPubSender:
         """
         # 测试 _connected=False
         connected_sender._connected = False
-        with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
+        with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
             result = await connected_sender.send("key", b"data")
             assert result is False
             mock_logger.warning.assert_called_once_with("send() called before connect()")
@@ -94,7 +94,7 @@ class TestZmqAsyncPubSender:
         # 测试 socket=None（即使 _connected=True）
         connected_sender._connected = True
         connected_sender.socket = None
-        with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
+        with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
             result = await connected_sender.send("key", b"data")
             assert result is False
             mock_logger.warning.assert_called_once_with("send() called before connect()")
@@ -111,7 +111,7 @@ class TestZmqAsyncPubSender:
         # Let send_multipart throw zmq.Again
         connected_sender.socket.send_multipart = AsyncMock(side_effect=zmq.Again())
 
-        with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
+        with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
             result = await connected_sender.send(hash_key, payload)
             assert result is False
             mock_logger.info.assert_called_once_with(
@@ -133,7 +133,7 @@ class TestZmqAsyncPubSender:
         error = zmq.ZMQError(errno=zmq.EPROTONOSUPPORT)
         connected_sender.socket.send_multipart = AsyncMock(side_effect=error)
 
-        with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
+        with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
             result = await connected_sender.send(hash_key, payload)
             assert result is False
             mock_logger.info.assert_called_once_with(
@@ -172,7 +172,7 @@ class TestZmqAsyncSubReceiver:
         场景：未绑定状态（_bound=False 或 socket/poller 为 None）
         预期：返回 None，并记录 warning 日志
         """
-        with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
+        with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
             # 情况1：_bound=False
             bound_receiver._bound = False
             result = await bound_receiver.receive()
@@ -213,7 +213,7 @@ class TestZmqAsyncSubReceiver:
         error = zmq.ZMQError(errno=zmq.EPROTONOSUPPORT)
         bound_receiver.socket.recv_multipart = AsyncMock(side_effect=error)
 
-        with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
+        with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
             result = await bound_receiver.receive()
             assert result is None
             mock_logger.warning.assert_called_once_with(f"Receive error: {error}")
@@ -288,7 +288,7 @@ def mock_transport():
 
 @pytest.fixture
 def connector(mock_local_conn, mock_transport):
-    with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.NetworkTransportFactory.create", return_value=mock_transport):
+    with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.NetworkTransportFactory.create", return_value=mock_transport):
 
         config = NetworkConnectorConfig()
         config.is_producer = True
@@ -307,7 +307,7 @@ class TestNetworkMMFeatureConnector:
         serialized_updates = [{"op": "add", "data": 1}]
 
         # Mock pack_complex_payload 返回固定字节
-        with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.pack_complex_payload", return_value=b"packed_data") as mock_pack:
+        with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.pack_complex_payload", return_value=b"packed_data") as mock_pack:
             await connector.save(mm_hash, metadata, tensors, serialized_updates)
 
             await asyncio.sleep(0)
@@ -329,7 +329,7 @@ class TestNetworkMMFeatureConnector:
         exception = RuntimeError("Disk full")
         mock_local_conn.save.side_effect = exception
 
-        with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
+        with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
             await connector.save(mm_hash, metadata, tensors, serialized_updates)
             # 给事件循环一点时间执行回调
             await asyncio.sleep(1)
@@ -350,8 +350,8 @@ class TestNetworkMMFeatureConnector:
 
         mock_transport.send.return_value = False
 
-        with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.pack_complex_payload", return_value=b"packed"):
-            with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
+        with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.pack_complex_payload", return_value=b"packed"):
+            with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
                 await connector.save(mm_hash, metadata, tensors, serialized_updates)
 
                 mock_transport.send.assert_awaited_once()
@@ -388,8 +388,8 @@ class TestNetworkMMFeatureConnector:
 
         mock_transport.receive.side_effect = receive_side_effect
 
-        with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.unpack_complex_payload", return_value=(metadata, tensors, state)) as mock_unpack:
-            with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
+        with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.unpack_complex_payload", return_value=(metadata, tensors, state)) as mock_unpack:
+            with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
                 # will exit after the second call of receive
                 await connector.run_forever()
 
@@ -418,7 +418,7 @@ class TestNetworkMMFeatureConnector:
 
         mock_transport.receive.side_effect = receive_side_effect
 
-        with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
+        with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
             with patch("asyncio.create_task") as mock_create_task:
                 await connector.run_forever()
                 mock_create_task.assert_not_called()
@@ -449,8 +449,8 @@ class TestNetworkMMFeatureConnector:
 
         mock_transport.receive.side_effect = receive_side_effect
 
-        with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.unpack_complex_payload", return_value=(metadata, tensors, state)):
-            with patch("omni.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
+        with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.unpack_complex_payload", return_value=(metadata, tensors, state)):
+            with patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.network_connector.logger") as mock_logger:
                 # local save task will fail and trigger the callback
                 await connector.run_forever()
                 await asyncio.sleep(1)

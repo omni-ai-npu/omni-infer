@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from omni.connector.mm_feature_transfer.config import DiskConnectorConfig
-from omni.connector.mm_feature_transfer.mm_feature_connector.disk_connector import (
+from omni_npu.connector.mm_feature_transfer.config import DiskConnectorConfig
+from omni_npu.connector.mm_feature_transfer.mm_feature_connector.disk_connector import (
     DiskMMFeatureConnector,
     SQLiteMetadataStore,
 )
@@ -87,7 +87,7 @@ class TestSQLiteMetadataStoreStartupReset:
             store.close()
 
     def test_unknown_store_type_raises_value_error(self):
-        from omni.connector.mm_feature_transfer.mm_feature_connector.disk_connector import (
+        from omni_npu.connector.mm_feature_transfer.mm_feature_connector.disk_connector import (
             create_metadata_store,
         )
 

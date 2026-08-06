@@ -5,9 +5,9 @@ from unittest.mock import MagicMock, patch, mock_open
 import pytest
 import torch
 
-# Mock omni.adaptors... module
+# Mock omni_npu.adaptors... module
 mock_omni = MagicMock()
-sys.modules["omni.adaptors.vllm.npu_mem_allocator"] = mock_omni
+sys.modules["omni_npu.adaptors.vllm.npu_mem_allocator"] = mock_omni
 
 # Mock torch.npu
 if not hasattr(torch, "npu"):
@@ -18,8 +18,8 @@ if not hasattr(torch, "npu"):
     torch.npu.memory.use_mem_pool = MagicMock()
 
 # Import module under test
-import omni.worker.npu_mem_pool as npu_mem_pool
-from omni.worker.npu_mem_pool import NpuMemAllocator, find_loaded_library
+import omni_npu.worker.npu_mem_pool as npu_mem_pool
+from omni_npu.worker.npu_mem_pool import NpuMemAllocator, find_loaded_library
 
 
 class TestFindLoadedLibrary:
@@ -180,7 +180,7 @@ class TestNpuMemAllocator:
         original_tag = allocator.current_tag
 
         # Mock use_memory_pool_with_allocator (involves underlying PyTorch calls)
-        with patch("omni.worker.npu_mem_pool.use_memory_pool_with_allocator") as mock_ctx:
+        with patch("omni_npu.worker.npu_mem_pool.use_memory_pool_with_allocator") as mock_ctx:
             mock_ctx.return_value.__enter__.return_value = "mock_data"
 
             with allocator.use_memory_pool(tag="temp_tag"):
@@ -200,7 +200,7 @@ class TestNpuMemAllocator:
         first_alloc = MagicMock(name="first_alloc")
         first_data = (first_pool, first_alloc)
 
-        with patch("omni.worker.npu_mem_pool.use_memory_pool_with_allocator") as mock_ctx, \
+        with patch("omni_npu.worker.npu_mem_pool.use_memory_pool_with_allocator") as mock_ctx, \
              patch("torch.npu.memory.use_mem_pool") as mock_use_mem_pool:
             mock_ctx.return_value.__enter__.return_value = first_data
             mock_use_mem_pool.return_value.__enter__.return_value = None

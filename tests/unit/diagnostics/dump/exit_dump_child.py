@@ -9,7 +9,7 @@ import os
 import sys
 import time
 
-from omni.diagnostics.dump import exit_dump
+from omni_npu.diagnostics.dump import exit_dump
 
 
 def _block_until(stop_file):

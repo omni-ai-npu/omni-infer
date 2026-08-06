@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from vllm import platforms
 
-from omni.platform import NPUPlatform
+from omni_npu.platform import NPUPlatform
 from vllm.platforms import current_platform
 from vllm.config import (
     VllmConfig,
@@ -17,20 +17,20 @@ from vllm.config import (
 platforms.current_platform = NPUPlatform()
 
 from vllm.model_executor.layers.rotary_embedding.common import ApplyRotaryEmb
-from omni.layers.rotary_embedding.common import apply_rotary_emb_full_dim
-from omni.layers.rotary_embedding.deepseek_scaling_rope import (
+from omni_npu.layers.rotary_embedding.common import apply_rotary_emb_full_dim
+from omni_npu.layers.rotary_embedding.deepseek_scaling_rope import (
     NPUDeepseekScalingRotaryEmbedding,
 )
-from omni.layers.rotary_embedding.linear_scaling_rope import (
+from omni_npu.layers.rotary_embedding.linear_scaling_rope import (
     NPULinearScalingRotaryEmbedding,
 )
-from omni.layers.rotary_embedding.llama3_rope import (
+from omni_npu.layers.rotary_embedding.llama3_rope import (
     NPULlama3RotaryEmbedding,
 )
-from omni.layers.rotary_embedding.rotary_embedding_torch_npu import (
+from omni_npu.layers.rotary_embedding.rotary_embedding_torch_npu import (
     NPURotaryEmbedding,
 )
-from omni.layers.rotary_embedding.yarn_scaling_rope import (
+from omni_npu.layers.rotary_embedding.yarn_scaling_rope import (
     NPUYaRNScalingRotaryEmbedding,
 )
 
@@ -470,7 +470,7 @@ def test_forward_oot_with_cos_sin_fused_matches_forward_oot(default_vllm_config)
         return q_embed, k_embed
 
     with patch(
-        "omni.layers.rotary_embedding.rotary_embedding_torch_npu."
+        "omni_npu.layers.rotary_embedding.rotary_embedding_torch_npu."
         "torch_npu.npu_apply_rotary_pos_emb",
         side_effect=_mock_apply_rotary_pos_emb,
     ) as mock_apply:
@@ -563,7 +563,7 @@ def test_forward_fused_ops_squeezes_4d_cos_sin(default_vllm_config):
         return query_in, key_in
 
     with patch(
-        "omni.layers.rotary_embedding.rotary_embedding_torch_npu."
+        "omni_npu.layers.rotary_embedding.rotary_embedding_torch_npu."
         "torch_npu.npu_apply_rotary_pos_emb",
         side_effect=_mock_apply_rotary_pos_emb,
     ) as mock_apply:

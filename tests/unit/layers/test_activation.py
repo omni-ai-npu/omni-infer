@@ -5,7 +5,7 @@ import pytest
 import unittest
 from unittest.mock import patch, MagicMock
 import torch
-from omni.layers.activation import NPUSiluAndMul
+from omni_npu.layers.activation import NPUSiluAndMul
 
 
 @pytest.mark.usefixtures("default_vllm_config")

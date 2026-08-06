@@ -18,7 +18,7 @@ import pytest
 pytest.importorskip("vllm")  # needs a real vllm environment (NPU / CI docker)
 
 from vllm.v1.core import kv_cache_utils  # noqa: E402
-from omni.vllm_patches.patches.models.pangu_v2_hybrid import (  # noqa: E402
+from omni_npu.vllm_patches.patches.models.pangu_v2_hybrid import (  # noqa: E402
     patch_kv_cache_utils as P,
 )
 

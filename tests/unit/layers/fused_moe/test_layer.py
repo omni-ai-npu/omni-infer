@@ -64,12 +64,12 @@ def layer_module(monkeypatch):
             setattr(ns, op_name, op_func)
     torch_utils_module.direct_register_custom_op = _stub_direct_register_custom_op
 
-    # omni.layers.prefetch with PrefetchManager (needed by layer.py)
-    prefetch_module = _ensure_module(monkeypatch, "omni.layers.prefetch")
+    # omni_npu.layers.prefetch with PrefetchManager (needed by layer.py)
+    prefetch_module = _ensure_module(monkeypatch, "omni_npu.layers.prefetch")
     prefetch_module.PrefetchManager = type("PrefetchManager", (), {})
 
-    # omni.plugin_decorators with attn_decorator (needed by layer.py)
-    plugin_decorators_module = _ensure_module(monkeypatch, "omni.plugin_decorators")
+    # omni_npu.plugin_decorators with attn_decorator (needed by layer.py)
+    plugin_decorators_module = _ensure_module(monkeypatch, "omni_npu.plugin_decorators")
     plugin_decorators_module.attn_decorator = (
         lambda fn=None, **kw: (fn if fn is not None else lambda f: f)
     )
@@ -134,8 +134,8 @@ def layer_module(monkeypatch):
         raising=False,
     )
 
-    sys.modules.pop("omni.layers.fused_moe.layer", None)
-    module = importlib.import_module("omni.layers.fused_moe.layer")
+    sys.modules.pop("omni_npu.layers.fused_moe.layer", None)
+    module = importlib.import_module("omni_npu.layers.fused_moe.layer")
     importlib.reload(module)
     return module, torch_npu, context_holder
 

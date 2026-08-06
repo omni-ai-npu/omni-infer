@@ -6,11 +6,11 @@ import torch
 import time
 from unittest.mock import patch, MagicMock
 
-MODULE = "omni.connector.utils"
+MODULE = "omni_npu.connector.utils"
 
 
 def test_get_local_ip():
-    from omni.connector.utils import get_local_ip
+    from omni_npu.connector.utils import get_local_ip
     # This function connects to an external address. Mocking socket is complex here.
     # A simple test to ensure it returns a string-like IP.
     ip = get_local_ip()
@@ -20,7 +20,7 @@ def test_get_local_ip():
     assert len(ip.split(".")) == 4
 
 def test_get_kv_port():
-    from omni.connector.utils import get_kv_port
+    from omni_npu.connector.utils import get_kv_port
     def get_world_group():
         return MagicMock(local_rank=7)
     def make_config(port: int):
@@ -30,7 +30,7 @@ def test_get_kv_port():
         assert get_kv_port(make_config(None)) == 5575 # 5568 + 7
 
 def test_get_kv_role():
-    from omni.connector.utils import get_kv_role
+    from omni_npu.connector.utils import get_kv_role
     def make_config(role: str):
         return MagicMock(kv_transfer_config=MagicMock(kv_role=role))
     assert get_kv_role(make_config("kv_producer")) == True
@@ -39,7 +39,7 @@ def test_get_kv_role():
         get_kv_role(make_config("unknown"))
 
 def test_serial_brief():
-    from omni.connector.utils import serial_brief
+    from omni_npu.connector.utils import serial_brief
     s1 = [1, 2, 3, 4]
     s2 = [9, 10, 11, 12]
     s3 = [1001, 1002, 1003, 1004]
@@ -52,7 +52,7 @@ def test_serial_brief():
     assert serial_brief(s4 + s5 + s6) == "[-1~2, 5, 4, 3, 2, 1, 1, 1, 1]"
 
 def test_calm_down():
-    from omni.connector.utils import calm_down
+    from omni_npu.connector.utils import calm_down
     t1 = time.time()
     calm_down("case1", 0.5)
     t2 = time.time()
@@ -69,12 +69,12 @@ def test_calm_down():
 
 
 
-from omni.connector.utils import TP_Convertor
+from omni_npu.connector.utils import TP_Convertor
 
 class TestTPConvertor:
     """Test TP_Convertor class with various scenarios"""
 
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_init(self, mock_get_tp_group):
         """Test TP_Convertor initialization"""
         # Mock TP group
@@ -99,7 +99,7 @@ class TestTPConvertor:
         with pytest.raises(ValueError):
             TP_Convertor(remote_tp_size=2)
 
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_scheme_reorg_stride_1(self, mock_get_tp_group):
         """Test scheme_reorg when stride is 1"""
         # Mock TP group with stride 1
@@ -121,7 +121,7 @@ class TestTPConvertor:
                                         local_block_ids, remote_block_ids)
         assert result == remote_block_ids
 
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_scheme_reorg_with_stride(self, mock_get_tp_group):
         """Test scheme_reorg when stride > 1"""
         # Mock TP group with stride > 1
@@ -157,7 +157,7 @@ class TestTPConvertor:
         assert hasattr(convertor, 'send_split')
         assert hasattr(convertor, 'recv_split')
 
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_token_reorg_stride_1(self, mock_get_tp_group):
         """Test token_reorg when stride is 1"""
         # Mock TP group with stride 1
@@ -171,7 +171,7 @@ class TestTPConvertor:
         convertor.token_reorg()  # Should do nothing when stride == 1
 
     @patch('torch.distributed.all_to_all_single')
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_token_reorg_with_stride(self, mock_get_tp_group,
                                      mock_all_to_all_single):
         """Test token_reorg when stride > 1"""
@@ -209,7 +209,7 @@ class TestTPConvertor:
                 # Verify store_kv was called
                 mock_store_kv.assert_called_once()
 
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_scheduled_list(self, mock_get_tp_group):
         """Test scheduled_list class method"""
         # Mock TP group for different ranks
@@ -228,7 +228,7 @@ class TestTPConvertor:
         assert isinstance(list_rank0, list)
         assert isinstance(list_rank1, list)
 
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_tail_blk_num(self, mock_get_tp_group):
         """Test tail_blk_num static method"""
         # Test various scenarios
@@ -250,7 +250,7 @@ class TestTPConvertor:
         assert before_zero == 0
         assert after_zero == 0
 
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_link_to_remote(self, mock_get_tp_group):
         """Test link_to_remote static method"""
         # Test valid cases
@@ -263,7 +263,7 @@ class TestTPConvertor:
         with pytest.raises(ValueError):
             TP_Convertor.link_to_remote(0, 7, 2)
 
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_a2a_mapper(self, mock_get_tp_group):
         """Test a2a_mapper static method"""
         # Test balanced movement
@@ -284,7 +284,7 @@ class TestTPConvertor:
         assert result.shape == (3, 3)
         assert result.sum() == 0
 
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_extract_kv(self, mock_get_tp_group):
         """Test extract_kv static method"""
         # Create mock KV tensors
@@ -300,7 +300,7 @@ class TestTPConvertor:
         # Check shape: [T, N, D] where T=20-10=10, N=2, D=64
         assert result.shape == (10, 2, 64)
 
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_store_kv(self, mock_get_tp_group):
         """Test store_kv static method"""
         # Create mock destination KV tensors
@@ -325,7 +325,7 @@ class TestTPConvertor:
         assert not torch.allclose(v[blk_i][domain[0]:domain[1]],
                                   torch.zeros(T, D))
 
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_do_scheduled_kv_reorg_empty(self, mock_get_tp_group):
         """Test do_scheduled_kv_reorg with empty list"""
         # Mock TP group
@@ -337,7 +337,7 @@ class TestTPConvertor:
         # Should not raise error when list is empty
         TP_Convertor.do_scheduled_kv_reorg()
 
-    @patch('omni.connector.utils.get_tp_group')
+    @patch('omni_npu.connector.utils.get_tp_group')
     def test_do_scheduled_kv_reorg_with_items(self, mock_get_tp_group):
         """Test do_scheduled_kv_reorg with items in list"""
         # Mock TP group

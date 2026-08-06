@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import torch
 
-from omni.v1.sample.logits_processor.mineru_logits_processor import (
+from omni_npu.v1.sample.logits_processor.mineru_logits_processor import (
     MinerULogitsProcessor,
     _get_int_value,
 )

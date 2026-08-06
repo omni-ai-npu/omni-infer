@@ -32,9 +32,9 @@ from vllm.config.load import LoadConfig
 from vllm.model_executor.model_loader import get_model_loader
 from vllm.model_executor.model_loader import utils as loader_utils
 
-from omni.model_config.config_loader.loader import model_extra_config
-from omni.v1.models.pangu import pangu_ultra_moe as pangu_ultra_moe_mod
-from omni.worker.npu_worker import NPUWorker
+from omni_npu.model_config.config_loader.loader import model_extra_config
+from omni_npu.v1.models.pangu import pangu_ultra_moe as pangu_ultra_moe_mod
+from omni_npu.worker.npu_worker import NPUWorker
 from tests.unit.platform.utils import DeviceConfig, create_vllm_config
 
 ParamLayoutSnapshot = tuple[tuple[int, ...], torch.dtype, str, int]
@@ -165,19 +165,19 @@ def _build_random_weights(
 
 def _patch_npu_layer_static_imports(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "omni.layers.fused_moe.prepare_permute_unpermute_finalize.current_platform",
+        "omni_npu.layers.fused_moe.prepare_permute_unpermute_finalize.current_platform",
         SimpleNamespace(device_type="npu"),
     )
     monkeypatch.setattr(
-        "omni.layers.fused_moe.layer.get_tensor_model_parallel_world_size",
+        "omni_npu.layers.fused_moe.layer.get_tensor_model_parallel_world_size",
         lambda: 1,
     )
     monkeypatch.setattr(
-        "omni.layers.fused_moe.layer.get_tensor_model_parallel_rank",
+        "omni_npu.layers.fused_moe.layer.get_tensor_model_parallel_rank",
         lambda: 0,
     )
     monkeypatch.setattr(
-        "omni.v1.layers.vocab_parallel_embedding.get_local_world_group",
+        "omni_npu.v1.layers.vocab_parallel_embedding.get_local_world_group",
         lambda: SimpleNamespace(world_size=1),
     )
 
@@ -471,11 +471,11 @@ def _run_model_case(
 def test_high_player_update_weight(monkeypatch: pytest.MonkeyPatch):
     """Share one real worker, load Ultra/OpenPangu per model spec in order, and verify reload consistency."""
     monkeypatch.setattr(
-        "omni.layers.fused_moe.layer.get_tensor_model_parallel_world_size",
+        "omni_npu.layers.fused_moe.layer.get_tensor_model_parallel_world_size",
         lambda: 1,
     )
     monkeypatch.setattr(
-        "omni.layers.fused_moe.layer.get_tensor_model_parallel_rank",
+        "omni_npu.layers.fused_moe.layer.get_tensor_model_parallel_rank",
         lambda: 0,
     )
 

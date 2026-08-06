@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-"""Unit tests for ``omni.v1.config.reasoning.ReasoningConfig``."""
+"""Unit tests for ``omni_npu.v1.config.reasoning.ReasoningConfig``."""
 
 from __future__ import annotations
 
 import unittest
 from unittest.mock import MagicMock, patch
 
-from omni.v1.config import ReasoningConfig
+from omni_npu.v1.config import ReasoningConfig
 from vllm.config.model import ModelConfig
 
 
@@ -44,7 +44,7 @@ class TestReasoningConfig(unittest.TestCase):
             d = ReasoningConfig.as_argparse_dict()
         self.assertIn("Reasoning configuration.", d["help"])
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_initialize_token_ids_short_circuit_already_set(self, mock_tok: MagicMock) -> None:
         cfg = ReasoningConfig()
         cfg._reasoning_start_token_ids = [1]
@@ -53,21 +53,21 @@ class TestReasoningConfig(unittest.TestCase):
         mock_tok.assert_not_called()
         self.assertTrue(cfg.enabled)
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_initialize_token_ids_missing_start_no_tokenizer(self, mock_tok: MagicMock) -> None:
         cfg = ReasoningConfig(reasoning_end_str="</t>")
         cfg.initialize_token_ids(self.model_config)
         mock_tok.assert_not_called()
         self.assertFalse(cfg.enabled)
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_initialize_token_ids_missing_end_no_tokenizer(self, mock_tok: MagicMock) -> None:
         cfg = ReasoningConfig(reasoning_start_str="<t>")
         cfg.initialize_token_ids(self.model_config)
         mock_tok.assert_not_called()
         self.assertFalse(cfg.enabled)
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_initialize_token_ids_uses_think_alias_strings(self, mock_tok: MagicMock) -> None:
         mock_enc = MagicMock()
         mock_enc.encode.side_effect = lambda s, add_special_tokens=False: [10] if s == "<a>" else [20]
@@ -81,7 +81,7 @@ class TestReasoningConfig(unittest.TestCase):
         self.assertTrue(cfg.enabled)
         mock_tok.assert_called_once_with(model_config=self.model_config)
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_initialize_token_ids_reasoning_str_over_alias(self, mock_tok: MagicMock) -> None:
         mock_enc = MagicMock()
         mock_enc.encode.side_effect = (
@@ -101,7 +101,7 @@ class TestReasoningConfig(unittest.TestCase):
         self.assertEqual(cfg.reasoning_start_token_ids, [1])
         self.assertEqual(cfg.reasoning_end_token_ids, [2])
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_initialize_token_ids_raises_when_encode_empty(self, mock_tok: MagicMock) -> None:
         mock_enc = MagicMock()
         mock_enc.encode.return_value = []
@@ -112,7 +112,7 @@ class TestReasoningConfig(unittest.TestCase):
             cfg.initialize_token_ids(self.model_config)
         self.assertIn("failed to tokenize", str(ctx.exception))
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_start_token_id_not_resolved_when_ban_off(
         self, mock_tok: MagicMock
     ) -> None:
@@ -126,7 +126,7 @@ class TestReasoningConfig(unittest.TestCase):
         cfg.initialize_token_ids(self.model_config)
         self.assertIsNone(cfg.tool_call_start_token_id)
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_start_token_id_resolved_when_ban_on(
         self, mock_tok: MagicMock
     ) -> None:
@@ -143,7 +143,7 @@ class TestReasoningConfig(unittest.TestCase):
         cfg.initialize_token_ids(self.model_config)
         self.assertEqual(cfg.tool_call_start_token_id, 999)
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_start_token_id_falls_back_to_unused11(
         self, mock_tok: MagicMock
     ) -> None:
@@ -161,7 +161,7 @@ class TestReasoningConfig(unittest.TestCase):
         cfg.initialize_token_ids(self.model_config)
         self.assertEqual(cfg.tool_call_start_token_id, 11)
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_start_token_id_none_when_no_key(
         self, mock_tok: MagicMock
     ) -> None:
@@ -180,7 +180,7 @@ class TestReasoningConfig(unittest.TestCase):
 
     # --- ban_tool_end_in_thinking resolution --------------------------
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_end_token_id_not_resolved_when_ban_off(
         self, mock_tok: MagicMock
     ) -> None:
@@ -194,7 +194,7 @@ class TestReasoningConfig(unittest.TestCase):
         cfg.initialize_token_ids(self.model_config)
         self.assertIsNone(cfg.tool_call_end_token_id)
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_end_token_id_resolved_when_ban_on(
         self, mock_tok: MagicMock
     ) -> None:
@@ -211,7 +211,7 @@ class TestReasoningConfig(unittest.TestCase):
         cfg.initialize_token_ids(self.model_config)
         self.assertEqual(cfg.tool_call_end_token_id, 888)
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_end_token_id_falls_back_to_unused12(
         self, mock_tok: MagicMock
     ) -> None:
@@ -229,7 +229,7 @@ class TestReasoningConfig(unittest.TestCase):
         cfg.initialize_token_ids(self.model_config)
         self.assertEqual(cfg.tool_call_end_token_id, 12)
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_end_token_id_none_when_no_key(
         self, mock_tok: MagicMock
     ) -> None:
@@ -246,7 +246,7 @@ class TestReasoningConfig(unittest.TestCase):
         cfg.initialize_token_ids(self.model_config)
         self.assertIsNone(cfg.tool_call_end_token_id)
 
-    @patch("omni.v1.config.reasoning.cached_tokenizer_from_config")
+    @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_start_and_end_bans_resolve_independently(
         self, mock_tok: MagicMock
     ) -> None:

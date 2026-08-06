@@ -4,7 +4,7 @@
 Fixtures for MTP integration tests.
 
 Strategy (following test_deepseek_mtp.py / test_gpt_oss_v1.py patterns):
-  1. Minimal module-level stubs so ``import omni.v1.models.pangu.pangu_ultra_moe_mtp`` succeeds.
+  1. Minimal module-level stubs so ``import omni_npu.v1.models.pangu.pangu_ultra_moe_mtp`` succeeds.
   2. ``patch.object`` to replace RMSNorm (→ avoids CustomOp chain) and
      OpenPanguDecoderLayer (→ DecoderLayerStub) inside the imported module.
   3. Call the **real** OpenPanguMultiTokenPredictorLayer.__init__ and .forward() —
@@ -81,7 +81,7 @@ if not hasattr(_torch, "npu"):
 # -- omni_npu internals -------------------------------------------------------
 # model_extra_config only — parsers load fine now that vLLM 0.14 protocol stub
 # provides all needed classes (DeltaMessage, ChatCompletionRequest, etc.).
-# Do NOT stub omni.v1.parsers or it breaks existing parser tests.
+# Do NOT stub omni_npu.v1.parsers or it breaks existing parser tests.
 
 # model_extra_config patch — fixture-level, NOT module-level.
 # Must NOT replace sys.modules["...loader"] because other tests import
@@ -165,7 +165,7 @@ def _noop_stc(cls=None, **kwargs):
 import vllm.compilation.decorators as _stc_mod
 _stc_mod.support_torch_compile = _noop_stc
 
-import omni.v1.models.pangu.pangu_ultra_moe_mtp as _mtp_mod
+import omni_npu.v1.models.pangu.pangu_ultra_moe_mtp as _mtp_mod
 
 # ==============================================================================
 # Lightweight fakes (same pattern as test_deepseek_mtp.py)
@@ -237,7 +237,7 @@ def _mtp_patches():
         patch.object(_mtp_mod, "LogitsProcessor", _FakeLogitsProcessor),
         patch.object(_mtp_mod, "OpenPanguDecoderLayer", DecoderLayerStub),
         patch.object(_mtp_mod, "model_extra_config", _make_model_extra_ns()),
-        patch("omni.v1.models.pangu.pangu_ultra_moe_mtp.maybe_prefix",
+        patch("omni_npu.v1.models.pangu.pangu_ultra_moe_mtp.maybe_prefix",
               side_effect=lambda p, s: f"{p}.{s}"),
     ]
 

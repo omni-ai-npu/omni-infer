@@ -8,7 +8,7 @@ import pytest
 import torch
 from vllm.v1.kv_cache_interface import AttentionSpec, KVCacheGroupSpec, MambaSpec
 
-from omni.vllm_patches.patches.models.qwen import qwen_hybrid_common as hybrid
+from omni_npu.vllm_patches.patches.models.qwen import qwen_hybrid_common as hybrid
 
 
 def _attention_spec(**kwargs):

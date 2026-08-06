@@ -244,7 +244,7 @@ def _load_patch_module(monkeypatch):
     monkeypatch.syspath_prepend(str(repo_root / "src"))
 
     module_name = (
-        "omni.vllm_patches.patches.common."
+        "omni_npu.vllm_patches.patches.common."
         "patch_prefilled_token_skip_tokenize"
     )
     sys.modules.pop(module_name, None)
@@ -2869,7 +2869,7 @@ def _load_routed_experts_module(monkeypatch):
     monkeypatch.syspath_prepend(str(repo_root / "src"))
 
     module_name = (
-        "omni.vllm_patches.patches.common.patch_routed_experts"
+        "omni_npu.vllm_patches.patches.common.patch_routed_experts"
     )
     sys.modules.pop(module_name, None)
     return importlib.import_module(module_name)
@@ -2884,14 +2884,14 @@ def _load_apc_module(monkeypatch):
 
     # Ensure routed_experts loads first (APC imports from it)
     routed_name = (
-        "omni.vllm_patches.patches.common.patch_routed_experts"
+        "omni_npu.vllm_patches.patches.common.patch_routed_experts"
     )
     sys.modules.pop(routed_name, None)
     importlib.import_module(routed_name)
 
     # Now load APC
     apc_name = (
-        "omni.vllm_patches.patches.common.patch_serving_apc"
+        "omni_npu.vllm_patches.patches.common.patch_serving_apc"
     )
     sys.modules.pop(apc_name, None)
     return importlib.import_module(apc_name)

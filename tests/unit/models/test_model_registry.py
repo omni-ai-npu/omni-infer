@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import omni.v1.models as models_mod
+import omni_npu.v1.models as models_mod
 
 
 def test_register_models_uses_mock_qwen2_when_capture_env_enabled():
@@ -16,7 +16,7 @@ def test_register_models_uses_mock_qwen2_when_capture_env_enabled():
     def fake_import_module(name):
         if name == "vllm.model_executor.models.qwen2":
             return qwen2_module
-        if name == "omni.v1.models.mock.mock":
+        if name == "omni_npu.v1.models.mock.mock":
             return mock_module
         raise AssertionError(f"unexpected import: {name}")
 

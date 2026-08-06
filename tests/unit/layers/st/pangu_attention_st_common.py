@@ -73,7 +73,7 @@ _CURRENT_CFG_CM = None
 def _set_model_extra_config(enable_cp: bool = False,
                             enable_fc2: bool = False,
                             implementation: str = "low_latency") -> None:
-    from omni.model_config.config_loader.loader import model_extra_config
+    from omni_npu.model_config.config_loader.loader import model_extra_config
     op = model_extra_config.operator_opt_config
     pc = model_extra_config.parall_config
     op.use_noncontiguous_kv = True
@@ -107,7 +107,7 @@ def bootstrap_worker(kv_role: Optional[str] = None,
     import torch_npu  # noqa: F401
     from vllm.config import set_current_vllm_config
     from vllm.distributed import get_tp_group
-    from omni.vllm_patches import apply_patches
+    from omni_npu.vllm_patches import apply_patches
 
     # This is a manual multi-directory selection, so the patch loader does not
     # expand pangu_v2_hybrid's dependency mapping. List every dependency
@@ -237,7 +237,7 @@ def build_layer(vllm_config, layer_idx: int, seed: int = 0,
             prefix=f"model.layers.{layer_idx}.self_attn",
         )
         if implementation == "low_latency":
-            from omni.v1.layers.attention.npu_pangu import (
+            from omni_npu.v1.layers.attention.npu_pangu import (
                 NPUPanguSparseAttention,
             )
             layer = NPUPanguSparseAttention(
@@ -248,12 +248,12 @@ def build_layer(vllm_config, layer_idx: int, seed: int = 0,
             )
         elif implementation == "high_performance":
             if layer_idx in hf.dsa_layers:
-                from omni.v1.layers.attention.npu_dsa import (
+                from omni_npu.v1.layers.attention.npu_dsa import (
                     NPUDeepseekSparseAttention,
                 )
                 layer_cls = NPUDeepseekSparseAttention
             else:
-                from omni.v1.layers.attention.npu_mla import (
+                from omni_npu.v1.layers.attention.npu_mla import (
                     NPUDeepseekMLAAttention,
                 )
                 layer_cls = NPUDeepseekMLAAttention
@@ -291,7 +291,7 @@ def _init_weights(layer, seed: int) -> None:
 def _transpose_flashcomm_weights(layer) -> None:
     # FlashComm linears use matmul(x, weight) and expect [in, out] layout. Do
     # the transpose directly to avoid the vLLM base PWAL JIT-compile init path.
-    from omni.v1.layers.linear import FlashCommLinearBase
+    from omni_npu.v1.layers.linear import FlashCommLinearBase
     with torch.no_grad():
         for m in layer.modules():
             if isinstance(m, FlashCommLinearBase) and hasattr(m, "weight"):
@@ -345,9 +345,9 @@ def _prepare_high_performance_weights(layer) -> None:
 
 def alloc_caches(layer, vllm_config, num_blocks: int) -> None:
     """Allocate attn + mome caches via the production reshape_kv_cache."""
-    from omni.attention.backends.mla import NPUMLABackend
-    from omni.attention.backends.dsa import NPUDSABackend
-    from omni.attention.backends.mome import NPUPanguMomeBackend
+    from omni_npu.attention.backends.mla import NPUMLABackend
+    from omni_npu.attention.backends.dsa import NPUDSABackend
+    from omni_npu.attention.backends.mome import NPUPanguMomeBackend
 
     spec = layer.attn.get_kv_cache_spec(vllm_config)
     raw = torch.zeros(num_blocks * spec.page_size_bytes, dtype=torch.int8,
@@ -382,9 +382,9 @@ def build_metadata(layer, vllm_config, reqs, num_blocks: int,
     physically non-contiguous prefix blocks, as prefix caching does in prod.
     """
     device = torch.device(NPU)
-    from omni.attention.backends.mla import NPUMLAMetadataBuilder
-    from omni.attention.backends.dsa import NPUDSAMetadataBuilder
-    from omni.attention.backends.mome import NPUMomeAttentionMetadataBuilder
+    from omni_npu.attention.backends.mla import NPUMLAMetadataBuilder
+    from omni_npu.attention.backends.dsa import NPUDSAMetadataBuilder
+    from omni_npu.attention.backends.mome import NPUMomeAttentionMetadataBuilder
     from vllm.v1.attention.backends.utils import CommonAttentionMetadata
 
     prefix = layer.layer_name
@@ -482,10 +482,10 @@ def run_forward(layer, hidden, cos, sin, attn_meta, mome_meta):
         virtual_engine=0, batch_descriptor=None, capturing=False,
         num_tokens=hidden.shape[0],
     )
-    from omni.v1.layers.attention import (
+    from omni_npu.v1.layers.attention import (
         npu_dsa, npu_mla, npu_pangu, npu_pangu_custom_ops,
     )
-    from omni.vllm_patches.patches.models.pangu_v2_hybrid import (
+    from omni_npu.vllm_patches.patches.models.pangu_v2_hybrid import (
         patch_mome_hybrid,
     )
     modules = (npu_pangu, npu_pangu_custom_ops, npu_dsa, npu_mla,

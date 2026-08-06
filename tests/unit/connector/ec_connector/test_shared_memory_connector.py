@@ -14,7 +14,7 @@ from vllm.distributed.ec_transfer.ec_connector.base import ECConnectorRole
 from vllm.multimodal.inputs import MultiModalFeatureSpec, PlaceholderRange
 from vllm.v1.core.sched.output import SchedulerOutput
 
-from omni.connector.ec_connector.shared_memory_connector import (
+from omni_npu.connector.ec_connector.shared_memory_connector import (
     BYTE_LENGTH,
     ECSharedMemoryConnector,
     ECSharedMemoryConnectorMetadata,
@@ -88,10 +88,10 @@ def mock_request_with_3_mm():
 def mock_single_tp_world():
     """Keep shared-memory connector tests independent of torch.distributed."""
     with patch(
-        'omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
+        'omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
         return_value=0
     ), patch(
-        'omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_world_size',
+        'omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_world_size',
         return_value=1
     ):
         yield
@@ -104,28 +104,28 @@ def tp_broadcast_patches():
     @contextmanager
     def apply_patches(connector, tp_rank, device_group, broadcast_side_effect):
         with patch(
-            'omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
+            'omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
             return_value=tp_rank
         ), patch(
-            'omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_world_size',
+            'omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_world_size',
             return_value=2
         ), patch(
-            'omni.connector.ec_connector.shared_memory_connector.dist.is_available',
+            'omni_npu.connector.ec_connector.shared_memory_connector.dist.is_available',
             return_value=True
         ), patch(
-            'omni.connector.ec_connector.shared_memory_connector.dist.is_initialized',
+            'omni_npu.connector.ec_connector.shared_memory_connector.dist.is_initialized',
             return_value=True
         ), patch.object(
             connector, '_tp_src_rank', return_value=0
         ), patch.object(
             connector, '_tp_device_group', return_value=device_group
         ), patch(
-            'omni.connector.ec_connector.shared_memory_connector.dist.broadcast_object_list',
+            'omni_npu.connector.ec_connector.shared_memory_connector.dist.broadcast_object_list',
         ) as mock_broadcast_meta, patch(
-            'omni.connector.ec_connector.shared_memory_connector.dist.broadcast',
+            'omni_npu.connector.ec_connector.shared_memory_connector.dist.broadcast',
             side_effect=broadcast_side_effect
         ) as mock_broadcast, patch(
-            'omni.connector.ec_connector.shared_memory_connector.current_platform'
+            'omni_npu.connector.ec_connector.shared_memory_connector.current_platform'
         ) as mock_platform:
             mock_platform.device_type = 'cpu'
             yield mock_broadcast_meta, mock_broadcast
@@ -249,7 +249,7 @@ class TestECSharedMemoryConnectorSerializeDeserialize:
         payload = build_raw_tensor_shm_buffer(tensor)
 
         with patch(
-            'omni.connector.ec_connector.shared_memory_connector.current_platform'
+            'omni_npu.connector.ec_connector.shared_memory_connector.current_platform'
         ) as mock_platform:
             mock_platform.device_type = 'cpu'
             result = connector._deserialize_cache(memoryview(payload))
@@ -288,7 +288,7 @@ class TestECSharedMemoryConnectorSerializeDeserialize:
         original = torch.randn(10, 768)
 
         with patch(
-            'omni.connector.ec_connector.shared_memory_connector.current_platform'
+            'omni_npu.connector.ec_connector.shared_memory_connector.current_platform'
         ) as mock_platform:
             mock_platform.device_type = 'cpu'
             payload = build_raw_tensor_shm_buffer(original)
@@ -314,7 +314,7 @@ class TestECSharedMemoryConnectorSerializeDeserialize:
         for i, original in enumerate(test_cases):
             payload = build_raw_tensor_shm_buffer(original)
             with patch(
-                'omni.connector.ec_connector.shared_memory_connector.current_platform'
+                'omni_npu.connector.ec_connector.shared_memory_connector.current_platform'
             ) as mock_platform:
                 mock_platform.device_type = 'cpu'
                 restored = connector._deserialize_cache(memoryview(payload))
@@ -378,7 +378,7 @@ class TestECSharedMemoryConnectorLRU:
 class TestECSharedMemoryConnectorSaveCaches:
     """Test cache saving functionality."""
 
-    @patch('omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
+    @patch('omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
            return_value=0)
     def test_save_caches_saves_to_shared_memory(self, mock_tp_rank, mock_vllm_config):
         """Test save_caches saves tensor to shared memory."""
@@ -420,7 +420,7 @@ class TestECSharedMemoryConnectorSaveCaches:
             # Should not be called for consumer
             mock_shm.assert_not_called()
 
-    @patch('omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
+    @patch('omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
            return_value=1)
     def test_save_caches_skips_non_rank0(self, mock_tp_rank, mock_vllm_config):
         """Test save_caches is skipped when tensor model parallel rank != 0."""
@@ -438,7 +438,7 @@ class TestECSharedMemoryConnectorSaveCaches:
             mock_shm.assert_not_called()
             assert mm_hash not in connector._mm_hash_sizes
 
-    @patch('omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
+    @patch('omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
            return_value=0)
     def test_save_caches_updates_lru(self, mock_tp_rank, mock_vllm_config):
         """Test save_caches updates LRU cache."""
@@ -493,7 +493,7 @@ class TestECSharedMemoryConnectorLoadCaches:
 
             # Mock connector current_platform to use cpu
             with patch(
-                'omni.connector.ec_connector.shared_memory_connector.current_platform'
+                'omni_npu.connector.ec_connector.shared_memory_connector.current_platform'
             ) as mock_platform:
                 mock_platform.device_type = 'cpu'
 
@@ -592,7 +592,7 @@ class TestECSharedMemoryConnectorTPBroadcast:
         tp_group.ranks = [4, 5]
 
         with patch(
-            'omni.connector.ec_connector.shared_memory_connector.get_tp_group',
+            'omni_npu.connector.ec_connector.shared_memory_connector.get_tp_group',
             return_value=tp_group
         ):
             assert ECSharedMemoryConnector._tp_src_rank() == 4
@@ -603,7 +603,7 @@ class TestECSharedMemoryConnectorTPBroadcast:
         tp_group.ranks = []
 
         with patch(
-            'omni.connector.ec_connector.shared_memory_connector.get_tp_group',
+            'omni_npu.connector.ec_connector.shared_memory_connector.get_tp_group',
             return_value=tp_group
         ), pytest.raises(RuntimeError, match="TP group does not expose ranks"):
             ECSharedMemoryConnector._tp_src_rank()
@@ -615,7 +615,7 @@ class TestECSharedMemoryConnectorTPBroadcast:
         tp_group.device_group = device_group
 
         with patch(
-            'omni.connector.ec_connector.shared_memory_connector.get_tp_group',
+            'omni_npu.connector.ec_connector.shared_memory_connector.get_tp_group',
             return_value=tp_group
         ):
             assert ECSharedMemoryConnector._tp_device_group() is device_group
@@ -626,7 +626,7 @@ class TestECSharedMemoryConnectorTPBroadcast:
         tp_group.device_group = None
 
         with patch(
-            'omni.connector.ec_connector.shared_memory_connector.get_tp_group',
+            'omni_npu.connector.ec_connector.shared_memory_connector.get_tp_group',
             return_value=tp_group
         ), pytest.raises(RuntimeError, match="TP group does not expose device_group"):
             ECSharedMemoryConnector._tp_device_group()
@@ -1001,7 +1001,7 @@ class TestECSharedMemoryConnectorDelayedClose:
         with patch('multiprocessing.shared_memory.SharedMemory', return_value=mock_shm), patch.object(
             connector, '_close_shm_async'
         ) as mock_close_async, patch(
-            'omni.connector.ec_connector.shared_memory_connector.current_platform'
+            'omni_npu.connector.ec_connector.shared_memory_connector.current_platform'
         ) as mock_platform:
             mock_platform.device_type = 'cpu'
             encoder_cache = {}
@@ -1026,16 +1026,16 @@ class TestECSharedMemoryConnectorDelayedClose:
         result = _CacheLoadResult(torch.ones(2, 2), True, None, mock_shm)
 
         with patch(
-            'omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
+            'omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
             return_value=0
         ), patch(
-            'omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_world_size',
+            'omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_world_size',
             return_value=2
         ), patch(
-            'omni.connector.ec_connector.shared_memory_connector.dist.is_available',
+            'omni_npu.connector.ec_connector.shared_memory_connector.dist.is_available',
             return_value=True
         ), patch(
-            'omni.connector.ec_connector.shared_memory_connector.dist.is_initialized',
+            'omni_npu.connector.ec_connector.shared_memory_connector.dist.is_initialized',
             return_value=True
         ), patch.object(
             connector, '_load_single_cache', return_value=result
@@ -1068,10 +1068,10 @@ class TestECSharedMemoryConnectorDelayedClose:
                 raise RuntimeError("cache insert failed")
 
         with patch(
-            'omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
+            'omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
             return_value=0
         ), patch(
-            'omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_world_size',
+            'omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_world_size',
             return_value=1
         ), patch.object(
             connector, '_load_single_cache', return_value=result
@@ -1098,7 +1098,7 @@ class TestECSharedMemoryConnectorDelayedClose:
         with patch('multiprocessing.shared_memory.SharedMemory', return_value=mock_shm), patch.object(
             connector, '_close_shm_async'
         ) as mock_close_async, patch(
-            'omni.connector.ec_connector.shared_memory_connector.current_platform'
+            'omni_npu.connector.ec_connector.shared_memory_connector.current_platform'
         ) as mock_platform:
             mock_platform.device_type = 'cpu'
             result = connector._load_single_cache(mm_hash)
@@ -1454,7 +1454,7 @@ class TestECSharedMemoryConnectorMetadataBinding:
         with patch.object(
             connector, '_get_connector_metadata', return_value=None
         ), patch(
-            'omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank'
+            'omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank'
         ) as mock_tp_rank:
             connector.start_load_caches({})
 
@@ -1474,7 +1474,7 @@ class TestECSharedMemoryConnectorMetadataBinding:
 
         # Should not raise, should return gracefully
         with patch(
-            'omni.connector.ec_connector.shared_memory_connector.current_platform'
+            'omni_npu.connector.ec_connector.shared_memory_connector.current_platform'
         ) as mock_platform:
             mock_platform.device_type = 'cpu'
             connector.start_load_caches(encoder_cache)
@@ -1486,7 +1486,7 @@ class TestECSharedMemoryConnectorMetadataBinding:
 class TestECSharedMemoryConnectorEdgeCases:
     """Test edge cases and error handling."""
 
-    @patch('omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
+    @patch('omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
            return_value=0)
     def test_save_caches_empty_tensor(self, mock_tp_rank, mock_vllm_config):
         """Test saving empty tensor."""
@@ -1526,7 +1526,7 @@ class TestECSharedMemoryConnectorEdgeCases:
         assert len(result) == 0
         assert result == []
 
-    @patch('omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
+    @patch('omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
            return_value=0)
     def test_multiple_save_and_reload_refcount(self, mock_tp_rank, mock_vllm_config):
         """Test refcount increases on multiple operations."""
@@ -1571,7 +1571,7 @@ class TestECSharedMemoryConnectorEdgeCases:
         )
         assert worker.role == ECConnectorRole.WORKER
 
-    @patch('omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
+    @patch('omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
            return_value=0)
     def test_save_caches_file_already_exists_with_same_size(self, mock_tp_rank, mock_vllm_config):
         """Test save_caches reuses existing shared memory with the same size."""
@@ -1604,7 +1604,7 @@ class TestECSharedMemoryConnectorEdgeCases:
             mock_shm_instance.close.assert_called_once()
             mock_shm_instance.unlink.assert_not_called()
 
-    @patch('omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
+    @patch('omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
            return_value=0)
     def test_save_caches_file_already_exists_with_different_size(self, mock_tp_rank, mock_vllm_config):
         """Test save_caches recreates existing shared memory with different size."""
@@ -1633,7 +1633,7 @@ class TestECSharedMemoryConnectorEdgeCases:
             old_shm_instance.close.assert_called_once()
             old_shm_instance.unlink.assert_called_once()
 
-    @patch('omni.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
+    @patch('omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
            return_value=0)
     def test_save_caches_unlinks_stale_shm_when_close_fails(
             self, mock_tp_rank, mock_vllm_config):

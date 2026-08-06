@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for omni.diagnostics.watchdog.stat_logger.
+"""Unit tests for omni_npu.diagnostics.watchdog.stat_logger.
 
 Covers the vLLM StatLogger plugin that drives the watchdog heartbeat.
 Pure CPU; no NPU needed.
@@ -11,8 +11,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from omni.diagnostics.watchdog import heartbeat
-from omni.diagnostics.watchdog.stat_logger import OmniNpuStatLogger
+from omni_npu.diagnostics.watchdog import heartbeat
+from omni_npu.diagnostics.watchdog.stat_logger import OmniNpuStatLogger
 
 
 @pytest.fixture(autouse=True)

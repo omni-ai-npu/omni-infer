@@ -18,7 +18,7 @@ def mock_distributed_environment():
     """Context manager to mock torch.distributed environment"""
     with patch('torch.distributed.get_rank', return_value=0), \
          patch('torch.distributed.get_world_size', return_value=1), \
-         patch('omni.distributed.communicator.CudaCommunicator.__init__', return_value=None):
+         patch('omni_npu.distributed.communicator.CudaCommunicator.__init__', return_value=None):
         yield
 
 
@@ -27,7 +27,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     """Unit tests for NPUCommunicator (no NPU hardware required)"""
     def test_init_with_torch_npu_available(self):
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -56,7 +56,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
                 
         with del_torch_npu():
             with mock_distributed_environment():
-                from omni.distributed.communicator import NPUCommunicator
+                from omni_npu.distributed.communicator import NPUCommunicator
                 
                 cpu_group = Mock(spec=ProcessGroup)
                 device_group = Mock(spec=ProcessGroup)
@@ -73,7 +73,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_all_reduce_delegates_to_torch_distributed(self):
         """Test all_reduce delegates to torch.distributed.all_reduce"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -92,7 +92,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_all_gather_shape_transformation(self):
         """Test all_gather performs correct shape transformation"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -112,7 +112,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_reduce_scatter_world_size_one_returns_input(self):
         """Test reduce_scatter returns input tensor when world_size is 1"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -128,7 +128,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_reduce_scatter_delegates_to_torch_distributed(self):
         """Test reduce_scatter delegates to torch.distributed.reduce_scatter_tensor"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -147,7 +147,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_send_with_explicit_destination(self):
         """Test send with explicit destination rank"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -167,7 +167,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_send_with_default_destination(self):
         """Test send with default destination (next rank)"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -187,7 +187,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_recv_creates_tensor_with_correct_shape(self):
         """Test recv creates tensor with correct shape and dtype"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -213,7 +213,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_gather_on_destination_rank(self):
         """Test gather returns concatenated tensor on destination rank"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -234,7 +234,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_gather_on_non_destination_rank(self):
         """Test gather returns None on non-destination rank"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -255,7 +255,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_destroy_returns_none(self):
         """Test destroy method returns None"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -268,7 +268,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_all_gatherv_raises_for_non_zero_dim(self):
         """Test all_gatherv raises NotImplementedError for dim != 0"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -284,7 +284,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_negative_dim_handling(self):
         """Test that negative dim values are correctly converted"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -301,7 +301,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_reduce_scatterv_with_sizes(self):
         """Test reduce_scatterv with explicit sizes parameter"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -323,7 +323,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_reduce_scatterv_without_sizes(self):
         """Test reduce_scatterv without sizes parameter (fallback to standard reduce_scatter)"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -344,7 +344,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_reduce_scatterv_negative_dim(self):
         """Test reduce_scatterv with negative dimension"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -362,7 +362,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_reduce_scatterv_world_size_one(self):
         """Test reduce_scatterv when world_size is 1 (should return input)"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -382,7 +382,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_all_gatherv_single_tensor_without_sizes(self):
         """Test all_gatherv with single tensor and no sizes parameter"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -403,7 +403,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_all_gatherv_single_tensor_with_sizes(self):
         """Test all_gatherv with single tensor and sizes parameter (broadcast fallback)"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -426,7 +426,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_all_gatherv_tensor_list_without_sizes(self):
         """Test all_gatherv with tensor list and no sizes parameter"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -450,7 +450,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_all_gatherv_tensor_list_with_sizes(self):
         """Test all_gatherv with tensor list and sizes parameter"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -474,7 +474,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
     def test_all_gatherv_non_zero_dim_raises_error(self):
         """Test all_gatherv raises NotImplementedError for dim != 0"""
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
             
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -489,7 +489,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
 
     def test_empty_method(self):
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
 
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)
@@ -505,7 +505,7 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
 
     def test_prepare_communication_buffer_for_model(self):
         with mock_distributed_environment():
-            from omni.distributed.communicator import NPUCommunicator
+            from omni_npu.distributed.communicator import NPUCommunicator
 
             cpu_group = Mock(spec=ProcessGroup)
             device_group = Mock(spec=ProcessGroup)

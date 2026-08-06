@@ -70,12 +70,12 @@ def _stub_fused_moe_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     omni_npu_pkg.__path__ = [
         str(Path(__file__).resolve().parents[4] / "omni")
     ]
-    model_config_pkg = _ensure_module(monkeypatch, "omni.model_config")
+    model_config_pkg = _ensure_module(monkeypatch, "omni_npu.model_config")
     model_config_pkg.__path__ = []
-    config_loader_pkg = _ensure_module(monkeypatch, "omni.model_config.config_loader")
+    config_loader_pkg = _ensure_module(monkeypatch, "omni_npu.model_config.config_loader")
     config_loader_pkg.__path__ = []
     loader_module = _ensure_module(
-        monkeypatch, "omni.model_config.config_loader.loader"
+        monkeypatch, "omni_npu.model_config.config_loader.loader"
     )
     loader_module.model_extra_config = SimpleNamespace(
         dtype=torch.bfloat16,
@@ -96,7 +96,7 @@ def _stub_fused_moe_deps(monkeypatch: pytest.MonkeyPatch) -> None:
         parall_config=SimpleNamespace(ena_seq_parallel=False),
     )
 
-    layers_utils_module = _ensure_module(monkeypatch, "omni.layers.utils")
+    layers_utils_module = _ensure_module(monkeypatch, "omni_npu.layers.utils")
     layers_utils_module.named_stream = lambda _name: SimpleNamespace(
         wait_stream=lambda _other: None,
     )
@@ -206,7 +206,7 @@ def _stub_fused_moe_deps(monkeypatch: pytest.MonkeyPatch) -> None:
 
     compressed_tensors_module = _ensure_module(
         monkeypatch,
-        "omni.layers.quantization.compressed_tensors.compressed_tensors",
+        "omni_npu.layers.quantization.compressed_tensors.compressed_tensors",
     )
 
     class NPUCompressedTensorsConfig:
@@ -214,30 +214,30 @@ def _stub_fused_moe_deps(monkeypatch: pytest.MonkeyPatch) -> None:
 
     compressed_tensors_module.NPUCompressedTensorsConfig = NPUCompressedTensorsConfig
 
-    layers_pkg = _ensure_module(monkeypatch, "omni.layers")
+    layers_pkg = _ensure_module(monkeypatch, "omni_npu.layers")
     layers_pkg.__path__ = [
         str(Path(__file__).resolve().parents[4] / "omni" / "layers")
     ]
-    omni_npu_v1_pkg = _ensure_module(monkeypatch, "omni.v1")
+    omni_npu_v1_pkg = _ensure_module(monkeypatch, "omni_npu.v1")
     omni_npu_v1_pkg.__path__ = []
-    omni_npu_v1_utils_module = _ensure_module(monkeypatch, "omni.v1.utils")
+    omni_npu_v1_utils_module = _ensure_module(monkeypatch, "omni_npu.v1.utils")
     omni_npu_v1_utils_module.on_ascend950 = lambda: False
-    omni_npu_v1_distributed = _ensure_module(monkeypatch, "omni.v1.distributed")
+    omni_npu_v1_distributed = _ensure_module(monkeypatch, "omni_npu.v1.distributed")
     omni_npu_v1_distributed.__path__ = []
     comm_op_ext_module = _ensure_module(
-        monkeypatch, "omni.v1.distributed.communication_op_ext"
+        monkeypatch, "omni_npu.v1.distributed.communication_op_ext"
     )
     comm_op_ext_module.all_gather_round_pipeline_two_tensor = lambda *a, **kw: None
     parallel_state_ext_module = _ensure_module(
-        monkeypatch, "omni.v1.distributed.parallel_state_ext"
+        monkeypatch, "omni_npu.v1.distributed.parallel_state_ext"
     )
     parallel_state_ext_module.get_npu_device_count = lambda: 1
     parallel_state_ext_module.get_moe_dispatch_ep_group = lambda: SimpleNamespace(
         world_size=1, rank_in_group=0
     )
-    omni_npu_compilation_pkg = _ensure_module(monkeypatch, "omni.compilation")
+    omni_npu_compilation_pkg = _ensure_module(monkeypatch, "omni_npu.compilation")
     omni_npu_compilation_pkg.__path__ = []
-    acl_graph_module = _ensure_module(monkeypatch, "omni.compilation.acl_graph")
+    acl_graph_module = _ensure_module(monkeypatch, "omni_npu.compilation.acl_graph")
     acl_graph_module.set_aclgraph_recapture = lambda _flag: None
     
     vllm_module.logger = logger_module

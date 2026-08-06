@@ -56,37 +56,37 @@ def _install_mhc_rl_stubs(monkeypatch, on_ascend950=False, use_batch_invariant_o
 
     omni_pkg = types.ModuleType("omni_npu")
     omni_pkg.__path__ = [str(repo_root / "omni")]
-    omni_layers_pkg = types.ModuleType("omni.layers")
+    omni_layers_pkg = types.ModuleType("omni_npu.layers")
     omni_layers_pkg.__path__ = [str(repo_root / "omni" / "layers")]
-    omni_mhc_pkg = types.ModuleType("omni.layers.mhc")
+    omni_mhc_pkg = types.ModuleType("omni_npu.layers.mhc")
     omni_mhc_pkg.__path__ = [str(repo_root / "omni" / "layers" / "mhc")]
-    omni_v1_pkg = types.ModuleType("omni.v1")
+    omni_v1_pkg = types.ModuleType("omni_npu.v1")
     omni_v1_pkg.__path__ = [str(repo_root / "omni" / "v1")]
-    utils_mod = types.ModuleType("omni.v1.utils")
+    utils_mod = types.ModuleType("omni_npu.v1.utils")
     utils_mod.on_ascend950 = lambda: on_ascend950
 
-    omni_model_config_pkg = types.ModuleType("omni.model_config")
+    omni_model_config_pkg = types.ModuleType("omni_npu.model_config")
     omni_model_config_pkg.__path__ = [str(repo_root / "omni" / "model_config")]
-    omni_model_config_loader_pkg = types.ModuleType("omni.model_config.config_loader")
+    omni_model_config_loader_pkg = types.ModuleType("omni_npu.model_config.config_loader")
     omni_model_config_loader_pkg.__path__ = [
         str(repo_root / "omni" / "model_config" / "config_loader")
     ]
-    loader_mod = types.ModuleType("omni.model_config.config_loader.loader")
+    loader_mod = types.ModuleType("omni_npu.model_config.config_loader.loader")
     loader_mod.model_extra_config = SimpleNamespace(
         operator_opt_config=SimpleNamespace(use_batch_invariant_op=use_batch_invariant_op)
     )
 
     monkeypatch.setitem(sys.modules, "omni_npu", omni_pkg)
-    monkeypatch.setitem(sys.modules, "omni.layers", omni_layers_pkg)
-    monkeypatch.setitem(sys.modules, "omni.layers.mhc", omni_mhc_pkg)
-    monkeypatch.setitem(sys.modules, "omni.v1", omni_v1_pkg)
-    monkeypatch.setitem(sys.modules, "omni.v1.utils", utils_mod)
-    monkeypatch.setitem(sys.modules, "omni.model_config", omni_model_config_pkg)
+    monkeypatch.setitem(sys.modules, "omni_npu.layers", omni_layers_pkg)
+    monkeypatch.setitem(sys.modules, "omni_npu.layers.mhc", omni_mhc_pkg)
+    monkeypatch.setitem(sys.modules, "omni_npu.v1", omni_v1_pkg)
+    monkeypatch.setitem(sys.modules, "omni_npu.v1.utils", utils_mod)
+    monkeypatch.setitem(sys.modules, "omni_npu.model_config", omni_model_config_pkg)
     monkeypatch.setitem(
-        sys.modules, "omni.model_config.config_loader", omni_model_config_loader_pkg
+        sys.modules, "omni_npu.model_config.config_loader", omni_model_config_loader_pkg
     )
     monkeypatch.setitem(
-        sys.modules, "omni.model_config.config_loader.loader", loader_mod
+        sys.modules, "omni_npu.model_config.config_loader.loader", loader_mod
     )
 
 
@@ -96,8 +96,8 @@ def _import_mhc_rl(monkeypatch, on_ascend950=False, use_batch_invariant_op=False
         on_ascend950=on_ascend950,
         use_batch_invariant_op=use_batch_invariant_op,
     )
-    monkeypatch.delitem(sys.modules, "omni.layers.mhc.mhc_rl", raising=False)
-    module = importlib.import_module("omni.layers.mhc.mhc_rl")
+    monkeypatch.delitem(sys.modules, "omni_npu.layers.mhc.mhc_rl", raising=False)
+    module = importlib.import_module("omni_npu.layers.mhc.mhc_rl")
     return importlib.reload(module)
 
 

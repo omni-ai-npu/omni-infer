@@ -91,7 +91,7 @@ def _install_stubbed_chat_utils_env(monkeypatch):
     monkeypatch.setitem(sys.modules, "vllm.entrypoints.chat_utils", chat_mod)
 
     # Stub VisionChunk types
-    kimi_mod = types.ModuleType("omni.vllm_patches.patches.models.kimi.kimi_k25")
+    kimi_mod = types.ModuleType("omni_npu.vllm_patches.patches.models.kimi.kimi_k25")
 
     @dataclass(frozen=True)
     class VisionChunkImage:
@@ -105,9 +105,9 @@ def _install_stubbed_chat_utils_env(monkeypatch):
 
     kimi_mod.VisionChunkImage = VisionChunkImage
     kimi_mod.VisionChunkVideo = VisionChunkVideo
-    monkeypatch.setitem(sys.modules, "omni.vllm_patches.patches.models.kimi.kimi_k25", kimi_mod)
+    monkeypatch.setitem(sys.modules, "omni_npu.vllm_patches.patches.models.kimi.kimi_k25", kimi_mod)
 
-    # Stub omni.vllm_patches.core with a register_patch that applies immediately
+    # Stub omni_npu.vllm_patches.core with a register_patch that applies immediately
     class FakeVLLMPatch:
         _attr_names_to_apply = []
 
@@ -120,12 +120,12 @@ def _install_stubbed_chat_utils_env(monkeypatch):
             return cls
         return decorator
 
-    core_mod = types.ModuleType("omni.vllm_patches.core")
+    core_mod = types.ModuleType("omni_npu.vllm_patches.core")
     core_mod.VLLMPatch = FakeVLLMPatch
     core_mod.register_patch = fake_register_patch
-    monkeypatch.setitem(sys.modules, "omni.vllm_patches.core", core_mod)
+    monkeypatch.setitem(sys.modules, "omni_npu.vllm_patches.core", core_mod)
 
-    patch_module = "omni.vllm_patches.patches.models.kimi.patch_chat_utils"
+    patch_module = "omni_npu.vllm_patches.patches.models.kimi.patch_chat_utils"
     monkeypatch.delitem(sys.modules, patch_module, raising=False)
     importlib.import_module(patch_module)
 
@@ -150,14 +150,14 @@ class TestPatchApplied:
 
     def test_modality_placeholders_map_has_vision_chunk(self):
         """After patch, MODALITY_PLACEHOLDERS_MAP should contain 'vision_chunk'."""
-        import omni.vllm_patches.patches.models.kimi.patch_chat_utils  # noqa: F401
+        import omni_npu.vllm_patches.patches.models.kimi.patch_chat_utils  # noqa: F401
         from vllm.entrypoints.chat_utils import MODALITY_PLACEHOLDERS_MAP
 
         assert "vision_chunk" in MODALITY_PLACEHOLDERS_MAP
 
     def test_tracker_has_use_unified_vision_chunk_property(self):
         """BaseMultiModalItemTracker should have use_unified_vision_chunk_modality."""
-        import omni.vllm_patches.patches.models.kimi.patch_chat_utils  # noqa: F401
+        import omni_npu.vllm_patches.patches.models.kimi.patch_chat_utils  # noqa: F401
         from vllm.entrypoints.chat_utils import BaseMultiModalItemTracker
 
         assert hasattr(BaseMultiModalItemTracker, "use_unified_vision_chunk_modality")
@@ -170,7 +170,7 @@ class TestAddModalityMapping:
 
     def _make_tracker(self, use_unified=True):
         """Create a tracker with mocked dependencies."""
-        import omni.vllm_patches.patches.models.kimi.patch_chat_utils  # noqa: F401
+        import omni_npu.vllm_patches.patches.models.kimi.patch_chat_utils  # noqa: F401
         from vllm.entrypoints.chat_utils import BaseMultiModalItemTracker
 
         model_config = _make_fake_model_config(use_unified)
@@ -270,7 +270,7 @@ class TestAddModalityMapping:
 class TestAllMmUuids:
 
     def _make_tracker(self):
-        import omni.vllm_patches.patches.models.kimi.patch_chat_utils  # noqa: F401
+        import omni_npu.vllm_patches.patches.models.kimi.patch_chat_utils  # noqa: F401
         from vllm.entrypoints.chat_utils import BaseMultiModalItemTracker
 
         model_config = _make_fake_model_config(True)
@@ -310,7 +310,7 @@ class TestAllMmUuids:
 class TestSyncAllMmData:
 
     def _make_sync_tracker(self):
-        import omni.vllm_patches.patches.models.kimi.patch_chat_utils  # noqa: F401
+        import omni_npu.vllm_patches.patches.models.kimi.patch_chat_utils  # noqa: F401
         from vllm.entrypoints.chat_utils import MultiModalItemTracker
 
         model_config = _make_fake_model_config(True)
@@ -325,7 +325,7 @@ class TestSyncAllMmData:
         return tracker
 
     def test_image_wrapped_in_vision_chunk_image(self):
-        from omni.vllm_patches.patches.models.kimi.kimi_k25 import VisionChunkImage
+        from omni_npu.vllm_patches.patches.models.kimi.kimi_k25 import VisionChunkImage
 
         tracker = self._make_sync_tracker()
         sentinel = object()
@@ -340,7 +340,7 @@ class TestSyncAllMmData:
         assert chunks[0].image is sentinel
 
     def test_video_wrapped_in_vision_chunk_video(self):
-        from omni.vllm_patches.patches.models.kimi.kimi_k25 import VisionChunkVideo
+        from omni_npu.vllm_patches.patches.models.kimi.kimi_k25 import VisionChunkVideo
 
         tracker = self._make_sync_tracker()
         sentinel = object()
@@ -355,7 +355,7 @@ class TestSyncAllMmData:
         assert chunks[0].video_chunk is sentinel
 
     def test_mixed_image_video_order_preserved(self):
-        from omni.vllm_patches.patches.models.kimi.kimi_k25 import VisionChunkImage, VisionChunkVideo
+        from omni_npu.vllm_patches.patches.models.kimi.kimi_k25 import VisionChunkImage, VisionChunkVideo
 
         tracker = self._make_sync_tracker()
         img = object()
@@ -383,7 +383,7 @@ class TestSyncAllMmData:
 class TestAsyncAllMmData:
 
     def _make_async_tracker(self):
-        import omni.vllm_patches.patches.models.kimi.patch_chat_utils  # noqa: F401
+        import omni_npu.vllm_patches.patches.models.kimi.patch_chat_utils  # noqa: F401
         from vllm.entrypoints.chat_utils import AsyncMultiModalItemTracker
 
         model_config = _make_fake_model_config(True)
@@ -399,7 +399,7 @@ class TestAsyncAllMmData:
 
     @pytest.mark.anyio
     async def test_async_image_wrapped(self):
-        from omni.vllm_patches.patches.models.kimi.kimi_k25 import VisionChunkImage
+        from omni_npu.vllm_patches.patches.models.kimi.kimi_k25 import VisionChunkImage
 
         tracker = self._make_async_tracker()
         sentinel = object()

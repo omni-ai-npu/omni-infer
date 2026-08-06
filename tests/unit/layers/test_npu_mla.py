@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-MLA_MODULE = "omni.v1.layers.attention.npu_mla"
+MLA_MODULE = "omni_npu.v1.layers.attention.npu_mla"
 
 cfg_i32 = {"device": "cpu", "dtype": torch.int32}
 cfg_i64 = {"device": "cpu", "dtype": torch.int64}
@@ -19,7 +19,7 @@ cfg_bf16 = {"device": "cpu", "dtype": torch.bfloat16}
 
 @pytest.mark.unit
 def test_cross_layer_shared_op_reuses_buffers_and_isolates_callers():
-    from omni.attention.backends.utils import CrossLayerSharedOp
+    from omni_npu.attention.backends.utils import CrossLayerSharedOp
 
     # Keep buffers and expected tensors on CPU so the test is device-agnostic
     # (default torch device may be NPU in CI containers).
@@ -47,7 +47,7 @@ def test_cross_layer_shared_op_reuses_buffers_and_isolates_callers():
 
 @pytest.mark.unit
 def test_cross_layer_shared_op_isolates_composite_keys_and_recomputes_unknown():
-    from omni.attention.backends.utils import CrossLayerSharedOp
+    from omni_npu.attention.backends.utils import CrossLayerSharedOp
 
     op = MagicMock(
         side_effect=[
@@ -82,8 +82,8 @@ def test_cross_layer_shared_op_isolates_composite_keys_and_recomputes_unknown():
 
 @pytest.mark.unit
 def test_init_cross_layer_shared_ops_uses_expected_buffers(monkeypatch):
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     constructor = MagicMock(side_effect=[MagicMock(), MagicMock()])
     monkeypatch.setattr(mla_mod, "CrossLayerSharedOp", constructor)
@@ -136,7 +136,7 @@ def test_init_cross_layer_shared_ops_uses_expected_buffers(monkeypatch):
 def test_init_metadata_sharing_selects_main_producers_and_refreshes_all_mtp(
     layer_idx, sliding_window, expected_producer
 ):
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     config = SimpleNamespace(
         num_hidden_layers=8,
@@ -159,7 +159,7 @@ def test_init_metadata_sharing_selects_main_producers_and_refreshes_all_mtp(
 
 @pytest.mark.unit
 def test_init_metadata_sharing_recomputes_unregistered_window():
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     config = SimpleNamespace(
         num_hidden_layers=8,
@@ -178,7 +178,7 @@ def test_init_metadata_sharing_recomputes_unregistered_window():
 
 @pytest.mark.unit
 def test_init_metadata_sharing_uses_first_swa_layer_for_scalar_window():
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     config = SimpleNamespace(
         num_hidden_layers=8,
@@ -203,8 +203,8 @@ def test_init_metadata_sharing_uses_first_swa_layer_for_scalar_window():
 def test_init_metadata_sharing_reuses_full_mla_after_skipping_dsa(
     layer_idx, expected_producer
 ):
-    from omni.attention.backends.mla import NPUMLAImpl
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.attention.backends.mla import NPUMLAImpl
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     config = SimpleNamespace(
         num_hidden_layers=9,
@@ -230,7 +230,7 @@ def test_init_metadata_sharing_reuses_full_mla_after_skipping_dsa(
 def test_init_metadata_sharing_reuses_all_full_mla_layers(
     layer_idx, expected_producer
 ):
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     config = SimpleNamespace(num_hidden_layers=4)
     fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
@@ -247,8 +247,8 @@ def test_init_metadata_sharing_reuses_all_full_mla_layers(
 def test_mla_mome_out_partitions_only_when_o_proj_requires_it(
     monkeypatch, requires_partition
 ):
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     attention = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
     torch.nn.Module.__init__(attention)
@@ -466,7 +466,7 @@ def _mock_mome():
         def __call__(self, x, *args, **kwargs):
             return x
 
-    import omni.v1.layers.attention.npu_mla as mla_mod
+    import omni_npu.v1.layers.attention.npu_mla as mla_mod
     mla_mod.AggregateConv = MockAggregateConv
     mla_mod.MomeAttention = MockMomeAttention
     yield
@@ -540,7 +540,7 @@ def _mock_mla_attention(
         patch(f"{MLA_MODULE}.MLAAttention", MockMLAAttention),
         # patch(f"vllm.model_executor.layers.attention.static_sink_attention.StaticSinkMLAAttention", MockMLAAttention),
     ):
-        import omni.v1.layers.attention.npu_mla as mla_mod
+        import omni_npu.v1.layers.attention.npu_mla as mla_mod
         mla_mod.StaticSinkMLAAttention = MockMLAAttention
         yield
         mla_mod.StaticSinkMLAAttention = None
@@ -880,7 +880,7 @@ class TestNPUDeepseekMLAAttention:
 
     def test_forward_prefill_routes_absorb_for_absorb_or_chunked_context(self):
         with _patch_and_gen_configs(prefill_absorb=True) as (cfg, vllm_cfg, env):
-            from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+            from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
             module = NPUDeepseekMLAAttention(
                 vllm_config=vllm_cfg,
@@ -918,7 +918,7 @@ class TestNPUDeepseekMLAAttention:
             standard_mock.assert_not_called()
 
         with _patch_and_gen_configs(prefill_absorb=False) as (cfg, vllm_cfg, env):
-            from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+            from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
             module = NPUDeepseekMLAAttention(
                 vllm_config=vllm_cfg,
@@ -1011,7 +1011,7 @@ class TestNPUDeepseekMLAAttention:
             is_mtp_layer=is_mtp_layer,
             num_nextn_predict_layers=num_nextn_predict_layers,
         ) as (cfg, vllm_cfg, env):
-            from omni.v1.layers.attention.npu_mla import (
+            from omni_npu.v1.layers.attention.npu_mla import (
                 NPUDeepseekMLAAttention,
                 get_forward_context,
                 npu_mla_forward,
@@ -1170,7 +1170,7 @@ class TestNPUDeepseekMLAAttention:
 @pytest.mark.unit
 def test_kv_norm_rope_cache_truncates_when_slots_shorter_than_latent_kv():
     """pd-mixed + SP: slots size < latent_kv size -> truncate latent_kv/cos/sin."""
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     R, L = 64, 512
     T_full, T_short = 8, 5
@@ -1200,8 +1200,8 @@ def test_kv_norm_rope_cache_truncates_when_slots_shorter_than_latent_kv():
 @pytest.mark.unit
 def test_kv_norm_rope_cache_a5_scatters_nope_and_pe_separately(monkeypatch):
     """A5: npu_scatter_nd_update_ called twice — once for nope into nope_cache, once for pe into rope_cache."""
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     R, L, T = 2, 4, 3
 
@@ -1253,8 +1253,8 @@ def test_kv_norm_rope_cache_a5_scatters_nope_and_pe_separately(monkeypatch):
 @pytest.mark.unit
 def test_kv_norm_rope_cache_a5_uses_v2_for_noncontiguous_kv(monkeypatch):
     """A5 + noncontiguous_kv: npu_ai_infra_kv_rmsnorm_rope_cache_v2 is used instead of scatter."""
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     R, L, T = 2, 4, 3
 
@@ -1311,8 +1311,8 @@ def test_kv_norm_rope_cache_a5_uses_v2_for_noncontiguous_kv(monkeypatch):
 @pytest.mark.unit
 def test_apply_standard_attention_resolves_dict_attn_metadata():
     """attn_metadata can be a dict keyed by f'{prefix}.attn'; resolve before reading max_query_len."""
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
     fake.prefix = "test_layer"
@@ -1358,7 +1358,7 @@ def test_apply_standard_attention_resolves_dict_attn_metadata():
 @pytest.mark.unit
 def test_apply_sink_attention_non_pa_basic():
     """覆盖 block_table is None 且 noncontiguous_kv=False 的 sink 注意力路径"""
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
     import torch
 
     R = 64          # qk_rope_head_dim
@@ -1422,8 +1422,8 @@ def test_apply_sink_attention_non_pa_basic():
 @pytest.mark.unit
 def test_apply_sink_attention_non_pa_noncontiguous():
     """覆盖 block_table is None 且 noncontiguous_kv=True 的 sink 注意力"""
-    from omni.v1.layers.attention import npu_mla as layer_mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as layer_mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
     import torch
 
     R, L, N, V, T = 64, 512, 8, 128, 4
@@ -1503,10 +1503,10 @@ def test_apply_sink_attention_non_pa_noncontiguous():
 @pytest.mark.unit
 def test_apply_sink_attention_non_pa_noncontiguous_and_fa_tiling():
     """覆盖 block_table is None 且 noncontiguous_kv=True 的 sink 注意力"""
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
     import torch
-    import omni.attention.backends.mla as mla_mod
-    from omni.v1.layers.attention import npu_mla as layer_mla_mod
+    import omni_npu.attention.backends.mla as mla_mod
+    from omni_npu.v1.layers.attention import npu_mla as layer_mla_mod
 
     R, L, N, V, T = 64, 512, 8, 128, 4
     S = 128   # sink 长度
@@ -1590,7 +1590,7 @@ def test_apply_sink_attention_non_pa_noncontiguous_and_fa_tiling():
 @pytest.mark.unit
 def test_apply_attention_routes_sink_to_a5_path():
     """Ascend 950 sink attention routes through the dedicated A5 implementation."""
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
     fake.param_sink_number = 128
@@ -1629,7 +1629,7 @@ def test_apply_attention_routes_sink_to_a5_path():
 @pytest.mark.unit
 def test_forward_prefill_a5_sink_uses_standard_path():
     """A5 sink prefill bypasses absorb PA and uses standard prefill."""
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
     fake.ena_sp = False
@@ -1659,8 +1659,8 @@ def test_forward_prefill_a5_sink_uses_standard_path():
 @pytest.mark.unit
 def test_apply_sink_attention_ascend950_prefill_path_calls_pioneer(monkeypatch):
     """A5 prefill path concatenates query/key rope tensors for pioneer attention."""
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     monkeypatch.setattr(torch.Tensor, "npu", lambda self: self, raising=False)
     monkeypatch.setattr(mla_mod.NPUMLAImpl, "ensure_decode_attn_mask", MagicMock())
@@ -1731,8 +1731,8 @@ def test_apply_sink_attention_ascend950_prefill_path_calls_pioneer(monkeypatch):
 @pytest.mark.unit
 def test_apply_sink_attention_ascend950_decode_path_calls_pioneer(monkeypatch):
     """A5 decode path builds TND_NTD metadata for paged attention."""
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     monkeypatch.setattr(torch.Tensor, "npu", lambda self: self, raising=False)
     monkeypatch.setattr(mla_mod.NPUMLAImpl, "ensure_decode_attn_mask", MagicMock())
@@ -1798,7 +1798,7 @@ def test_apply_sink_attention_ascend950_decode_path_calls_pioneer(monkeypatch):
 
 @pytest.mark.unit
 def test_chunked_prefill_cumlens_helpers_handle_tensor_and_list_refs():
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     tensor_ref = torch.tensor([2, 5], dtype=torch.int32)
     assert NPUDeepseekMLAAttention._as_cumlens_list(None) is None
@@ -1812,7 +1812,7 @@ def test_chunked_prefill_cumlens_helpers_handle_tensor_and_list_refs():
 
 @pytest.mark.unit
 def test_lengths_to_i64_converts_int32_tensor_and_list():
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     device = torch.device("cpu")
     int32_tensor = torch.tensor([4, 8], dtype=torch.int32, device=device)
@@ -1835,8 +1835,8 @@ def test_lengths_to_i64_converts_int32_tensor_and_list():
 
 @pytest.mark.unit
 def test_prepend_chunked_prefill_context_adds_swa_history_from_paged_cache(monkeypatch):
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     monkeypatch.setattr(mla_mod, "cache_fit_shape", lambda cache, mode: cache)
 
@@ -1891,8 +1891,8 @@ def test_prepend_chunked_prefill_context_adds_swa_history_from_paged_cache(monke
 def test_prepend_chunked_prefill_context_returns_original_when_not_applicable(
     case, monkeypatch,
 ):
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     monkeypatch.setattr(mla_mod, "cache_fit_shape", lambda cache, mode: cache)
 
@@ -1932,7 +1932,7 @@ def test_prepend_chunked_prefill_context_returns_original_when_not_applicable(
 
 @pytest.mark.unit
 def test_prepend_chunked_prefill_context_asserts_non_swa_a5_chunked_prefill():
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
     fake.on_ascend950 = True
@@ -1954,8 +1954,8 @@ def test_prepend_chunked_prefill_context_asserts_non_swa_a5_chunked_prefill():
 
 @pytest.mark.unit
 def test_forward_prefill_standard_passes_metadata_to_chunked_context(monkeypatch):
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
     fake.num_local_heads = 2
@@ -2028,8 +2028,8 @@ def test_kv_norm_rope_cache_noncontiguous_batch_invariant_uses_scatter_block_upd
 ):
     """When enable_kv_rmsnorm_rope_cache is enabled, fused_op is disabled and the non-contiguous
     cache update falls back to npu_ai_infra_scatter_block_update_."""
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
     fake.qk_rope_head_dim = 2
@@ -2105,8 +2105,8 @@ def test_kv_norm_rope_cache_noncontiguous_batch_invariant_uses_scatter_block_upd
 
 @pytest.mark.unit
 def test_build_decode_sink_fia_kwargs_shape_and_keys(monkeypatch):
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     monkeypatch.setattr(mla_mod.NPUMLAImpl, "SHARE_MASK_TRIL_SPARSE", "mask", raising=False)
 
@@ -2135,8 +2135,8 @@ def test_build_decode_sink_fia_kwargs_shape_and_keys(monkeypatch):
 
 @pytest.mark.unit
 def test_apply_sink_attention_consistency_core_merges_outputs(monkeypatch):
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     T, N, L, R, S = 2, 2, 4, 2, 3
     fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
@@ -2207,8 +2207,8 @@ def test_apply_sink_attention_consistency_core_merges_outputs(monkeypatch):
 
 @pytest.mark.unit
 def test_apply_sink_attention_consistency_core_uses_sliding_window(monkeypatch):
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     T, N, L, R, S = 2, 2, 4, 2, 3
     fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
@@ -2300,8 +2300,8 @@ def test_apply_sink_attention_consistency_core_uses_sliding_window(monkeypatch):
 
 @pytest.mark.unit
 def test_apply_sink_attention_precision_path_transposes_output(monkeypatch):
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     T, N, L = 2, 3, 4
     fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
@@ -2347,8 +2347,8 @@ def test_apply_sink_attention_precision_path_transposes_output(monkeypatch):
 
 @pytest.mark.unit
 def test_apply_sink_attention_consistency_core_requires_flags(monkeypatch):
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
     monkeypatch.setattr(
@@ -2376,8 +2376,8 @@ def test_apply_sink_attention_consistency_core_requires_flags(monkeypatch):
 
 @pytest.mark.unit
 def test_forward_prefill_standard_noncontiguous_sink_calls_kv_b_proj(monkeypatch):
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
     fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
     T, N, R, QK, L, V, S = 3, 2, 1, 4, 5, 3, 2

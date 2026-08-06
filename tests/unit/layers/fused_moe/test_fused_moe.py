@@ -82,8 +82,8 @@ def fused_module(monkeypatch):
     monkeypatch.setattr(torch, "ones", _safe_ones)
     monkeypatch.setattr(torch, "zeros", _safe_zeros)
     monkeypatch.setattr(torch, "full", _safe_full)
-    sys.modules.pop("omni.layers.fused_moe.fused_moe", None)
-    module = importlib.import_module("omni.layers.fused_moe.fused_moe")
+    sys.modules.pop("omni_npu.layers.fused_moe.fused_moe", None)
+    module = importlib.import_module("omni_npu.layers.fused_moe.fused_moe")
     importlib.reload(module)
 
     stubs = SimpleNamespace(torch_npu=torch_npu)

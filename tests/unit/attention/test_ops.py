@@ -3,7 +3,7 @@
 
 import torch
 
-from omni.attention.ops import (
+from omni_npu.attention.ops import (
     apply_FA_rescale_forward,
     attention_update_torch,
     gather_and_maybe_dequant_cache,

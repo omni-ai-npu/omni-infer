@@ -2,7 +2,7 @@
 import unittest
 import torch
 from unittest.mock import MagicMock, patch
-from omni.worker.npu_input_batch import NPUInputBatch
+from omni_npu.worker.npu_input_batch import NPUInputBatch
 
 
 class TestNPUInputBatch(unittest.TestCase):

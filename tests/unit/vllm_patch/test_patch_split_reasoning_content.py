@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from omni.vllm_patches.patches.common.patch_split_reasoning_content import (
+from omni_npu.vllm_patches.patches.common.patch_split_reasoning_content import (
     _maybe_split_sse_line,
     _rewrite_named_finish_reason_sse,
 )

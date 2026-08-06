@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from omni.vllm_patches.core import VLLMPatch
-from omni.vllm_patches.patches.models.minimax import patch_speculative
+from omni_npu.vllm_patches.core import VLLMPatch
+from omni_npu.vllm_patches.patches.models.minimax import patch_speculative
 
 
 def _speculative_config(method="eagle3", model_type="minimax_m2"):

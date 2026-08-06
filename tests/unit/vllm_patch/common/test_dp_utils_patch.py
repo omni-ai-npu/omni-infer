@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from omni.vllm_patches.patches.common import patch_dp_utils
+from omni_npu.vllm_patches.patches.common import patch_dp_utils
 
 
 def _make_parallel_config(dp_size=2, dp_rank=0, tp_size=1):

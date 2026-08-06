@@ -4,7 +4,7 @@
 from typing import Optional
 import pytest
 import torch
-from omni.layers.npu_rms_norm import NPURMSNorm
+from omni_npu.layers.npu_rms_norm import NPURMSNorm
 from .distributed_test_common import parse_ascend_devices, distributed_worker_pool
 
 FIRST_DIE, _ = parse_ascend_devices()

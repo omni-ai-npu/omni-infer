@@ -5,9 +5,9 @@ import torch
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from omni.v1.layers.logits_processor import NPULogitsProcessor
+from omni_npu.v1.layers.logits_processor import NPULogitsProcessor
 
-MOD = "omni.v1.layers.logits_processor"
+MOD = "omni_npu.v1.layers.logits_processor"
 
 
 def _make_lm_head(

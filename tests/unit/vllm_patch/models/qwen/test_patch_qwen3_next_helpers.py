@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import torch
 from vllm.v1.kv_cache_interface import AttentionSpec, KVCacheGroupSpec
 
-from omni.vllm_patches.patches.models.qwen import patch_qwen3_next as patch_next
+from omni_npu.vllm_patches.patches.models.qwen import patch_qwen3_next as patch_next
 
 
 def test_empty_groups_returns_minimal_config():
@@ -19,7 +19,7 @@ def test_empty_groups_returns_minimal_config():
 
 
 @patch(
-    "omni.vllm_patches.patches.models.qwen.patch_qwen3_next."
+    "omni_npu.vllm_patches.patches.models.qwen.patch_qwen3_next."
     "native_get_kv_cache_config_from_groups"
 )
 def test_attention_config_uses_shared_hybrid_builder(native_builder):
@@ -44,7 +44,7 @@ def test_attention_config_uses_shared_hybrid_builder(native_builder):
 
 
 def test_patch_module_reexports_shared_patch_classes():
-    from omni.vllm_patches.patches.models.qwen import qwen_hybrid_common
+    from omni_npu.vllm_patches.patches.models.qwen import qwen_hybrid_common
 
     assert patch_next.KVCacheUtilsPatch is qwen_hybrid_common.QwenHybridKVCacheUtilsPatch
     assert patch_next.SchedulerPatch is qwen_hybrid_common.QwenHybridSchedulerPatch

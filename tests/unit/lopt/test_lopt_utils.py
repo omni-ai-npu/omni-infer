@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from omni.lopt.lopt_utils import (
+from omni_npu.lopt.lopt_utils import (
     chunks,
     flatten,
     pairs,

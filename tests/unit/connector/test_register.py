@@ -4,12 +4,12 @@
 from unittest.mock import MagicMock, patch, call
 import pytest
 
-from omni.connector.register import _safe_register, register_connectors
+from omni_npu.connector.register import _safe_register, register_connectors
 
 # Path constants
 KV_CONNECTOR_FACTORY_PATH = 'vllm.distributed.kv_transfer.kv_connector.factory.KVConnectorFactory'
-LOGGER_PATH = 'omni.connector.register.logger'
-SAFE_REGISTER_PATH = 'omni.connector.register._safe_register'
+LOGGER_PATH = 'omni_npu.connector.register.logger'
+SAFE_REGISTER_PATH = 'omni_npu.connector.register._safe_register'
 
 
 class TestSafeRegister:
@@ -142,7 +142,7 @@ class TestRegisterConnectors:
         # Verify _safe_register was called with correct parameters
         mock_safe_register.assert_called_once_with(
             "LLMDataDistConnector",
-            "omni.connector.llmdatadist_connector_v1",
+            "omni_npu.connector.llmdatadist_connector_v1",
             "LLMDataDistConnector"
         )
 
@@ -167,7 +167,7 @@ class TestModuleLevel:
 
     def test_logger_initialization(self):
         """Test that logger is properly initialized"""
-        from omni.connector.register import logger
+        from omni_npu.connector.register import logger
 
         # Verify logger exists and has expected attributes
         assert logger is not None
@@ -180,7 +180,7 @@ class TestModuleLevel:
         """Test that all required imports work correctly"""
         # Test that the module can be imported without errors
         try:
-            from omni.connector.register import _safe_register, register_connectors
+            from omni_npu.connector.register import _safe_register, register_connectors
             assert _safe_register is not None
             assert register_connectors is not None
         except ImportError as e:

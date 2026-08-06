@@ -16,7 +16,7 @@ import pytest
 
 # Check if config files are available
 try:
-    from omni.model_config.config_loader.loader import default_config_path
+    from omni_npu.model_config.config_loader.loader import default_config_path
     CONFIG_AVAILABLE = os.path.exists(default_config_path)
     if CONFIG_AVAILABLE:
         # Check for specific files
@@ -42,13 +42,13 @@ class TestConfigLoaderIntegration(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures"""
-        from omni.model_config.config_loader.loader import model_extra_config, ModelExtraConfig
+        from omni_npu.model_config.config_loader.loader import model_extra_config, ModelExtraConfig
         # Reset global config to default
         model_extra_config = ModelExtraConfig()
 
     def test_config_files_exist(self):
         """Test that required config files exist"""
-        from omni.model_config.config_loader.loader import default_config_path
+        from omni_npu.model_config.config_loader.loader import default_config_path
         
         self.assertTrue(os.path.exists(default_config_path))
         
@@ -60,7 +60,7 @@ class TestConfigLoaderIntegration(unittest.TestCase):
 
     def test_loader_configs_data_with_real_file(self):
         """Test _loader_configs_data with real config file"""
-        from omni.model_config.config_loader.loader import _loader_configs_data, default_config_path
+        from omni_npu.model_config.config_loader.loader import _loader_configs_data, default_config_path
         
         match_hf_configs_path = os.path.join(default_config_path, 'match_hf_configs.json')
         data = _loader_configs_data(match_hf_configs_path)
@@ -70,7 +70,7 @@ class TestConfigLoaderIntegration(unittest.TestCase):
 
     def test_parse_hf_config_with_real_data(self):
         """Test parse_hf_config with real match_hf_configs data"""
-        from omni.model_config.config_loader.loader import parse_hf_config, _loader_configs_data, default_config_path
+        from omni_npu.model_config.config_loader.loader import parse_hf_config, _loader_configs_data, default_config_path
         
         # Create a mock hf_config that matches one in match_hf_configs.json
         class MockHfConfig:
@@ -101,7 +101,7 @@ class TestConfigLoaderIntegration(unittest.TestCase):
 
     def test_get_best_practice_config_with_real_files(self):
         """Test _get_best_practice_config with real config files"""
-        from omni.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
+        from omni_npu.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
         
         task_config = TaskConfig(
             model_name="deepseek_v3",
@@ -124,7 +124,7 @@ class TestConfigLoaderIntegration(unittest.TestCase):
 
     def test_init_model_extra_config_with_real_config(self):
         """Test _init_model_extra_config with real config data"""
-        from omni.model_config.config_loader.loader import _init_model_extra_config, TaskConfig, model_extra_config
+        from omni_npu.model_config.config_loader.loader import _init_model_extra_config, TaskConfig, model_extra_config
         
         task_config = TaskConfig(
             model_name="deepseek_v3",
@@ -144,7 +144,7 @@ class TestConfigLoaderIntegration(unittest.TestCase):
 
     def test_load_model_extra_config(self):
         """Test load_model_extra_config function with mocked inputs"""
-        from omni.model_config.config_loader.loader import (
+        from omni_npu.model_config.config_loader.loader import (
             load_model_extra_config,
             model_extra_config,
         )
@@ -194,7 +194,7 @@ class TestConfigLoaderIntegration(unittest.TestCase):
 
     def test_duplicate_config_detection(self):
         """Test that duplicate configurations from different JSON files are detected"""
-        from omni.model_config.config_loader.loader import (
+        from omni_npu.model_config.config_loader.loader import (
             default_config_path, _loader_configs_data, ModelParallelConfig, ModelOperatorOptConfig, filter_dict_by_dataclass
         )
         import os
@@ -264,7 +264,7 @@ class TestConfigLoaderIntegration(unittest.TestCase):
 
     def test_full_config_loading_pipeline(self):
         """Test the full config loading pipeline"""
-        from omni.model_config.config_loader.loader import (
+        from omni_npu.model_config.config_loader.loader import (
             update_task_config, _validate_config, _print_model_config, model_extra_config
         )
         
@@ -293,7 +293,7 @@ if __name__ == '__main__':
     # Print config availability info
     print(f"Config Available: {CONFIG_AVAILABLE}")
     if CONFIG_AVAILABLE:
-        from omni.model_config.config_loader.loader import default_config_path
+        from omni_npu.model_config.config_loader.loader import default_config_path
         print(f"Config Path: {default_config_path}")
     
     unittest.main()

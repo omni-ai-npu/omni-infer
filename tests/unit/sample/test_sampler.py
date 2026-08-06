@@ -3,8 +3,8 @@ import unittest
 import torch
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-import omni.sample.sampler as sampler_mod
-from omni.sample.sampler import NPUSamplerV1, _apply_penalties_v1
+import omni_npu.sample.sampler as sampler_mod
+from omni_npu.sample.sampler import NPUSamplerV1, _apply_penalties_v1
 
 class TestNPUSamplerV1(unittest.TestCase):
     def setUp(self):
@@ -44,8 +44,8 @@ class TestNPUSamplerV1(unittest.TestCase):
         try:
             with patch('vllm.v1.sample.sampler.Sampler.__init__', return_value=None), \
                  patch('vllm.v1.sample.sampler.Sampler.forward', return_value="bypassed"), \
-                 patch('omni.sample.sampler.torch_npu', MagicMock()), \
-                 patch('omni.sample.sampler.NPUTopKTopPSampler', MagicMock()):
+                 patch('omni_npu.sample.sampler.torch_npu', MagicMock()), \
+                 patch('omni_npu.sample.sampler.NPUTopKTopPSampler', MagicMock()):
                  
                 sampler = NPUSamplerV1()
                 res = sampler.forward(logits=torch.tensor([[1.0]]), sampling_metadata=MagicMock())
@@ -66,8 +66,8 @@ class TestNPUSamplerV1(unittest.TestCase):
             # preventing any missing function errors in subsequent smoke tests.
             with patch.object(sampler_mod, 'get_forward_context', return_value=mock_ctx), \
                  patch('vllm.v1.sample.sampler.Sampler.__init__', return_value=None), \
-                 patch('omni.sample.sampler.torch_npu', MagicMock()), \
-                 patch('omni.sample.sampler.NPUTopKTopPSampler', MagicMock()):
+                 patch('omni_npu.sample.sampler.torch_npu', MagicMock()), \
+                 patch('omni_npu.sample.sampler.NPUTopKTopPSampler', MagicMock()):
                 
                 sampler = NPUSamplerV1()
                 sampler.topk_topp_sampler = MagicMock(return_value=(torch.tensor([2]), None))

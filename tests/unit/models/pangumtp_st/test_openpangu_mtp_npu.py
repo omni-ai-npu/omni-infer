@@ -168,10 +168,10 @@ def _patch_model_extra_config(monkeypatch):
         ),
     )
     for path in [
-        "omni.v1.models.pangu.pangu_ultra_moe_mtp.model_extra_config",
-        "omni.v1.models.pangu.pangu_ultra_moe.model_extra_config",
-        "omni.v1.layers.attention.npu_pangu.model_extra_config",
-        "omni.model_config.config_loader.loader.model_extra_config",
+        "omni_npu.v1.models.pangu.pangu_ultra_moe_mtp.model_extra_config",
+        "omni_npu.v1.models.pangu.pangu_ultra_moe.model_extra_config",
+        "omni_npu.v1.layers.attention.npu_pangu.model_extra_config",
+        "omni_npu.model_config.config_loader.loader.model_extra_config",
     ]:
         try:
             monkeypatch.setattr(path, ns)
@@ -215,9 +215,9 @@ class TestNPUMTPInit:
             attention_config=SimpleNamespace(backend=None),
         )
         with set_current_vllm_config(_wrap):
-            from omni.v1.models.pangu.pangu_ultra_moe_mtp import \
+            from omni_npu.v1.models.pangu.pangu_ultra_moe_mtp import \
                 OpenPanguMultiTokenPredictorLayer
-            from omni.v1.models.pangu.pangu_ultra_moe import OpenPanguDecoderLayer
+            from omni_npu.v1.models.pangu.pangu_ultra_moe import OpenPanguDecoderLayer
 
             vllm_cfg = _make_npu_vllm_cfg()
             layer = OpenPanguMultiTokenPredictorLayer(

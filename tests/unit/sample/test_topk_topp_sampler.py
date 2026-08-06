@@ -34,7 +34,7 @@ def topk_mod(monkeypatch):
     setattr(fake_aiter_ops, "rocm_aiter_ops", types.SimpleNamespace(is_enabled=lambda: False))
     monkeypatch.setitem(sys.modules, "vllm._aiter_ops", fake_aiter_ops)
 
-    import omni.sample.ops.topk_topp_sampler as mod
+    import omni_npu.sample.ops.topk_topp_sampler as mod
 
     mod = importlib.reload(mod)
     monkeypatch.setattr(

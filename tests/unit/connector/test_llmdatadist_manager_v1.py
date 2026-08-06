@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch, mock_open
 
-from omni.connector.llmdatadist_manager_v1 import (
+from omni_npu.connector.llmdatadist_manager_v1 import (
     DatadistEngine,
     ServerEngine,
     ClientEngine,
@@ -56,7 +56,7 @@ def _mock_hccl_rootinfo(rootinfo=None, open_side_effect=None, load_side_effect=N
     elif rootinfo is not None:
         load_kwargs["return_value"] = rootinfo
     with patch("builtins.open", open_mock):
-        with patch("omni.connector.llmdatadist_manager_v1.json.load", **load_kwargs):
+        with patch("omni_npu.connector.llmdatadist_manager_v1.json.load", **load_kwargs):
             yield
 
 
@@ -377,7 +377,7 @@ class TestDatadistEngine:
         )
 
     def test_init_with_port(self, rank=7, port=10000):
-        from omni.connector.utils import get_local_ip
+        from omni_npu.connector.utils import get_local_ip
         ip = get_local_ip()
         with (
             _mock_parallel(tp=16, rank=rank),
@@ -391,10 +391,10 @@ class TestDatadistEngine:
 
     def test_init_prefill_with_hixl_backend(self, rank=7, port=10000):
         """Prefill + hixl: listen_ip_info uses fixed port (prefill takes priority)."""
-        from omni.connector.utils import get_local_ip
+        from omni_npu.connector.utils import get_local_ip
         ip = get_local_ip()
         with (
-            patch("omni.connector.llmdatadist_manager_v1.on_ascend950", return_value=True),
+            patch("omni_npu.connector.llmdatadist_manager_v1.on_ascend950", return_value=True),
             patch.object(DatadistEngine, "_get_local_comm_res", return_value='{"k":"v"}'),
             _mock_parallel(tp=16, rank=rank),
             _mock_llm_datadist() as get_instance,
@@ -410,10 +410,10 @@ class TestDatadistEngine:
 
     def test_init_decoder_with_hixl_backend(self, rank=7, port=10000):
         """Decoder + hixl: listen_ip_info uses port 0 (random assignment)."""
-        from omni.connector.utils import get_local_ip
+        from omni_npu.connector.utils import get_local_ip
         ip = get_local_ip()
         with (
-            patch("omni.connector.llmdatadist_manager_v1.on_ascend950", return_value=True),
+            patch("omni_npu.connector.llmdatadist_manager_v1.on_ascend950", return_value=True),
             patch.object(DatadistEngine, "_get_local_comm_res", return_value='{"k":"v"}'),
             _mock_parallel(tp=16, rank=rank),
             _mock_llm_datadist() as get_instance,
@@ -430,7 +430,7 @@ class TestDatadistEngine:
     def test_init_decoder_without_hixl_backend(self, rank=7, port=10000):
         """Decoder + no hixl: listen_ip_info is None (no binding)."""
         with (
-            patch("omni.connector.llmdatadist_manager_v1.on_ascend950", return_value=False),
+            patch("omni_npu.connector.llmdatadist_manager_v1.on_ascend950", return_value=False),
             _mock_parallel(tp=16, rank=rank),
             _mock_llm_datadist() as get_instance,
         ):
@@ -659,7 +659,7 @@ def _mock_datadist_engine():
             self.log.manual(f"pull_blocks: {model_id}")
             return self._pull_ok # edittable
 
-    import omni.connector.llmdatadist_manager_v1 as module
+    import omni_npu.connector.llmdatadist_manager_v1 as module
     with _patch_module(module,
         DatadistEngine=DatadistEngine,
         ServerEngine=ServerEngine,

@@ -235,7 +235,7 @@ def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
 
     npu_moe_module = _make_module(
         monkeypatch,
-        "omni.layers.quantization.compressed_tensors.compressed_tensors_moe",
+        "omni_npu.layers.quantization.compressed_tensors.compressed_tensors_moe",
     )
     npu_moe_module.NPUCompressedTensorsW8A8Int8MoEMethod = (
         DummyNPUCompressedTensorsW8A8Int8MoEMethod
@@ -246,11 +246,11 @@ def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
 
     npu_scheme_module = _make_module(
         monkeypatch,
-        "omni.layers.quantization.compressed_tensors.schemes.compressed_tensors_w8a8_int8",
+        "omni_npu.layers.quantization.compressed_tensors.schemes.compressed_tensors_w8a8_int8",
     )
     npu_scheme_module.NPUCompressedTensorsW8A8Int8 = DummyNPUCompressedTensorsW8A8Int8
 
-    v1_linear_module = _make_module(monkeypatch, "omni.v1.layers.linear")
+    v1_linear_module = _make_module(monkeypatch, "omni_npu.v1.layers.linear")
     v1_linear_module.UnquantizedFlashCommLinearMethod = (
         DummyUnquantizedFlashCommLinearMethod
     )
@@ -260,12 +260,12 @@ def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
 
     v1_ct_linear_module = _make_module(
         monkeypatch,
-        "omni.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear",
+        "omni_npu.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear",
     )
     v1_ct_linear_module.W8A8Int8FCLinearMethod = DummyW8A8Int8FCLinearMethod
     v1_ct_linear_module.W8A8Int8ShardedLinearMethod = DummyW8A8Int8ShardedLinearMethod
 
-    v1_fused_mlp_module = _make_module(monkeypatch, "omni.v1.layers.fused_mlp.layer")
+    v1_fused_mlp_module = _make_module(monkeypatch, "omni_npu.v1.layers.fused_mlp.layer")
     v1_fused_mlp_module.FusedMLP = DummyFusedMLP
 
     v1_ct_linear_module.W8A8Int8MlpMethod = DummyW8A8Int8MlpMethod
@@ -274,15 +274,15 @@ def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
     omni_pkg = types.ModuleType("omni_npu")
     omni_pkg.__path__ = [str(base_path / "omni")]
     monkeypatch.setitem(sys.modules, "omni_npu", omni_pkg)
-    layers_pkg = types.ModuleType("omni.layers")
+    layers_pkg = types.ModuleType("omni_npu.layers")
     layers_pkg.__path__ = [str(base_path / "omni" / "layers")]
-    monkeypatch.setitem(sys.modules, "omni.layers", layers_pkg)
-    quant_pkg = types.ModuleType("omni.layers.quantization")
+    monkeypatch.setitem(sys.modules, "omni_npu.layers", layers_pkg)
+    quant_pkg = types.ModuleType("omni_npu.layers.quantization")
     quant_pkg.__path__ = [
         str(base_path / "omni" / "layers" / "quantization")
     ]
-    monkeypatch.setitem(sys.modules, "omni.layers.quantization", quant_pkg)
-    ct_pkg = types.ModuleType("omni.layers.quantization.compressed_tensors")
+    monkeypatch.setitem(sys.modules, "omni_npu.layers.quantization", quant_pkg)
+    ct_pkg = types.ModuleType("omni_npu.layers.quantization.compressed_tensors")
     ct_pkg.__path__ = [
         str(
             base_path
@@ -293,11 +293,11 @@ def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
         )
     ]
     monkeypatch.setitem(
-        sys.modules, "omni.layers.quantization.compressed_tensors", ct_pkg
+        sys.modules, "omni_npu.layers.quantization.compressed_tensors", ct_pkg
     )
 
     sys.modules.pop(
-        "omni.layers.quantization.compressed_tensors.compressed_tensors",
+        "omni_npu.layers.quantization.compressed_tensors.compressed_tensors",
         None,
     )
     yield
@@ -306,7 +306,7 @@ def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture
 def compressed_tensors_module(mock_dependencies):
     module = importlib.import_module(
-        "omni.layers.quantization.compressed_tensors.compressed_tensors"
+        "omni_npu.layers.quantization.compressed_tensors.compressed_tensors"
     )
     importlib.reload(module)
     return module

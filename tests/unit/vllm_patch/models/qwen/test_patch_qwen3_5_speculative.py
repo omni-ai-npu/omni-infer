@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from omni.vllm_patches.patches.models.qwen3_5.patch_speculative import (
+from omni_npu.vllm_patches.patches.models.qwen3_5.patch_speculative import (
     SpeculativeConfigPatch,
 )
 

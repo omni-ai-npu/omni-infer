@@ -11,8 +11,8 @@ from typing import Any
 
 import torch
 
-from omni.v1.config import ReasoningConfig
-from omni.v1.sample.thinking_ban_state import (
+from omni_npu.v1.config import ReasoningConfig
+from omni_npu.v1.sample.thinking_ban_state import (
     IN_THINK,
     POST_THINK,
     PRE_THINK,

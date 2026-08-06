@@ -78,14 +78,14 @@ class TestConfigLoaderUnit(unittest.TestCase):
         sys.modules['vllm.distributed'] = self.vllm_distributed_mock
         sys.modules['vllm.v1'] = self.vllm_v1_mock
 
-        # Mock omni.model_config.config_loader.features
+        # Mock omni_npu.model_config.config_loader.features
         self.features_mock = MagicMock()
-        sys.modules['omni.model_config.config_loader.features'] = self.features_mock
+        sys.modules['omni_npu.model_config.config_loader.features'] = self.features_mock
 
-        # Mock omni.v1.parsers (needed by some tests)
+        # Mock omni_npu.v1.parsers (needed by some tests)
         self.parsers_mock = MagicMock()
         self.parsers_mock.register_lazy_parsers = MagicMock()
-        sys.modules['omni.v1.parsers'] = self.parsers_mock
+        sys.modules['omni_npu.v1.parsers'] = self.parsers_mock
 
     def tearDown(self):
         """Clean up after tests - restore original sys.modules"""
@@ -108,8 +108,8 @@ class TestConfigLoaderUnit(unittest.TestCase):
             'vllm.config',
             'vllm.distributed',
             'vllm.v1',
-            'omni.model_config.config_loader.features',
-            'omni.v1.parsers',
+            'omni_npu.model_config.config_loader.features',
+            'omni_npu.v1.parsers',
         ]
 
         for module in modules_to_remove:
@@ -123,11 +123,11 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_model_operator_opt_config_post_init_enable_prefetch_true(self):
         """Test ModelOperatorOptConfig __post_init__ when enable_prefetch is True"""
-        from omni.model_config.config_loader.loader import ModelOperatorOptConfig
+        from omni_npu.model_config.config_loader.loader import ModelOperatorOptConfig
         
         mock_logger = MagicMock()
         
-        with patch('omni.model_config.config_loader.loader.logger', mock_logger):
+        with patch('omni_npu.model_config.config_loader.loader.logger', mock_logger):
             config = ModelOperatorOptConfig(enable_prefetch=True)
         
         # When enable_prefetch is True, prefetch values should remain default
@@ -138,11 +138,11 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_model_operator_opt_config_post_init_enable_prefetch_false(self):
         """Test ModelOperatorOptConfig __post_init__ when enable_prefetch is False"""
-        from omni.model_config.config_loader.loader import ModelOperatorOptConfig
+        from omni_npu.model_config.config_loader.loader import ModelOperatorOptConfig
         
         mock_logger = MagicMock()
         
-        with patch('omni.model_config.config_loader.loader.logger', mock_logger):
+        with patch('omni_npu.model_config.config_loader.loader.logger', mock_logger):
             config = ModelOperatorOptConfig(enable_prefetch=False)
         
         # When enable_prefetch is False, prefetch values should be set to 0
@@ -160,7 +160,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_model_operator_opt_config_post_init_conflicting_comm_config(self):
         """Test ModelOperatorOptConfig __post_init__ raises error for conflicting comm config"""
-        from omni.model_config.config_loader.loader import ModelOperatorOptConfig
+        from omni_npu.model_config.config_loader.loader import ModelOperatorOptConfig
         
         with self.assertRaises(ValueError) as context:
             ModelOperatorOptConfig(enable_pipeline_comm=True, enable_round_pipeline_comm=True)
@@ -169,7 +169,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_model_operator_opt_config_post_init_unquant_bmm_nz(self):
         """Test ModelOperatorOptConfig __post_init__ sets torch config for unquant_bmm_nz"""
-        from omni.model_config.config_loader.loader import ModelOperatorOptConfig
+        from omni_npu.model_config.config_loader.loader import ModelOperatorOptConfig
         
         config = ModelOperatorOptConfig(unquant_bmm_nz=True)
         
@@ -178,14 +178,14 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_model_operator_opt_config_lmhead_fp32_default(self):
         """Test ModelOperatorOptConfig lmhead_fp32 defaults to False"""
-        from omni.model_config.config_loader.loader import ModelOperatorOptConfig
+        from omni_npu.model_config.config_loader.loader import ModelOperatorOptConfig
 
         config = ModelOperatorOptConfig()
         self.assertFalse(config.lmhead_fp32)
 
     def test_model_operator_opt_config_lmhead_fp32_from_config(self):
         """Test _init_model_extra_config loads lmhead_fp32 from operator config"""
-        from omni.model_config.config_loader.loader import (
+        from omni_npu.model_config.config_loader.loader import (
             _init_model_extra_config,
             TaskConfig,
             model_extra_config,
@@ -193,7 +193,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
         task_config = TaskConfig()
         with patch(
-            "omni.model_config.config_loader.loader._get_best_practice_config",
+            "omni_npu.model_config.config_loader.loader._get_best_practice_config",
             return_value={
                 "model_parallel_config": {},
                 "operator_optimization_config": {"lmhead_fp32": True},
@@ -205,7 +205,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_parse_hf_config_deepseek_v3(self):
         """Test parse_hf_config for deepseek_v3 model"""
-        from omni.model_config.config_loader.loader import parse_hf_config
+        from omni_npu.model_config.config_loader.loader import parse_hf_config
         
         # Mock hf_config
         hf_config_mock = MagicMock()
@@ -228,7 +228,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_parse_hf_config_deepseek_v32(self):
         """Test parse_hf_config for deepseek_v32 model"""
-        from omni.model_config.config_loader.loader import parse_hf_config
+        from omni_npu.model_config.config_loader.loader import parse_hf_config
         # Mock hf_config
         hf_config_mock = MagicMock()
         hf_config_mock.model_type = "deepseek_v32"
@@ -251,7 +251,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
     def test_parse_hf_config_bf16(self):
         """Test parse_hf_config for BF16 model without quantization"""
         from types import SimpleNamespace
-        from omni.model_config.config_loader.loader import parse_hf_config
+        from omni_npu.model_config.config_loader.loader import parse_hf_config
 
         hf_config = SimpleNamespace(model_type="some_model", dtype=torch.bfloat16)
         model_name, quant_type = parse_hf_config(hf_config)
@@ -262,7 +262,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
     def test_parse_hf_config_fp16(self):
         """Test parse_hf_config maps float16/fp16 dtype to quant_type fp16."""
         from types import SimpleNamespace
-        from omni.model_config.config_loader.loader import parse_hf_config
+        from omni_npu.model_config.config_loader.loader import parse_hf_config
 
         for dtype in ("float16", "fp16", torch.float16):
             hf_config = SimpleNamespace(model_type="openpangu_v2", dtype=dtype)
@@ -276,8 +276,8 @@ class TestConfigLoaderUnit(unittest.TestCase):
         """Test low-latency best-practice config lookup for gpt_oss alias."""
         parser_stub = MagicMock()
         parser_stub.register_lazy_parsers = MagicMock()
-        with patch.dict("sys.modules", {"omni.v1.parsers": parser_stub}):
-            from omni.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
+        with patch.dict("sys.modules", {"omni_npu.v1.parsers": parser_stub}):
+            from omni_npu.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
 
             best_practice_entries = [
                 {
@@ -304,7 +304,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
             }
 
             with patch(
-                "omni.model_config.config_loader.loader._loader_configs_data",
+                "omni_npu.model_config.config_loader.loader._loader_configs_data",
                 side_effect=[best_practice_entries, selected_config],
             ) as mock_loader:
                 task_config = TaskConfig(
@@ -323,8 +323,8 @@ class TestConfigLoaderUnit(unittest.TestCase):
     def test_get_best_practice_config_gpt_oss_a2_low_latency_hyphen_alias(self, mock_exists):
         parser_stub = MagicMock()
         parser_stub.register_lazy_parsers = MagicMock()
-        with patch.dict("sys.modules", {"omni.v1.parsers": parser_stub}):
-            from omni.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
+        with patch.dict("sys.modules", {"omni_npu.v1.parsers": parser_stub}):
+            from omni_npu.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
 
             best_practice_entries = [
                 {
@@ -351,7 +351,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
             }
 
             with patch(
-                "omni.model_config.config_loader.loader._loader_configs_data",
+                "omni_npu.model_config.config_loader.loader._loader_configs_data",
                 side_effect=[best_practice_entries, selected_config],
             ):
                 task_config = TaskConfig(
@@ -369,8 +369,8 @@ class TestConfigLoaderUnit(unittest.TestCase):
     def test_get_best_practice_config_gpt_oss_a2_high_throughout_alias(self, mock_exists):
         parser_stub = MagicMock()
         parser_stub.register_lazy_parsers = MagicMock()
-        with patch.dict("sys.modules", {"omni.v1.parsers": parser_stub}):
-            from omni.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
+        with patch.dict("sys.modules", {"omni_npu.v1.parsers": parser_stub}):
+            from omni_npu.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
 
             best_practice_entries = [
                 {
@@ -390,7 +390,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
             }
 
             with patch(
-                "omni.model_config.config_loader.loader._loader_configs_data",
+                "omni_npu.model_config.config_loader.loader._loader_configs_data",
                 side_effect=[best_practice_entries, selected_config],
             ):
                 task_config = TaskConfig(
@@ -406,7 +406,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_filter_dict_by_dataclass(self):
         """Test filter_dict_by_dataclass filters valid keys"""
-        from omni.model_config.config_loader.loader import filter_dict_by_dataclass, ModelOperatorOptConfig
+        from omni_npu.model_config.config_loader.loader import filter_dict_by_dataclass, ModelOperatorOptConfig
         
         data_dict = {
             'enable_prefetch': False,
@@ -423,7 +423,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
     @patch('builtins.open', new_callable=mock_open, read_data='{"key": "value"}')
     def test_loader_configs_data(self, mock_file):
         """Test _loader_configs_data loads JSON correctly"""
-        from omni.model_config.config_loader.loader import _loader_configs_data
+        from omni_npu.model_config.config_loader.loader import _loader_configs_data
         
         result = _loader_configs_data('dummy_path.json')
         
@@ -433,7 +433,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
     @patch('builtins.open', new_callable=mock_open, read_data='invalid json')
     def test_loader_configs_data_invalid_json(self, mock_file):
         """Test _loader_configs_data raises error for invalid JSON"""
-        from omni.model_config.config_loader.loader import _loader_configs_data
+        from omni_npu.model_config.config_loader.loader import _loader_configs_data
         
         with self.assertRaises(RuntimeError) as context:
             _loader_configs_data('dummy_path.json')
@@ -447,12 +447,12 @@ class TestConfigLoaderUnit(unittest.TestCase):
     }))
     def test_init_model_extra_config(self, mock_file, mock_exists):
         """Test _init_model_extra_config initializes configs correctly"""
-        from omni.model_config.config_loader.loader import _init_model_extra_config, TaskConfig, model_extra_config
+        from omni_npu.model_config.config_loader.loader import _init_model_extra_config, TaskConfig, model_extra_config
 
         task_config = TaskConfig()
 
         # Mock _get_best_practice_config to return config data
-        with patch('omni.model_config.config_loader.loader._get_best_practice_config', return_value={
+        with patch('omni_npu.model_config.config_loader.loader._get_best_practice_config', return_value={
             "model_parallel_config": {"enable_share_expert_tp": True},
             "operator_optimization_config": {"enable_prefetch": False}
         }):
@@ -465,7 +465,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_init_model_extra_config_uses_absolute_custom_config_path(self):
         """CUSTOM_MODEL_CONFIG_PATH absolute values are loaded directly."""
-        from omni.model_config.config_loader.loader import _init_model_extra_config, TaskConfig
+        from omni_npu.model_config.config_loader.loader import _init_model_extra_config, TaskConfig
 
         # Use a path that is absolute on the current platform. Posix-only paths
         # like "/tmp/..." are not absolute on Windows (no drive letter), so
@@ -480,7 +480,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
         with patch.dict(os.environ, {"CUSTOM_MODEL_CONFIG_PATH": custom_path}), \
              patch(
-                 'omni.model_config.config_loader.loader._loader_configs_data',
+                 'omni_npu.model_config.config_loader.loader._loader_configs_data',
                  return_value=config_data,
              ) as mock_loader:
             _init_model_extra_config(TaskConfig())
@@ -489,7 +489,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_init_model_extra_config_resolves_relative_custom_config_path(self):
         """CUSTOM_MODEL_CONFIG_PATH relative values remain under default_config_path."""
-        from omni.model_config.config_loader.loader import (
+        from omni_npu.model_config.config_loader.loader import (
             _init_model_extra_config,
             TaskConfig,
             default_config_path,
@@ -506,7 +506,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
         with patch.dict(os.environ, {"CUSTOM_MODEL_CONFIG_PATH": custom_path}), \
              patch(
-                 'omni.model_config.config_loader.loader._loader_configs_data',
+                 'omni_npu.model_config.config_loader.loader._loader_configs_data',
                  return_value=config_data,
              ) as mock_loader:
             _init_model_extra_config(TaskConfig())
@@ -515,7 +515,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_update_task_config(self):
         """Test update_task_config updates task_config correctly"""
-        from omni.model_config.config_loader.loader import update_task_config, model_extra_config
+        from omni_npu.model_config.config_loader.loader import update_task_config, model_extra_config
         
         update_task_config(model_name="test_model", quant_type="w8a8")
         
@@ -524,11 +524,11 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_print_model_config(self):
         """Test _print_model_config logs config correctly"""
-        from omni.model_config.config_loader.loader import _print_model_config, model_extra_config
+        from omni_npu.model_config.config_loader.loader import _print_model_config, model_extra_config
         
         mock_logger = MagicMock()
         
-        with patch('omni.model_config.config_loader.loader.logger', mock_logger):
+        with patch('omni_npu.model_config.config_loader.loader.logger', mock_logger):
             _print_model_config()
         
         # Verify logger.info was called
@@ -536,7 +536,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_load_model_extra_config(self):
         """Test load_model_extra_config function with mocked dependencies"""
-        from omni.model_config.config_loader.loader import (
+        from omni_npu.model_config.config_loader.loader import (
             load_model_extra_config,
             model_extra_config,
         )
@@ -562,12 +562,12 @@ class TestConfigLoaderUnit(unittest.TestCase):
         mock_patch_module = MagicMock(patch_matmul=mock_patch_matmul)
         
         # Mock external dependencies
-        with patch('omni.model_config.config_loader.loader.parse_hf_config', return_value=('deepseek_v3', 'w8a8c16')), \
-             patch('omni.model_config.config_loader.loader.update_task_config') as mock_update, \
-             patch('omni.model_config.config_loader.loader._validate_config') as mock_validate, \
-             patch('omni.model_config.config_loader.loader._print_model_config') as mock_print, \
+        with patch('omni_npu.model_config.config_loader.loader.parse_hf_config', return_value=('deepseek_v3', 'w8a8c16')), \
+             patch('omni_npu.model_config.config_loader.loader.update_task_config') as mock_update, \
+             patch('omni_npu.model_config.config_loader.loader._validate_config') as mock_validate, \
+             patch('omni_npu.model_config.config_loader.loader._print_model_config') as mock_print, \
              patch.object(model_extra_config.operator_opt_config, 'enable_precision_strong_consistency', True), \
-             patch.dict(sys.modules, {'omni.vllm_patches.patches.common.patch_matmul': mock_patch_module}):
+             patch.dict(sys.modules, {'omni_npu.vllm_patches.patches.common.patch_matmul': mock_patch_module}):
             
             load_model_extra_config(mock_model_config, mock_vllm_config, mock_scheduler_config)
             
@@ -582,7 +582,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_model_operator_opt_config_enable_mtp_invariant(self):
         """Test ModelOperatorOptConfig enable_mtp_invariant default and custom value"""
-        from omni.model_config.config_loader.loader import ModelOperatorOptConfig
+        from omni_npu.model_config.config_loader.loader import ModelOperatorOptConfig
         
         default_config = ModelOperatorOptConfig()
         self.assertFalse(default_config.enable_mtp_invariant)
@@ -597,7 +597,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
     def test_match_model_name_multiple_matches_deepseek_v3(self):
         """Multiple matches with model_type=deepseek_v3 resolve to 'deepseek_v3'."""
         from types import SimpleNamespace
-        from omni.model_config.config_loader.loader import _match_model_name
+        from omni_npu.model_config.config_loader.loader import _match_model_name
 
         fake_matches = {
             "model_a": {"arch": "deepseek"},
@@ -606,7 +606,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
         hf_config = SimpleNamespace(model_type="deepseek_v3", arch="deepseek")
 
         with patch(
-            "omni.model_config.config_loader.loader._loader_configs_data",
+            "omni_npu.model_config.config_loader.loader._loader_configs_data",
             return_value=fake_matches,
         ):
             result = _match_model_name(hf_config, vars(hf_config))
@@ -616,7 +616,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
     def test_match_model_name_multiple_matches_deepseek_v32(self):
         """Multiple matches with model_type=deepseek_v32 resolve to 'deepseek_v32'."""
         from types import SimpleNamespace
-        from omni.model_config.config_loader.loader import _match_model_name
+        from omni_npu.model_config.config_loader.loader import _match_model_name
 
         fake_matches = {
             "model_a": {"arch": "deepseek"},
@@ -625,7 +625,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
         hf_config = SimpleNamespace(model_type="deepseek_v32", arch="deepseek")
 
         with patch(
-            "omni.model_config.config_loader.loader._loader_configs_data",
+            "omni_npu.model_config.config_loader.loader._loader_configs_data",
             return_value=fake_matches,
         ):
             result = _match_model_name(hf_config, vars(hf_config))
@@ -635,7 +635,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
     def test_match_model_name_multiple_matches_unknown_raises(self):
         """Multiple matches with unknown model_type raise RuntimeError."""
         from types import SimpleNamespace
-        from omni.model_config.config_loader.loader import _match_model_name
+        from omni_npu.model_config.config_loader.loader import _match_model_name
 
         fake_matches = {
             "model_a": {"arch": "deepseek"},
@@ -644,7 +644,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
         hf_config = SimpleNamespace(model_type="unknown_model", arch="deepseek")
 
         with patch(
-            "omni.model_config.config_loader.loader._loader_configs_data",
+            "omni_npu.model_config.config_loader.loader._loader_configs_data",
             return_value=fake_matches,
         ):
             with self.assertRaises(RuntimeError) as ctx:
@@ -659,7 +659,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
     def test_extract_quantization_config_via_text_config(self):
         """Cover text_config fallback when hf_config has no quantization_config attr."""
         from types import SimpleNamespace
-        from omni.model_config.config_loader.loader import _extract_quantization_config
+        from omni_npu.model_config.config_loader.loader import _extract_quantization_config
 
         text_config = SimpleNamespace(quantization_config={"format": "int-quantized"})
         hf_config = SimpleNamespace(text_config=text_config)
@@ -672,7 +672,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
     def test_extract_quantization_config_returns_none_when_no_text_config(self):
         """Cover text_config path returning None when neither attr has quantization_config."""
         from types import SimpleNamespace
-        from omni.model_config.config_loader.loader import _extract_quantization_config
+        from omni_npu.model_config.config_loader.loader import _extract_quantization_config
 
         text_config = SimpleNamespace()  # no quantization_config attr
         hf_config = SimpleNamespace(text_config=text_config)
@@ -687,7 +687,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_resolve_int_quant_type_dict_weights_and_activations(self):
         """Cover dict num_bits branches for both weights and input_activations."""
-        from omni.model_config.config_loader.loader import _resolve_int_quant_type
+        from omni_npu.model_config.config_loader.loader import _resolve_int_quant_type
 
         quantization_config = {
             "config_groups": {
@@ -705,7 +705,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_resolve_int_quant_type_opti_c8_scheme(self):
         """Cover kv_cache_scheme == 'Opti-C8' branch."""
-        from omni.model_config.config_loader.loader import _resolve_int_quant_type
+        from omni_npu.model_config.config_loader.loader import _resolve_int_quant_type
 
         quantization_config = {
             "config_groups": {
@@ -722,7 +722,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_resolve_int_quant_type_dict_kv_cache_scheme(self):
         """Cover dict kv_cache_scheme branch."""
-        from omni.model_config.config_loader.loader import _resolve_int_quant_type
+        from omni_npu.model_config.config_loader.loader import _resolve_int_quant_type
 
         quantization_config = {
             "config_groups": {
@@ -744,7 +744,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
     def test_resolve_quant_type_hifloat8(self):
         """Cover quant_method='hifloat8' → 'hif8'."""
         from types import SimpleNamespace
-        from omni.model_config.config_loader.loader import _resolve_quant_type
+        from omni_npu.model_config.config_loader.loader import _resolve_quant_type
 
         hf_config = SimpleNamespace(quantization_config={"quant_method": "hifloat8"})
         result = _resolve_quant_type(hf_config)
@@ -753,7 +753,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
     def test_resolve_quant_type_mxfp8(self):
         """Cover quant_method='mxfp8' → 'mxfp8'."""
         from types import SimpleNamespace
-        from omni.model_config.config_loader.loader import _resolve_quant_type
+        from omni_npu.model_config.config_loader.loader import _resolve_quant_type
 
         hf_config = SimpleNamespace(quantization_config={"quant_method": "mxfp8"})
         result = _resolve_quant_type(hf_config)
@@ -765,7 +765,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_select_config_file_decode_node(self):
         """Cover decode node branch (is_prefill_node=False)."""
-        from omni.model_config.config_loader.loader import _select_config_file, TaskConfig
+        from omni_npu.model_config.config_loader.loader import _select_config_file, TaskConfig
 
         files_data = {
             "prefill_config_file": "p.json",
@@ -781,10 +781,10 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_get_best_practice_config_warns_when_no_matching_list(self):
         """Cover logger.warning + return None when model/hardware/precision not found."""
-        from omni.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
+        from omni_npu.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
 
         with patch(
-            "omni.model_config.config_loader.loader._loader_configs_data",
+            "omni_npu.model_config.config_loader.loader._loader_configs_data",
             return_value=[],
         ):
             result = _get_best_practice_config(TaskConfig())
@@ -793,7 +793,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_get_best_practice_config_warns_when_no_pd_scheme(self):
         """Cover logger.warning + return None when pd_scheme missing from configs_list."""
-        from omni.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
+        from omni_npu.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
 
         best_practice_entries = [
             {
@@ -805,7 +805,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
         ]
 
         with patch(
-            "omni.model_config.config_loader.loader._loader_configs_data",
+            "omni_npu.model_config.config_loader.loader._loader_configs_data",
             return_value=best_practice_entries,
         ):
             task_config = TaskConfig(
@@ -819,7 +819,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_get_best_practice_config_raises_when_file_not_found(self):
         """Cover raise RuntimeError when resolved config file does not exist on disk."""
-        from omni.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
+        from omni_npu.model_config.config_loader.loader import _get_best_practice_config, TaskConfig
 
         best_practice_entries = [
             {
@@ -833,7 +833,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
         ]
 
         with patch(
-            "omni.model_config.config_loader.loader._loader_configs_data",
+            "omni_npu.model_config.config_loader.loader._loader_configs_data",
             return_value=best_practice_entries,
         ), patch("os.path.exists", return_value=False):
             # is_pd_disaggregation=False → pd_scheme='hybrid' (matches configs key)
@@ -854,7 +854,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_loader_configs_data_type_error_handler(self):
         """Cover except TypeError → RuntimeError('Config structure mismatch')."""
-        from omni.model_config.config_loader.loader import _loader_configs_data
+        from omni_npu.model_config.config_loader.loader import _loader_configs_data
 
         # Patch open so the file handle is a mock; then make json.load raise TypeError.
         m = mock_open()
@@ -866,7 +866,7 @@ class TestConfigLoaderUnit(unittest.TestCase):
 
     def test_loader_configs_data_unexpected_error_handler(self):
         """Cover except Exception → RuntimeError('Unexpected error')."""
-        from omni.model_config.config_loader.loader import _loader_configs_data
+        from omni_npu.model_config.config_loader.loader import _loader_configs_data
 
         with patch("builtins.open", side_effect=OSError("unexpected failure")):
             with self.assertRaises(RuntimeError) as ctx:

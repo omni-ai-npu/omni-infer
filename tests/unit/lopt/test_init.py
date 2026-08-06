@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-from omni.lopt import (
+from omni_npu.lopt import (
     LOPT_AVAILABLE,
     LoptParallelTokenizer,
     maybe_get_lopt_tokenizer,

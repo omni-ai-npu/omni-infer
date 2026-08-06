@@ -8,7 +8,7 @@ import pytest
 from vllm.config import CUDAGraphMode, CompilationConfig, SchedulerConfig, VllmConfig
 from vllm.forward_context import BatchDescriptor
 
-from omni.worker.npu_graph_dispatcher import NPUGraphDispatcher
+from omni_npu.worker.npu_graph_dispatcher import NPUGraphDispatcher
 
 
 @pytest.fixture

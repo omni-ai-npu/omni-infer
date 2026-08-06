@@ -13,12 +13,12 @@ from vllm.v1.kv_cache_interface import (
     UniformTypeKVCacheSpecs,
 )
 
-from omni.vllm_patches.patches.models.qwen import qwen_hybrid_common as hybrid
+from omni_npu.vllm_patches.patches.models.qwen import qwen_hybrid_common as hybrid
 
 
 class TestUniformTypeKvCacheConfig:
     @patch(
-        "omni.vllm_patches.patches.models.qwen.qwen_hybrid_common.kv_cache_utils.may_override_num_blocks",
+        "omni_npu.vllm_patches.patches.models.qwen.qwen_hybrid_common.kv_cache_utils.may_override_num_blocks",
         side_effect=lambda _cfg, n: n,
     )
     def test_builds_per_layer_tensors(self, _override):
@@ -238,7 +238,7 @@ class TestKvCacheUtilsPatch:
             hybrid.set_hybrid_kv_cache_config_fn(original)
 
     @patch(
-        "omni.vllm_patches.patches.models.qwen.qwen_hybrid_common.uniform_type_kv_cache_config",
+        "omni_npu.vllm_patches.patches.models.qwen.qwen_hybrid_common.uniform_type_kv_cache_config",
         return_value="uniform_cfg",
     )
     def test_single_uniform_group_uses_uniform_helper(self, mock_uniform):

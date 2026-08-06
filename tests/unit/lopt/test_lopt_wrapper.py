@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from omni.lopt import (
+from omni_npu.lopt import (
     LOPT_AVAILABLE,
     LoptParallelTokenizer,
     maybe_get_lopt_tokenizer,
@@ -62,7 +62,7 @@ class TestLoptParallelTokenizerWithMock:
             )
 
     def test_tokenize_chunk_static(self):
-        import omni.lopt.lopt_wrapper as lw
+        import omni_npu.lopt.lopt_wrapper as lw
 
         mock_tokenizer = MagicMock()
         lw._worker_tokenizer = mock_tokenizer
@@ -165,7 +165,7 @@ class TestLoptParallelTokenizerWithMock:
         monkeypatch.setitem(sys.modules, "Cpp_match_merge", mock_cpp)
 
         import importlib
-        import omni.lopt.lopt_wrapper as lw
+        import omni_npu.lopt.lopt_wrapper as lw
 
         importlib.reload(lw)
 
@@ -191,7 +191,7 @@ class TestLoptParallelTokenizerWithMock:
         monkeypatch.setitem(sys.modules, "Cpp_match_merge", mock_cpp)
 
         import importlib
-        import omni.lopt.lopt_wrapper as lw
+        import omni_npu.lopt.lopt_wrapper as lw
 
         importlib.reload(lw)
 
@@ -206,7 +206,7 @@ class TestLoptParallelTokenizerWithMock:
             assert result is None
 
     def test_init_worker(self):
-        import omni.lopt.lopt_wrapper as lw
+        import omni_npu.lopt.lopt_wrapper as lw
 
         mock_tokenizer = MagicMock()
         with patch(
@@ -289,7 +289,7 @@ class TestLoptParallelTokenizerWithMock:
 
     def test_cpp_match_wrapper_success(self):
         import numpy as np
-        import omni.lopt.lopt_wrapper as lw
+        import omni_npu.lopt.lopt_wrapper as lw
 
         mock_cpp = MagicMock()
         mock_cpp.match = MagicMock(return_value=(5, 3))
@@ -311,7 +311,7 @@ class TestLoptParallelTokenizerWithMock:
     def test_parallel_encode_success(self, monkeypatch):
         import importlib
         import numpy as np
-        import omni.lopt.lopt_wrapper as lw
+        import omni_npu.lopt.lopt_wrapper as lw
 
         mock_cpp = MagicMock()
         mock_cpp.match = MagicMock(return_value=(3, 3))
@@ -353,7 +353,7 @@ class TestLoptParallelTokenizerWithMock:
     def test_parallel_encode_with_special_tokens(self, monkeypatch):
         import importlib
         import numpy as np
-        import omni.lopt.lopt_wrapper as lw
+        import omni_npu.lopt.lopt_wrapper as lw
 
         mock_cpp = MagicMock()
         mock_cpp.match = MagicMock(return_value=(3, 3))

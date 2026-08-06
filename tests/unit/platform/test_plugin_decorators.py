@@ -2,7 +2,7 @@
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """
-Unit tests for omni.plugin_decorators module (plugin-based decorators).
+Unit tests for omni_npu.plugin_decorators module (plugin-based decorators).
 Covers missing lines: 38-42, 46-51, 53, 60-65, 67, 112-118, 121-129, 131, 134-136, 139-145, 147, 149
 """
 
@@ -11,7 +11,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import Mock
 
-from omni.plugin_decorators import (
+from omni_npu.plugin_decorators import (
     _cached_eps,
     create_plugin_decorator,
     create_conditional_plugin_decorator,
@@ -47,7 +47,7 @@ class TestCreatePluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -83,7 +83,7 @@ class TestCreatePluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -121,7 +121,7 @@ class TestCreatePluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -154,7 +154,7 @@ class TestCreatePluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -187,7 +187,7 @@ class TestCreatePluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -219,12 +219,12 @@ class TestCreatePluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
         mock_logger = Mock()
-        monkeypatch.setattr("omni.plugin_decorators.logger", mock_logger)
+        monkeypatch.setattr("omni_npu.plugin_decorators.logger", mock_logger)
 
         decorator = create_plugin_decorator(
             "test.missing_pre",
@@ -261,12 +261,12 @@ class TestCreatePluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
         mock_logger = Mock()
-        monkeypatch.setattr("omni.plugin_decorators.logger", mock_logger)
+        monkeypatch.setattr("omni_npu.plugin_decorators.logger", mock_logger)
 
         decorator = create_plugin_decorator(
             "test.missing_post",
@@ -300,12 +300,12 @@ class TestCreatePluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
         mock_logger = Mock()
-        monkeypatch.setattr("omni.plugin_decorators.logger", mock_logger)
+        monkeypatch.setattr("omni_npu.plugin_decorators.logger", mock_logger)
 
         decorator = create_plugin_decorator(
             "test.load_fail",
@@ -331,7 +331,7 @@ class TestCreatePluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -372,7 +372,7 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -405,7 +405,7 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -446,7 +446,7 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -479,7 +479,7 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -510,12 +510,12 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
         mock_logger = Mock()
-        monkeypatch.setattr("omni.plugin_decorators.logger", mock_logger)
+        monkeypatch.setattr("omni_npu.plugin_decorators.logger", mock_logger)
 
         decorator = create_conditional_plugin_decorator(
             "test.conditional_missing_pre",
@@ -548,12 +548,12 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
         mock_logger = Mock()
-        monkeypatch.setattr("omni.plugin_decorators.logger", mock_logger)
+        monkeypatch.setattr("omni_npu.plugin_decorators.logger", mock_logger)
 
         decorator = create_conditional_plugin_decorator(
             "test.conditional_missing_post",
@@ -583,12 +583,12 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
         mock_logger = Mock()
-        monkeypatch.setattr("omni.plugin_decorators.logger", mock_logger)
+        monkeypatch.setattr("omni_npu.plugin_decorators.logger", mock_logger)
 
         decorator = create_conditional_plugin_decorator(
             "test.conditional_load_fail",
@@ -623,7 +623,7 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -656,7 +656,7 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -689,7 +689,7 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -728,7 +728,7 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -761,7 +761,7 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -794,7 +794,7 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -827,7 +827,7 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -868,7 +868,7 @@ class TestCreateConditionalPluginDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -911,7 +911,7 @@ class TestPredefinedDecorators:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
         _cached_eps.clear()
@@ -929,7 +929,7 @@ class TestPredefinedDecorators:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
         _cached_eps.clear()
@@ -947,7 +947,7 @@ class TestPredefinedDecorators:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
         _cached_eps.clear()
@@ -965,7 +965,7 @@ class TestPredefinedDecorators:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
         _cached_eps.clear()
@@ -976,7 +976,7 @@ class TestPredefinedDecorators:
 
         result = sample_reinitialize_function("kv-config", [16, 32])
         assert result == ("kv-config", [16, 32])
-        assert "omni.reinitialize_input_batch_decorators" in _cached_eps
+        assert "omni_npu.reinitialize_input_batch_decorators" in _cached_eps
 
     def test_reinitialize_input_batch_decorator_uses_expected_hooks(
         self, monkeypatch
@@ -994,12 +994,12 @@ class TestPredefinedDecorators:
 
         def mock_entry_points(group):
             captured_groups.append(group)
-            if group == "omni.reinitialize_input_batch_decorators":
+            if group == "omni_npu.reinitialize_input_batch_decorators":
                 return [mock_ep]
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
         _cached_eps.clear()
@@ -1012,7 +1012,7 @@ class TestPredefinedDecorators:
         result = sample_reinitialize_function("runner", "kv-config", [16])
 
         assert result == "base-called"
-        assert captured_groups == ["omni.reinitialize_input_batch_decorators"]
+        assert captured_groups == ["omni_npu.reinitialize_input_batch_decorators"]
         mock_plugin.pre_reinitialize_input_batch.assert_called_once_with(
             "runner", "kv-config", [16]
         )
@@ -1081,7 +1081,7 @@ class TestCachedEntryPoints:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -1129,12 +1129,12 @@ class TestAttnDecorator:
 
         def mock_entry_points(group):
             captured_groups.append(group)
-            if group == "omni.test_type_attn_decorators":
+            if group == "omni_npu.test_type_attn_decorators":
                 return [mock_ep]
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -1147,7 +1147,7 @@ class TestAttnDecorator:
         test_func()
 
         # Verify the entry point group was constructed correctly
-        assert "omni.test_type_attn_decorators" in captured_groups
+        assert "omni_npu.test_type_attn_decorators" in captured_groups
         mock_plugin.pre_attn.assert_called_once()
         mock_plugin.post_attn.assert_called_once()
 
@@ -1160,7 +1160,7 @@ class TestAttnDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -1171,7 +1171,7 @@ class TestAttnDecorator:
             return "result"
 
         assert test_func() == "result"
-        assert "omni.legacy_attn_decorators" in captured_groups
+        assert "omni_npu.legacy_attn_decorators" in captured_groups
 
     def test_attn_decorator_rejects_unexpected_keyword(self):
         """Test that attn_decorator rejects unsupported keywords."""
@@ -1208,12 +1208,12 @@ class TestAttnDecorator:
         mock_ep.name = "dsa_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.dsa_attn_decorators":
+            if group == "omni_npu.dsa_attn_decorators":
                 return [mock_ep]
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -1240,12 +1240,12 @@ class TestAttnDecorator:
         mock_ep.name = "mla_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.mla_attn_decorators":
+            if group == "omni_npu.mla_attn_decorators":
                 return [mock_ep]
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -1271,12 +1271,12 @@ class TestAttnDecorator:
         mock_ep.name = "mome_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.mome_attn_decorators":
+            if group == "omni_npu.mome_attn_decorators":
                 return [mock_ep]
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -1298,7 +1298,7 @@ class TestAttnDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -1318,17 +1318,17 @@ class TestAttnDecorator:
         mock_ep.name = "failing_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.fail_attn_decorators":
+            if group == "omni_npu.fail_attn_decorators":
                 return [mock_ep]
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
         mock_logger = Mock()
-        monkeypatch.setattr("omni.plugin_decorators.logger", mock_logger)
+        monkeypatch.setattr("omni_npu.plugin_decorators.logger", mock_logger)
 
         decorator = attn_decorator(attn_type='fail')
 
@@ -1359,7 +1359,7 @@ class TestDetermineMemoryDecorator:
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -1381,12 +1381,12 @@ class TestDetermineMemoryDecorator:
         mock_ep.name = "memory_override_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.determine_memory_decorators":
+            if group == "omni_npu.determine_memory_decorators":
                 return [mock_ep]
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -1414,12 +1414,12 @@ class TestDetermineMemoryDecorator:
         mock_ep.name = "skip_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.determine_memory_decorators":
+            if group == "omni_npu.determine_memory_decorators":
                 return [mock_ep]
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 
@@ -1441,12 +1441,12 @@ class TestDetermineMemoryDecorator:
         mock_ep.name = "passthrough_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.determine_memory_decorators":
+            if group == "omni_npu.determine_memory_decorators":
                 return [mock_ep]
             return []
 
         monkeypatch.setattr(
-            "omni.plugin_decorators.entry_points",
+            "omni_npu.plugin_decorators.entry_points",
             mock_entry_points
         )
 

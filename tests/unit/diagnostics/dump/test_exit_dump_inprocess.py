@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-from omni.diagnostics.dump import constants, exit_dump
+from omni_npu.diagnostics.dump import constants, exit_dump
 
 pytestmark = pytest.mark.unit
 

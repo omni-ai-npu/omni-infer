@@ -6,9 +6,9 @@ from unittest.mock import MagicMock
 
 from vllm.v1.kv_cache_interface import AttentionSpec
 
-from omni.vllm_patches.patches.models.qwen import patch_qwen3_next as patch_next
-from omni.vllm_patches.patches.models.qwen import qwen_hybrid_common as hybrid
-from omni.vllm_patches.patches.models.qwen3_5 import patch_qwen3_5 as patch35
+from omni_npu.vllm_patches.patches.models.qwen import patch_qwen3_next as patch_next
+from omni_npu.vllm_patches.patches.models.qwen import qwen_hybrid_common as hybrid
+from omni_npu.vllm_patches.patches.models.qwen3_5 import patch_qwen3_5 as patch35
 
 
 def test_hybrid_patch_entry_modules_import():
@@ -25,7 +25,7 @@ def test_patch_qwen3_5_module_exports_runner_patch():
 
 
 def test_hybrid_scheduler_and_kv_patches_registered():
-    from omni.vllm_patches.patch_manager import PatchManager
+    from omni_npu.vllm_patches.patch_manager import PatchManager
 
     assert "SchedulerPatch" in PatchManager.registered_patches
     assert "KVCacheUtilsPatch" in PatchManager.registered_patches

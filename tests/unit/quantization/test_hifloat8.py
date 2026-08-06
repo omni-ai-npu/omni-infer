@@ -127,22 +127,22 @@ def hifloat8_module(monkeypatch):
 
     omni_pkg = _make_module(monkeypatch, "omni_npu", is_package=True)
     omni_pkg.__path__ = [str(repo_root / "omni")]
-    layers_pkg = _make_module(monkeypatch, "omni.layers", is_package=True)
+    layers_pkg = _make_module(monkeypatch, "omni_npu.layers", is_package=True)
     layers_pkg.__path__ = [str(repo_root / "omni" / "layers")]
-    quant_pkg = _make_module(monkeypatch, "omni.layers.quantization", is_package=True)
+    quant_pkg = _make_module(monkeypatch, "omni_npu.layers.quantization", is_package=True)
     quant_pkg.__path__ = [str(repo_root / "omni" / "layers" / "quantization")]
 
-    fused_moe_pkg = _make_module(monkeypatch, "omni.layers.fused_moe", is_package=True)
+    fused_moe_pkg = _make_module(monkeypatch, "omni_npu.layers.fused_moe", is_package=True)
     # Point the package at disk so the (lightweight, torch-only) shared_expert
     # submodule imports for real; the other submodules stay stubbed via sys.modules.
     fused_moe_pkg.__path__ = [str(repo_root / "omni" / "layers" / "fused_moe")]
-    fused_moe_config_module = _make_module(monkeypatch, "omni.layers.fused_moe.config")
+    fused_moe_config_module = _make_module(monkeypatch, "omni_npu.layers.fused_moe.config")
     fused_moe_config_module.hifloat8_moe_quant_config = (
         lambda **kwargs: SimpleNamespace(**kwargs)
     )
 
     npu_fused_moe_base_module = _make_module(
-        monkeypatch, "omni.layers.fused_moe.fused_moe_method_base"
+        monkeypatch, "omni_npu.layers.fused_moe.fused_moe_method_base"
     )
 
     class NPUFusedMoEMethodBase:
@@ -152,7 +152,7 @@ def hifloat8_module(monkeypatch):
     npu_fused_moe_base_module.NPUFusedMoEMethodBase = NPUFusedMoEMethodBase
 
     npu_fused_moe_layer_module = _make_module(
-        monkeypatch, "omni.layers.fused_moe.layer"
+        monkeypatch, "omni_npu.layers.fused_moe.layer"
     )
 
     class NPUFusedMoE:
@@ -163,7 +163,7 @@ def hifloat8_module(monkeypatch):
     from dataclasses import dataclass, field
     from typing import Callable, Optional
 
-    layer_utils_module = _make_module(monkeypatch, "omni.layers.utils")
+    layer_utils_module = _make_module(monkeypatch, "omni_npu.layers.utils")
     layer_utils_module.named_stream = lambda _name: _DummyStream()
     layer_utils_module.CUBE_SIDE_TASKS_KEY = "cube_side_tasks"
     layer_utils_module.CUBE_SIDE_STREAM_NAME = "cube_side_task"
@@ -176,13 +176,13 @@ def hifloat8_module(monkeypatch):
     layer_utils_module.CubeSideTask = _CubeSideTask
 
     model_config_pkg = _make_module(
-        monkeypatch, "omni.model_config", is_package=True
+        monkeypatch, "omni_npu.model_config", is_package=True
     )
     config_loader_pkg = _make_module(
-        monkeypatch, "omni.model_config.config_loader", is_package=True
+        monkeypatch, "omni_npu.model_config.config_loader", is_package=True
     )
     config_loader_module = _make_module(
-        monkeypatch, "omni.model_config.config_loader.loader"
+        monkeypatch, "omni_npu.model_config.config_loader.loader"
     )
     config_loader_module.model_extra_config = SimpleNamespace(
         operator_opt_config=SimpleNamespace(
@@ -191,21 +191,21 @@ def hifloat8_module(monkeypatch):
         ),
     )
 
-    _make_module(monkeypatch, "omni.v1", is_package=True)
-    _make_module(monkeypatch, "omni.v1.layers", is_package=True)
-    v1_linear_module = _make_module(monkeypatch, "omni.v1.layers.linear")
+    _make_module(monkeypatch, "omni_npu.v1", is_package=True)
+    _make_module(monkeypatch, "omni_npu.v1.layers", is_package=True)
+    v1_linear_module = _make_module(monkeypatch, "omni_npu.v1.layers.linear")
 
     class FlashCommLinearMethodBase:
         pass
 
     v1_linear_module.FlashCommLinearMethodBase = FlashCommLinearMethodBase
 
-    # omni.layers.mhc — load the real cube_side_task_ops module from disk
+    # omni_npu.layers.mhc — load the real cube_side_task_ops module from disk
     # so torch.ops.vllm.cube_side_run / cube_side_wait can be bound to its
     # Python implementations for the runner tests.
-    mhc_pkg = _make_module(monkeypatch, "omni.layers.mhc", is_package=True)
+    mhc_pkg = _make_module(monkeypatch, "omni_npu.layers.mhc", is_package=True)
     mhc_pkg.__path__ = [str(repo_root / "omni" / "layers" / "mhc")]
-    cube_side_ops_name = "omni.layers.mhc.cube_side_task_ops"
+    cube_side_ops_name = "omni_npu.layers.mhc.cube_side_task_ops"
     monkeypatch.delitem(sys.modules, cube_side_ops_name, raising=False)
     cube_side_ops_module = importlib.import_module(cube_side_ops_name)
     cube_side_ops_module = importlib.reload(cube_side_ops_module)
@@ -218,7 +218,7 @@ def hifloat8_module(monkeypatch):
     )
     monkeypatch.setattr(torch.ops, "vllm", torch_ops_vllm, raising=False)
 
-    module_name = "omni.layers.quantization.hifloat8"
+    module_name = "omni_npu.layers.quantization.hifloat8"
     monkeypatch.delitem(sys.modules, module_name, raising=False)
     module = importlib.import_module(module_name)
     module = importlib.reload(module)
@@ -927,14 +927,14 @@ def test_flashcomm_apply_runs_registered_cube_side_task(
 
     # Hifloat8FCLinearMethod.apply imports these lazily; stub the module so the
     # default (x_transform=None) path imports without the real comm extension.
-    v1_distributed = types.ModuleType("omni.v1.distributed")
+    v1_distributed = types.ModuleType("omni_npu.v1.distributed")
     v1_distributed.__path__ = []
-    comm_ext = types.ModuleType("omni.v1.distributed.communication_op_ext")
+    comm_ext = types.ModuleType("omni_npu.v1.distributed.communication_op_ext")
     comm_ext.layer_parallel_all_gather = lambda x, *a, **k: x
     comm_ext.layer_parallel_all2all_single = lambda x, *a, **k: x
-    monkeypatch.setitem(sys.modules, "omni.v1.distributed", v1_distributed)
+    monkeypatch.setitem(sys.modules, "omni_npu.v1.distributed", v1_distributed)
     monkeypatch.setitem(
-        sys.modules, "omni.v1.distributed.communication_op_ext", comm_ext
+        sys.modules, "omni_npu.v1.distributed.communication_op_ext", comm_ext
     )
 
     flag = {"called": False}

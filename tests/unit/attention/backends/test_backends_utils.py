@@ -2,7 +2,7 @@
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 """
-Unit tests for omni.attention.backends.utils module.
+Unit tests for omni_npu.attention.backends.utils module.
 Tests for get_attention_backend, load_plugin_backends, and get_available_backends.
 """
 
@@ -16,9 +16,9 @@ import pytest
 import torch
 from unittest.mock import Mock
 
-# Load utils.py directly so we do not import omni.attention.backends.__init__
+# Load utils.py directly so we do not import omni_npu.attention.backends.__init__
 # (that pulls attention.py -> torch.npu / NPU runtime, which breaks CPU-only pytest).
-_UTILS_MOD_NAME = "omni.attention.backends.utils"
+_UTILS_MOD_NAME = "omni_npu.attention.backends.utils"
 
 
 def _load_utils_standalone():
@@ -82,7 +82,7 @@ class TestLoadPluginBackends:
 
         # Mock entry_points to return our mock
         def mock_entry_points(group):
-            if group == "omni.attention_backends":
+            if group == "omni_npu.attention_backends":
                 return [mock_ep]
             return []
 
@@ -104,7 +104,7 @@ class TestLoadPluginBackends:
         mock_ep.name = "failing_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.attention_backends":
+            if group == "omni_npu.attention_backends":
                 return [mock_ep]
             return []
 
@@ -229,7 +229,7 @@ class TestLoadPluginBackendsMap:
         mock_ep.name = "test_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.attention_backends":
+            if group == "omni_npu.attention_backends":
                 return [mock_ep]
             return []
 
@@ -265,7 +265,7 @@ class TestLoadPluginBackendsMap:
         mock_success_ep.name = "success_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.attention_backends":
+            if group == "omni_npu.attention_backends":
                 return [mock_fail_ep, mock_success_ep]
             return []
 
@@ -298,7 +298,7 @@ class TestLoadPluginBackendsMap:
         mock_ep.name = "bad_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.attention_backends":
+            if group == "omni_npu.attention_backends":
                 return [mock_ep]
             return []
 
@@ -399,7 +399,7 @@ class TestApplyPluginOverrides:
         mock_ep.name = "replace_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.attention_backends":
+            if group == "omni_npu.attention_backends":
                 return [mock_ep]
             return []
 
@@ -442,7 +442,7 @@ class TestApplyPluginOverrides:
         mock_ep.name = "disabled_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.attention_backends":
+            if group == "omni_npu.attention_backends":
                 return [mock_ep]
             return []
 
@@ -481,7 +481,7 @@ class TestApplyPluginOverrides:
         mock_ep.name = "same_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.attention_backends":
+            if group == "omni_npu.attention_backends":
                 return [mock_ep]
             return []
 
@@ -528,7 +528,7 @@ class TestApplyPluginOverrides:
         mock_ep2.name = "disabled_plugin"
 
         def mock_entry_points(group):
-            if group == "omni.attention_backends":
+            if group == "omni_npu.attention_backends":
                 return [mock_ep1, mock_ep2]
             return []
 

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import torch
 import pytest
 
-DSA_MODULE = "omni.v1.layers.attention.npu_dsa"
+DSA_MODULE = "omni_npu.v1.layers.attention.npu_dsa"
 
 cfg_i32 = {"device": "cpu", "dtype": torch.int32}
 cfg_i64 = {"device": "cpu", "dtype": torch.int64}
@@ -21,8 +21,8 @@ cfg_bf16 = {"device": "cpu", "dtype": torch.bfloat16}
 def test_pangu_mla_epilog_partitions_only_when_o_proj_requires_it(
     monkeypatch, requires_partition
 ):
-    from omni.v1.layers.attention import npu_pangu as pangu_mod
-    from omni.v1.layers.attention.npu_pangu import NPUPanguSparseAttention
+    from omni_npu.v1.layers.attention import npu_pangu as pangu_mod
+    from omni_npu.v1.layers.attention.npu_pangu import NPUPanguSparseAttention
 
     attention = NPUPanguSparseAttention.__new__(NPUPanguSparseAttention)
     torch.nn.Module.__init__(attention)
@@ -58,8 +58,8 @@ def test_pangu_mla_epilog_partitions_only_when_o_proj_requires_it(
 def test_dsa_mome_out_partitions_only_when_o_proj_requires_it(
     monkeypatch, requires_partition
 ):
-    from omni.v1.layers.attention import npu_mla as mla_mod
-    from omni.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
 
     attention = NPUDeepseekSparseAttention.__new__(NPUDeepseekSparseAttention)
     torch.nn.Module.__init__(attention)
@@ -319,9 +319,9 @@ def _mock_omni_cache(
     kv0 = torch.zeros(num_slots, pg, 1, kv_lora_rank, **cfg_bf16)
     kv1 = torch.zeros(num_slots, pg, 1, qk_rope_head_dim, **cfg_bf16)
     kv2 = torch.zeros(num_slots, pg, 1, index_head_dim, **cfg_bf16)
-    fake_omni.device_cache = (kv0, kv1, kv2)
-    fake_omni.synchronize_d2h = MagicMock()
-    fake_omni.synchronize_h2d = MagicMock()
+    fake_omni_npu.device_cache = (kv0, kv1, kv2)
+    fake_omni_npu.synchronize_d2h = MagicMock()
+    fake_omni_npu.synchronize_h2d = MagicMock()
 
     cache_mod = MagicMock()
     cache_mod.omni_cache = fake_omni
@@ -581,7 +581,7 @@ def _mock_mome():
         def __call__(self, x, *args, **kwargs):
             return x
 
-    import omni.v1.layers.attention.npu_dsa as mla_mod
+    import omni_npu.v1.layers.attention.npu_dsa as mla_mod
     mla_mod.AggregateConv = MockAggregateConv
     mla_mod.MomeAttention = MockMomeAttention
     yield
@@ -739,7 +739,7 @@ def _mock_forward_context(seq_lens: list, mode: str="prefill", use_mome=False):
         ctx.attn_metadata.num_actual_tokens = sum(seq_lens)
         ctx.attn_metadata.num_decode_tokens = 0
 
-        from omni.v1.layers.attention.npu_dsa import (
+        from omni_npu.v1.layers.attention.npu_dsa import (
             get_tp_group,
             get_dcp_group,
             model_extra_config,
@@ -747,7 +747,7 @@ def _mock_forward_context(seq_lens: list, mode: str="prefill", use_mome=False):
             KVSPMaganer,
         )
 
-        from omni.attention.backends.utils import paged_cache
+        from omni_npu.attention.backends.utils import paged_cache
         if model_extra_config.parall_config.ena_seq_parallel:
             metadata = ctx.attn_metadata.prefill
             computed_lens = metadata.seq_lens - (metadata.query_start_loc[1:] - metadata.query_start_loc[:-1])
@@ -779,7 +779,7 @@ def _mock_forward_context(seq_lens: list, mode: str="prefill", use_mome=False):
         ctx.attn_metadata.num_actual_tokens = 2
         ctx.attn_metadata.num_decode_tokens = 2
 
-        from omni.v1.layers.attention.npu_dsa import (
+        from omni_npu.v1.layers.attention.npu_dsa import (
             get_dcp_group,
             KVSPMaganer,
         )
@@ -982,7 +982,7 @@ class TestIndexer:
             indexer_rope_interleave=False,
             rope_type="default",
         ) as (cfg, vllm_cfg, env):
-            from omni.v1.layers.attention.npu_dsa import Indexer, get_forward_context
+            from omni_npu.v1.layers.attention.npu_dsa import Indexer, get_forward_context
 
             idx = Indexer(
                 vllm_config=vllm_cfg,
@@ -1020,7 +1020,7 @@ class TestIndexer:
             indexer_rope_interleave=True,
             rope_type="deepseek_yarn",
         ) as (cfg, vllm_cfg, env):
-            from omni.v1.layers.attention.npu_dsa import Indexer, get_forward_context
+            from omni_npu.v1.layers.attention.npu_dsa import Indexer, get_forward_context
 
             idx = Indexer(
                 vllm_config=vllm_cfg,
@@ -1056,7 +1056,7 @@ class TestIndexer:
             use_omni_cache=False,
             enable_precision_strong_consistency=True,
         ) as (cfg, vllm_cfg, env):
-            from omni.v1.layers.attention.npu_dsa import Indexer
+            from omni_npu.v1.layers.attention.npu_dsa import Indexer
 
             idx = Indexer(
                 vllm_config=vllm_cfg,
@@ -1076,7 +1076,7 @@ class TestIndexer:
             use_omni_cache=False,
             enable_precision_strong_consistency=False,
         ) as (cfg, vllm_cfg, env):
-            from omni.v1.layers.attention.npu_dsa import Indexer
+            from omni_npu.v1.layers.attention.npu_dsa import Indexer
 
             idx = Indexer(
                 vllm_config=vllm_cfg,
@@ -1100,7 +1100,7 @@ class TestIndexer:
             hidden_size=16,
             q_lora_rank=16,
         ) as (cfg, vllm_cfg, env):
-            from omni.v1.layers.attention.npu_dsa import Indexer
+            from omni_npu.v1.layers.attention.npu_dsa import Indexer
 
             idx = Indexer(
                 vllm_config=vllm_cfg,
@@ -1141,7 +1141,7 @@ class TestIndexer:
             hidden_size=16,
             q_lora_rank=16,
         ) as (cfg, vllm_cfg, env):
-            from omni.v1.layers.attention.npu_dsa import Indexer
+            from omni_npu.v1.layers.attention.npu_dsa import Indexer
 
             idx = Indexer(
                 vllm_config=vllm_cfg,
@@ -1179,7 +1179,7 @@ class TestIndexer:
             indexer_rope_interleave=False,
             rope_type="default",
         ) as (cfg, vllm_cfg, env):
-            from omni.v1.layers.attention.npu_dsa import Indexer, get_forward_context
+            from omni_npu.v1.layers.attention.npu_dsa import Indexer, get_forward_context
 
             idx = Indexer(
                 vllm_config=vllm_cfg,
@@ -1283,11 +1283,11 @@ class TestNPUDeepseekSparseAttention:
             index_topk_pattern=index_topk_pattern,
             index_skip_topk_offset=index_skip_topk_offset,
         ) as (cfg, vllm_cfg, env):
-            from omni.v1.layers.attention.npu_dsa import (
+            from omni_npu.v1.layers.attention.npu_dsa import (
                 NPUDeepseekSparseAttention,
                 get_forward_context,
             )
-            import omni.v1.layers.attention.npu_dsa as npu_dsa_mod
+            import omni_npu.v1.layers.attention.npu_dsa as npu_dsa_mod
             if hasattr(npu_dsa_mod, "npu_dsa_forward"):
                 torch.ops.vllm.npu_dsa_forward = npu_dsa_mod.npu_dsa_forward
 
@@ -1545,8 +1545,8 @@ class TestNPUDeepseekSparseAttention:
 
 @pytest.mark.unit
 def test_indexer_update_cache_uses_a5_scatter(monkeypatch):
-    from omni.v1.layers.attention import npu_dsa as dsa_mod
-    from omni.v1.layers.attention.npu_dsa import Indexer
+    from omni_npu.v1.layers.attention import npu_dsa as dsa_mod
+    from omni_npu.v1.layers.attention.npu_dsa import Indexer
 
     idx = Indexer.__new__(Indexer)
     idx.on_ascend950 = True
@@ -1566,8 +1566,8 @@ def test_indexer_update_cache_uses_a5_scatter(monkeypatch):
 
 @pytest.mark.unit
 def test_indexer_noncontiguous_lightning_uses_a5_op(monkeypatch):
-    from omni.v1.layers.attention import npu_dsa as dsa_mod
-    from omni.v1.layers.attention.npu_dsa import Indexer
+    from omni_npu.v1.layers.attention import npu_dsa as dsa_mod
+    from omni_npu.v1.layers.attention.npu_dsa import Indexer
 
     idx = Indexer.__new__(Indexer)
     idx.on_ascend950 = True
@@ -1599,8 +1599,8 @@ def test_indexer_noncontiguous_lightning_uses_a5_op(monkeypatch):
 
 @pytest.mark.unit
 def test_sparse_kv_norm_rope_cache_a5_updates_combined_cache(monkeypatch):
-    from omni.v1.layers.attention import npu_dsa as dsa_mod
-    from omni.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
+    from omni_npu.v1.layers.attention import npu_dsa as dsa_mod
+    from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
 
     fake = NPUDeepseekSparseAttention.__new__(NPUDeepseekSparseAttention)
     fake.qk_rope_head_dim = 2
@@ -1639,8 +1639,8 @@ def test_sparse_kv_norm_rope_cache_a5_updates_combined_cache(monkeypatch):
 @pytest.mark.unit
 def test_sparse_kv_norm_rope_cache_a5_uses_v2_for_noncontiguous_kv(monkeypatch):
     """A5 + noncontiguous_kv: npu_ai_infra_kv_rmsnorm_rope_cache_v2 is used instead of scatter."""
-    from omni.v1.layers.attention import npu_dsa as dsa_mod
-    from omni.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
+    from omni_npu.v1.layers.attention import npu_dsa as dsa_mod
+    from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
 
     R, L, T = 2, 4, 3
 
@@ -1695,8 +1695,8 @@ def test_sparse_kv_norm_rope_cache_a5_uses_v2_for_noncontiguous_kv(monkeypatch):
 
 @pytest.mark.unit
 def test_post_attn_absorb_a5_uses_transposed_input(monkeypatch):
-    from omni.v1.layers.attention import npu_dsa as dsa_mod
-    from omni.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
+    from omni_npu.v1.layers.attention import npu_dsa as dsa_mod
+    from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
 
     fake = NPUDeepseekSparseAttention.__new__(NPUDeepseekSparseAttention)
     fake.on_ascend950 = True
@@ -1731,8 +1731,8 @@ def test_kv_norm_rope_cache_noncontiguous_batch_invariant_uses_scatter_block_upd
 ):
     """When enable_kv_rmsnorm_rope_cache is enabled, fused_op is disabled and the non-contiguous
     cache update falls back to npu_ai_infra_scatter_block_update_."""
-    from omni.v1.layers.attention import npu_dsa as dsa_mod
-    from omni.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
+    from omni_npu.v1.layers.attention import npu_dsa as dsa_mod
+    from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
 
     fake = NPUDeepseekSparseAttention.__new__(NPUDeepseekSparseAttention)
     fake.qk_rope_head_dim = 2
@@ -1801,8 +1801,8 @@ def test_kv_norm_rope_cache_noncontiguous_batch_invariant_uses_scatter_block_upd
 
 @pytest.mark.unit
 def test_apply_attention_rescale_pioneer_calls_custom_ops(monkeypatch):
-    from omni.v1.layers.attention import npu_dsa as dsa_mod
-    from omni.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
+    from omni_npu.v1.layers.attention import npu_dsa as dsa_mod
+    from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
 
     T, N, L, R, S, B = 2, 2, 4, 2, 3, 1
     fake = NPUDeepseekSparseAttention.__new__(NPUDeepseekSparseAttention)
@@ -1876,8 +1876,8 @@ def test_apply_attention_rescale_pioneer_calls_custom_ops(monkeypatch):
 
 @pytest.mark.unit
 def test_apply_attn_absorb_precision_path_delegates_to_rescale_pioneer(monkeypatch):
-    from omni.v1.layers.attention import npu_dsa as dsa_mod
-    from omni.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
+    from omni_npu.v1.layers.attention import npu_dsa as dsa_mod
+    from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
 
     fake = NPUDeepseekSparseAttention.__new__(NPUDeepseekSparseAttention)
     fake.noncontiguous_kv = True

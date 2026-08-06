@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # SPDX-License-Identifier: MIT
 
-from omni.vllm_patches.patches.models.qwen import patch_qwen3_next
-from omni.vllm_patches.patches.models.qwen3_5 import patch_qwen3_5
+from omni_npu.vllm_patches.patches.models.qwen import patch_qwen3_next
+from omni_npu.vllm_patches.patches.models.qwen3_5 import patch_qwen3_5
 
 
 def test_qwen35_patch_reexports_shared_qwen_hybrid_patches():

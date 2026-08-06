@@ -285,7 +285,7 @@ def _make_forward_context_for_strategy(expected_strategy: str) -> DummyForwardCo
 
 
 def _configure_strategy_selector_for_case(case: MoERegressionCase) -> None:
-    from omni.model_config.config_loader.loader import model_extra_config
+    from omni_npu.model_config.config_loader.loader import model_extra_config
 
     model_extra_config.operator_opt_config.decode_moe_dispatch_combine = (
         case.expected_strategy in ("dispatch_combine", "all2all")
@@ -403,7 +403,7 @@ def _load_or_update_fused_moe_golden(
 
 
 def _build_w8a8_quant_config():
-    from omni.layers.quantization.compressed_tensors.compressed_tensors import (
+    from omni_npu.layers.quantization.compressed_tensors.compressed_tensors import (
         NPUCompressedTensorsConfig,
     )
 
@@ -432,7 +432,7 @@ def _build_w8a8_quant_config():
 
 
 def _build_w4a8_quant_config():
-    from omni.layers.quantization.compressed_tensors.compressed_tensors import (
+    from omni_npu.layers.quantization.compressed_tensors.compressed_tensors import (
         NPUCompressedTensorsConfig,
     )
 
@@ -463,21 +463,21 @@ def _build_w4a8_quant_config():
 def _install_omni_layer_packages() -> None:
     base = Path(__file__).resolve().parents[4] / "omni"
 
-    layers_pkg = types.ModuleType("omni.layers")
+    layers_pkg = types.ModuleType("omni_npu.layers")
     layers_pkg.__path__ = [str(base / "layers")]
-    sys.modules["omni.layers"] = layers_pkg
+    sys.modules["omni_npu.layers"] = layers_pkg
 
-    fused_moe_pkg = types.ModuleType("omni.layers.fused_moe")
+    fused_moe_pkg = types.ModuleType("omni_npu.layers.fused_moe")
     fused_moe_pkg.__path__ = [str(base / "layers" / "fused_moe")]
-    sys.modules["omni.layers.fused_moe"] = fused_moe_pkg
+    sys.modules["omni_npu.layers.fused_moe"] = fused_moe_pkg
 
-    quant_pkg = types.ModuleType("omni.layers.quantization")
+    quant_pkg = types.ModuleType("omni_npu.layers.quantization")
     quant_pkg.__path__ = [str(base / "layers" / "quantization")]
-    sys.modules["omni.layers.quantization"] = quant_pkg
+    sys.modules["omni_npu.layers.quantization"] = quant_pkg
 
-    ct_pkg = types.ModuleType("omni.layers.quantization.compressed_tensors")
+    ct_pkg = types.ModuleType("omni_npu.layers.quantization.compressed_tensors")
     ct_pkg.__path__ = [str(base / "layers" / "quantization" / "compressed_tensors")]
-    sys.modules["omni.layers.quantization.compressed_tensors"] = ct_pkg
+    sys.modules["omni_npu.layers.quantization.compressed_tensors"] = ct_pkg
 
 
 def _run_moe_output_regression(
@@ -490,9 +490,9 @@ def _run_moe_output_regression(
 
     from vllm.config import get_current_vllm_config
     from vllm.distributed import get_dp_group
-    from omni.layers.fused_moe.layer import NPUFusedMoE, NPUSharedFusedMoE
-    import omni.layers.fused_moe.layer as moe_layer_module
-    import omni.layers.fused_moe.prepare_permute_unpermute_finalize as prepare_module
+    from omni_npu.layers.fused_moe.layer import NPUFusedMoE, NPUSharedFusedMoE
+    import omni_npu.layers.fused_moe.layer as moe_layer_module
+    import omni_npu.layers.fused_moe.prepare_permute_unpermute_finalize as prepare_module
 
     torch.manual_seed(TEST_SEED)
     torch.npu.set_device(device)

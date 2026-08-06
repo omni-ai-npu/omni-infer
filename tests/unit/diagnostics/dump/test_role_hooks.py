@@ -10,7 +10,7 @@ are replaced by recorders so only the hook wiring is under test.
 """
 import pytest
 
-from omni.diagnostics.dump import constants, engine_stats, exit_dump, hooks
+from omni_npu.diagnostics.dump import constants, engine_stats, exit_dump, hooks
 
 pytestmark = pytest.mark.unit
 

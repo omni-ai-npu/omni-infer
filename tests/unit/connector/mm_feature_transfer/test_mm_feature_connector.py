@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch, call, ANY
 import pytest
 from vllm.multimodal.processing import ResolvedPromptUpdate, PromptUpdateDetails
 
-from omni.connector.mm_feature_transfer.config import DiskConnectorConfig
-from omni.connector.mm_feature_transfer.mm_feature_connector.disk_connector import DiskMMFeatureConnector
+from omni_npu.connector.mm_feature_transfer.config import DiskConnectorConfig
+from omni_npu.connector.mm_feature_transfer.mm_feature_connector.disk_connector import DiskMMFeatureConnector
 
 
 # -------------------- Fixtures --------------------
@@ -105,7 +105,7 @@ def connector(tmp_path, mock_meta):
 
     # Patch the metadata store factory to return our mock
     with patch(
-        "omni.connector.mm_feature_transfer.mm_feature_connector.disk_connector.create_metadata_store",
+        "omni_npu.connector.mm_feature_transfer.mm_feature_connector.disk_connector.create_metadata_store",
         return_value=mock_meta,
     ):
         # Patch _start_background_threads to avoid real thread creation
@@ -258,7 +258,7 @@ class TestLoadItemWithUpdates:
     
     @patch("safetensors.torch.load_file")
     @patch("pickle.load")
-    @patch("omni.connector.mm_feature_transfer.mm_feature_connector.disk_connector.MultiModalKwargsItem.from_elems")
+    @patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.disk_connector.MultiModalKwargsItem.from_elems")
     def test_load_successful(
         self, mock_from_elems, mock_pickle_load, mock_safe_load,
         connector, real_prompt_updates

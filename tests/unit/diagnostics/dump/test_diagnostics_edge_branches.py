@@ -11,7 +11,7 @@ import pathlib
 
 import pytest
 
-from omni.diagnostics.dump import forensic, hardware_probe
+from omni_npu.diagnostics.dump import forensic, hardware_probe
 
 pytestmark = pytest.mark.unit
 

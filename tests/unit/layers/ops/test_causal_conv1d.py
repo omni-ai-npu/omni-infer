@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from omni.layers.ops import causal_conv1d as conv_mod
+from omni_npu.layers.ops import causal_conv1d as conv_mod
 
 
 def test_npu_fused_causal_conv1d_squeezes_and_transposes_weight(monkeypatch):

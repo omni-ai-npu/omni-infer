@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
-from omni.worker.npu_model_runner import NPUModelRunner
+from omni_npu.worker.npu_model_runner import NPUModelRunner
 from tests.unit.platform.utils import create_vllm_config
 from vllm.v1.kv_cache_interface import AttentionSpec
 

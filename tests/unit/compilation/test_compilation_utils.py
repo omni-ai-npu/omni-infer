@@ -1,13 +1,13 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for omni.compilation.utils module."""
+"""Unit tests for omni_npu.compilation.utils module."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import torch
 
-from omni.compilation.utils import (
+from omni_npu.compilation.utils import (
     _capture_kwargs,
     _get_or_create_workspace,
     capture_graph_task,
@@ -29,7 +29,7 @@ class TestCaptureKwargs:
             "none_field": None,
         }
 
-        with patch("omni.compilation.utils.weak_ref_tensors") as mock_weak_ref:
+        with patch("omni_npu.compilation.utils.weak_ref_tensors") as mock_weak_ref:
             mock_weak_ref.side_effect = lambda x: f"weak_ref_{id(x)}"
             captured = _capture_kwargs(op_desc, kwargs)
 
@@ -51,8 +51,8 @@ class TestGetOrCreateWorkspace:
         op_desc = SimpleNamespace(workspace_fn=workspace_fn)
         graph_params = SimpleNamespace(workspaces={num_tokens: {}})
 
-        with patch("omni.compilation.utils.get_graph_params", return_value=graph_params):
-            with patch("omni.compilation.utils.weak_ref_tensors", side_effect=lambda x: x):
+        with patch("omni_npu.compilation.utils.get_graph_params", return_value=graph_params):
+            with patch("omni_npu.compilation.utils.weak_ref_tensors", side_effect=lambda x: x):
                 first = _get_or_create_workspace(op_desc, {"query": query}, num_tokens)
                 second = _get_or_create_workspace(op_desc, {"query": query}, num_tokens)
 
@@ -89,8 +89,8 @@ class TestCaptureGraphTask:
             workspaces={num_tokens: {}},
         )
 
-        with patch("omni.compilation.utils.get_graph_params", return_value=graph_params):
-            with patch("omni.compilation.utils.weak_ref_tensors", side_effect=lambda x: x):
+        with patch("omni_npu.compilation.utils.get_graph_params", return_value=graph_params):
+            with patch("omni_npu.compilation.utils.weak_ref_tensors", side_effect=lambda x: x):
                 with patch("torch_npu.npu.current_stream", return_value=stream):
                     with patch("torch.npu.ExternalEvent", return_value=event):
                         with patch("torch.npu.graph_task_group_begin") as mock_begin:

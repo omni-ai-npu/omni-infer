@@ -16,7 +16,7 @@ from vllm.sampling_params import SamplingParams
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.request import Request, RequestStatus
 
-from omni.vllm_patches.patches.common import (
+from omni_npu.vllm_patches.patches.common import (
     patch_prefilled_token_skip_tokenize as patch_mod,
 )
 

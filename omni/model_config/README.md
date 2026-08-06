@@ -18,7 +18,7 @@
 ## 关于新增模型配置项
 对于新增的模型配置项，需要先在`loader.py`的对应配置类上添加对应的配置项，请注意默认方式，非必须打开的配置项默认关闭，调用方式如下：
 ```python
-from omni.models.config_loader.loader import model_extra_config
+from omni_npu.models.config_loader.loader import model_extra_config
 model_extra_config.operator_opt_config.xxxx
 ```
 ## 关于新增模型的配置项json

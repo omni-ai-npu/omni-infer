@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Unit tests for omni.diagnostics.metrics.worker_mem (采样，走 stats 通道，无 prometheus)."""
+"""Unit tests for omni_npu.diagnostics.metrics.worker_mem (采样，走 stats 通道，无 prometheus)."""
 
 import sys
 import types
@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("vllm.logger")
 
-from omni.diagnostics.metrics import worker_mem
+from omni_npu.diagnostics.metrics import worker_mem
 
 
 @pytest.fixture

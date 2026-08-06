@@ -57,7 +57,7 @@ def _mock_vllm_deps(monkeypatch):
 
 
 def _make_dummy_method_cls():
-    from omni.layers.fused_moe.fused_moe_method_base import NPUFusedMoEMethodBase
+    from omni_npu.layers.fused_moe.fused_moe_method_base import NPUFusedMoEMethodBase
 
     class _DummyMethod(NPUFusedMoEMethodBase):
         def apply_experts(self, layer, prepare_permute_result, activation="silu"):
@@ -121,7 +121,7 @@ def test_method_base_delegates_prepare_and_finalize():
 
 @pytest.mark.unit
 def test_make_communication_strategy_selector_sets_selector(monkeypatch):
-    from omni.layers.fused_moe import fused_moe_method_base as base_module
+    from omni_npu.layers.fused_moe import fused_moe_method_base as base_module
 
     method = _make_dummy_method_cls()()
     fake_selector = SimpleNamespace(select_communication_strategy=lambda n: ("agrs", object()))

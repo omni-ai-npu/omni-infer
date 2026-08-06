@@ -5,7 +5,7 @@ Chunked-prefill math test for the base-layer NPU MLA backend.
 
 What path is being tested
 ------------------------
-This file targets `omni.attention.backends.mla.NPUMLAImpl._forward_prefill`
+This file targets `omni_npu.attention.backends.mla.NPUMLAImpl._forward_prefill`
 when `attn_metadata.prefill.chunked_context is not None` (a.k.a. "chunked prefill").
 
 In this mode, prefill attention is computed as a merge of:
@@ -39,7 +39,7 @@ if not (hasattr(torch, "npu") and torch.npu.device_count() > 0):
 
 from types import SimpleNamespace
 
-from omni.attention.backends.mla import NPUMLAImpl, NPUMLAMetadataBuilder
+from omni_npu.attention.backends.mla import NPUMLAImpl, NPUMLAMetadataBuilder
 from vllm.v1.attention.backend import AttentionType
 from vllm.v1.attention.backends.utils import CommonAttentionMetadata
 from vllm.v1.kv_cache_interface import AttentionSpec
@@ -298,7 +298,7 @@ def test_mla_chunked_prefill_matches_full_attention(
         lambda *_args, **_kwargs: 32 * batch_size,
     )
     monkeypatch.setattr(
-        "omni.attention.backends.mla.get_current_vllm_config",
+        "omni_npu.attention.backends.mla.get_current_vllm_config",
         lambda: None,
     )
     ctx = type("Ctx", (), {"batch_descriptor": None, "virtual_engine": 0})()
@@ -437,7 +437,7 @@ def test_mla_chunked_prefill_matches_full_attention(
     )
 
     # Provide a safe wrapper for gather that tolerates CPU `starts` tensors by converting them to ints.
-    import omni.attention.ops as ops
+    import omni_npu.attention.ops as ops
 
     real_gather = ops.gather_and_maybe_dequant_cache
     real_merge = ops.merge_attn_states

@@ -6,7 +6,7 @@ index b9588ebcd..5c46e0b5b 100644
      create_vllm_config,
  )
  
-+from omni.connector import register_connectors
++from omni_npu.connector import register_connectors
 +register_connectors()
 +
  pytestmark = pytest.mark.cpu_test

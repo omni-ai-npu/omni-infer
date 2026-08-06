@@ -4,13 +4,13 @@ import json
 import pytest
 from unittest.mock import Mock, patch
 
-from omni.connector.mm_feature_transfer.config import MMFeatureTransferConfig
-from omni.connector.mm_feature_transfer.mm_feature_connector import MMFeatureConnectorFactory
+from omni_npu.connector.mm_feature_transfer.config import MMFeatureTransferConfig
+from omni_npu.connector.mm_feature_transfer.mm_feature_connector import MMFeatureConnectorFactory
 
 
 class TestMMFeatureConnectorFactory:
-    @patch('omni.connector.mm_feature_transfer.mm_feature_connector.factory.DiskMMFeatureConnector')
-    @patch("omni.connector.mm_feature_transfer.mm_feature_connector.factory.NetworkMMFeatureConnector")
+    @patch('omni_npu.connector.mm_feature_transfer.mm_feature_connector.factory.DiskMMFeatureConnector')
+    @patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.factory.NetworkMMFeatureConnector")
     def test_create_connector_creates_new(self, mock_network_cls, mock_disk_cls):
         json_str = json.dumps({
             "connectors": {
@@ -46,7 +46,7 @@ class TestMMFeatureConnectorFactory:
         # 断言 3：返回的是 remote (Network) 实例
         assert result is mock_network_instance
 
-    @patch('omni.connector.mm_feature_transfer.mm_feature_connector.factory.DiskMMFeatureConnector')
+    @patch('omni_npu.connector.mm_feature_transfer.mm_feature_connector.factory.DiskMMFeatureConnector')
     def test_create_connector_reuses_instance(self, mock_disk_cls):
         json_str = json.dumps({
             "connector_type": "DiskMMFeatureConnector",

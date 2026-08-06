@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from omni.diagnostics.dump import hardware_probe
+from omni_npu.diagnostics.dump import hardware_probe
 
 pytestmark = pytest.mark.unit
 

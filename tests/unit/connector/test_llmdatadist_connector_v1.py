@@ -35,8 +35,8 @@ from .test_llmdatadist_manager_v1 import (
     _stop_daemon,
 )
 
-from omni.connector.utils import ParallelDesc
-from omni.connector.llmdatadist_connector_v1 import (
+from omni_npu.connector.utils import ParallelDesc
+from omni_npu.connector.llmdatadist_connector_v1 import (
     LLMDataDistConnector,
     Metadata,
     SchemePull,
@@ -198,7 +198,7 @@ def _mock_cache_manager():
             self.log.runtime("pull_blocks")
             return True
 
-    import omni.connector.llmdatadist_connector_v1 as module
+    import omni_npu.connector.llmdatadist_connector_v1 as module
     with _patch_module(module, CacheManager=CacheManager):
         SupportLogCompare.clear_common()
         def get_instance() -> tuple[_LogCompare, CacheManager]:
@@ -376,7 +376,7 @@ class TestLLMDataDistConnector:
         )
 
         with patch(
-            "omni.connector.llmdatadist_connector_v1.SimpleClient"
+            "omni_npu.connector.llmdatadist_connector_v1.SimpleClient"
         ) as client_cls:
             delay_free, params = d_scheduler.request_finished(request, [])
 
@@ -429,7 +429,7 @@ class TestConnectorMetrics:
         with (
             _mock_parallel(tp=16, rank=3),
             _mock_cache_manager(),
-            patch("omni.diagnostics.metrics.kv_transfer.collect") as m,
+            patch("omni_npu.diagnostics.metrics.kv_transfer.collect") as m,
         ):
             conn = LLMDataDistConnector(
                 vllm_config=_make_vllm_config(is_prefill=False, tp=16),
@@ -446,16 +446,16 @@ class TestConnectorMetrics:
             role=KVConnectorRole.SCHEDULER,
             kv_cache_config=None,
         )
-        with patch("omni.diagnostics.metrics.kv_transfer.collect") as m:
+        with patch("omni_npu.diagnostics.metrics.kv_transfer.collect") as m:
             conn.get_kv_connector_stats()
             m.assert_called_once_with(rank=None)
 
     def test_build_kv_connector_stats_delegates(self):
-        with patch("omni.diagnostics.metrics.kv_transfer.build_stats") as m:
+        with patch("omni_npu.diagnostics.metrics.kv_transfer.build_stats") as m:
             LLMDataDistConnector.build_kv_connector_stats({"fail": {"pull": 1}})
             m.assert_called_once_with({"fail": {"pull": 1}})
 
     def test_build_prom_metrics_delegates(self):
-        with patch("omni.diagnostics.metrics.kv_transfer.build_prom_metrics") as m:
+        with patch("omni_npu.diagnostics.metrics.kv_transfer.build_prom_metrics") as m:
             LLMDataDistConnector.build_prom_metrics("cfg", "mt", "ln", "pe")
             m.assert_called_once_with("cfg", "mt", "ln", "pe")

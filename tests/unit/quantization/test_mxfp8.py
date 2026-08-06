@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-"""Unit tests for ``omni.layers.quantization.mxfp8``.
+"""Unit tests for ``omni_npu.layers.quantization.mxfp8``.
 
 MXFP8 kernels live on A5 hardware, but CI runs on A2. Every ``torch_npu.*``
 kernel used by the module is therefore replaced with a shape-correct Python
@@ -99,8 +99,8 @@ def mock_torch_npu(monkeypatch):
     # ModelWeightParameter.__init__ queries the TP group on construction.
     # In a unit-test context no distributed env is initialised, so we stub
     # those accessors at the single import site inside vllm.
-    with patch("omni.layers.quantization.mxfp8.torch_npu", ns), patch(
-        "omni.layers.quantization.mxfp8._FLOAT8_E8M0FNU_DTYPE",
+    with patch("omni_npu.layers.quantization.mxfp8.torch_npu", ns), patch(
+        "omni_npu.layers.quantization.mxfp8._FLOAT8_E8M0FNU_DTYPE",
         _E8M0_SENTINEL,
     ), patch(
         "vllm.model_executor.parameter.get_tensor_model_parallel_rank",
@@ -115,7 +115,7 @@ def mock_torch_npu(monkeypatch):
 @pytest.fixture
 def mxfp8_module(mock_torch_npu):
     # Re-import every test so we always see the patched torch_npu binding.
-    return importlib.import_module("omni.layers.quantization.mxfp8")
+    return importlib.import_module("omni_npu.layers.quantization.mxfp8")
 
 
 @pytest.fixture
@@ -333,7 +333,7 @@ class TestMxfp8Config:
         assert isinstance(result, UnquantizedLinearMethod)
 
     def test_dispatch_flashcomm_linear(self, mxfp8_module):
-        from omni.v1.layers.linear import FlashCommLinearBase
+        from omni_npu.v1.layers.linear import FlashCommLinearBase
 
         layer = MagicMock(spec=FlashCommLinearBase)
         cfg = mxfp8_module.Mxfp8Config()
@@ -341,7 +341,7 @@ class TestMxfp8Config:
         assert isinstance(result, mxfp8_module.Mxfp8FCLinearMethod)
 
     def test_dispatch_flashcomm_linear_ignored(self, mxfp8_module):
-        from omni.v1.layers.linear import (
+        from omni_npu.v1.layers.linear import (
             FlashCommLinearBase,
             UnquantizedFlashCommLinearMethod,
         )
@@ -352,7 +352,7 @@ class TestMxfp8Config:
         assert isinstance(result, UnquantizedFlashCommLinearMethod)
 
     def test_dispatch_fused_mlp(self, mxfp8_module):
-        from omni.v1.layers.fused_mlp.layer import FusedMLP
+        from omni_npu.v1.layers.fused_mlp.layer import FusedMLP
 
         layer = MagicMock(spec=FusedMLP)
         cfg = mxfp8_module.Mxfp8Config()
@@ -531,9 +531,9 @@ class TestMxfp8FCLinearMethod:
         ag = MagicMock(side_effect=lambda t, *a, **k: t)
         a2a = MagicMock()
         with patch(
-            "omni.v1.distributed.communication_op_ext.layer_parallel_all_gather", ag
+            "omni_npu.v1.distributed.communication_op_ext.layer_parallel_all_gather", ag
         ), patch(
-            "omni.v1.distributed.communication_op_ext.layer_parallel_all2all_single",
+            "omni_npu.v1.distributed.communication_op_ext.layer_parallel_all2all_single",
             a2a,
         ):
             fc_linear_method.apply(fc_layer_created, x, x_transform="AllGather")
@@ -548,9 +548,9 @@ class TestMxfp8FCLinearMethod:
         ag = MagicMock()
         a2a = MagicMock(side_effect=lambda t, *a, **k: t)
         with patch(
-            "omni.v1.distributed.communication_op_ext.layer_parallel_all_gather", ag
+            "omni_npu.v1.distributed.communication_op_ext.layer_parallel_all_gather", ag
         ), patch(
-            "omni.v1.distributed.communication_op_ext.layer_parallel_all2all_single",
+            "omni_npu.v1.distributed.communication_op_ext.layer_parallel_all2all_single",
             a2a,
         ):
             fc_linear_method.apply(fc_layer_created, x, x_transform="ALL2ALL")
@@ -566,7 +566,7 @@ class TestMxfp8FCLinearMethod:
 @pytest.fixture
 def mlp_method(mxfp8_module, null_stream_ctx):
     method = mxfp8_module.Mxfp8MlpMethod(mxfp8_module.Mxfp8Config())
-    with patch("omni.v1.layers.utils.get_npu_execution_type", null_stream_ctx):
+    with patch("omni_npu.v1.layers.utils.get_npu_execution_type", null_stream_ctx):
         yield method
 
 
@@ -640,16 +640,16 @@ class _MockMoELayer:
 def moe_patches(mxfp8_module):
     stream_instance = MagicMock()
     with patch(
-        "omni.layers.quantization.mxfp8.named_stream",
+        "omni_npu.layers.quantization.mxfp8.named_stream",
         MagicMock(return_value=stream_instance),
     ), patch(
-        "omni.layers.quantization.mxfp8.get_tensor_model_parallel_world_size",
+        "omni_npu.layers.quantization.mxfp8.get_tensor_model_parallel_world_size",
         return_value=1,
     ), patch(
-        "omni.layers.quantization.mxfp8.get_tensor_model_parallel_rank",
+        "omni_npu.layers.quantization.mxfp8.get_tensor_model_parallel_rank",
         return_value=0,
     ), patch(
-        "omni.layers.quantization.mxfp8.get_current_vllm_config",
+        "omni_npu.layers.quantization.mxfp8.get_current_vllm_config",
         return_value=SimpleNamespace(
             model_config=SimpleNamespace(hf_config=SimpleNamespace())
         ),

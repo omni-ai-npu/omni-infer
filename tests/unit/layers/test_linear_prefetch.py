@@ -79,33 +79,33 @@ def _install_linear_stubs(monkeypatch):
     omni_pkg = types.ModuleType("omni_npu")
     omni_pkg.__path__ = [str(repo_root / "omni")]
     monkeypatch.setitem(sys.modules, "omni_npu", omni_pkg)
-    omni_v1_pkg = types.ModuleType("omni.v1")
+    omni_v1_pkg = types.ModuleType("omni_npu.v1")
     omni_v1_pkg.__path__ = [str(repo_root / "omni" / "v1")]
-    monkeypatch.setitem(sys.modules, "omni.v1", omni_v1_pkg)
-    omni_dist_pkg = types.ModuleType("omni.v1.distributed")
+    monkeypatch.setitem(sys.modules, "omni_npu.v1", omni_v1_pkg)
+    omni_dist_pkg = types.ModuleType("omni_npu.v1.distributed")
     omni_dist_pkg.__path__ = [str(repo_root / "omni" / "v1" / "distributed")]
-    monkeypatch.setitem(sys.modules, "omni.v1.distributed", omni_dist_pkg)
-    omni_layers_pkg = types.ModuleType("omni.v1.layers")
+    monkeypatch.setitem(sys.modules, "omni_npu.v1.distributed", omni_dist_pkg)
+    omni_layers_pkg = types.ModuleType("omni_npu.v1.layers")
     omni_layers_pkg.__path__ = [str(repo_root / "omni" / "v1" / "layers")]
-    monkeypatch.setitem(sys.modules, "omni.v1.layers", omni_layers_pkg)
-    omni_models_pkg = types.ModuleType("omni.v1.models")
+    monkeypatch.setitem(sys.modules, "omni_npu.v1.layers", omni_layers_pkg)
+    omni_models_pkg = types.ModuleType("omni_npu.v1.models")
     omni_models_pkg.__path__ = [str(repo_root / "omni" / "v1" / "models")]
-    monkeypatch.setitem(sys.modules, "omni.v1.models", omni_models_pkg)
-    omni_compilation_pkg = types.ModuleType("omni.compilation")
+    monkeypatch.setitem(sys.modules, "omni_npu.v1.models", omni_models_pkg)
+    omni_compilation_pkg = types.ModuleType("omni_npu.compilation")
     omni_compilation_pkg.__path__ = []
-    acl_graph_mod = types.ModuleType("omni.compilation.acl_graph")
+    acl_graph_mod = types.ModuleType("omni_npu.compilation.acl_graph")
     acl_graph_mod.set_aclgraph_recapture = lambda: None
-    monkeypatch.setitem(sys.modules, "omni.compilation", omni_compilation_pkg)
-    monkeypatch.setitem(sys.modules, "omni.compilation.acl_graph", acl_graph_mod)
-    omni_config_loader_pkg = types.ModuleType("omni.model_config.config_loader")
+    monkeypatch.setitem(sys.modules, "omni_npu.compilation", omni_compilation_pkg)
+    monkeypatch.setitem(sys.modules, "omni_npu.compilation.acl_graph", acl_graph_mod)
+    omni_config_loader_pkg = types.ModuleType("omni_npu.model_config.config_loader")
     omni_config_loader_pkg.__path__ = [
         str(repo_root / "omni" / "v1" / "models" / "config_loader")
     ]
     monkeypatch.setitem(
-        sys.modules, "omni.model_config.config_loader", omni_config_loader_pkg
+        sys.modules, "omni_npu.model_config.config_loader", omni_config_loader_pkg
     )
 
-    comm_mod = types.ModuleType("omni.v1.distributed.communication_op_ext")
+    comm_mod = types.ModuleType("omni_npu.v1.distributed.communication_op_ext")
     comm_mod.layer_parallel_all_reduce = lambda data, *_args: data
     comm_mod.layer_parallel_all_gather = lambda data, *_args: data
     comm_mod.layer_parallel_reduce_scatter = lambda data, *_args: data
@@ -113,35 +113,35 @@ def _install_linear_stubs(monkeypatch):
     comm_mod.layer_parallel_dp2tp_single = lambda data, *_args: data
     comm_mod.layer_parallel_dp2tp_all2all = lambda data, *_args: data
     monkeypatch.setitem(
-        sys.modules, "omni.v1.distributed.communication_op_ext", comm_mod
+        sys.modules, "omni_npu.v1.distributed.communication_op_ext", comm_mod
     )
 
-    parallel_state_mod = types.ModuleType("omni.v1.distributed.parallel_state_ext")
+    parallel_state_mod = types.ModuleType("omni_npu.v1.distributed.parallel_state_ext")
     parallel_state_mod.get_layer_transform_type = lambda *_args: "NoOp"
     parallel_state_mod.get_layer_dim = lambda *_args: 0
     parallel_state_mod.get_layer_parallel_world_size = lambda: 1
     parallel_state_mod.get_layer_parallel_rank = lambda: 0
     parallel_state_mod.get_layer_parallel_group = lambda data, *_args: GroupCoordinator()
     monkeypatch.setitem(
-        sys.modules, "omni.v1.distributed.parallel_state_ext", parallel_state_mod
+        sys.modules, "omni_npu.v1.distributed.parallel_state_ext", parallel_state_mod
     )
 
-    loader_mod = types.ModuleType("omni.model_config.config_loader.loader")
+    loader_mod = types.ModuleType("omni_npu.model_config.config_loader.loader")
     loader_mod.model_extra_config = SimpleNamespace(
         operator_opt_config=SimpleNamespace(attn_prefetch=0, enable_mlaprolog=False)
     )
-    monkeypatch.setitem(sys.modules, "omni.model_config.config_loader.loader", loader_mod)
+    monkeypatch.setitem(sys.modules, "omni_npu.model_config.config_loader.loader", loader_mod)
 
-    utils_v1_mod = types.ModuleType("omni.v1.utils")
+    utils_v1_mod = types.ModuleType("omni_npu.v1.utils")
     utils_v1_mod.get_last_two_parts = lambda name: ".".join(name.split(".")[-2:])
     utils_v1_mod.ACL_FORMAT_FRACTAL_NZ = 29
-    monkeypatch.setitem(sys.modules, "omni.v1.utils", utils_v1_mod)
+    monkeypatch.setitem(sys.modules, "omni_npu.v1.utils", utils_v1_mod)
 
 
 def _import_linear_module(monkeypatch):
     _install_linear_stubs(monkeypatch)
-    monkeypatch.delitem(sys.modules, "omni.v1.layers.linear", raising=False)
-    module = importlib.import_module("omni.v1.layers.linear")
+    monkeypatch.delitem(sys.modules, "omni_npu.v1.layers.linear", raising=False)
+    module = importlib.import_module("omni_npu.v1.layers.linear")
     return importlib.reload(module)
 
 

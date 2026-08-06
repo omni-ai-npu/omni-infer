@@ -10,12 +10,12 @@ import pytest
 import vllm.compilation.decorators as _dec_mododule
 from vllm.config import VllmConfig, CUDAGraphMode
 
-from omni.compilation.decorators import (
+from omni_npu.compilation.decorators import (
     _bypass_prefill,
     _wrap_call,
     patch_compile_decorators,
 )
-import omni.compilation.decorators as decorators_mod
+import omni_npu.compilation.decorators as decorators_mod
 
 
 @pytest.fixture(autouse=True)
@@ -79,7 +79,7 @@ def test_bypass_prefill(attn_metadata, cudagraph_runtime_mode, expected_hit):
     test_model = TestModel(vllm_config=VllmConfig(), prefix="test")
     test_tensor = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
 
-    with patch("omni.compilation.decorators.get_forward_context") as mock_get_forward_context:
+    with patch("omni_npu.compilation.decorators.get_forward_context") as mock_get_forward_context:
         mock_get_forward_context.return_value.attn_metadata = attn_metadata
         mock_get_forward_context.return_value.cudagraph_runtime_mode = cudagraph_runtime_mode
 
@@ -106,7 +106,7 @@ def test_wrap_call(bypass_result, model_cls, expected):
     wrapped_call = _wrap_call(type(model).__call__)
     test_tensor = torch.tensor([1.0])
 
-    with patch("omni.compilation.decorators._bypass_prefill", return_value=bypass_result):
+    with patch("omni_npu.compilation.decorators._bypass_prefill", return_value=bypass_result):
         retval = wrapped_call(model, test_tensor)
 
     if isinstance(expected, torch.Tensor):
@@ -122,7 +122,7 @@ def test_wrap_call_returns_original_output_for_non_singleton_sequence():
     model = TestModel(vllm_config=VllmConfig(), prefix="test")
     test_tensor = torch.tensor([1.0])
 
-    with patch("omni.compilation.decorators._bypass_prefill", return_value=(False, None)):
+    with patch("omni_npu.compilation.decorators._bypass_prefill", return_value=(False, None)):
         retval = wrapped_call(model, test_tensor)
 
     assert retval == original_call.return_value
@@ -134,7 +134,7 @@ def test_wrap_call_unwraps_nested_single_tensor_list():
     wrapped_call = _wrap_call(original_call)
     model = TestModel(vllm_config=VllmConfig(), prefix="test")
 
-    with patch("omni.compilation.decorators._bypass_prefill", return_value=(False, None)):
+    with patch("omni_npu.compilation.decorators._bypass_prefill", return_value=(False, None)):
         retval = wrapped_call(model, torch.tensor([1.0]))
 
     assert torch.equal(retval, torch.tensor([3.0]).to(retval.device))
@@ -162,8 +162,8 @@ def test_patch_compile_decorators_no_ge_compile():
     mock_original_decorator = MagicMock(return_value=TestModel)
     _dec_mododule._support_torch_compile = mock_original_decorator
 
-    with patch("omni.compilation.decorators._patched_mark_dynamic") as mock_patched_mark_dynamic:
-        with patch("omni.compilation.decorators._wrap_call", MagicMock(side_effect=lambda x: x)) as mock_wrap:
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic") as mock_patched_mark_dynamic:
+        with patch("omni_npu.compilation.decorators._wrap_call", MagicMock(side_effect=lambda x: x)) as mock_wrap:
             patch_compile_decorators()
 
             patched_cls = _dec_mododule._support_torch_compile(TestModel)
@@ -175,7 +175,7 @@ def test_patch_compile_decorators_no_ge_compile():
 
 
 def test_patch_compile_decorators_no_env():
-    with patch("omni.compilation.decorators._patched_mark_dynamic"):
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
         patch_compile_decorators()
         assert _dec_mododule._support_torch_compile.__name__ == "_patched_support_torch_compile"
 
@@ -187,7 +187,7 @@ def test_patch_compile_decorators_skips_repatching_piecewise_backend():
     sentinel_call = _piecewise_module.PiecewiseBackend.__call__
     _piecewise_module.PiecewiseBackend._omni_npu_patched = True
 
-    with patch("omni.compilation.decorators._patched_mark_dynamic"):
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
         patch_compile_decorators()
 
     assert _piecewise_module.PiecewiseBackend.__call__ is sentinel_call
@@ -218,7 +218,7 @@ def test_patched_call_runtime_shape_none_fallback_compile_sizes(
     ]
     mock_backend.sym_shape_indices = [0]
 
-    with patch("omni.compilation.decorators._patched_mark_dynamic"):
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
         _piecewise_module.PiecewiseBackend._omni_npu_patched = False
         patch_compile_decorators()
 
@@ -243,7 +243,7 @@ def test_patched_call_runtime_shape_none_without_fallback_raises():
         _maybe_compile_for_range_entry=MagicMock(),
     )
 
-    with patch("omni.compilation.decorators._patched_mark_dynamic"):
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
         _piecewise_module.PiecewiseBackend._omni_npu_patched = False
         patch_compile_decorators()
 
@@ -267,7 +267,7 @@ def test_patched_call_runtime_shape_hits_existing_range():
         _maybe_compile_for_range_entry=MagicMock(),
     )
 
-    with patch("omni.compilation.decorators._patched_mark_dynamic"):
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
         _piecewise_module.PiecewiseBackend._omni_npu_patched = False
         patch_compile_decorators()
 
@@ -300,7 +300,7 @@ def test_patched_call_runtime_shape_uses_sym_shape_index():
         _maybe_compile_for_range_entry=MagicMock(),
     )
 
-    with patch("omni.compilation.decorators._patched_mark_dynamic"):
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
         _piecewise_module.PiecewiseBackend._omni_npu_patched = False
         patch_compile_decorators()
 
@@ -350,7 +350,7 @@ def test_patched_call_creates_new_range_entry_when_no_existing_match():
         _maybe_compile_for_range_entry=MagicMock(),
     )
 
-    with patch("omni.compilation.decorators._patched_mark_dynamic"):
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
         _piecewise_module.PiecewiseBackend._omni_npu_patched = False
         patch_compile_decorators()
 

@@ -7,7 +7,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from omni.vllm_patches.patches.common import patch_matmul
+from omni_npu.vllm_patches.patches.common import patch_matmul
 
 
 @pytest.fixture

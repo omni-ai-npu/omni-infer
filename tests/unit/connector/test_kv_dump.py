@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from omni.connector.kv_dump import (
+from omni_npu.connector.kv_dump import (
     append_items,
     DecodeReq,
     Dump,
@@ -22,7 +22,7 @@ from omni.connector.kv_dump import (
     PrefillReq,
 )
 
-KV_DUMP_MODULE = "omni.connector.kv_dump"
+KV_DUMP_MODULE = "omni_npu.connector.kv_dump"
 
 pytestmark = pytest.mark.unit
 
@@ -513,7 +513,7 @@ class TestPrefillReq:
 
     def test_mock_prefill_req_for_upper_layer(self):
         with _patch_prefill_req():
-            from omni.connector import kv_dump as mod
+            from omni_npu.connector import kv_dump as mod
             req = mod.PrefillReq(_make_new_request(req_id="patched", block_ids=[[5]]))
             assert isinstance(req, MockPrefillReq)
             assert req.req_id == "patched"
@@ -576,7 +576,7 @@ class TestDecodeReq:
 
     def test_mock_decode_req_for_upper_layer(self):
         with _patch_decode_req():
-            from omni.connector import kv_dump as mod
+            from omni_npu.connector import kv_dump as mod
             req = mod.DecodeReq(_make_new_request(req_id="dec0", block_ids=[[1]]))
             assert isinstance(req, MockDecodeReq)
             assert req.req_id == "dec0"

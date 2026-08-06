@@ -6,9 +6,9 @@ from unittest.mock import MagicMock
 import torch
 from vllm.v1.kv_cache_interface import MambaSpec
 
-import omni.worker.npu_model_runner as runner_module
-from omni.vllm_patches.patches.models.qwen import qwen_hybrid_common
-from omni.worker.npu_model_runner import NPUModelRunner
+import omni_npu.worker.npu_model_runner as runner_module
+from omni_npu.vllm_patches.patches.models.qwen import qwen_hybrid_common
+from omni_npu.worker.npu_model_runner import NPUModelRunner
 
 
 def test_build_conv_context_removes_stale_request_cache(monkeypatch):

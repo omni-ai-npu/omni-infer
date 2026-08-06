@@ -5,8 +5,8 @@
 import os
 import unittest
 from unittest.mock import MagicMock, patch
-from omni.v1.parsers import PanguReasoningParser
-from omni.v1.parsers._streaming_relay import (
+from omni_npu.v1.parsers import PanguReasoningParser
+from omni_npu.v1.parsers._streaming_relay import (
     reattach_reasoning_to,
     reset_for_tests,
     stash_reasoning_from,

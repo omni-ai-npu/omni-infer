@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # SPDX-License-Identifier: MIT
 
-from omni.worker.npu_model_runner import NPUModelRunner
+from omni_npu.worker.npu_model_runner import NPUModelRunner
 
 
 def test_iter_kv_cache_attn_groups_delegates():

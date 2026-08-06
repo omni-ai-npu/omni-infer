@@ -4,7 +4,7 @@ import time
 import pytest
 from unittest.mock import patch
 
-from omni.connector.mm_feature_transfer.mm_feature_connector.disk_connector import SQLiteMetadataStore
+from omni_npu.connector.mm_feature_transfer.mm_feature_connector.disk_connector import SQLiteMetadataStore
 
 
 # ---------- Test SQLiteMetadataStore ----------

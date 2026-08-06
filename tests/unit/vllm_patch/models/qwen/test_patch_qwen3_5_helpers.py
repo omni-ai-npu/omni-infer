@@ -4,8 +4,8 @@
 import torch
 from types import SimpleNamespace
 
-from omni.vllm_patches.patches.models.qwen import qwen_hybrid_common as hybrid
-from omni.vllm_patches.patches.models.qwen3_5 import patch_gdn_attn
+from omni_npu.vllm_patches.patches.models.qwen import qwen_hybrid_common as hybrid
+from omni_npu.vllm_patches.patches.models.qwen3_5 import patch_gdn_attn
 
 
 def test_mask_padded_state_indices_masks_one_dimensional_indices():
@@ -58,8 +58,8 @@ def test_page_dense_helper_returns_none_for_non_page_strided_cache():
 
 
 def test_qwen35_patch_module_exports_shared_entrypoints():
-    from omni.vllm_patches.patches.models.qwen3_5 import patch_qwen3_5
-    from omni.vllm_patches.patches.models.qwen import patch_qwen3_next
+    from omni_npu.vllm_patches.patches.models.qwen3_5 import patch_qwen3_5
+    from omni_npu.vllm_patches.patches.models.qwen import patch_qwen3_next
 
     assert patch_qwen3_5.NPUModelRunnerPatch is patch_qwen3_next.NPUModelRunnerPatch
     assert patch_qwen3_5.SchedulerPatch is patch_qwen3_next.SchedulerPatch

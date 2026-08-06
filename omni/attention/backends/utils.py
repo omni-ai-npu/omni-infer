@@ -130,7 +130,7 @@ def _maybe_padded_raw_tensor_to_strided_caches(
 def _load_plugin_backends_map() -> dict[str, type]:
     """NOTE: Scan entry points once and build a name -> class map.
 
-    Each entry point under group ``omni.attention_backends`` is loaded
+    Each entry point under group ``omni_npu.attention_backends`` is loaded
     and indexed by the value returned by its ``get_name()`` method.
     The result is cached so subsequent calls are free.
     """
@@ -140,7 +140,7 @@ def _load_plugin_backends_map() -> dict[str, type]:
 
     plugin_map: dict[str, type] = {}
     try:
-        eps = entry_points(group="omni.attention_backends")
+        eps = entry_points(group="omni_npu.attention_backends")
     except Exception:
         _PLUGIN_BACKEND_CACHE = plugin_map
         return plugin_map
@@ -206,7 +206,7 @@ def load_plugin_backends():
     This should be called during module initialization.
     Plugins can override the base backends by registering with the same name.
     """
-    eps = entry_points(group="omni.attention_backends")
+    eps = entry_points(group="omni_npu.attention_backends")
     for ep in eps:
         try:
             backend_cls = ep.load()
@@ -232,7 +232,7 @@ def apply_plugin_overrides():
     while the base modules are still being imported.
 
     For each registered backend name, we check whether an entry point
-    under ``omni.attention_backends`` provides a class whose
+    under ``omni_npu.attention_backends`` provides a class whose
     ``get_name()`` matches.  If it does and the backend is not listed
     in the ``DISABLE_PLUGIN_BACKENDS`` environment variable, the
     plugin class replaces the base class in ``NPU_ATTENTION_BACKEND``

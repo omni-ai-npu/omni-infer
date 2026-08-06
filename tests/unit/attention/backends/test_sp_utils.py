@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import torch
 
-MODULE = "omni.attention.backends.utils"
+MODULE = "omni_npu.attention.backends.utils"
 
 cfg_i32 = {"device": "cpu", "dtype": torch.int32}
 cfg_bf16 = {"device": "cpu", "dtype": torch.bfloat16}

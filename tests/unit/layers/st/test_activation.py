@@ -5,7 +5,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from omni.layers.activation import NPUSiluAndMul
+from omni_npu.layers.activation import NPUSiluAndMul
 from .distributed_test_common import parse_ascend_devices
 
 FIRST_DEVICE, _ = parse_ascend_devices()

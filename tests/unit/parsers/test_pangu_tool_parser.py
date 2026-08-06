@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import MagicMock
 
-from omni.v1.parsers import PanguToolParser
+from omni_npu.v1.parsers import PanguToolParser
 from vllm.entrypoints.openai.protocol import ChatCompletionRequest
 
 

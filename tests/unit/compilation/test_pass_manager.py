@@ -5,7 +5,7 @@ from torch import fx
 
 from vllm.config import VllmConfig, ModelConfig
 from vllm.compilation.vllm_inductor_pass import VllmInductorPass
-from omni.compilation.pass_manager import GraphPassManager
+from omni_npu.compilation.pass_manager import GraphPassManager
 
 
 class MockVllmInductorPass(VllmInductorPass):
@@ -89,7 +89,7 @@ class TestGraphPassManagerCall:
         compile_range = getattr(request, "param", "decode")
         # Store compile_range on vllm_config for mock passes to access
         vllm_config._test_compile_range = compile_range
-        with patch('omni.compilation.pass_manager.get_pass_context') as mock_ctx:
+        with patch('omni_npu.compilation.pass_manager.get_pass_context') as mock_ctx:
             ctx = MagicMock()
             ctx.compile_range = compile_range
             mock_ctx.return_value = ctx
@@ -214,7 +214,7 @@ class TestGraphPassManagerConfigure:
             "npugraph_ex_config": {"merge_dynamic_quant": True}
         }
 
-        with patch('omni.compilation.passes.merge_dynamic_quant_pass.MergeDynamicQuantPass') as MockMergePass:
+        with patch('omni_npu.compilation.passes.merge_dynamic_quant_pass.MergeDynamicQuantPass') as MockMergePass:
             manager.configure(vllm_config)
 
             # Verify config is set
@@ -251,7 +251,7 @@ class TestGraphPassManagerConfigure:
             }
         }
 
-        with patch('omni.compilation.passes.merge_dynamic_quant_pass.MergeDynamicQuantPass') as MockMergePass:
+        with patch('omni_npu.compilation.passes.merge_dynamic_quant_pass.MergeDynamicQuantPass') as MockMergePass:
             manager.configure(vllm_config)
 
             # Verify all options are preserved

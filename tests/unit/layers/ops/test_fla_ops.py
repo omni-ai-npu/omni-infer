@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import torch
 
-from omni.layers.ops import fla_ops
+from omni_npu.layers.ops import fla_ops
 
 
 def test_fused_recurrent_gated_delta_rule_fwd_updates_indexed_states(monkeypatch):

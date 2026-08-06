@@ -7,8 +7,8 @@ import torch
 
 from vllm.model_executor.layers.mla import MLAModules
 
-from omni.layers.attention import npu_mla_wrapper as npu_mla_wrapper_module
-from omni.layers.attention.npu_mla_wrapper import NPUMultiHeadLatentAttentionWrapper
+from omni_npu.layers.attention import npu_mla_wrapper as npu_mla_wrapper_module
+from omni_npu.layers.attention.npu_mla_wrapper import NPUMultiHeadLatentAttentionWrapper
 
 
 pytestmark = pytest.mark.unit

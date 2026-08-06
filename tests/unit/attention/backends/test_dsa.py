@@ -8,8 +8,8 @@ import weakref
 import torch
 
 from vllm.v1.kv_cache_interface import AttentionSpec
-import omni.attention.backends.dsa as mla_mod
-from omni.attention.backends.utils import get_batch_desc
+import omni_npu.attention.backends.dsa as mla_mod
+from omni_npu.attention.backends.utils import get_batch_desc
 
 
 class TestNPUDSABackend(unittest.TestCase):
@@ -56,7 +56,7 @@ class TestNPUDSABackend(unittest.TestCase):
         mock_vllm_config = MagicMock()
         mock_vllm_config.kv_transfer_config = mock_kv_transfer_config
 
-        with patch("omni.attention.backends.dsa.get_current_vllm_config", 
+        with patch("omni_npu.attention.backends.dsa.get_current_vllm_config",
                 return_value=mock_vllm_config):
             kv_cache_spec = AttentionSpec(
                 block_size=block_size,
@@ -89,7 +89,7 @@ class TestNPUDSABackend(unittest.TestCase):
             dtype=torch.bfloat16,
         )
 
-        with patch("omni.attention.backends.dsa.get_current_vllm_config",
+        with patch("omni_npu.attention.backends.dsa.get_current_vllm_config",
                    return_value=mock_vllm_config):
             out = mla_mod.NPUDSABackend.reshape_kv_cache(
                 raw_tensor=raw,
@@ -118,7 +118,7 @@ class TestNPUDSABackend(unittest.TestCase):
             dtype=torch.bfloat16,
         )
 
-        with patch("omni.attention.backends.dsa.get_current_vllm_config",
+        with patch("omni_npu.attention.backends.dsa.get_current_vllm_config",
                 return_value=mock_vllm_config), \
             self.assertRaises(RuntimeError):
             _ = mla_mod.NPUDSABackend.reshape_kv_cache(
@@ -175,7 +175,7 @@ class TestNPUDSABackendReshapeNoncontiguous(unittest.TestCase):
 
     def test_default_branch_shapes_and_dtypes(self):
         """Default branch uses model_extra_config.dtype (bf16 by default)."""
-        from omni.model_config.config_loader.loader import model_extra_config
+        from omni_npu.model_config.config_loader.loader import model_extra_config
 
         shapes, dtypes = self._call_with_dtype("bf16")
         self.assertEqual(shapes, ((576,), (128,)))

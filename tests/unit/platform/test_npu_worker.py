@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import torch
 import pytest
-from omni.v1.utils import switch_torch_device
-from omni.worker.npu_worker import NPUWorker, _env_to_bool
+from omni_npu.v1.utils import switch_torch_device
+from omni_npu.worker.npu_worker import NPUWorker, _env_to_bool
 from vllm.sequence import IntermediateTensors
 from vllm.utils.mem_utils import MemorySnapshot
 from vllm.v1.outputs import ModelRunnerOutput
@@ -33,7 +33,7 @@ class TestNpuWorker:
             dist_backend="hccl",
             is_sleep_mode_available=lambda: True,
         )
-        monkeypatch.setattr("omni.worker.npu_worker.current_platform",
+        monkeypatch.setattr("omni_npu.worker.npu_worker.current_platform",
                             mock_platform)
 
         # Mock torch.npu related operations
@@ -46,16 +46,16 @@ class TestNpuWorker:
 
         # Mock distributed initialization
         monkeypatch.setattr(
-            "omni.worker.npu_worker.init_worker_distributed_environment",
+            "omni_npu.worker.npu_worker.init_worker_distributed_environment",
             lambda *args, **kwargs: None,
         )
-        monkeypatch.setattr("omni.worker.npu_worker.set_random_seed",
+        monkeypatch.setattr("omni_npu.worker.npu_worker.set_random_seed",
                             lambda seed: None)
 
         # Mock NPUModelRunner
         mock_model_runner = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_worker.NPUModelRunner",
+            "omni_npu.worker.npu_worker.NPUModelRunner",
             lambda *args, **kwargs: mock_model_runner,
         )
 
@@ -87,20 +87,20 @@ class TestNpuWorker:
 
         # Test case: no kv_transfer_group available
         monkeypatch.setattr(
-            "omni.worker.npu_worker.has_kv_transfer_group",
+            "omni_npu.worker.npu_worker.has_kv_transfer_group",
             lambda: False,
         )
         assert worker.get_kv_connector_handshake_metadata() is None
 
         # Test case: kv_transfer_group exists but has no metadata
         monkeypatch.setattr(
-            "omni.worker.npu_worker.has_kv_transfer_group",
+            "omni_npu.worker.npu_worker.has_kv_transfer_group",
             lambda: True,
         )
         mock_connector = MagicMock()
         mock_connector.get_handshake_metadata.return_value = None
         monkeypatch.setattr(
-            "omni.worker.npu_worker.get_kv_transfer_group",
+            "omni_npu.worker.npu_worker.get_kv_transfer_group",
             lambda: mock_connector,
         )
         assert worker.get_kv_connector_handshake_metadata() is None
@@ -110,7 +110,7 @@ class TestNpuWorker:
         mock_connector.get_handshake_metadata.return_value = mock_metadata
         mock_tp_group = SimpleNamespace(rank_in_group=0)
         monkeypatch.setattr(
-            "omni.worker.npu_worker.get_tp_group",
+            "omni_npu.worker.npu_worker.get_tp_group",
             lambda: mock_tp_group,
         )
         result = worker.get_kv_connector_handshake_metadata()
@@ -150,7 +150,7 @@ class TestNpuWorker:
         # Mock load_model_extra_config to avoid dependencies
         mock_load_config = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_worker.load_model_extra_config",
+            "omni_npu.worker.npu_worker.load_model_extra_config",
             mock_load_config,
         )
 
@@ -163,7 +163,7 @@ class TestNpuWorker:
         # Mock NPUModelRunner initialization
         mock_model_runner = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_worker.NPUModelRunner",
+            "omni_npu.worker.npu_worker.NPUModelRunner",
             MagicMock(return_value=mock_model_runner),
         )
 
@@ -214,7 +214,7 @@ class TestNpuWorker:
             ensure_called["backend"] = backend
 
         monkeypatch.setattr(
-            "omni.v1.distributed.parallel_state_ext.ensure_layer_parallel_initialized",
+            "omni_npu.v1.distributed.parallel_state_ext.ensure_layer_parallel_initialized",
             mock_ensure_layer_parallel_initialized,
         )
 
@@ -222,11 +222,11 @@ class TestNpuWorker:
         mock_load_config = MagicMock()
         # Mock both potential import paths
         monkeypatch.setattr(
-            "omni.worker.npu_worker.load_model_extra_config",
+            "omni_npu.worker.npu_worker.load_model_extra_config",
             mock_load_config,
         )
         monkeypatch.setattr(
-            "omni.model_config.config_loader.loader.load_model_extra_config",
+            "omni_npu.model_config.config_loader.loader.load_model_extra_config",
             mock_load_config,
         )
 
@@ -239,7 +239,7 @@ class TestNpuWorker:
         # Mock NPUModelRunner initialization
         mock_model_runner = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_worker.NPUModelRunner",
+            "omni_npu.worker.npu_worker.NPUModelRunner",
             MagicMock(return_value=mock_model_runner),
         )
 
@@ -510,14 +510,14 @@ class TestNpuWorker:
                                                     kv_cache_config)
 
         monkeypatch.setattr(
-            "omni.worker.npu_worker.ensure_kv_transfer_initialized",
+            "omni_npu.worker.npu_worker.ensure_kv_transfer_initialized",
             mock_ensure_kv_initialized,
         )
 
         # Mock NpuMemAllocator
         mock_allocator = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_worker.NpuMemAllocator.get_instance",
+            "omni_npu.worker.npu_worker.NpuMemAllocator.get_instance",
             lambda: mock_allocator)
 
         # Test case: ENABLE_OMNI_CACHE=0 (原 use_omni_cache=False)
@@ -598,7 +598,7 @@ class TestNpuWorker:
         # Mock NpuMemAllocator
         mock_allocator = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_worker.NpuMemAllocator.get_instance",
+            "omni_npu.worker.npu_worker.NpuMemAllocator.get_instance",
             lambda: mock_allocator)
         mock_allocator.get_current_usage.return_value = 0
 
@@ -672,7 +672,7 @@ class TestNpuWorker:
         worker.profiler = None
         mock_tp_group = SimpleNamespace(rank_in_group=0)
         monkeypatch.setattr(
-            "omni.worker.npu_worker.get_tp_group",
+            "omni_npu.worker.npu_worker.get_tp_group",
             lambda: mock_tp_group,
         )
         
@@ -681,7 +681,7 @@ class TestNpuWorker:
         mock_pp_group.is_first_rank = False
         mock_pp_group.recv_tensor_dict = mock_send_recv
         mock_pp_group.send_tensor_dict = mock_send_recv
-        monkeypatch.setattr("omni.worker.npu_worker.get_pp_group",
+        monkeypatch.setattr("omni_npu.worker.npu_worker.get_pp_group",
                             mock_pp_group)
         result = worker.execute_model(mock_scheduler_output)
         assert result is None
@@ -693,7 +693,7 @@ class TestNpuWorker:
         worker.model_runner.execute_model.return_value = mock_output
         
         mock_pp_group.is_first_rank = True
-        monkeypatch.setattr("omni.worker.npu_worker.get_pp_group",
+        monkeypatch.setattr("omni_npu.worker.npu_worker.get_pp_group",
                             mock_pp_group)
         result = worker.execute_model(mock_scheduler_output)
 
@@ -716,7 +716,7 @@ class TestNpuWorker:
         import vllm.envs as envs
         monkeypatch.setattr(envs, "VLLM_TORCH_PROFILER_DIR", "/tmp/profiler")
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR", "/tmp/profiler")
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR", "/tmp/profiler")
 
         worker._use_token_for_profile = True
         worker.profile_already_start = False
@@ -755,10 +755,10 @@ class TestNpuWorker:
         worker = self._create_worker(monkeypatch)
 
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR",
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR",
             "/tmp/profiler")
         mock_pp_group = MagicMock()
-        monkeypatch.setattr("omni.worker.npu_worker.get_pp_group",
+        monkeypatch.setattr("omni_npu.worker.npu_worker.get_pp_group",
                             lambda: mock_pp_group)
         worker.model_runner.execute_model.return_value = ModelRunnerOutput(
             req_ids=MagicMock(), req_id_to_index=MagicMock())
@@ -830,7 +830,7 @@ class TestNpuWorker:
 
         # Test case: profiler disabled
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR", None)
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR", None)
         monkeypatch.delenv("PROFILER_TOKEN_THRESHOLD", raising=False)
         monkeypatch.delenv("PROFILER_STOP_STEP", raising=False)
 
@@ -842,7 +842,7 @@ class TestNpuWorker:
 
         # Test case: profiler enabled with token threshold
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR",
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR",
             "/tmp/profiler")
         monkeypatch.setenv("PROFILER_TOKEN_THRESHOLD", "10")
         monkeypatch.setenv("PROFILER_STOP_STEP", "20")
@@ -877,16 +877,16 @@ class TestNpuWorker:
             SimpleNamespace(CPU="cpu", NPU="npu"),
         )
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_RECORD_SHAPES",
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_RECORD_SHAPES",
             False)
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY",
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY",
             False)
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_STACK",
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_STACK",
             False)
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_FLOPS",
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_FLOPS",
             False)
 
         profiler = worker._init_profiler()
@@ -944,19 +944,19 @@ class TestNpuWorker:
             SimpleNamespace(CPU="cpu", NPU="npu"),
         )
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR",
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_DIR",
             "/tmp/profiler")
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_RECORD_SHAPES",
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_RECORD_SHAPES",
             "True")
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY",
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY",
             "1")
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_STACK",
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_STACK",
             "False")
         monkeypatch.setattr(
-            "omni.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_FLOPS",
+            "omni_npu.worker.npu_worker.envs.VLLM_TORCH_PROFILER_WITH_FLOPS",
             None)
 
         worker._init_profiler()
@@ -972,7 +972,7 @@ class TestNpuWorker:
         worker = self._create_worker(monkeypatch)
         monkeypatch.setattr("torch.npu.synchronize", lambda: None)
         monkeypatch.setattr(
-            "omni.worker.npu_worker.on_ascend950", lambda: False)
+            "omni_npu.worker.npu_worker.on_ascend950", lambda: False)
 
         mock_model = MagicMock()
         worker.model_runner.get_model.return_value = mock_model
@@ -1008,10 +1008,10 @@ class TestNpuWorker:
 
         # Cast-related unit tests trigger the explicit NZ → ND cast only when the A5 path is taken by default.
         monkeypatch.setattr(
-            "omni.worker.npu_worker.on_ascend950", lambda: True)
+            "omni_npu.worker.npu_worker.on_ascend950", lambda: True)
 
         monkeypatch.setattr(
-            "omni.worker.npu_worker.torch_npu.get_npu_format",
+            "omni_npu.worker.npu_worker.torch_npu.get_npu_format",
             lambda t: 29)
 
         def fake_cast(tensor, fmt):
@@ -1019,7 +1019,7 @@ class TestNpuWorker:
             return tensor
 
         monkeypatch.setattr(
-            "omni.worker.npu_worker.torch_npu.npu_format_cast",
+            "omni_npu.worker.npu_worker.torch_npu.npu_format_cast",
             fake_cast)
 
     def test_sleep_casts_npu_params_and_buffers_to_nd(self, monkeypatch):
@@ -1104,14 +1104,14 @@ class TestNpuWorker:
         monkeypatch.setattr("torch.npu.mem_get_info", lambda:
                             (15 * (1 << 30), 20 * (1 << 30)))
         monkeypatch.setattr(
-            "omni.worker.npu_worker.on_ascend950", lambda: True)
+            "omni_npu.worker.npu_worker.on_ascend950", lambda: True)
         monkeypatch.setattr(
-            "omni.worker.npu_worker.torch_npu.get_npu_format",
+            "omni_npu.worker.npu_worker.torch_npu.get_npu_format",
             lambda t: 29)
 
         call_order = []
         monkeypatch.setattr(
-            "omni.worker.npu_worker.torch_npu.npu_format_cast",
+            "omni_npu.worker.npu_worker.torch_npu.npu_format_cast",
             lambda t, fmt: (call_order.append("cast"), t)[1])
 
         npu_param = self._make_tensor_like("npu")
@@ -1136,11 +1136,11 @@ class TestNpuWorker:
         monkeypatch.setattr("torch.npu.mem_get_info", lambda:
                             (15 * (1 << 30), 20 * (1 << 30)))
         monkeypatch.setattr(
-            "omni.worker.npu_worker.on_ascend950", lambda: False)
+            "omni_npu.worker.npu_worker.on_ascend950", lambda: False)
 
         cast_calls = []
         monkeypatch.setattr(
-            "omni.worker.npu_worker.torch_npu.npu_format_cast",
+            "omni_npu.worker.npu_worker.torch_npu.npu_format_cast",
             lambda t, fmt: (cast_calls.append((t, fmt)), t)[1])
 
         main_param = self._make_tensor_like("npu")
@@ -1173,9 +1173,9 @@ class TestNpuWorker:
         monkeypatch.setattr("torch.npu.mem_get_info", lambda:
                             (15 * (1 << 30), 20 * (1 << 30)))
         monkeypatch.setattr(
-            "omni.worker.npu_worker.on_ascend950", lambda: True)
+            "omni_npu.worker.npu_worker.on_ascend950", lambda: True)
         monkeypatch.setattr(
-            "omni.worker.npu_worker.torch_npu.get_npu_format",
+            "omni_npu.worker.npu_worker.torch_npu.get_npu_format",
             lambda t: 29)
 
         cast_result = MagicMock(name="nd_tensor")
@@ -1185,7 +1185,7 @@ class TestNpuWorker:
             return cast_result
 
         monkeypatch.setattr(
-            "omni.worker.npu_worker.torch_npu.npu_format_cast",
+            "omni_npu.worker.npu_worker.torch_npu.npu_format_cast",
             fake_cast)
 
         npu_param = self._make_tensor_like("npu")
@@ -1223,7 +1223,7 @@ class TestNpuWorker:
         monkeypatch.setattr("torch.npu.synchronize", lambda: None)
         mock_recapture = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_worker.set_aclgraph_recapture",
+            "omni_npu.worker.npu_worker.set_aclgraph_recapture",
             mock_recapture)
 
         worker.kv_nbytes = [[256]]
@@ -1246,7 +1246,7 @@ class TestNpuWorker:
         monkeypatch.setattr("torch.npu.synchronize", lambda: None)
         mock_recapture = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_worker.set_aclgraph_recapture",
+            "omni_npu.worker.npu_worker.set_aclgraph_recapture",
             mock_recapture)
 
         worker.kv_nbytes = [[128]]
@@ -1268,7 +1268,7 @@ class TestNpuWorker:
 
         mock_set_flag = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_worker.set_aclgraph_recapture",
+            "omni_npu.worker.npu_worker.set_aclgraph_recapture",
             mock_set_flag,
         )
 
@@ -1299,7 +1299,7 @@ class TestNpuWorker:
 
         mock_set_flag = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_worker.set_aclgraph_recapture",
+            "omni_npu.worker.npu_worker.set_aclgraph_recapture",
             mock_set_flag,
         )
 
@@ -1317,7 +1317,7 @@ class TestNpuWorker:
 
         mock_set_flag = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_worker.set_aclgraph_recapture",
+            "omni_npu.worker.npu_worker.set_aclgraph_recapture",
             mock_set_flag,
         )
 
@@ -1341,7 +1341,7 @@ class TestNpuWorker:
 
         call_order = []
         monkeypatch.setattr(
-            "omni.worker.npu_worker.set_aclgraph_recapture",
+            "omni_npu.worker.npu_worker.set_aclgraph_recapture",
             lambda enable: call_order.append(("set", enable)),
         )
         worker.model_runner.capture_model.side_effect = \
@@ -1360,12 +1360,12 @@ class TestNpuWorker:
         worker.model_config = SimpleNamespace(enforce_eager=False)
 
         monkeypatch.setattr(
-            "omni.worker.npu_worker.set_aclgraph_recapture",
+            "omni_npu.worker.npu_worker.set_aclgraph_recapture",
             lambda enable: None,
         )
         mock_consume = MagicMock(return_value=True)
         monkeypatch.setattr(
-            "omni.worker.npu_worker.consume_aclgraph_recapture",
+            "omni_npu.worker.npu_worker.consume_aclgraph_recapture",
             mock_consume,
         )
         worker.model_runner.capture_model.side_effect = RuntimeError(
@@ -1385,12 +1385,12 @@ class TestNpuWorker:
         worker.model_config = SimpleNamespace(enforce_eager=False)
 
         monkeypatch.setattr(
-            "omni.worker.npu_worker.set_aclgraph_recapture",
+            "omni_npu.worker.npu_worker.set_aclgraph_recapture",
             lambda enable: None,
         )
         mock_consume = MagicMock(return_value=False)
         monkeypatch.setattr(
-            "omni.worker.npu_worker.consume_aclgraph_recapture",
+            "omni_npu.worker.npu_worker.consume_aclgraph_recapture",
             mock_consume,
         )
 
@@ -1477,7 +1477,7 @@ class TestInitWorkerDistributedEnvironment:
 
     def test_init_with_default_init_method(self, mock_vllm_config, monkeypatch):
         """Test initialization with default init_method when world_ranks is None."""
-        from omni.worker.npu_worker import init_worker_distributed_environment
+        from omni_npu.worker.npu_worker import init_worker_distributed_environment
 
         # Track calls
         calls = []
@@ -1497,11 +1497,11 @@ class TestInitWorkerDistributedEnvironment:
         def mock_ensure_ec_transfer_initialized(config):
             calls.append(('ensure_ec_transfer_initialized', config))
 
-        monkeypatch.setattr("omni.worker.npu_worker.init_batch_invariance", mock_init_batch_invariance)
-        monkeypatch.setattr("omni.worker.npu_worker.set_custom_all_reduce", mock_set_custom_all_reduce)
-        monkeypatch.setattr("omni.worker.npu_worker.init_distributed_environment", mock_init_distributed_environment)
-        monkeypatch.setattr("omni.worker.npu_worker.ensure_model_parallel_initialized", mock_ensure_model_parallel_initialized)
-        monkeypatch.setattr("omni.worker.npu_worker.ensure_ec_transfer_initialized", mock_ensure_ec_transfer_initialized)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_batch_invariance", mock_init_batch_invariance)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.set_custom_all_reduce", mock_set_custom_all_reduce)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_distributed_environment", mock_init_distributed_environment)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_model_parallel_initialized", mock_ensure_model_parallel_initialized)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_ec_transfer_initialized", mock_ensure_ec_transfer_initialized)
 
         # Execute
         init_worker_distributed_environment(
@@ -1519,18 +1519,18 @@ class TestInitWorkerDistributedEnvironment:
 
     def test_init_with_env_method_when_no_init_method(self, mock_vllm_config, monkeypatch):
         """Test initialization uses 'env://' when distributed_init_method is None."""
-        from omni.worker.npu_worker import init_worker_distributed_environment
+        from omni_npu.worker.npu_worker import init_worker_distributed_environment
 
         captured_init_method = []
 
         def mock_init_distributed_environment(world_size, rank, init_method, local_rank, backend):
             captured_init_method.append(init_method)
 
-        monkeypatch.setattr("omni.worker.npu_worker.init_batch_invariance", lambda x: None)
-        monkeypatch.setattr("omni.worker.npu_worker.set_custom_all_reduce", lambda x: None)
-        monkeypatch.setattr("omni.worker.npu_worker.init_distributed_environment", mock_init_distributed_environment)
-        monkeypatch.setattr("omni.worker.npu_worker.ensure_model_parallel_initialized", lambda *args: None)
-        monkeypatch.setattr("omni.worker.npu_worker.ensure_ec_transfer_initialized", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_batch_invariance", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.set_custom_all_reduce", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_distributed_environment", mock_init_distributed_environment)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_model_parallel_initialized", lambda *args: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_ec_transfer_initialized", lambda x: None)
 
         # Execute with None init_method
         init_worker_distributed_environment(
@@ -1547,7 +1547,7 @@ class TestInitWorkerDistributedEnvironment:
 
     def test_init_with_world_ranks(self, mock_vllm_config, monkeypatch):
         """Test initialization with world_ranks provided (RL scenario)."""
-        from omni.worker.npu_worker import init_worker_distributed_environment
+        from omni_npu.worker.npu_worker import init_worker_distributed_environment
 
         # Track calls
         calls = []
@@ -1555,11 +1555,11 @@ class TestInitWorkerDistributedEnvironment:
         def mock_init_world_group(ranks, local_rank, backend):
             calls.append(('init_world_group', ranks, local_rank, backend))
 
-        monkeypatch.setattr("omni.worker.npu_worker.init_batch_invariance", lambda x: None)
-        monkeypatch.setattr("omni.worker.npu_worker.set_custom_all_reduce", lambda x: None)
-        monkeypatch.setattr("omni.worker.npu_worker.init_world_group", mock_init_world_group)
-        monkeypatch.setattr("omni.worker.npu_worker.ensure_model_parallel_initialized", lambda *args: None)
-        monkeypatch.setattr("omni.worker.npu_worker.ensure_ec_transfer_initialized", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_batch_invariance", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.set_custom_all_reduce", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_world_group", mock_init_world_group)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_model_parallel_initialized", lambda *args: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_ec_transfer_initialized", lambda x: None)
 
         world_ranks = [0, 1, 2, 3]
 
@@ -1582,18 +1582,18 @@ class TestInitWorkerDistributedEnvironment:
 
     def test_ensure_model_parallel_initialized_called(self, mock_vllm_config, monkeypatch):
         """Test that ensure_model_parallel_initialized is called with correct parameters."""
-        from omni.worker.npu_worker import init_worker_distributed_environment
+        from omni_npu.worker.npu_worker import init_worker_distributed_environment
 
         captured_args = []
 
         def mock_ensure_model_parallel_initialized(tp_size, pp_size, pcp_size, dcp_size):
             captured_args.append((tp_size, pp_size, pcp_size, dcp_size))
 
-        monkeypatch.setattr("omni.worker.npu_worker.init_batch_invariance", lambda x: None)
-        monkeypatch.setattr("omni.worker.npu_worker.set_custom_all_reduce", lambda x: None)
-        monkeypatch.setattr("omni.worker.npu_worker.init_distributed_environment", lambda *args: None)
-        monkeypatch.setattr("omni.worker.npu_worker.ensure_model_parallel_initialized", mock_ensure_model_parallel_initialized)
-        monkeypatch.setattr("omni.worker.npu_worker.ensure_ec_transfer_initialized", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_batch_invariance", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.set_custom_all_reduce", lambda x: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.init_distributed_environment", lambda *args: None)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_model_parallel_initialized", mock_ensure_model_parallel_initialized)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.ensure_ec_transfer_initialized", lambda x: None)
 
         # Execute
         init_worker_distributed_environment(
@@ -1614,7 +1614,7 @@ class TestInitWorldGroup:
 
     def test_init_world_group_success(self, monkeypatch):
         """Test successful initialization of world group."""
-        from omni.worker.npu_worker import init_world_group
+        from omni_npu.worker.npu_worker import init_world_group
 
         # Mock torch.distributed
         mock_dist = MagicMock()
@@ -1628,11 +1628,11 @@ class TestInitWorldGroup:
         mock_parallel_state._WORLD = None
         mock_world_group = MagicMock()
         mock_parallel_state.init_world_group.return_value = mock_world_group
-        monkeypatch.setattr("omni.worker.npu_worker.parallel_state", mock_parallel_state)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.parallel_state", mock_parallel_state)
 
         # Mock GroupCoordinator
         mock_group_coordinator = MagicMock()
-        monkeypatch.setattr("omni.worker.npu_worker.GroupCoordinator", mock_group_coordinator)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.GroupCoordinator", mock_group_coordinator)
 
         ranks = [0, 1, 2, 3]
 
@@ -1645,7 +1645,7 @@ class TestInitWorldGroup:
 
     def test_init_world_group_raises_when_dist_not_initialized(self, monkeypatch):
         """Test that RuntimeError is raised when torch.distributed is not initialized."""
-        from omni.worker.npu_worker import init_world_group
+        from omni_npu.worker.npu_worker import init_world_group
 
         # Mock torch.distributed as not initialized
         mock_dist = MagicMock()
@@ -1657,7 +1657,7 @@ class TestInitWorldGroup:
 
     def test_init_world_group_raises_when_world_already_initialized(self, monkeypatch):
         """Test that RuntimeError is raised when _WORLD is already initialized."""
-        from omni.worker.npu_worker import init_world_group
+        from omni_npu.worker.npu_worker import init_world_group
 
         # Mock torch.distributed as initialized
         mock_dist = MagicMock()
@@ -1667,14 +1667,14 @@ class TestInitWorldGroup:
         # Mock parallel_state with _WORLD already set
         mock_parallel_state = MagicMock()
         mock_parallel_state._WORLD = MagicMock()  # Already initialized
-        monkeypatch.setattr("omni.worker.npu_worker.parallel_state", mock_parallel_state)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.parallel_state", mock_parallel_state)
 
         with pytest.raises(RuntimeError, match="_WORLD must not be initialized"):
             init_world_group(ranks=[0, 1, 2, 3], local_rank=0, backend="hccl")
 
     def test_init_world_group_sets_local_synchronization_when_ranks_mismatch(self, monkeypatch):
         """Test that use_local_synchronization is set when ranks length != world_size."""
-        from omni.worker.npu_worker import init_world_group
+        from omni_npu.worker.npu_worker import init_world_group
 
         # Mock torch.distributed
         mock_dist = MagicMock()
@@ -1688,11 +1688,11 @@ class TestInitWorldGroup:
         mock_parallel_state._WORLD = None
         mock_world_group = MagicMock()
         mock_parallel_state.init_world_group.return_value = mock_world_group
-        monkeypatch.setattr("omni.worker.npu_worker.parallel_state", mock_parallel_state)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.parallel_state", mock_parallel_state)
 
         # Mock GroupCoordinator
         mock_group_coordinator = MagicMock()
-        monkeypatch.setattr("omni.worker.npu_worker.GroupCoordinator", mock_group_coordinator)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.GroupCoordinator", mock_group_coordinator)
 
         # Use fewer ranks than world_size
         ranks = [0, 1, 2, 3]  # len(ranks) = 4, world_size = 8
@@ -1705,7 +1705,7 @@ class TestInitWorldGroup:
 
     def test_init_world_group_no_local_synchronization_when_ranks_match(self, monkeypatch):
         """Test that use_local_synchronization is not set when ranks length == world_size."""
-        from omni.worker.npu_worker import init_world_group
+        from omni_npu.worker.npu_worker import init_world_group
 
         # Mock torch.distributed
         mock_dist = MagicMock()
@@ -1719,11 +1719,11 @@ class TestInitWorldGroup:
         mock_parallel_state._WORLD = None
         mock_world_group = MagicMock()
         mock_parallel_state.init_world_group.return_value = mock_world_group
-        monkeypatch.setattr("omni.worker.npu_worker.parallel_state", mock_parallel_state)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.parallel_state", mock_parallel_state)
 
         # Mock GroupCoordinator
         mock_group_coordinator = MagicMock()
-        monkeypatch.setattr("omni.worker.npu_worker.GroupCoordinator", mock_group_coordinator)
+        monkeypatch.setattr("omni_npu.worker.npu_worker.GroupCoordinator", mock_group_coordinator)
 
         ranks = [0, 1, 2, 3]  # len(ranks) = 4, world_size = 4
 

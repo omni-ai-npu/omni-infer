@@ -22,7 +22,7 @@ def parse_ascend_devices():
 
 def _destroy_layer_parallel_ext_groups() -> None:
     try:
-        from omni.v1.distributed import parallel_state_ext as pse
+        from omni_npu.v1.distributed import parallel_state_ext as pse
 
         for name in ("_LOCAL_WORLD",):
             group = getattr(pse, name, None)
@@ -72,23 +72,23 @@ def _persistent_worker_loop(device: int, rank: int, world_size: int, temp_file_p
                             runtime_config: Dict):
     try:
         # 1. Apply Patches Immediately
-        # from omni.adaptors.vllm.patches.model_patch import patch_all
+        # from omni_npu.adaptors.vllm.patches.model_patch import patch_all
         # patch_all()
 
         # 2. Set Configuration BEFORE loading/reloading layers
-        # from omni.models.config_loader.loader import model_extra_config
+        # from omni_npu.models.config_loader.loader import model_extra_config
         # model_extra_config.parall_config.dense_mlp_tp_size = world_size
         # model_extra_config.parall_config.o_proj_tp_size = world_size
 
         # 3. CRITICAL: Reload the layer module
-        # import omni.layers.linear
-        # importlib.reload(omni.layers.linear)
+        # import omni_npu.layers.linear
+        # importlib.reload(omni_npu.layers.linear)
 
         # 4. Setup Distributed Environment
         from vllm import distributed as vllm_dist
         from vllm.utils.system_utils import update_environment_variables
 
-        from omni.v1.distributed.parallel_state_ext import ensure_layer_parallel_initialized
+        from omni_npu.v1.distributed.parallel_state_ext import ensure_layer_parallel_initialized
         
         torch.npu.set_device(device)
         os.environ["GLOO_SOCKET_IFNAME"] = "lo"
@@ -130,10 +130,10 @@ def _persistent_worker_loop(device: int, rank: int, world_size: int, temp_file_p
                 )
 
             with patch(
-                "omni.v1.distributed.parallel_state_ext._load_layer_parallel_config_from_model_extra_config",
+                "omni_npu.v1.distributed.parallel_state_ext._load_layer_parallel_config_from_model_extra_config",
                 return_value={"layer_parallel_config": layer_parallel_config},
             ),patch(
-                "omni.v1.distributed.parallel_state_ext.get_current_vllm_config",
+                "omni_npu.v1.distributed.parallel_state_ext.get_current_vllm_config",
                 return_value=vllm_config,
             ):
                 ensure_layer_parallel_initialized(backend="hccl")

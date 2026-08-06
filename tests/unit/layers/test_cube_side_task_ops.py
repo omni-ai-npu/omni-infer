@@ -44,10 +44,10 @@ def cube_side_task_ops(monkeypatch):
     torch_utils_module = _make_module(monkeypatch, "vllm.utils.torch_utils")
     torch_utils_module.direct_register_custom_op = lambda **_kw: None
 
-    # omni.layers.utils — supply CubeSideTask + key constant.
+    # omni_npu.layers.utils — supply CubeSideTask + key constant.
     _make_module(monkeypatch, "omni_npu", is_package=True)
-    _make_module(monkeypatch, "omni.layers", is_package=True)
-    layer_utils_module = _make_module(monkeypatch, "omni.layers.utils")
+    _make_module(monkeypatch, "omni_npu.layers", is_package=True)
+    layer_utils_module = _make_module(monkeypatch, "omni_npu.layers.utils")
     from dataclasses import dataclass
     from typing import Callable, Optional
 
@@ -63,7 +63,7 @@ def cube_side_task_ops(monkeypatch):
         wait_stream=lambda *_a: None,
         wait_event=lambda *_a: None,
     )
-    mhc_pkg = _make_module(monkeypatch, "omni.layers.mhc", is_package=True)
+    mhc_pkg = _make_module(monkeypatch, "omni_npu.layers.mhc", is_package=True)
     mhc_pkg.__path__ = [str(repo_root / "omni" / "layers" / "mhc")]
 
     # Stub torch.npu.{current_stream, stream} so the closure can run without NPU.
@@ -90,7 +90,7 @@ def cube_side_task_ops(monkeypatch):
     # Tensor.record_stream needs a real Stream. For tests, no-op it.
     monkeypatch.setattr(torch.Tensor, "record_stream", lambda *_a: None)
 
-    module_name = "omni.layers.mhc.cube_side_task_ops"
+    module_name = "omni_npu.layers.mhc.cube_side_task_ops"
     monkeypatch.delitem(sys.modules, module_name, raising=False)
     module = importlib.import_module(module_name)
     return importlib.reload(module), fwctx

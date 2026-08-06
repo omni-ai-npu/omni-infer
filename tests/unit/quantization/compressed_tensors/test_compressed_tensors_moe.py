@@ -272,35 +272,35 @@ def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
     )
     fused_moe_init_module.FusedMoE = SimpleNamespace
 
-    npu_layer_module = _make_module(monkeypatch, "omni.layers.fused_moe.layer")
+    npu_layer_module = _make_module(monkeypatch, "omni_npu.layers.fused_moe.layer")
     npu_layer_module.NPUFusedMoE = DummyNPUFusedMoE
 
     npu_fused_moe_module = _make_module(
-        monkeypatch, "omni.layers.fused_moe.fused_moe"
+        monkeypatch, "omni_npu.layers.fused_moe.fused_moe"
     )
     npu_fused_moe_module.fused_experts_tp = MagicMock(
         return_value=torch.tensor([2.0], dtype=torch.float32)
     )
 
     npu_base_module = _make_module(
-        monkeypatch, "omni.layers.fused_moe.fused_moe_method_base"
+        monkeypatch, "omni_npu.layers.fused_moe.fused_moe_method_base"
     )
     npu_base_module.NPUFusedMoEMethodBase = DummyNPUFusedMoEMethodBase
 
     prepare_module = _make_module(
-        monkeypatch, "omni.layers.fused_moe.prepare_permute_unpermute_finalize"
+        monkeypatch, "omni_npu.layers.fused_moe.prepare_permute_unpermute_finalize"
     )
     prepare_module.PreparePermuteOptions = SimpleNamespace
     prepare_module.PreparePermuteResult = DummyPreparePermuteResult
     prepare_module.AGRSPreparePermuteResult = SimpleNamespace
 
-    # Mock omni.layers.fused_moe.config
+    # Mock omni_npu.layers.fused_moe.config
     npu_fused_moe_config_module = _make_module(
-        monkeypatch, "omni.layers.fused_moe.config"
+        monkeypatch, "omni_npu.layers.fused_moe.config"
     )
     npu_fused_moe_config_module.int4_w4a8_moe_quant_config = lambda **kw: SimpleNamespace(**kw)
 
-    utils_layer_module = _make_module(monkeypatch, "omni.layers.utils")
+    utils_layer_module = _make_module(monkeypatch, "omni_npu.layers.utils")
     utils_layer_module.named_stream = lambda name: DummyNPUStream()
 
     # Mock model_extra_config for v1 models config loader
@@ -309,7 +309,7 @@ def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
         operator_opt_config=_operator_opt_config(),
     )
     config_loader_module = _make_module(
-        monkeypatch, "omni.model_config.config_loader.loader"
+        monkeypatch, "omni_npu.model_config.config_loader.loader"
     )
     config_loader_module.model_extra_config = model_extra_config
 
@@ -317,32 +317,32 @@ def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
     omni_pkg = types.ModuleType("omni_npu")
     omni_pkg.__path__ = [str(base_path / "omni")]
     monkeypatch.setitem(sys.modules, "omni_npu", omni_pkg)
-    layers_pkg = types.ModuleType("omni.layers")
+    layers_pkg = types.ModuleType("omni_npu.layers")
     layers_pkg.__path__ = [str(base_path / "omni" / "layers")]
-    monkeypatch.setitem(sys.modules, "omni.layers", layers_pkg)
-    quant_pkg = types.ModuleType("omni.layers.quantization")
+    monkeypatch.setitem(sys.modules, "omni_npu.layers", layers_pkg)
+    quant_pkg = types.ModuleType("omni_npu.layers.quantization")
     quant_pkg.__path__ = [str(base_path / "omni" / "layers" / "quantization")]
-    monkeypatch.setitem(sys.modules, "omni.layers.quantization", quant_pkg)
-    ct_pkg = types.ModuleType("omni.layers.quantization.compressed_tensors")
+    monkeypatch.setitem(sys.modules, "omni_npu.layers.quantization", quant_pkg)
+    ct_pkg = types.ModuleType("omni_npu.layers.quantization.compressed_tensors")
     ct_pkg.__path__ = [
         str(base_path / "omni" / "layers" / "quantization" / "compressed_tensors")
     ]
     monkeypatch.setitem(
-        sys.modules, "omni.layers.quantization.compressed_tensors", ct_pkg
+        sys.modules, "omni_npu.layers.quantization.compressed_tensors", ct_pkg
     )
 
-    # Mock omni.v1 chain to avoid pulling in vllm/transformers
-    v1_pkg = types.ModuleType("omni.v1")
+    # Mock omni_npu.v1 chain to avoid pulling in vllm/transformers
+    v1_pkg = types.ModuleType("omni_npu.v1")
     v1_pkg.__path__ = []
-    monkeypatch.setitem(sys.modules, "omni.v1", v1_pkg)
-    v1_distributed_pkg = _make_module(monkeypatch, "omni.v1.distributed")
+    monkeypatch.setitem(sys.modules, "omni_npu.v1", v1_pkg)
+    v1_distributed_pkg = _make_module(monkeypatch, "omni_npu.v1.distributed")
     parallel_state_ext_module = _make_module(
-        monkeypatch, "omni.v1.distributed.parallel_state_ext"
+        monkeypatch, "omni_npu.v1.distributed.parallel_state_ext"
     )
     parallel_state_ext_module.get_npu_device_count = lambda: 1
 
     sys.modules.pop(
-        "omni.layers.quantization.compressed_tensors.compressed_tensors_moe", None
+        "omni_npu.layers.quantization.compressed_tensors.compressed_tensors_moe", None
     )
     yield
 
@@ -350,7 +350,7 @@ def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture
 def compressed_moe_module(mock_dependencies):
     module = importlib.import_module(
-        "omni.layers.quantization.compressed_tensors.compressed_tensors_moe"
+        "omni_npu.layers.quantization.compressed_tensors.compressed_tensors_moe"
     )
     importlib.reload(module)
     return module

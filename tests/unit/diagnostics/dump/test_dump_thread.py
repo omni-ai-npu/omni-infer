@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from omni.diagnostics.dump import constants, dump_thread
+from omni_npu.diagnostics.dump import constants, dump_thread
 
 pytestmark = pytest.mark.unit
 

@@ -8,7 +8,7 @@ import torch
 from vllm.compilation.cuda_graph import CUDAGraphOptions
 from vllm.config import CUDAGraphMode, VllmConfig
 
-import omni.compilation.acl_graph as acl_graph_mod
+import omni_npu.compilation.acl_graph as acl_graph_mod
 
 REQUIRED_SYMBOLS = [
     "weak_ref_tensor",
@@ -118,7 +118,7 @@ def test_set_aclgraph_recapture_coalesces_requests():
 
 
 def test_reset_stale_aclgraph_resources_noop_when_empty():
-    with patch("omni.compilation.acl_graph.get_graph_params",
+    with patch("omni_npu.compilation.acl_graph.get_graph_params",
                return_value=None), \
          patch("torch.npu.empty_cache", create=True) as mock_empty:
         reset_stale_aclgraph_resources([])
@@ -143,9 +143,9 @@ def test_reset_stale_aclgraph_resources_releases_and_rotates():
     wrapper = MagicMock()
     new_pool = MagicMock()
 
-    with patch("omni.compilation.acl_graph.get_graph_params",
+    with patch("omni_npu.compilation.acl_graph.get_graph_params",
                return_value=params), \
-         patch("omni.compilation.acl_graph.current_platform"
+         patch("omni_npu.compilation.acl_graph.current_platform"
                ".get_global_graph_pool", return_value=new_pool), \
          patch("torch.npu.mem_get_info", create=True,
                side_effect=[(0, 0), (1 << 30, 0)]), \
@@ -186,7 +186,7 @@ class TestACLGraphWrapper:
 
     @pytest.fixture
     def default_aclgraph_wrapper(self, default_npu_graph):
-        with patch("omni.compilation.acl_graph.get_forward_context") as mock_get_forward_context:
+        with patch("omni_npu.compilation.acl_graph.get_forward_context") as mock_get_forward_context:
             mock_context = MagicMock()
             mock_batch_descriptor = MagicMock()
             mock_batch_descriptor.num_reqs = None
@@ -266,7 +266,7 @@ class TestACLGraphWrapper:
         cudagraph_options = MagicMock()
 
         mock_graph_pool = MagicMock()
-        with patch("omni.compilation.acl_graph.current_platform.get_global_graph_pool", return_value=mock_graph_pool) as mock_get_global_graph_pool:
+        with patch("omni_npu.compilation.acl_graph.current_platform.get_global_graph_pool", return_value=mock_graph_pool) as mock_get_global_graph_pool:
             wrapper = ACLGraphWrapper(runnable, vllm_config, runtime_mode, None, cudagraph_options)
 
             assert wrapper.graph_pool == mock_graph_pool
@@ -281,7 +281,7 @@ class TestACLGraphWrapper:
         runtime_mode = CUDAGraphMode.PIECEWISE
         graph_pool = MagicMock()
 
-        with patch("omni.compilation.acl_graph.CUDAGraphOptions", return_value=MagicMock(spec=CUDAGraphOptions)) as mock_cudagraph_options:
+        with patch("omni_npu.compilation.acl_graph.CUDAGraphOptions", return_value=MagicMock(spec=CUDAGraphOptions)) as mock_cudagraph_options:
             wrapper = ACLGraphWrapper(runnable, vllm_config, runtime_mode, graph_pool, None)
 
             # Verify whether the type of aclgraph_options is CUDAGraphOptions
@@ -406,7 +406,7 @@ class TestACLGraphWrapper:
         }
         default_aclgraph_wrapper.runnable = MagicMock(return_value=torch.tensor([1.0]))
 
-        with patch("omni.compilation.acl_graph.ensure_weak_ref_graph_params"):
+        with patch("omni_npu.compilation.acl_graph.ensure_weak_ref_graph_params"):
             result = default_aclgraph_wrapper(torch.tensor([1.0]))
 
         default_aclgraph_wrapper.runnable.assert_called_once()
@@ -425,7 +425,7 @@ class TestACLGraphWrapper:
         }
         default_aclgraph_wrapper.runnable = MagicMock(return_value=torch.tensor([1.0]))
 
-        with patch("omni.compilation.acl_graph.ensure_weak_ref_graph_params"):
+        with patch("omni_npu.compilation.acl_graph.ensure_weak_ref_graph_params"):
             result = default_aclgraph_wrapper(torch.tensor([1.0]))
 
         default_aclgraph_wrapper.runnable.assert_called_once()
@@ -479,7 +479,7 @@ class TestACLGraphWrapper:
         default_aclgraph_wrapper.concrete_aclgraph_entries = {}
         default_aclgraph_wrapper.runnable = MagicMock(return_value=torch.tensor([1.0]))
 
-        with patch("omni.compilation.acl_graph.ensure_weak_ref_graph_params"):
+        with patch("omni_npu.compilation.acl_graph.ensure_weak_ref_graph_params"):
             result = default_aclgraph_wrapper(torch.tensor([1.0]))
 
         assert torch.equal(result, torch.tensor([1.0]))
@@ -494,7 +494,7 @@ class TestACLGraphWrapperUpdateMethods:
         with patch("torch.npu.NPUGraph"), \
              patch("torch.npu.graph"), \
              patch("torch.npu.Stream") as mock_stream, \
-             patch("omni.compilation.acl_graph.get_forward_context") as mock_get_forward_context:
+             patch("omni_npu.compilation.acl_graph.get_forward_context") as mock_get_forward_context:
 
             mock_stream_instance = MagicMock()
             mock_stream.return_value = mock_stream_instance
@@ -560,7 +560,7 @@ class TestACLGraphWrapperUpdateMethods:
             workspaces={4: {workspace_fn: MagicMock()}},
         )
 
-        with patch("omni.compilation.acl_graph.get_graph_params", return_value=graph_params), \
+        with patch("omni_npu.compilation.acl_graph.get_graph_params", return_value=graph_params), \
              patch("torch.npu.stream"), \
              patch("torch.npu.graph_task_update_begin") as mock_update_begin, \
              patch("torch.npu.graph_task_update_end") as mock_update_end:
@@ -596,7 +596,7 @@ class TestACLGraphWrapperUpdateMethods:
             workspaces={4: {workspace_fn: MagicMock()}},
         )
 
-        with patch("omni.compilation.acl_graph.get_graph_params", return_value=graph_params), \
+        with patch("omni_npu.compilation.acl_graph.get_graph_params", return_value=graph_params), \
              patch("torch.npu.stream"), \
              patch("torch.npu.graph_task_update_begin") as mock_update_begin, \
              patch("torch.npu.graph_task_update_end") as mock_update_end:
@@ -619,7 +619,7 @@ class TestACLGraphWrapperUpdateMethods:
             workspaces={4: {workspace_fn: MagicMock()}},
         )
 
-        with patch("omni.compilation.acl_graph.get_graph_params", return_value=graph_params), \
+        with patch("omni_npu.compilation.acl_graph.get_graph_params", return_value=graph_params), \
              patch("torch.npu.stream"), \
              patch("torch.npu.graph_task_update_begin") as mock_update_begin, \
              patch("torch.npu.graph_task_update_end") as mock_update_end:
@@ -644,7 +644,7 @@ class TestACLGraphWrapperUpdateMethods:
             workspaces={4: {workspace_fn: workspace}},
         )
 
-        with patch("omni.compilation.acl_graph.get_graph_params", return_value=graph_params), \
+        with patch("omni_npu.compilation.acl_graph.get_graph_params", return_value=graph_params), \
              patch("torch.npu.stream"), \
              patch("torch.npu.graph_task_update_begin") as mock_update_begin, \
              patch("torch.npu.graph_task_update_end") as mock_update_end:
@@ -679,7 +679,7 @@ class TestACLGraphWrapperUpdateMethods:
             workspaces={4: {workspace_fn: workspace}},
         )
 
-        with patch("omni.compilation.acl_graph.get_graph_params", return_value=graph_params), \
+        with patch("omni_npu.compilation.acl_graph.get_graph_params", return_value=graph_params), \
              patch("torch.npu.stream"), \
              patch("torch.npu.graph_task_update_begin"), \
              patch("torch.npu.graph_task_update_end"):
@@ -727,10 +727,10 @@ def test_ensure_weak_ref_graph_params_updates_tasks_and_workspaces():
             return [weak_workspace]
         return tensors
 
-    with patch("omni.compilation.acl_graph.get_graph_params", return_value=graph_params), \
-         patch("omni.compilation.acl_graph.weak_ref_tensor", return_value=weak_keep), \
+    with patch("omni_npu.compilation.acl_graph.get_graph_params", return_value=graph_params), \
+         patch("omni_npu.compilation.acl_graph.weak_ref_tensor", return_value=weak_keep), \
          patch(
-             "omni.compilation.acl_graph.weak_ref_tensors",
+             "omni_npu.compilation.acl_graph.weak_ref_tensors",
              side_effect=fake_weak_ref_tensors,
          ):
         acl_graph_mod.ensure_weak_ref_graph_params()

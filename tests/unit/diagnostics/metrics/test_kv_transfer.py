@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Unit tests for omni.diagnostics.metrics.kv_transfer（KVConnectorStats 通道，含 worker_mem 合并）。"""
+"""Unit tests for omni_npu.diagnostics.metrics.kv_transfer（KVConnectorStats 通道，含 worker_mem 合并）。"""
 
 import sys
 import types
@@ -11,7 +11,7 @@ pytest.importorskip("vllm.distributed.kv_transfer.kv_connector.v1.metrics")
 
 from prometheus_client import REGISTRY, Counter, Gauge, Histogram  # noqa: E402
 
-from omni.diagnostics.metrics import kv_transfer, worker_mem  # noqa: E402
+from omni_npu.diagnostics.metrics import kv_transfer, worker_mem  # noqa: E402
 
 
 def _unregister_omni():

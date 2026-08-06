@@ -151,26 +151,26 @@ def create_conditional_plugin_decorator(entry_point_group: str, pre_method: str,
 
 # Pre-defined decorators for common use cases
 load_model_decorator = create_plugin_decorator(
-    entry_point_group="omni.load_model_decorators",
+    entry_point_group="omni_npu.load_model_decorators",
     pre_method="pre_load",
     post_method="post_load"
 )
 
 # Use conditional decorator for init_config to allow plugins to skip original function
 init_config_decorator = create_conditional_plugin_decorator(
-    entry_point_group="omni.init_config_decorators",
+    entry_point_group="omni_npu.init_config_decorators",
     pre_method="pre_init_config",
     post_method="post_init_config"
 )
 
 prepare_inputs_decorator = create_plugin_decorator(
-    entry_point_group="omni.prepare_inputs_decorators",
+    entry_point_group="omni_npu.prepare_inputs_decorators",
     pre_method="pre_prepare_inputs",
     post_method="post_prepare_inputs"
 )
 
 reinitialize_input_batch_decorator = create_plugin_decorator(
-    entry_point_group="omni.reinitialize_input_batch_decorators",
+    entry_point_group="omni_npu.reinitialize_input_batch_decorators",
     pre_method="pre_reinitialize_input_batch",
     post_method="post_reinitialize_input_batch"
 )
@@ -194,7 +194,7 @@ def attn_decorator(attn_type: str = None, **kwargs):
         @attn_decorator(attn_type='dsa')
         def _apply_attention(...): ...
 
-    The decorator will look for entry points in the group "omni.{attn_type}_attn_decorators"
+    The decorator will look for entry points in the group "omni_npu.{attn_type}_attn_decorators"
     and call pre_attn/post_attn methods on the loaded plugin classes.
     """
     legacy_attn_type = kwargs.pop("type", None)
@@ -208,7 +208,7 @@ def attn_decorator(attn_type: str = None, **kwargs):
     if attn_type is None:
         raise TypeError("attn_decorator() missing required argument: 'attn_type'")
 
-    entry_point_group = f"omni.{attn_type}_attn_decorators"
+    entry_point_group = f"omni_npu.{attn_type}_attn_decorators"
 
     return create_plugin_decorator(
         entry_point_group=entry_point_group,
@@ -219,25 +219,25 @@ def attn_decorator(attn_type: str = None, **kwargs):
 
 
 post_model_forward_decorator = create_plugin_decorator(
-    entry_point_group="omni.model_forward_decorators",
+    entry_point_group="omni_npu.model_forward_decorators",
     pre_method="pre_model_forward",
     post_method="post_model_forward"
 )
 
 update_from_output_decorator = create_plugin_decorator(
-    entry_point_group="omni.update_from_output_decorators",
+    entry_point_group="omni_npu.update_from_output_decorators",
     pre_method="pre_update_from_output",
     post_method="post_update_from_output"
 )
 
 model_output_decorator = create_plugin_decorator(
-    entry_point_group="omni.model_output_decorators",
+    entry_point_group="omni_npu.model_output_decorators",
     pre_method="pre_model_output",
     post_method="post_model_output"
 )
 
 determine_memory_decorator = create_conditional_plugin_decorator(
-    entry_point_group="omni.determine_memory_decorators",
+    entry_point_group="omni_npu.determine_memory_decorators",
     pre_method="pre_determine_memory",
     post_method="post_determine_memory"
 )

@@ -20,7 +20,7 @@ class TestPrestopShipping:
     def test_pyproject_declares_package_data(self):
         pyproject = (ROOT / "pyproject.toml").read_text()
         assert "[tool.setuptools.package-data]" in pyproject
-        assert '"omni.script" = ["*.sh"]' in pyproject
+        assert '"omni_npu.script" = ["*.sh"]' in pyproject
 
     def test_script_dir_is_a_package(self):
         assert (SCRIPT.parent / "__init__.py").exists(), (

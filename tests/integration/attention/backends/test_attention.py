@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 import torch
 import pytest
-from omni.attention.backends.attention import (
+from omni_npu.attention.backends.attention import (
     NPUAttentionBackendImpl,
     NPUMetadata,
 )
@@ -98,7 +98,7 @@ class TestNPUAttentionBackendDefaultImplIntegration(unittest.TestCase):
         )
         mock_ctx.capturing = False
 
-        with patch('omni.attention.backends.attention.get_forward_context', return_value=mock_ctx):
+        with patch('omni_npu.attention.backends.attention.get_forward_context', return_value=mock_ctx):
             result = impl.forward(
                 layer=layer,
                 query=query,

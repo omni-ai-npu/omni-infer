@@ -3,7 +3,7 @@
 """Unit tests for the vllm-free role hooks (worker / engine / api)."""
 import pytest
 
-from omni.diagnostics.dump import engine_stats, hooks
+from omni_npu.diagnostics.dump import engine_stats, hooks
 
 pytestmark = pytest.mark.unit
 

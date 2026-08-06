@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from omni.diagnostics.dump import constants, forensic
+from omni_npu.diagnostics.dump import constants, forensic
 
 pytestmark = pytest.mark.unit
 

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from omni.configs.validators import (
+from omni_npu.configs.validators import (
     Severity,
     ValidationContext,
     ValidationRule,
@@ -145,7 +145,7 @@ def test_passing_warn_rule_does_not_log_summary(caplog):
 # ---------------------------------------------------------------------------
 # Cross-source validation rules
 # ---------------------------------------------------------------------------
-import omni.envs  # noqa: F401,E402 - used by rules through lazy access
+import omni_npu.envs  # noqa: F401,E402 - used by rules through lazy access
 
 
 def _ctx_with_role(monkeypatch, role, kv_role=None, add_cfg=None, omni_cache_env=None):
@@ -169,14 +169,14 @@ def _ctx_with_role(monkeypatch, role, kv_role=None, add_cfg=None, omni_cache_env
 
 
 def test_role_kv_role_consistent_pass(monkeypatch):
-    from omni.configs.validators import _ALL_RULES
+    from omni_npu.configs.validators import _ALL_RULES
     rule = next(r for r in _ALL_RULES if r.name == "role_kv_role_consistent")
     ctx = _ctx_with_role(monkeypatch, "prefill", kv_role="kv_producer")
     assert rule.check(ctx) is None
 
 
 def test_role_kv_role_consistent_fail(monkeypatch):
-    from omni.configs.validators import _ALL_RULES
+    from omni_npu.configs.validators import _ALL_RULES
     rule = next(r for r in _ALL_RULES if r.name == "role_kv_role_consistent")
     ctx = _ctx_with_role(monkeypatch, "decode", kv_role="kv_producer")
     v = rule.check(ctx)
@@ -186,14 +186,14 @@ def test_role_kv_role_consistent_fail(monkeypatch):
 
 def test_role_kv_role_skipped_when_unset(monkeypatch):
     # Skip role validation when no role information is available.
-    from omni.configs.validators import _ALL_RULES
+    from omni_npu.configs.validators import _ALL_RULES
     rule = next(r for r in _ALL_RULES if r.name == "role_kv_role_consistent")
     ctx = _ctx_with_role(monkeypatch, None, kv_role="kv_consumer")
     assert rule.check(ctx) is None
 
 
 def test_cache_consistency_pass(monkeypatch):
-    from omni.configs.validators import _ALL_RULES
+    from omni_npu.configs.validators import _ALL_RULES
     rule = next(r for r in _ALL_RULES if r.name == "omni_cache_consistent")
     ctx = _ctx_with_role(monkeypatch, None, add_cfg={"enable_omni_cache": True},
                          omni_cache_env="true")
@@ -201,7 +201,7 @@ def test_cache_consistency_pass(monkeypatch):
 
 
 def test_cache_consistency_fail(monkeypatch):
-    from omni.configs.validators import _ALL_RULES
+    from omni_npu.configs.validators import _ALL_RULES
     rule = next(r for r in _ALL_RULES if r.name == "omni_cache_consistent")
     ctx = _ctx_with_role(monkeypatch, None, add_cfg={"enable_omni_cache": True},
                          omni_cache_env="false")
@@ -211,7 +211,7 @@ def test_cache_consistency_fail(monkeypatch):
 
 
 def test_cache_consistency_skips_legacy_env_only_configuration(monkeypatch):
-    from omni.configs.validators import _ALL_RULES
+    from omni_npu.configs.validators import _ALL_RULES
     rule = next(r for r in _ALL_RULES if r.name == "omni_cache_consistent")
     ctx = _ctx_with_role(
         monkeypatch,
@@ -253,7 +253,7 @@ def _ctx_with_cudagraph(
 
 
 def _cudagraph_rule():
-    from omni.configs.validators import _ALL_RULES
+    from omni_npu.configs.validators import _ALL_RULES
     return next(
         rule
         for rule in _ALL_RULES

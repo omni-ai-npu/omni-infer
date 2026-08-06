@@ -50,7 +50,6 @@ from vllm.v1.outputs import (
 )
 from vllm.v1.spec_decode.eagle import EagleProposer
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
-from vllm.v1.spec_decode.utils import PADDING_SLOT_ID
 from vllm.v1.worker.ubatch_utils import maybe_create_ubatch_slices
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.utils import prepare_kernel_block_sizes
@@ -1019,11 +1018,11 @@ class NPUModelRunner(GPUModelRunner):
             ubatch_slices=(ubatch_slices_padded if pad_attn else ubatch_slices),
         )
 
-        # Dummy runs have no real slot assignments — fill with PADDING_SLOT_ID
-        # so concat_and_cache / indexer kernels skip the KV write.
+        # Dummy runs have no real slot assignments — fill with -1 so
+        # concat_and_cache kernels skip the KV write.
         if slot_mappings_by_group is not None:
             for sm in slot_mappings_by_group.values():
-                sm.fill_(PADDING_SLOT_ID)
+                sm.fill_(-1)
 
         # _dummy_run shares pinned CPU buffers (seq_lens, query_start_loc,
         # etc.) with execute_model.  It must participate in the same event

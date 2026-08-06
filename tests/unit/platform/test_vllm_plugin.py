@@ -3,7 +3,7 @@ import sys
 from unittest.mock import MagicMock
 
 import pytest
-from omni.vllm_plugin import plugin
+from omni_npu.vllm_plugin import plugin
 
 
 class TestVllmPlugin:
@@ -15,7 +15,7 @@ class TestVllmPlugin:
         """
         result = plugin()
         # Return value should be None or platform class name string
-        assert result is None or result == "omni.platform.NPUPlatform"
+        assert result is None or result == "omni_npu.platform.NPUPlatform"
 
     def test_plugin_with_torch_npu_attribute(self, monkeypatch):
         """Test plugin when torch has npu attribute (fallback case).
@@ -43,7 +43,7 @@ class TestVllmPlugin:
         monkeypatch.setattr("builtins.__import__", mock_import)
 
         result = plugin()
-        assert result == "omni.platform.NPUPlatform"
+        assert result == "omni_npu.platform.NPUPlatform"
 
         # Restore
         if original_torch:

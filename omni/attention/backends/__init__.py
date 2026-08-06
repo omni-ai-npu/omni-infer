@@ -15,7 +15,7 @@ from omni_npu.attention.backends.mla import NPUMLABackend
 from omni_npu.attention.backends.mome import NPUPanguMomeBackend
 
 # NOTE: After all base backends are imported, apply plugin overrides.
-# This loads entry points from omni.attention_backends and replaces
+# This loads entry points from omni_npu.attention_backends and replaces
 # base classes with their plugin counterparts in NPU_ATTENTION_BACKEND.
 # It also returns the override map so we can rebind module-level names.
 from omni_npu.attention.backends.utils import apply_plugin_overrides

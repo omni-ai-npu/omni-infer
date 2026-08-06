@@ -7,7 +7,7 @@ These catch NameError / missing hybrid.* references during pytest collection.
 
 
 def test_qwen_hybrid_common_imports():
-    from omni.vllm_patches.patches.models.qwen import qwen_hybrid_common as hybrid
+    from omni_npu.vllm_patches.patches.models.qwen import qwen_hybrid_common as hybrid
 
     assert hybrid.QwenHybridSchedulerPatch is not None
     assert hybrid.QwenHybridKVCacheUtilsPatch is not None
@@ -16,7 +16,7 @@ def test_qwen_hybrid_common_imports():
 
 
 def test_patch_qwen3_next_imports():
-    from omni.vllm_patches.patches.models.qwen import patch_qwen3_next as patch_next
+    from omni_npu.vllm_patches.patches.models.qwen import patch_qwen3_next as patch_next
 
     assert patch_next.NPUModelRunnerPatch is not None
     assert patch_next.KVCacheUtilsPatch is not None
@@ -24,7 +24,7 @@ def test_patch_qwen3_next_imports():
 
 
 def test_patch_qwen3_5_imports():
-    from omni.vllm_patches.patches.models.qwen3_5 import patch_qwen3_5 as patch35
+    from omni_npu.vllm_patches.patches.models.qwen3_5 import patch_qwen3_5 as patch35
 
     assert patch35.NPUModelRunnerPatch is not None
     assert patch35.KVCacheUtilsPatch is not None

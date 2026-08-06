@@ -151,7 +151,7 @@ def _npu_profiler(profile_dir: Path, enabled: bool):
 
 
 def _patch_prepare_module_for_torchrun(ep_group: _TorchEPGroup):
-    import omni.layers.fused_moe.prepare_permute_unpermute_finalize as module
+    import omni_npu.layers.fused_moe.prepare_permute_unpermute_finalize as module
 
     module.get_ep_group = lambda: ep_group
     module.get_forward_context = lambda: SimpleNamespace(attn_metadata=None)
@@ -365,7 +365,7 @@ def test_standalone_agrs_moe_profile_tp8() -> None:
     ep_group = _TorchEPGroup(rank, world_size, dist.group.WORLD)
     prepare_module = _patch_prepare_module_for_torchrun(ep_group)
 
-    from omni.layers.quantization.compressed_tensors.compressed_tensors_moe import (
+    from omni_npu.layers.quantization.compressed_tensors.compressed_tensors_moe import (
         NPUCompressedTensorsW8A8Int8MoEMethod,
     )
 

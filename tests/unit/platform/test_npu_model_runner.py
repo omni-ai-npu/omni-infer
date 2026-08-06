@@ -4,11 +4,11 @@ from contextlib import contextmanager, nullcontext
 import numpy as np
 import torch
 import pytest
-import omni.worker.npu_model_runner as runner_module
+import omni_npu.worker.npu_model_runner as runner_module
 from types import SimpleNamespace
-from omni.sample.sampler import NPUSamplerV1
-from omni.sample.rejection_sampler import NPURejectionSampler
-from omni.worker.npu_model_runner import (
+from omni_npu.sample.sampler import NPUSamplerV1
+from omni_npu.sample.rejection_sampler import NPURejectionSampler
+from omni_npu.worker.npu_model_runner import (
     NPUModelRunner,
     switch_torch_device,
 )
@@ -30,7 +30,7 @@ def mock_forward_context():
     mock_ctx = SimpleNamespace(capturing=False, num_tokens=10, batch_descriptor=None)
 
     # Mock get_forward_context to return the mock context
-    import omni.worker.npu_model_runner as runner_module
+    import omni_npu.worker.npu_model_runner as runner_module
     original_get = runner_module.get_forward_context
     original_set = runner_module.set_forward_context
 
@@ -231,7 +231,7 @@ class TestNPUModelRunner:
         # isinstance(self.drafter, EagleProposer) still receives a valid type
         # as its second argument and does not raise TypeError.
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.EagleProposer",
+            "omni_npu.worker.npu_model_runner.EagleProposer",
             MockEagleProposer,
         )
 
@@ -245,7 +245,7 @@ class TestNPUModelRunner:
         """Test NPUModelRunner initialization with additional_config."""
         # Mock init_aclgraph_config
         monkeypatch.setattr(
-            "omni.compilation.npugraph_ex_config.init_aclgraph_config",
+            "omni_npu.compilation.npugraph_ex_config.init_aclgraph_config",
             lambda *args, **kwargs: None)
 
         # Set up additional_config
@@ -270,7 +270,7 @@ class TestNPUModelRunner:
         """Test NPUModelRunner initialization with router_sliding_window."""
         # Mock the necessary components
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.get_forward_context",
+            "omni_npu.worker.npu_model_runner.get_forward_context",
             MagicMock())
 
         # Create runner
@@ -299,7 +299,7 @@ class TestNPUModelRunner:
 
         # Setup configs
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.get_forward_context",
+            "omni_npu.worker.npu_model_runner.get_forward_context",
             MagicMock()
         )
 
@@ -399,7 +399,7 @@ class TestNPUModelRunner:
         # Mock the necessary components
         mock_forward_context = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.get_forward_context",
+            "omni_npu.worker.npu_model_runner.get_forward_context",
             lambda: mock_forward_context)
 
         # Create runner and set up necessary attributes
@@ -447,7 +447,7 @@ class TestNPUModelRunner:
         # Mock the necessary components
         mock_build_conv_context = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.NPUModelRunner._build_conv_context",
+            "omni_npu.worker.npu_model_runner.NPUModelRunner._build_conv_context",
             mock_build_conv_context)
 
         mock_model_output = MagicMock()
@@ -551,7 +551,7 @@ class TestNPUModelRunner:
     def test_load_model_with_aclgraph_wrapper_for_drafter(self, monkeypatch):
         """Test load_model with ACLGraphWrapper for drafter."""
         # _graph_params had been set in other case, reset it here.
-        monkeypatch.setattr("omni.compilation.acl_graph._graph_params", None)
+        monkeypatch.setattr("omni_npu.compilation.acl_graph._graph_params", None)
 
         # Create runner
         runner = NPUModelRunner(self.vllm_cfg, self.npu_device)
@@ -562,7 +562,7 @@ class TestNPUModelRunner:
         monkeypatch.setattr(GPUModelRunner, "load_model", mock_load_model)
 
         # Mock ACLGraphWrapper
-        monkeypatch.setattr("omni.worker.npu_model_runner.ACLGraphWrapper",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.ACLGraphWrapper",
                             FakeACLGraphWrapper)
 
         # Set up drafter
@@ -573,7 +573,7 @@ class TestNPUModelRunner:
         runner.drafter = mock_drafter
 
         # Mock logger.debug
-        monkeypatch.setattr("omni.worker.npu_model_runner.logger.debug",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.logger.debug",
                             lambda *args, **kwargs: None)
 
         # Call load_model
@@ -590,7 +590,7 @@ class TestNPUModelRunner:
         # Mock the necessary components
         mock_build_conv_context = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.NPUModelRunner._build_conv_context",
+            "omni_npu.worker.npu_model_runner.NPUModelRunner._build_conv_context",
             mock_build_conv_context)
 
         mock_model = MagicMock(return_value=MagicMock())
@@ -804,7 +804,7 @@ class TestNPUModelRunner:
 
         # Mock kv_cache_dtype_str_to_dtype to avoid dependency on real implementation
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.kv_cache_dtype_str_to_dtype",
+            "omni_npu.worker.npu_model_runner.kv_cache_dtype_str_to_dtype",
             lambda cache_dtype_str, mcfg: torch.float16,
         )
 
@@ -821,7 +821,7 @@ class TestNPUModelRunner:
 
         # Mock get_layers_from_vllm_config to return our constructed attn_layers
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.get_layers_from_vllm_config",
+            "omni_npu.worker.npu_model_runner.get_layers_from_vllm_config",
             lambda vllm_cfg, layer_type: attn_layers,
         )
 
@@ -987,7 +987,7 @@ class TestNPUModelRunner:
             "vllm.distributed.parallel_state.prepare_communication_buffer_for_model",
             mock_prepare)
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.prepare_communication_buffer_for_model",
+            "omni_npu.worker.npu_model_runner.prepare_communication_buffer_for_model",
             mock_prepare)
 
         # Set up drafter as EagleProposer
@@ -1056,11 +1056,11 @@ class TestNPUModelRunner:
 
         # Mock ACLGraphWrapper as a real type so isinstance(...) remains valid.
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.ACLGraphWrapper",
+            "omni_npu.worker.npu_model_runner.ACLGraphWrapper",
             FakeACLGraphWrapper,
         )
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.set_graph_params",
+            "omni_npu.worker.npu_model_runner.set_graph_params",
             lambda sizes: None,
         )
 
@@ -1118,7 +1118,7 @@ class TestNPUModelRunner:
         )
         log_error = MagicMock()
         monkeypatch.setattr(self.runner, "get_model", lambda: model)
-        monkeypatch.setattr("omni.worker.npu_model_runner.logger.error",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.logger.error",
                             log_error)
 
         self.runner._hook_model_load_weights(model)
@@ -1136,7 +1136,7 @@ class TestNPUModelRunner:
         monkeypatch.setattr(self.runner, "get_model", lambda: model)
 
         log_info_once = MagicMock()
-        monkeypatch.setattr("omni.worker.npu_model_runner.logger.info_once",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.logger.info_once",
                             log_info_once)
 
         class DummyContextManager:
@@ -1150,12 +1150,12 @@ class TestNPUModelRunner:
         allocator.use_memory_pool.return_value = DummyContextManager()
         get_instance = MagicMock(return_value=allocator)
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.NpuMemAllocator.get_instance",
+            "omni_npu.worker.npu_model_runner.NpuMemAllocator.get_instance",
             get_instance,
         )
 
         set_cfg_context = MagicMock(return_value=DummyContextManager())
-        monkeypatch.setattr("omni.worker.npu_model_runner.set_current_vllm_config",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.set_current_vllm_config",
                             set_cfg_context)
 
         capture_model = MagicMock()
@@ -1199,11 +1199,11 @@ class TestNPUModelRunner:
         allocator.use_memory_pool.return_value = DummyContextManager()
         get_instance = MagicMock(return_value=allocator)
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.NpuMemAllocator.get_instance",
+            "omni_npu.worker.npu_model_runner.NpuMemAllocator.get_instance",
             get_instance,
         )
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.set_current_vllm_config",
+            "omni_npu.worker.npu_model_runner.set_current_vllm_config",
             MagicMock(return_value=DummyContextManager()),
         )
 
@@ -1247,11 +1247,11 @@ class TestNPUModelRunner:
         allocator.use_memory_pool.return_value = DummyContextManager()
         get_instance = MagicMock(return_value=allocator)
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.NpuMemAllocator.get_instance",
+            "omni_npu.worker.npu_model_runner.NpuMemAllocator.get_instance",
             get_instance,
         )
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.set_current_vllm_config",
+            "omni_npu.worker.npu_model_runner.set_current_vllm_config",
             MagicMock(return_value=DummyContextManager()),
         )
         monkeypatch.setattr(self.runner, "capture_model", MagicMock())
@@ -1317,11 +1317,11 @@ class TestNPUModelRunner:
         allocator.use_memory_pool.return_value = DummyContextManager()
         get_instance = MagicMock(return_value=allocator)
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.NpuMemAllocator.get_instance",
+            "omni_npu.worker.npu_model_runner.NpuMemAllocator.get_instance",
             get_instance,
         )
         set_cfg_context = MagicMock(return_value=DummyContextManager())
-        monkeypatch.setattr("omni.worker.npu_model_runner.set_current_vllm_config",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.set_current_vllm_config",
                             set_cfg_context)
         capture_model = MagicMock()
         monkeypatch.setattr(self.runner, "capture_model", capture_model)
@@ -1362,7 +1362,7 @@ class TestNPUModelRunner:
             yield
 
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.switch_torch_device",
+            "omni_npu.worker.npu_model_runner.switch_torch_device",
             fake_switch)
 
         monkeypatch.setattr(torch.npu, "current_device", lambda: "npu:0")
@@ -1398,7 +1398,7 @@ class TestNPUModelRunner:
             yield
 
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.switch_torch_device",
+            "omni_npu.worker.npu_model_runner.switch_torch_device",
             fake_switch)
 
         monkeypatch.setattr(
@@ -1743,7 +1743,7 @@ class TestNPUModelRunner:
         Verifies that when model is wrapped with ACLGraphWrapper,
         get_model correctly unwraps and returns the underlying model.
         """
-        from omni.compilation.acl_graph import ACLGraphWrapper
+        from omni_npu.compilation.acl_graph import ACLGraphWrapper
 
         # Create mock unwrapped model
         unwrapped_model = MagicMock()
@@ -1805,7 +1805,7 @@ class TestNPUModelRunner:
         monkeypatch.setattr(self.runner, "maybe_randomize_inputs",
                             lambda x, y: nullcontext())
         monkeypatch.setattr(self.runner, "eplb_step", lambda **kwargs: None)
-        monkeypatch.setattr("omni.worker.npu_model_runner.get_pp_group",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.get_pp_group",
                             lambda: SimpleNamespace(is_first_rank=True))
         with mock_forward_context():
             hidden_states, logits = self.runner._dummy_run(num_tokens=10,
@@ -1896,7 +1896,7 @@ class TestNPUModelRunner:
         monkeypatch.setattr(self.runner, "maybe_randomize_inputs",
                             lambda x, y: nullcontext())
         monkeypatch.setattr(self.runner, "eplb_step", lambda **kwargs: None)
-        monkeypatch.setattr("omni.worker.npu_model_runner.get_pp_group",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.get_pp_group",
                             lambda: SimpleNamespace(is_first_rank=True))
         with mock_forward_context():
             hidden_states, logits = self.runner._dummy_run(num_tokens=10,
@@ -1965,7 +1965,7 @@ class TestNPUModelRunner:
         monkeypatch.setattr(self.runner, "maybe_randomize_inputs",
                             lambda x, y: nullcontext())
         monkeypatch.setattr(self.runner, "eplb_step", lambda **kwargs: None)
-        monkeypatch.setattr("omni.worker.npu_model_runner.get_pp_group",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.get_pp_group",
                             lambda: SimpleNamespace(is_first_rank=True))
 
         # Test line 317: when cudagraph_runtime_mode is None, it uses _cudagraph_mode
@@ -2032,7 +2032,7 @@ class TestNPUModelRunner:
         monkeypatch.setattr(self.runner, "maybe_randomize_inputs",
                             lambda x, y: nullcontext())
         monkeypatch.setattr(self.runner, "eplb_step", lambda **kwargs: None)
-        monkeypatch.setattr("omni.worker.npu_model_runner.get_pp_group",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.get_pp_group",
                             lambda: SimpleNamespace(is_first_rank=True))
 
         with mock_forward_context():
@@ -2067,7 +2067,7 @@ class TestNPUModelRunner:
         assert hidden_states4 is not None
 
         # Test line 392-401: not is_first_rank branch
-        monkeypatch.setattr("omni.worker.npu_model_runner.get_pp_group",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.get_pp_group",
                             lambda: SimpleNamespace(is_first_rank=False))
         self.runner.intermediate_tensors = None
         self.runner.model.make_empty_intermediate_tensors = MagicMock(
@@ -2088,7 +2088,7 @@ class TestNPUModelRunner:
             (MagicMock(), batch_desc, [ubatch_slice], num_tokens_across_dp, None),
         )
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.maybe_create_ubatch_slices",
+            "omni_npu.worker.npu_model_runner.maybe_create_ubatch_slices",
             lambda *args, **kwargs: ([ubatch_slice], [ubatch_slice]),
         )
         hidden_states6, _ = self.runner._dummy_run(num_tokens=10, skip_eplb=True)
@@ -2103,7 +2103,7 @@ class TestNPUModelRunner:
 
         self.runner.model = MagicMock(side_effect=mock_model_aux)
         self.runner.model.is_mm_encoder_only_model = False
-        monkeypatch.setattr("omni.worker.npu_model_runner.get_pp_group",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.get_pp_group",
                             lambda: SimpleNamespace(is_first_rank=True))
         hidden_states7, logits7 = self.runner._dummy_run(num_tokens=10,
                                                          skip_eplb=True)
@@ -2176,15 +2176,15 @@ class TestNPUModelRunner:
         monkeypatch.setattr(self.runner, "maybe_randomize_inputs",
                             lambda x, y: nullcontext())
         monkeypatch.setattr(self.runner, "eplb_step", lambda **kwargs: None)
-        monkeypatch.setattr("omni.worker.npu_model_runner.get_pp_group",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.get_pp_group",
                             lambda: SimpleNamespace(is_first_rank=True, is_last_rank=True))
         # Mock CUDAGraphMode
         mock_cudagraph_mode = MagicMock()
         mock_cudagraph_mode.has_mode = lambda mode: True  # PIECEWISE mode
-        monkeypatch.setattr("omni.worker.npu_model_runner.CUDAGraphMode",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.CUDAGraphMode",
                             MagicMock())
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.CUDAGraphMode.PIECEWISE",
+            "omni_npu.worker.npu_model_runner.CUDAGraphMode.PIECEWISE",
             MagicMock())
 
         with mock_forward_context():
@@ -2248,7 +2248,7 @@ class TestNPUModelRunner:
         monkeypatch.setattr(self.runner, "maybe_randomize_inputs",
                             lambda x, y: nullcontext())
         monkeypatch.setattr(self.runner, "eplb_step", mock_eplb_step)
-        monkeypatch.setattr("omni.worker.npu_model_runner.get_pp_group",
+        monkeypatch.setattr("omni_npu.worker.npu_model_runner.get_pp_group",
                             lambda: SimpleNamespace(is_first_rank=True))
 
         with mock_forward_context():
@@ -2689,12 +2689,12 @@ class TestNPUModelRunner:
         # num_accepted_tokens_cpu must be updated in-place
         assert num_accepted_tokens_cpu[:num_reqs].tolist() == [1, 2, 3]
 
-    @patch('omni.worker.npu_model_runner.ENABLE_NPU_PENALTY_CACHE', True)
+    @patch('omni_npu.worker.npu_model_runner.ENABLE_NPU_PENALTY_CACHE', True)
     @patch('torch.npu.current_device', return_value=0)
     @patch('torch.device', return_value=torch.device('cpu'))
     def test_execute_model_npu_penalty_cache_upgrade(self, mock_device, mock_curr_dev):
         """Test the dynamic class upgrade to NPUInputBatch inside execute_model."""
-        from omni.worker.npu_input_batch import NPUInputBatch
+        from omni_npu.worker.npu_input_batch import NPUInputBatch
         from vllm.v1.worker.gpu_input_batch import InputBatch
         
         # We must extend the real InputBatch so Python allows the __class__ pointer swap
@@ -2722,7 +2722,7 @@ class TestNPUModelRunner:
 
     def test_init_npu_input_batch_default(self):
         """_init_npu_input_batch creates NPUInputBatch with caches disabled by default."""
-        from omni.worker.npu_input_batch import NPUInputBatch
+        from omni_npu.worker.npu_input_batch import NPUInputBatch
 
         self.runner._init_npu_input_batch()
 
@@ -2733,7 +2733,7 @@ class TestNPUModelRunner:
     def test_init_npu_input_batch_with_penalty_cache(self, monkeypatch):
         """_init_npu_input_batch initializes penalty tensors when ENABLE_NPU_PENALTY_CACHE is True."""
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.ENABLE_NPU_PENALTY_CACHE", True)
+            "omni_npu.worker.npu_model_runner.ENABLE_NPU_PENALTY_CACHE", True)
 
         runner = NPUModelRunner(self.vllm_cfg, self.npu_device)
 
@@ -2744,7 +2744,7 @@ class TestNPUModelRunner:
 
     def test_init_npu_input_batch_with_multi_mtp_fix(self):
         """_init_npu_input_batch init target-model cache when drafter has fix_multi_mtp_kvcache."""
-        from omni.worker.npu_input_batch import NPUInputBatch
+        from omni_npu.worker.npu_input_batch import NPUInputBatch
         from types import SimpleNamespace
 
         self.runner.drafter = SimpleNamespace(
@@ -2767,7 +2767,7 @@ class TestNPUModelRunner:
 
     def test_may_reinitialize_input_batch_different_block_size(self):
         """may_reinitialize_input_batch re-inits when kv_cache block sizes differ."""
-        from omni.worker.npu_input_batch import NPUInputBatch
+        from omni_npu.worker.npu_input_batch import NPUInputBatch
 
         runner = self.runner
         old_batch = runner.input_batch
@@ -2836,7 +2836,7 @@ class TestUnregisterAndReregisterKVCaches:
         runner.vllm_config.kv_transfer_config.kv_connector = "LLMDataDistConnector"
 
         # Import the method and bind it to the mock runner
-        from omni.worker.npu_model_runner import NPUModelRunner
+        from omni_npu.worker.npu_model_runner import NPUModelRunner
         runner.unregister_kv_caches = NPUModelRunner.unregister_kv_caches.__get__(runner, type(runner))
 
         # Mock has_kv_transfer_group and get_kv_transfer_group
@@ -2844,11 +2844,11 @@ class TestUnregisterAndReregisterKVCaches:
         mock_kv_group.unregister_kv_caches = MagicMock()
 
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.has_kv_transfer_group",
+            "omni_npu.worker.npu_model_runner.has_kv_transfer_group",
             lambda: True
         )
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.get_kv_transfer_group",
+            "omni_npu.worker.npu_model_runner.get_kv_transfer_group",
             lambda: mock_kv_group
         )
 
@@ -2864,7 +2864,7 @@ class TestUnregisterAndReregisterKVCaches:
         runner.vllm_config = SimpleNamespace()
         runner.vllm_config.kv_transfer_config = None
 
-        from omni.worker.npu_model_runner import NPUModelRunner
+        from omni_npu.worker.npu_model_runner import NPUModelRunner
         runner.unregister_kv_caches = NPUModelRunner.unregister_kv_caches.__get__(runner, type(runner))
 
         # Should not raise and should return early
@@ -2879,7 +2879,7 @@ class TestUnregisterAndReregisterKVCaches:
         runner.vllm_config.kv_transfer_config = SimpleNamespace()
         runner.vllm_config.kv_transfer_config.kv_connector = "OtherConnector"
 
-        from omni.worker.npu_model_runner import NPUModelRunner
+        from omni_npu.worker.npu_model_runner import NPUModelRunner
         runner.unregister_kv_caches = NPUModelRunner.unregister_kv_caches.__get__(runner, type(runner))
 
         # Should not call unregister
@@ -2894,12 +2894,12 @@ class TestUnregisterAndReregisterKVCaches:
         runner.vllm_config.kv_transfer_config = SimpleNamespace()
         runner.vllm_config.kv_transfer_config.kv_connector = "LLMDataDistConnector"
 
-        from omni.worker.npu_model_runner import NPUModelRunner
+        from omni_npu.worker.npu_model_runner import NPUModelRunner
         runner.unregister_kv_caches = NPUModelRunner.unregister_kv_caches.__get__(runner, type(runner))
 
         # Mock has_kv_transfer_group to return False
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.has_kv_transfer_group",
+            "omni_npu.worker.npu_model_runner.has_kv_transfer_group",
             lambda: False
         )
 
@@ -2916,7 +2916,7 @@ class TestUnregisterAndReregisterKVCaches:
         runner.vllm_config.kv_transfer_config.kv_connector = "LLMDataDistConnector"
         runner.kv_caches_dict = {"layer.0": torch.zeros(2, 3)}
 
-        from omni.worker.npu_model_runner import NPUModelRunner
+        from omni_npu.worker.npu_model_runner import NPUModelRunner
         runner.reregister_kv_caches = NPUModelRunner.reregister_kv_caches.__get__(runner, type(runner))
 
         # Mock has_kv_transfer_group and get_kv_transfer_group
@@ -2924,11 +2924,11 @@ class TestUnregisterAndReregisterKVCaches:
         mock_kv_group.register_kv_caches = MagicMock()
 
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.has_kv_transfer_group",
+            "omni_npu.worker.npu_model_runner.has_kv_transfer_group",
             lambda: True
         )
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.get_kv_transfer_group",
+            "omni_npu.worker.npu_model_runner.get_kv_transfer_group",
             lambda: mock_kv_group
         )
 
@@ -2966,7 +2966,7 @@ class TestUnregisterAndReregisterKVCaches:
         )
         # Mock has_kv_transfer_group to return True
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.has_kv_transfer_group",
+            "omni_npu.worker.npu_model_runner.has_kv_transfer_group",
             lambda: True
         )
         mock_kv_group = MagicMock()
@@ -2976,7 +2976,7 @@ class TestUnregisterAndReregisterKVCaches:
         if cross_layers_kv_cache is not None:
             runner.cross_layers_attn_backend = MagicMock()
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.get_kv_transfer_group",
+            "omni_npu.worker.npu_model_runner.get_kv_transfer_group",
             lambda: mock_kv_group
         )
 
@@ -3007,7 +3007,7 @@ class TestUnregisterAndReregisterKVCaches:
 
         # Mock has_kv_transfer_group to return True
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.has_kv_transfer_group",
+            "omni_npu.worker.npu_model_runner.has_kv_transfer_group",
             lambda: True
         )
 
@@ -3042,7 +3042,7 @@ class TestUnregisterAndReregisterKVCaches:
 
         # Mock has_kv_transfer_group to return False
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.has_kv_transfer_group",
+            "omni_npu.worker.npu_model_runner.has_kv_transfer_group",
             lambda: False
         )
 
@@ -3066,7 +3066,7 @@ class TestUnregisterAndReregisterKVCaches:
         runner.vllm_config.kv_transfer_config.kv_connector = "LLMDataDistConnector"
         runner.kv_caches_dict = {"layer.0": torch.zeros(2, 3)}
 
-        from omni.worker.npu_model_runner import NPUModelRunner
+        from omni_npu.worker.npu_model_runner import NPUModelRunner
         runner.reregister_kv_caches = NPUModelRunner.reregister_kv_caches.__get__(runner, type(runner))
 
         # Mock has_kv_transfer_group and get_kv_transfer_group
@@ -3074,11 +3074,11 @@ class TestUnregisterAndReregisterKVCaches:
         mock_kv_group.register_kv_caches = MagicMock()
 
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.has_kv_transfer_group",
+            "omni_npu.worker.npu_model_runner.has_kv_transfer_group",
             lambda: True
         )
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.get_kv_transfer_group",
+            "omni_npu.worker.npu_model_runner.get_kv_transfer_group",
             lambda: mock_kv_group
         )
 
@@ -3095,7 +3095,7 @@ class TestUnregisterAndReregisterKVCaches:
         runner.vllm_config = SimpleNamespace()
         runner.vllm_config.kv_transfer_config = None
 
-        from omni.worker.npu_model_runner import NPUModelRunner
+        from omni_npu.worker.npu_model_runner import NPUModelRunner
         runner.reregister_kv_caches = NPUModelRunner.reregister_kv_caches.__get__(runner, type(runner))
 
         # Should not raise and should return early
@@ -3110,12 +3110,12 @@ class TestUnregisterAndReregisterKVCaches:
         runner.vllm_config.kv_transfer_config = SimpleNamespace()
         runner.vllm_config.kv_transfer_config.kv_connector = "LLMDataDistConnector"
 
-        from omni.worker.npu_model_runner import NPUModelRunner
+        from omni_npu.worker.npu_model_runner import NPUModelRunner
         runner.reregister_kv_caches = NPUModelRunner.reregister_kv_caches.__get__(runner, type(runner))
 
         # Mock has_kv_transfer_group to return False
         monkeypatch.setattr(
-            "omni.worker.npu_model_runner.has_kv_transfer_group",
+            "omni_npu.worker.npu_model_runner.has_kv_transfer_group",
             lambda: False
         )
 
@@ -3247,13 +3247,13 @@ class TestDPLMHeadHelpers:
         # These tests mutate the class-level NPUParallelLMHead._dp_pad_n; restore
         # it afterwards so the leaked value can't pollute unrelated tests (e.g.
         # test_vocab_parallel_embedding's default-is-0 assertion) under reordering.
-        from omni.v1.layers.vocab_parallel_embedding import NPUParallelLMHead
+        from omni_npu.v1.layers.vocab_parallel_embedding import NPUParallelLMHead
         orig = NPUParallelLMHead._dp_pad_n
         yield
         NPUParallelLMHead._dp_pad_n = orig
 
     def _make_runner(self, *, dp_parallel_lmhead=True, local_parallel_lmhead=False):
-        from omni.worker.npu_model_runner import NPUModelRunner
+        from omni_npu.worker.npu_model_runner import NPUModelRunner
         runner = object.__new__(NPUModelRunner)
         runner.dp_parallel_lmhead = dp_parallel_lmhead
         runner.local_parallel_lmhead = local_parallel_lmhead
@@ -3262,7 +3262,7 @@ class TestDPLMHeadHelpers:
         return runner
 
     def test_capture_dp_pad_target_writes_class_attr(self):
-        from omni.v1.layers.vocab_parallel_embedding import NPUParallelLMHead
+        from omni_npu.v1.layers.vocab_parallel_embedding import NPUParallelLMHead
         NPUParallelLMHead._dp_pad_n = 0
         runner = self._make_runner()
         fc = SimpleNamespace(
@@ -3274,7 +3274,7 @@ class TestDPLMHeadHelpers:
         assert NPUParallelLMHead._dp_pad_n == 7
 
     def test_capture_dp_pad_target_noop_when_flag_off(self):
-        from omni.v1.layers.vocab_parallel_embedding import NPUParallelLMHead
+        from omni_npu.v1.layers.vocab_parallel_embedding import NPUParallelLMHead
         NPUParallelLMHead._dp_pad_n = 0
         runner = self._make_runner(dp_parallel_lmhead=False)
         fc = SimpleNamespace(
@@ -3284,14 +3284,14 @@ class TestDPLMHeadHelpers:
         assert NPUParallelLMHead._dp_pad_n == 0
 
     def test_capture_dp_pad_target_noop_when_no_dp_metadata(self):
-        from omni.v1.layers.vocab_parallel_embedding import NPUParallelLMHead
+        from omni_npu.v1.layers.vocab_parallel_embedding import NPUParallelLMHead
         NPUParallelLMHead._dp_pad_n = 0
         runner = self._make_runner()
         runner._capture_dp_pad_target(SimpleNamespace(dp_metadata=None))
         assert NPUParallelLMHead._dp_pad_n == 0
 
     def test_capture_dp_pad_target_uses_local_world_group_ranks(self, monkeypatch):
-        from omni.v1.layers.vocab_parallel_embedding import NPUParallelLMHead
+        from omni_npu.v1.layers.vocab_parallel_embedding import NPUParallelLMHead
         NPUParallelLMHead._dp_pad_n = 0
         runner = self._make_runner(
             dp_parallel_lmhead=False,
@@ -3303,7 +3303,7 @@ class TestDPLMHeadHelpers:
             ),
         )
         monkeypatch.setattr(
-            "omni.v1.distributed.parallel_state_ext.get_local_world_group",
+            "omni_npu.v1.distributed.parallel_state_ext.get_local_world_group",
             lambda: SimpleNamespace(ranks=[0, 2]),
         )
 

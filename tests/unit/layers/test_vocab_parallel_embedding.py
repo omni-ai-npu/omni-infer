@@ -4,7 +4,7 @@
 import torch
 from unittest.mock import Mock, patch
 
-from omni.v1.layers.vocab_parallel_embedding import (
+from omni_npu.v1.layers.vocab_parallel_embedding import (
     NPUVocabParallelEmbedding,
     NPUParallelLMHead,
     get_masked_input_and_mask,
@@ -20,9 +20,9 @@ class _mock_group:
 
 
 tp_group = "vllm.distributed.parallel_state._TP"
-local_world = "omni.v1.distributed.parallel_state_ext._LOCAL_WORLD"
+local_world = "omni_npu.v1.distributed.parallel_state_ext._LOCAL_WORLD"
 dispatch_forward = "vllm.model_executor.custom_op.CustomOp.dispatch_forward"
-test_file = "omni.v1.layers.vocab_parallel_embedding"
+test_file = "omni_npu.v1.layers.vocab_parallel_embedding"
 
 
 class TestGetMaskedInputAndMask:
@@ -172,7 +172,7 @@ class TestNPUParallelLMHead:
         """With dp_parallel=True the lm_head re-initializes its sharding to
         use the DP group's size instead of the TP group's."""
         dp_group = _mock_group(8, 3)
-        with patch("omni.v1.layers.vocab_parallel_embedding.get_dp_group",
+        with patch("omni_npu.v1.layers.vocab_parallel_embedding.get_dp_group",
                    return_value=dp_group):
             lm_head = NPUParallelLMHead(
                 num_embeddings=1000,
@@ -266,7 +266,7 @@ class TestNPUParallelLMHead:
         sharding to use the local_world_group instead of the TP group."""
         local_group = _mock_group(16, 5)
         with patch(
-            "omni.v1.layers.vocab_parallel_embedding.get_local_world_group",
+            "omni_npu.v1.layers.vocab_parallel_embedding.get_local_world_group",
             return_value=local_group,
         ):
             lm_head = NPUParallelLMHead(

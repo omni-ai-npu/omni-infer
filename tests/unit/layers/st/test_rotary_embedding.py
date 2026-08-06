@@ -14,16 +14,16 @@ import types
 from pathlib import Path
 
 from vllm import platforms
-from omni.platform import NPUPlatform
+from omni_npu.platform import NPUPlatform
 
 
 def _prepare_omni_layers_namespace() -> None:
-    """Preload omni.layers as namespace package for isolated ST imports.
+    """Preload omni_npu.layers as namespace package for isolated ST imports.
 
-    This avoids executing omni.layers.__init__ during test collection,
+    This avoids executing omni_npu.layers.__init__ during test collection,
     which may require optional runtime dependencies unrelated to rotary tests.
     """
-    package_name = "omni.layers"
+    package_name = "omni_npu.layers"
     if package_name in sys.modules:
         return
     layers_dir = Path(__file__).resolve().parents[4] / "omni" / "layers"
@@ -37,13 +37,13 @@ _prepare_omni_layers_namespace()
 # Apply the vllm patch that defines MRotaryEmbeddingInterleaved on the
 # vllm.model_executor.layers.rotary_embedding module. Without this the
 # import in mrope_interleaved_torch_npu fails.
-import omni.vllm_patches.patches.models.openpangu_v1_vl.patch_m_rotary_embedding as _patch_mod  # noqa: E402
-from omni.vllm_patches.patch_manager import PatchManager  # noqa: E402
+import omni_npu.vllm_patches.patches.models.openpangu_v1_vl.patch_m_rotary_embedding as _patch_mod  # noqa: E402
+from omni_npu.vllm_patches.patch_manager import PatchManager  # noqa: E402
 
 _pm = PatchManager()
 _pm.apply_patches()
 
-from omni.layers.rotary_embedding.common import apply_rotary_emb_full_dim
+from omni_npu.layers.rotary_embedding.common import apply_rotary_emb_full_dim
 try:
     from vllm.model_executor.layers.rotary_embedding.common import apply_rotary_emb_torch
 except ImportError:
@@ -100,22 +100,22 @@ def _apply_rotary_emb_dispatch_compat(
 ) -> torch.Tensor:
     return _apply_rotary_emb_dispatch(x, cos, sin, is_neox_style)
 
-from omni.layers.rotary_embedding.deepseek_scaling_rope import (
+from omni_npu.layers.rotary_embedding.deepseek_scaling_rope import (
     NPUDeepseekScalingRotaryEmbedding,
 )
-from omni.layers.rotary_embedding.linear_scaling_rope import (
+from omni_npu.layers.rotary_embedding.linear_scaling_rope import (
     NPULinearScalingRotaryEmbedding,
 )
-from omni.layers.rotary_embedding.llama3_rope import (
+from omni_npu.layers.rotary_embedding.llama3_rope import (
     NPULlama3RotaryEmbedding,
 )
-from omni.layers.rotary_embedding.rotary_embedding_torch_npu import (
+from omni_npu.layers.rotary_embedding.rotary_embedding_torch_npu import (
     NPURotaryEmbedding,
 )
-from omni.layers.rotary_embedding.yarn_scaling_rope import (
+from omni_npu.layers.rotary_embedding.yarn_scaling_rope import (
     NPUYaRNScalingRotaryEmbedding,
 )
-from omni.layers.rotary_embedding.mrope_interleaved_torch_npu import (
+from omni_npu.layers.rotary_embedding.mrope_interleaved_torch_npu import (
     NPUMRotaryEmbeddingInterleaved,
 )
 
@@ -669,7 +669,7 @@ def test_npu_linear_scaling_rope_forward_key_none(npu_device):
 def test_npu_mrope_decode_npu_mrope_kernel(cpu_device, npu_device):
     """NPUMRotaryEmbedding decode path: smoke test npu_mrope."""
     try:
-        from omni.layers.rotary_embedding.mrope import NPUMRotaryEmbedding
+        from omni_npu.layers.rotary_embedding.mrope import NPUMRotaryEmbedding
     except ImportError:
         pytest.skip("NPUMRotaryEmbedding not available")
 
@@ -702,7 +702,7 @@ def test_npu_mrope_decode_npu_mrope_kernel(cpu_device, npu_device):
 def test_npu_mrope_prefill_text_only(npu_device):
     """NPUMRotaryEmbedding prefill path: text-only positions (1D)."""
     try:
-        from omni.layers.rotary_embedding.mrope import NPUMRotaryEmbedding
+        from omni_npu.layers.rotary_embedding.mrope import NPUMRotaryEmbedding
     except ImportError:
         pytest.skip("NPUMRotaryEmbedding not available")
 
@@ -740,7 +740,7 @@ def test_npu_mrope_prefill_text_only(npu_device):
 def test_npu_mrope_prefill_interleaved(npu_device):
     """NPUMRotaryEmbedding prefill path with mrope_interleaved=True."""
     try:
-        from omni.layers.rotary_embedding.mrope import NPUMRotaryEmbedding
+        from omni_npu.layers.rotary_embedding.mrope import NPUMRotaryEmbedding
     except ImportError:
         pytest.skip("NPUMRotaryEmbedding not available")
 
@@ -772,7 +772,7 @@ def test_npu_mrope_prefill_interleaved(npu_device):
 def test_npu_mrope_prefill_2d_non_interleaved(npu_device):
     """NPUMRotaryEmbedding prefill path: 2D positions, non-interleaved."""
     try:
-        from omni.layers.rotary_embedding.mrope import NPUMRotaryEmbedding
+        from omni_npu.layers.rotary_embedding.mrope import NPUMRotaryEmbedding
     except ImportError:
         pytest.skip("NPUMRotaryEmbedding not available")
 
@@ -806,7 +806,7 @@ def test_npu_mrope_prefill_2d_non_interleaved(npu_device):
 def test_npu_mrope_prefill_rotary_dim_less_than_head_size(npu_device):
     """NPUMRotaryEmbedding prefill path with rotary_dim < head_size."""
     try:
-        from omni.layers.rotary_embedding.mrope import NPUMRotaryEmbedding
+        from omni_npu.layers.rotary_embedding.mrope import NPUMRotaryEmbedding
     except ImportError:
         pytest.skip("NPUMRotaryEmbedding not available")
 

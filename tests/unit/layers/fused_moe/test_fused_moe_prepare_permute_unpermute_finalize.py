@@ -85,52 +85,52 @@ def prepare_module(monkeypatch):
     if vllm_utils is not None and not hasattr(vllm_utils, "random_uuid"):
         # Compat: older/newer vllm variants may not expose random_uuid.
         vllm_utils.random_uuid = lambda: str(uuid.uuid4())
-    v1_pkg = types.ModuleType("omni.v1")
+    v1_pkg = types.ModuleType("omni_npu.v1")
     v1_pkg.__path__ = []
-    monkeypatch.setitem(sys.modules, "omni.v1", v1_pkg)
+    monkeypatch.setitem(sys.modules, "omni_npu.v1", v1_pkg)
 
-    v1_utils_module = types.ModuleType("omni.v1.utils")
+    v1_utils_module = types.ModuleType("omni_npu.v1.utils")
     v1_utils_module.on_ascend950 = lambda: False
-    monkeypatch.setitem(sys.modules, "omni.v1.utils", v1_utils_module)
+    monkeypatch.setitem(sys.modules, "omni_npu.v1.utils", v1_utils_module)
 
-    v1_distributed = types.ModuleType("omni.v1.distributed")
+    v1_distributed = types.ModuleType("omni_npu.v1.distributed")
     v1_distributed.__path__ = []
-    monkeypatch.setitem(sys.modules, "omni.v1.distributed", v1_distributed)
+    monkeypatch.setitem(sys.modules, "omni_npu.v1.distributed", v1_distributed)
 
-    comm_op_ext_module = types.ModuleType("omni.v1.distributed.communication_op_ext")
+    comm_op_ext_module = types.ModuleType("omni_npu.v1.distributed.communication_op_ext")
     comm_op_ext_module.all_gather_round_pipeline_two_tensor = MagicMock()
     monkeypatch.setitem(
-        sys.modules, "omni.v1.distributed.communication_op_ext", comm_op_ext_module
+        sys.modules, "omni_npu.v1.distributed.communication_op_ext", comm_op_ext_module
     )
 
     parallel_state_ext_module = types.ModuleType(
-        "omni.v1.distributed.parallel_state_ext"
+        "omni_npu.v1.distributed.parallel_state_ext"
     )
     parallel_state_ext_module.get_npu_device_count = lambda: 1
     monkeypatch.setitem(
-        sys.modules, "omni.v1.distributed.parallel_state_ext", parallel_state_ext_module
+        sys.modules, "omni_npu.v1.distributed.parallel_state_ext", parallel_state_ext_module
     )
 
-    utils_module = types.ModuleType("omni.layers.utils")
+    utils_module = types.ModuleType("omni_npu.layers.utils")
     utils_module.named_stream = lambda name: None
-    monkeypatch.setitem(sys.modules, "omni.layers.utils", utils_module)
+    monkeypatch.setitem(sys.modules, "omni_npu.layers.utils", utils_module)
 
-    parsers_module = types.ModuleType("omni.v1.parsers")
+    parsers_module = types.ModuleType("omni_npu.v1.parsers")
     parsers_module.register_lazy_parsers = lambda: None
-    monkeypatch.setitem(sys.modules, "omni.v1.parsers", parsers_module)
-    v1_distributed_module = types.ModuleType("omni.v1.distributed")
+    monkeypatch.setitem(sys.modules, "omni_npu.v1.parsers", parsers_module)
+    v1_distributed_module = types.ModuleType("omni_npu.v1.distributed")
     v1_distributed_module.__path__ = []
     parallel_state_ext_module = types.ModuleType(
-        "omni.v1.distributed.parallel_state_ext"
+        "omni_npu.v1.distributed.parallel_state_ext"
     )
     parallel_state_ext_module.get_moe_dispatch_ep_group = lambda: ep_group
     parallel_state_ext_module.get_npu_device_count = lambda: 8
     monkeypatch.setitem(
-        sys.modules, "omni.v1.distributed", v1_distributed_module
+        sys.modules, "omni_npu.v1.distributed", v1_distributed_module
     )
     monkeypatch.setitem(
         sys.modules,
-        "omni.v1.distributed.parallel_state_ext",
+        "omni_npu.v1.distributed.parallel_state_ext",
         parallel_state_ext_module,
     )
 
@@ -141,7 +141,7 @@ def prepare_module(monkeypatch):
         raising=False,
     )
 
-    module_name = "omni.layers.fused_moe.prepare_permute_unpermute_finalize"
+    module_name = "omni_npu.layers.fused_moe.prepare_permute_unpermute_finalize"
     sys.modules.pop(module_name, None)
     logger_mod = importlib.import_module("vllm.logger")
     monkeypatch.setattr(logger_mod, "init_logger", lambda _name: MagicMock(), raising=False)

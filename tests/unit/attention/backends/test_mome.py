@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
-import omni.attention.backends.mome as mome_mod
+import omni_npu.attention.backends.mome as mome_mod
 from vllm.v1.attention.backends.utils import PAD_SLOT_ID
-from omni.vllm_patches.patches.models.pangu_v2_hybrid.patch_kv_cache_interface import MomeSpec
+from omni_npu.vllm_patches.patches.models.pangu_v2_hybrid.patch_kv_cache_interface import MomeSpec
 
 
 class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
@@ -206,7 +206,7 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
         )
         return common
 
-    @patch("omni.attention.backends.mome.get_tp_group")
+    @patch("omni_npu.attention.backends.mome.get_tp_group")
     def test_build_for_flashcomm2_single_rank(self, mock_get_tp_group):
         """With tp_size=1, all tokens go to rank 0."""
         mock_tp = MagicMock()
@@ -236,7 +236,7 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
         # cache_indices_rearranged should be populated
         self.assertIsNotNone(result.cache_indices_rearranged)
 
-    @patch("omni.attention.backends.mome.get_tp_group")
+    @patch("omni_npu.attention.backends.mome.get_tp_group")
     def test_build_for_flashcomm2_two_ranks_even_split(self, mock_get_tp_group):
         """
         With tp_size=2 and 4 tokens from a single request,
@@ -271,7 +271,7 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
     @patch.object(mome_mod.GDNAttentionMetadataBuilder, "__init__", return_value=None)
     @patch.object(mome_mod.NPUMomeAttentionMetadataBuilder, "_init_reorder_batch_threshold", return_value=None)
     def test_init_sets_pd_disagg_and_fake_num_spec(self, mock_reorder, mock_super_init):
-        from omni.attention.backends.mome import NPUMomeAttentionMetadataBuilder
+        from omni_npu.attention.backends.mome import NPUMomeAttentionMetadataBuilder
 
         spec_cfg = SimpleNamespace(num_speculative_tokens=2)
         kv_trans = SimpleNamespace(kv_role="kv_consumer")
@@ -312,7 +312,7 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
         self.assertEqual(builder.kernel_width, 5)
         self.assertEqual(builder.state_len, 5 - 1 + 2)
 
-    @patch("omni.attention.backends.mome.split_decodes_and_prefills")
+    @patch("omni_npu.attention.backends.mome.split_decodes_and_prefills")
     def test_build_prefix_caching_spec_prompt_tokens(self, mock_split):
         builder = mome_mod.NPUMomeAttentionMetadataBuilder.__new__(
             mome_mod.NPUMomeAttentionMetadataBuilder
@@ -374,7 +374,7 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
         self.assertEqual(int(meta.block_idx_last_computed_token[0]), 1)
         self.assertEqual(int(meta.block_idx_last_computed_token[1]), 1)
 
-    @patch("omni.attention.backends.mome.split_decodes_and_prefills")
+    @patch("omni_npu.attention.backends.mome.split_decodes_and_prefills")
     def test_build_masked_fill_applied(self, mock_split):
         builder = mome_mod.NPUMomeAttentionMetadataBuilder.__new__(
             mome_mod.NPUMomeAttentionMetadataBuilder
@@ -432,7 +432,7 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
         self.assertFalse(torch.equal(meta.num_accepted_tokens, num_acc),
                         "masked_fill_ should have modified num_accepted_tokens")
 
-    @patch("omni.attention.backends.mome.split_decodes_and_prefills")
+    @patch("omni_npu.attention.backends.mome.split_decodes_and_prefills")
     def test_build_for_cudagraph_capture(self, mock_split):
         builder = mome_mod.NPUMomeAttentionMetadataBuilder.__new__(
             mome_mod.NPUMomeAttentionMetadataBuilder
@@ -475,7 +475,7 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
         self.assertTrue(torch.equal(meta.query_start_loc, common.query_start_loc))
 
     def test_update_block_table_with_prefill_present(self):
-        from omni.attention.backends.mome import NPUMomeAttentionMetadata
+        from omni_npu.attention.backends.mome import NPUMomeAttentionMetadata
 
         builder = mome_mod.NPUMomeAttentionMetadataBuilder.__new__(
             mome_mod.NPUMomeAttentionMetadataBuilder
@@ -678,8 +678,8 @@ class TestBuildForSp(unittest.TestCase):
         b.state_len = state_len
         return b
 
-    @patch("omni.attention.backends.mome.scheme_conv_sp")
-    @patch("omni.attention.backends.mome.get_tp_group")
+    @patch("omni_npu.attention.backends.mome.scheme_conv_sp")
+    @patch("omni_npu.attention.backends.mome.get_tp_group")
     def test_no_prefix_cache_uses_block_table_directly(self, mock_get_tp_group, mock_scheme):
         tp_group = MagicMock()
         mock_get_tp_group.return_value = tp_group
@@ -712,8 +712,8 @@ class TestBuildForSp(unittest.TestCase):
         self.assertEqual(kwargs["state_len"], 2)
         self.assertFalse(kwargs["save_all"])
 
-    @patch("omni.attention.backends.mome.scheme_conv_sp")
-    @patch("omni.attention.backends.mome.get_tp_group")
+    @patch("omni_npu.attention.backends.mome.scheme_conv_sp")
+    @patch("omni_npu.attention.backends.mome.get_tp_group")
     def test_prefix_cache_maps_init_and_save_idx(self, mock_get_tp_group, mock_scheme):
         mock_get_tp_group.return_value = MagicMock()
         save_range = [slice(1, 3), slice(0, 2)]
@@ -742,8 +742,8 @@ class TestBuildForSp(unittest.TestCase):
         self.assertIs(meta, fake_meta)
         self.assertTrue(mock_scheme.call_args.kwargs["save_all"])
 
-    @patch("omni.attention.backends.mome.scheme_conv_sp")
-    @patch("omni.attention.backends.mome.get_tp_group")
+    @patch("omni_npu.attention.backends.mome.scheme_conv_sp")
+    @patch("omni_npu.attention.backends.mome.get_tp_group")
     def test_prefix_cache_empty_save_slice(self, mock_get_tp_group, mock_scheme):
         mock_get_tp_group.return_value = MagicMock()
         save_range = [slice(0, 0), slice(2, 3)]

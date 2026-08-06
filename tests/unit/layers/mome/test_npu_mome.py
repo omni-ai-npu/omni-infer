@@ -24,7 +24,7 @@ def _make_module(monkeypatch, name, is_package=False):
 
 @pytest.fixture
 def npu_mome_module(monkeypatch):
-    """Import omni.layers.mome.npu_mome with its deps stubbed (no NPU)."""
+    """Import omni_npu.layers.mome.npu_mome with its deps stubbed (no NPU)."""
     repo_root = Path(__file__).resolve().parents[4]
     monkeypatch.syspath_prepend(str(repo_root / "omni"))
 
@@ -59,25 +59,25 @@ def npu_mome_module(monkeypatch):
 
     omni_pkg = _make_module(monkeypatch, "omni_npu", is_package=True)
     omni_pkg.__path__ = [str(repo_root / "omni")]
-    layers_pkg = _make_module(monkeypatch, "omni.layers", is_package=True)
+    layers_pkg = _make_module(monkeypatch, "omni_npu.layers", is_package=True)
     layers_pkg.__path__ = [str(repo_root / "omni" / "layers")]
-    mome_pkg = _make_module(monkeypatch, "omni.layers.mome", is_package=True)
+    mome_pkg = _make_module(monkeypatch, "omni_npu.layers.mome", is_package=True)
     mome_pkg.__path__ = [str(repo_root / "omni" / "layers" / "mome")]
 
-    _make_module(monkeypatch, "omni.v1", is_package=True)
-    v1_utils_module = _make_module(monkeypatch, "omni.v1.utils")
+    _make_module(monkeypatch, "omni_npu.v1", is_package=True)
+    v1_utils_module = _make_module(monkeypatch, "omni_npu.v1.utils")
     v1_utils_module.on_ascend950 = lambda: True
 
-    _make_module(monkeypatch, "omni.attention", is_package=True)
-    _make_module(monkeypatch, "omni.attention.backends", is_package=True)
-    mome_attn_module = _make_module(monkeypatch, "omni.attention.backends.mome")
+    _make_module(monkeypatch, "omni_npu.attention", is_package=True)
+    _make_module(monkeypatch, "omni_npu.attention.backends", is_package=True)
+    mome_attn_module = _make_module(monkeypatch, "omni_npu.attention.backends.mome")
 
     class NPUMomeAttentionMetadata:
         pass
 
     mome_attn_module.NPUMomeAttentionMetadata = NPUMomeAttentionMetadata
 
-    module_name = "omni.layers.mome.npu_mome"
+    module_name = "omni_npu.layers.mome.npu_mome"
     monkeypatch.delitem(sys.modules, module_name, raising=False)
     module = importlib.import_module(module_name)
     module = importlib.reload(module)

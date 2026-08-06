@@ -56,14 +56,14 @@ def _ensure_torch_npu_stubs():
 def _import_prefetch_module():
     """
     Import the prefetch module in a way that works both:
-    - when the package is installed (import path `omni...`)
-    - when running from source tree without installation (`src.omni...`)
+    - when the package is installed (import path `omni_npu...`)
+    - when running from source tree without installation (`src.omni_npu...`)
     """
     _ensure_torch_npu_stubs()
     try:
-        return importlib.import_module("omni.layers.prefetch")
+        return importlib.import_module("omni_npu.layers.prefetch")
     except Exception:
-        return importlib.import_module("src.omni.layers.prefetch")
+        return importlib.import_module("src.omni_npu.layers.prefetch")
 
 
 def _reload_prefetch_module():

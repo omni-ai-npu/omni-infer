@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import torch
 
-from omni.vllm_patches.patches.models.qwen3_5 import patch_mamba_abstract
-from omni.vllm_patches.patches.models.qwen3_5 import patch_modelconfig
+from omni_npu.vllm_patches.patches.models.qwen3_5 import patch_mamba_abstract
+from omni_npu.vllm_patches.patches.models.qwen3_5 import patch_modelconfig
 
 
 def test_qwen35_mtp_convertor_uses_text_config_mtp_layers():

@@ -12,8 +12,8 @@ from unittest.mock import MagicMock
 
 import torch
 
-from omni.v1.config import ReasoningConfig
-from omni.v1.sample.thinking_budget_state import (
+from omni_npu.v1.config import ReasoningConfig
+from omni_npu.v1.sample.thinking_budget_state import (
     ThinkingBudgetStateHolder,
     _get_thinking_token_budget,
     _normalize_thinking_token_budget,

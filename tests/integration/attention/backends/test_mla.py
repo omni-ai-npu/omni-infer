@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 import torch
 import pytest
 
-from omni.attention.backends.mla import (
+from omni_npu.attention.backends.mla import (
     NPUMLAImpl,
     NPUMLAMetadata,
 )
@@ -67,7 +67,7 @@ class TestNPUAttentionBackendMLAImplIntegration(unittest.TestCase):
             )
 
             with patch('vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size', return_value=64), \
-                patch('omni.attention.backends.mla.get_current_vllm_config', return_value=None):
+                patch('omni_npu.attention.backends.mla.get_current_vllm_config', return_value=None):
 
                 # Create kv_b_proj and convert to bfloat16
                 kv_b_proj = torch.nn.Linear(

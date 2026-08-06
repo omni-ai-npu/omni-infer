@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import torch
 import pytest
 
-from omni.platform import NPUPlatform
+from omni_npu.platform import NPUPlatform
 from tests.unit.platform.utils import create_vllm_config
 
 
@@ -37,11 +37,11 @@ class TestNPUPlatform:
 
     def test_is_cuda_alike_is_false_for_normal_npu_callers(self, monkeypatch):
         monkeypatch.setattr(
-            "omni.platform.traceback.format_stack",
+            "omni_npu.platform.traceback.format_stack",
             lambda: ["root", "caller", "is_cuda_alike"],
         )
         monkeypatch.setattr(
-            "omni.platform.traceback.extract_stack",
+            "omni_npu.platform.traceback.extract_stack",
             lambda limit: [SimpleNamespace(filename="/tmp/normal.py", name="caller")],
         )
 
@@ -49,7 +49,7 @@ class TestNPUPlatform:
 
     def test_is_cuda_alike_is_true_for_parallel_config_callsite(self, monkeypatch):
         monkeypatch.setattr(
-            "omni.platform.traceback.format_stack",
+            "omni_npu.platform.traceback.format_stack",
             lambda: [
                 "root",
                 "/opt/vllm/vllm/config/parallel.py current_platform.is_cuda_alike()",
@@ -57,7 +57,7 @@ class TestNPUPlatform:
             ],
         )
         monkeypatch.setattr(
-            "omni.platform.traceback.extract_stack",
+            "omni_npu.platform.traceback.extract_stack",
             lambda limit: [
                 SimpleNamespace(
                     filename="/tmp/moved/parallel.py",
@@ -70,11 +70,11 @@ class TestNPUPlatform:
 
     def test_is_cuda_alike_is_true_for_bind_kv_cache_callsite(self, monkeypatch):
         monkeypatch.setattr(
-            "omni.platform.traceback.format_stack",
+            "omni_npu.platform.traceback.format_stack",
             lambda: ["root", "caller", "is_cuda_alike"],
         )
         monkeypatch.setattr(
-            "omni.platform.traceback.extract_stack",
+            "omni_npu.platform.traceback.extract_stack",
             lambda limit: [
                 SimpleNamespace(
                     filename="/opt/vllm/vllm/v1/worker/utils.py",
@@ -157,11 +157,11 @@ class TestNPUPlatform:
             register_connectors_called["called"] = True
 
         monkeypatch.setattr(
-            "omni.compilation.decorators.patch_compile_decorators",
+            "omni_npu.compilation.decorators.patch_compile_decorators",
             mock_patch_decorators,
         )
         monkeypatch.setattr(
-            "omni.connector.register_connectors",
+            "omni_npu.connector.register_connectors",
             mock_register_connectors,
         )
 
@@ -185,11 +185,11 @@ class TestNPUPlatform:
             register_connectors_called["called"] = True
 
         monkeypatch.setattr(
-            "omni.compilation.decorators.patch_compile_decorators",
+            "omni_npu.compilation.decorators.patch_compile_decorators",
             mock_patch_decorators,
         )
         monkeypatch.setattr(
-            "omni.connector.register_connectors",
+            "omni_npu.connector.register_connectors",
             mock_register_connectors,
         )
 
@@ -205,13 +205,13 @@ class TestNPUPlatform:
         def mock_entry_points():
             class MockEntryPointsResult:
                 def select(self, group):
-                    if group == "omni.kv_connectors":
+                    if group == "omni_npu.kv_connectors":
                         return [mock_ep]
                     return []
             return MockEntryPointsResult()
 
         monkeypatch.setattr(
-            "omni.platform.entry_points",
+            "omni_npu.platform.entry_points",
             mock_entry_points,
         )
 
@@ -223,7 +223,7 @@ class TestNPUPlatform:
             original_warning["called"] = True
             original_warning["msg"] = msg
 
-        monkeypatch.setattr("omni.platform.logger.warning", mock_warning)
+        monkeypatch.setattr("omni_npu.platform.logger.warning", mock_warning)
 
         # Should not raise, just log a warning
         NPUPlatform.import_kernels()
@@ -258,7 +258,7 @@ class TestNPUPlatform:
         Verifies that the correct device communicator class name is returned.
         """
         result = NPUPlatform.get_device_communicator_cls()
-        assert result == "omni.distributed.communicator.NPUCommunicator"
+        assert result == "omni_npu.distributed.communicator.NPUCommunicator"
 
     def test_get_attn_backend_cls(self, monkeypatch):
         """Test get_attn_backend_cls method.
@@ -281,7 +281,7 @@ class TestNPUPlatform:
                 has_sink=False,
                 use_sparse=True,
             ))
-        assert result == "omni.attention.backends.dsa.NPUDSABackend"
+        assert result == "omni_npu.attention.backends.dsa.NPUDSABackend"
 
         # Test use_mla=True, use_sparse=False
         result = NPUPlatform.get_attn_backend_cls(
@@ -295,7 +295,7 @@ class TestNPUPlatform:
                 has_sink=False,
                 use_sparse=False,
             ))
-        assert result == "omni.attention.backends.mla.NPUMLABackend"
+        assert result == "omni_npu.attention.backends.mla.NPUMLABackend"
 
         # Test use_mla=False
         result = NPUPlatform.get_attn_backend_cls(
@@ -309,7 +309,7 @@ class TestNPUPlatform:
                 has_sink=False,
                 use_sparse=False,
             ))
-        assert result == "omni.attention.backends.attention.NPUAttentionBackend"
+        assert result == "omni_npu.attention.backends.attention.NPUAttentionBackend"
 
         # Test with VLLM_PLUGINS containing "omni_custom_models" (covers lines 150-157)
         monkeypatch.setenv("VLLM_PLUGINS", "omni_custom_models")
@@ -324,7 +324,7 @@ class TestNPUPlatform:
                 has_sink=False,
                 use_sparse=True,
             ))
-        assert result == "omni.attention.backends.dsa.NPUDSABackend"
+        assert result == "omni_npu.attention.backends.dsa.NPUDSABackend"
 
         result = NPUPlatform.get_attn_backend_cls(
             "test",
@@ -337,7 +337,7 @@ class TestNPUPlatform:
                 has_sink=False,
                 use_sparse=False,
             ))
-        assert result == "omni.attention.backends.mla.NPUMLABackend"
+        assert result == "omni_npu.attention.backends.mla.NPUMLABackend"
 
         result = NPUPlatform.get_attn_backend_cls(
             "test",
@@ -350,7 +350,7 @@ class TestNPUPlatform:
                 has_sink=False,
                 use_sparse=False,
             ))
-        assert result == "omni.attention.backends.attention.NPUAttentionBackend"
+        assert result == "omni_npu.attention.backends.attention.NPUAttentionBackend"
 
     def test_simple_compile_backend(self):
         """Test simple_compile_backend property.
@@ -374,7 +374,7 @@ class TestNPUPlatform:
         Verifies that the correct static graph wrapper class name is returned.
         """
         result = NPUPlatform.get_static_graph_wrapper_cls()
-        assert result == "omni.compilation.acl_graph.ACLGraphWrapper"
+        assert result == "omni_npu.compilation.acl_graph.ACLGraphWrapper"
 
     def test_is_sleep_mode_available(self, monkeypatch):
         """Test the is_sleep_mode_available method of NPUPlatform."""

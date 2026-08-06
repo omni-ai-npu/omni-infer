@@ -20,7 +20,6 @@ Pangu V2 MoE 505B int8 + EP 离线精度测试所需的最小 patch 集合。
 | `patch_attention.py` | common | NPU attention backend 注册 |
 | `patch_backends_utils.py` | common | CommonAttentionMetadata 扩展 |
 | `patch_eplb_parallel.py` | common | EP / EPLB 支持 |
-| `patch_serving_apc.py` | common（已迁入本目录） | PD 分离下把 APC 命中率上报改对：D 侧原生恒报 100%，改为转发 P 的真实命中；并补 `cached_rate` 字段 |
 
 ## 加载方式
 

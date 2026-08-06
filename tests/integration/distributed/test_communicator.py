@@ -55,7 +55,7 @@ class TestNPUCommunicatorIntegration(unittest.TestCase):
 
     def test_npu_communicator_initialization_with_real_npu(self):
         """Test NPUCommunicator can be initialized with real NPU"""
-        from omni.distributed.communicator import NPUCommunicator
+        from omni_npu.distributed.communicator import NPUCommunicator
         from torch.distributed import new_group
         
         # This test verifies the communicator can be instantiated
@@ -164,7 +164,7 @@ class TestNPUCommunicatorMultiDevice(unittest.TestCase):
 
     def test_all_reduce_integration(self):
         """Test all_reduce with real NPU devices"""
-        from omni.distributed.communicator import NPUCommunicator
+        from omni_npu.distributed.communicator import NPUCommunicator
         
         cpu_group = torch.distributed.group.WORLD
         device_group = torch.distributed.group.WORLD
@@ -189,7 +189,7 @@ class TestNPUCommunicatorMultiDevice(unittest.TestCase):
 
     def test_all_gather_integration(self):
         """Test all_gather with real NPU devices"""
-        from omni.distributed.communicator import NPUCommunicator
+        from omni_npu.distributed.communicator import NPUCommunicator
         
         cpu_group = torch.distributed.group.WORLD
         device_group = torch.distributed.group.WORLD
@@ -213,7 +213,7 @@ class TestNPUCommunicatorMultiDevice(unittest.TestCase):
 
     def test_send_recv_integration(self):
         """Test send/recv with real NPU devices"""
-        from omni.distributed.communicator import NPUCommunicator
+        from omni_npu.distributed.communicator import NPUCommunicator
         
         cpu_group = torch.distributed.group.WORLD
         device_group = torch.distributed.group.WORLD

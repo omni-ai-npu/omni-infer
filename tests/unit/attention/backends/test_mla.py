@@ -92,7 +92,7 @@ def mla_setup():
     forward_context_mod_patcher.start()
 
     try:
-        from omni.attention.backends.mla import (
+        from omni_npu.attention.backends.mla import (
             NPUMLAImpl,
             NPUMLAMetadata,
             NPUMLADecodeMetadata,
@@ -314,7 +314,7 @@ class TestNPUAttentionBackendMLAUtilsFunc(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -369,7 +369,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
     def setup_fixture(self, mla_setup):
         """Auto-use fixture that stores data for unittest.TestCase methods."""
         self.mla_setup = mla_setup
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         with patch.object(
             mla_mod.model_extra_config.operator_opt_config,
@@ -384,7 +384,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         kv_transfer_config=None,
         sink_len: int = 0,
     ):
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         class FakePrefillMetadata:
             def __init__(self, **kwargs):
@@ -472,7 +472,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -614,7 +614,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -810,7 +810,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -909,7 +909,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -938,7 +938,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         self.assertTrue(torch.equal(impl.sink_compressed_kv, sink_compressed_kv.unsqueeze(1)))
 
     def test_forward_prefill_with_sink_and_sliding_window(self):
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         device = torch.device("cpu")
         dtype = torch.bfloat16
@@ -967,7 +967,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -1077,7 +1077,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             self.assertEqual(result.shape, (T, num_heads * v_head_dim))
 
     def test_forward_prefill_with_sink_and_sliding_window_and_fa_tiling(self):
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         device = torch.device("cpu")
         dtype = torch.bfloat16
@@ -1106,7 +1106,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -1221,7 +1221,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             self.assertEqual(result.shape, (T, num_heads * v_head_dim))
 
     def test_forward_prefill_without_sink_uses_sink_op_when_fa_tiling_enabled(self):
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         device = torch.device("cpu")
         dtype = torch.bfloat16
@@ -1321,7 +1321,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         self.assertEqual(result.shape, (T, num_heads * v_head_dim))
 
     def test_forward_decode_without_sink_uses_sink_op_when_fa_tiling_enabled(self):
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         device = torch.device("cpu")
         dtype = torch.bfloat16
@@ -1382,7 +1382,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             fake_npu,
             create=True,
         ), patch(
-            "omni.attention.backends.mla.get_forward_context",
+            "omni_npu.attention.backends.mla.get_forward_context",
             return_value=mock_ctx,
         ), patch(
             "torch.ops.custom._npu_fused_infer_attention_sink_metadata",
@@ -1424,7 +1424,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         self.assertEqual(output.shape, sink_out.shape)
 
     def test_forward_decode_without_fa_tiling_uses_query_cumlens_for_num_tokens(self):
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         device = torch.device("cpu")
         dtype = torch.bfloat16
@@ -1485,7 +1485,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             "use_aicpu_fa_tiling",
             False,
         ), patch(
-            "omni.attention.backends.mla.get_forward_context",
+            "omni_npu.attention.backends.mla.get_forward_context",
             return_value=mock_ctx,
         ), patch(
             "torch.ops.npu.npu_fused_infer_attention_score",
@@ -1533,7 +1533,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -1620,7 +1620,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             self.assertEqual(result.shape, (T, num_heads * v_head_dim))
 
     def test_forward_decode_with_sink_and_sliding_window(self):
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         device = torch.device("cpu")
         dtype = torch.bfloat16
@@ -1650,7 +1650,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -1719,7 +1719,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 "torch.ops.custom.npu_fused_infer_attention_sink",
                 return_value=(sink_out.transpose(0, 1).contiguous(),),
             ) as mock_sink_op, patch(
-                "omni.attention.backends.mla.get_forward_context",
+                "omni_npu.attention.backends.mla.get_forward_context",
                 return_value=mock_ctx
             ), patch.object(
                 mla_mod.model_extra_config.operator_opt_config,
@@ -1740,7 +1740,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             self.assertEqual(o.shape, (num_heads, T, v_head_dim))
 
     def test_forward_decode_with_sink_and_sliding_window_and_fa_tiling(self):
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         device = torch.device("cpu")
         dtype = torch.bfloat16
@@ -1770,7 +1770,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -1839,7 +1839,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 "torch.ops.custom.npu_fused_infer_attention_sink",
                 return_value=(sink_out.transpose(0, 1).contiguous(),),
             ) as mock_sink_op, patch(
-                "omni.attention.backends.mla.get_forward_context",
+                "omni_npu.attention.backends.mla.get_forward_context",
                 return_value=mock_ctx
             ), patch.object(
                 mla_mod.model_extra_config.operator_opt_config,
@@ -1890,7 +1890,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -1997,7 +1997,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             self.assertEqual(result.shape, (T, num_heads * v_head_dim))
 
     def test_forward_decode_with_sink_without_sliding_window(self):
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         device = torch.device("cpu")
         dtype = torch.bfloat16
@@ -2026,7 +2026,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -2097,7 +2097,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 "torch.ops.custom.npu_fused_infer_attention_sink",
                 return_value=(sink_out.transpose(0, 1).contiguous(),),
             ) as mock_sink_op, patch(
-                "omni.attention.backends.mla.get_forward_context",
+                "omni_npu.attention.backends.mla.get_forward_context",
                 return_value=mock_ctx
             ), patch.object(
                 mla_mod.model_extra_config.operator_opt_config,
@@ -2158,11 +2158,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 return_value=64,
             ),
             patch(
-                "omni.attention.backends.mla.get_current_vllm_config",
+                "omni_npu.attention.backends.mla.get_current_vllm_config",
                 return_value=None,
             ),
             patch(
-                "omni.attention.backends.mla.get_forward_context",
+                "omni_npu.attention.backends.mla.get_forward_context",
                 return_value=mock_ctx
             )
         ):
@@ -2267,7 +2267,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             print("_forward_decode test passed!")
 
     def test_build_decode_with_aicpu_fa_tiling(self):
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         builder = self.mla_setup["builder"].__new__(self.mla_setup["builder"])
         builder.reorder_batch_threshold = 0
@@ -2300,7 +2300,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         self.assertEqual(result.num_tokens, 2)
 
     def test_build_decode_without_aicpu_fa_tiling(self):
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         builder = self.mla_setup["builder"].__new__(self.mla_setup["builder"])
         builder.reorder_batch_threshold = 0
@@ -2333,7 +2333,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         self.assertEqual(result.num_tokens, 2)
 
     def test_build_decode_with_zero_sink_len_keeps_seq_lens(self):
-        import omni.attention.backends.mla as mla_mod
+        import omni_npu.attention.backends.mla as mla_mod
 
         builder = self.mla_setup["builder"].__new__(self.mla_setup["builder"])
         builder.reorder_batch_threshold = 0

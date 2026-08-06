@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from omni.v1.layers.utils import get_npu_execution_type
+from omni_npu.v1.layers.utils import get_npu_execution_type
 
 
 @pytest.mark.skipif(not hasattr(torch, "npu"), reason="NPU required")
@@ -46,10 +46,10 @@ def test_get_npu_execution_type_other_types():
 
 
 # ---------------------------------------------------------------------------
-# Tests for omni.v1.utils  (multi-stream & core-limit utilities)
+# Tests for omni_npu.v1.utils  (multi-stream & core-limit utilities)
 # ---------------------------------------------------------------------------
-import omni.v1.utils as v1_utils
-from omni.v1.utils import (
+import omni_npu.v1.utils as v1_utils
+from omni_npu.v1.utils import (
     get_nth_last_sep_pos,
     get_last_two_parts,
 )

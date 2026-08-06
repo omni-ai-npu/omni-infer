@@ -7,7 +7,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from omni.layers.npu_rms_norm import NPUMiniMaxText01RMSNormTP, NPURMSNorm
+from omni_npu.layers.npu_rms_norm import NPUMiniMaxText01RMSNormTP, NPURMSNorm
 
 
 @pytest.mark.usefixtures("default_vllm_config")
@@ -28,8 +28,8 @@ class TestNPURMSNorm(unittest.TestCase):
         self.mock_config = MagicMock()
         self.mock_config.operator_opt_config = MagicMock()
         self.mock_config.operator_opt_config.omni_disable_npu_add_rms_norm = False
-        self.config_patch = patch("omni.model_config.config_loader.loader.model_extra_config", self.mock_config)
-        self.config_patch_loader = patch("omni.layers.npu_rms_norm.model_extra_config", self.mock_config)
+        self.config_patch = patch("omni_npu.model_config.config_loader.loader.model_extra_config", self.mock_config)
+        self.config_patch_loader = patch("omni_npu.layers.npu_rms_norm.model_extra_config", self.mock_config)
         self.config_patch.start()
         self.config_patch_loader.start()
 
@@ -179,7 +179,7 @@ class TestNPURMSNorm(unittest.TestCase):
 
 @pytest.mark.usefixtures("default_vllm_config")
 class TestNPUMiniMaxText01RMSNormTP:
-    @patch("omni.layers.npu_rms_norm.get_tensor_model_parallel_world_size", return_value=4)
+    @patch("omni_npu.layers.npu_rms_norm.get_tensor_model_parallel_world_size", return_value=4)
     def test_init_sets_full_weight_and_loader(self, mock_world):
         norm = NPUMiniMaxText01RMSNormTP(16, eps=1e-5)
 
@@ -209,8 +209,8 @@ class TestNPUMiniMaxText01RMSNormTP:
         )
         assert torch.allclose(rms_sq, expected)
 
-    @patch("omni.layers.npu_rms_norm.tensor_model_parallel_all_reduce")
-    @patch("omni.layers.npu_rms_norm.torch_npu.npu_rms_norm")
+    @patch("omni_npu.layers.npu_rms_norm.tensor_model_parallel_all_reduce")
+    @patch("omni_npu.layers.npu_rms_norm.torch_npu.npu_rms_norm")
     def test_npu_tp_rms_norm_qk_skips_rescale_when_tp_world_is_one(
         self, mock_rms_norm, mock_all_reduce
     ):
@@ -236,8 +236,8 @@ class TestNPUMiniMaxText01RMSNormTP:
         assert torch.equal(out_k, k_normed)
         mock_all_reduce.assert_not_called()
 
-    @patch("omni.layers.npu_rms_norm.tensor_model_parallel_all_reduce")
-    @patch("omni.layers.npu_rms_norm.torch_npu.npu_rms_norm")
+    @patch("omni_npu.layers.npu_rms_norm.tensor_model_parallel_all_reduce")
+    @patch("omni_npu.layers.npu_rms_norm.torch_npu.npu_rms_norm")
     def test_npu_tp_rms_norm_qk_rescales_with_global_rms(
         self, mock_rms_norm, mock_all_reduce
     ):
@@ -266,15 +266,15 @@ class TestNPUMiniMaxText01RMSNormTP:
         assert torch.allclose(out_k, expected_k)
         mock_all_reduce.assert_called_once()
 
-    @patch("omni.layers.npu_rms_norm.get_tensor_model_parallel_world_size", return_value=4)
-    @patch("omni.layers.npu_rms_norm.get_tensor_model_parallel_rank", return_value=1)
+    @patch("omni_npu.layers.npu_rms_norm.get_tensor_model_parallel_world_size", return_value=4)
+    @patch("omni_npu.layers.npu_rms_norm.get_tensor_model_parallel_rank", return_value=1)
     def test_get_shard_index(self, mock_rank, mock_world):
         shard_index = NPUMiniMaxText01RMSNormTP.get_shard_index(torch.ones(16))
 
         assert shard_index == slice(4, 8)
 
-    @patch("omni.layers.npu_rms_norm.get_tensor_model_parallel_world_size", return_value=2)
-    @patch("omni.layers.npu_rms_norm.get_tensor_model_parallel_rank", return_value=1)
+    @patch("omni_npu.layers.npu_rms_norm.get_tensor_model_parallel_world_size", return_value=2)
+    @patch("omni_npu.layers.npu_rms_norm.get_tensor_model_parallel_rank", return_value=1)
     @patch.object(NPUMiniMaxText01RMSNormTP, "npu_tp_rms_norm_qk")
     def test_forward_qk_prefill_uses_local_weight_shards(
         self, mock_norm_qk, mock_rank, mock_world
@@ -302,8 +302,8 @@ class TestNPUMiniMaxText01RMSNormTP:
         assert call_args[4] == q_norm.variance_epsilon
         assert call_args[5] == q_norm.tp_world
 
-    @patch("omni.layers.npu_rms_norm.get_tensor_model_parallel_world_size", return_value=2)
-    @patch("omni.layers.npu_rms_norm.get_tp_group")
+    @patch("omni_npu.layers.npu_rms_norm.get_tensor_model_parallel_world_size", return_value=2)
+    @patch("omni_npu.layers.npu_rms_norm.get_tp_group")
     def test_all_gather_qk_heads_gathers_across_tp_ranks(
         self, mock_get_tp_group, mock_world
     ):
@@ -325,8 +325,8 @@ class TestNPUMiniMaxText01RMSNormTP:
         assert torch.equal(k_ag[:, 0], k.view(2, 1, 2))
         assert torch.equal(k_ag[:, 1], k.view(2, 1, 2) + 1000)
 
-    @patch("omni.layers.npu_rms_norm.get_tensor_model_parallel_world_size", return_value=1)
-    @patch("omni.layers.npu_rms_norm.get_tp_group")
+    @patch("omni_npu.layers.npu_rms_norm.get_tensor_model_parallel_world_size", return_value=1)
+    @patch("omni_npu.layers.npu_rms_norm.get_tp_group")
     def test_all_gather_qk_heads_keeps_single_rank_layout(
         self, mock_get_tp_group, mock_world
     ):
@@ -341,9 +341,9 @@ class TestNPUMiniMaxText01RMSNormTP:
         assert torch.equal(q_ag[:, 0], q.view(2, 2, 2))
         assert torch.equal(k_ag[:, 0], k.view(2, 1, 2))
 
-    @patch("omni.layers.npu_rms_norm.get_tensor_model_parallel_world_size", return_value=2)
-    @patch("omni.layers.npu_rms_norm.get_tp_group")
-    @patch("omni.layers.npu_rms_norm.torch_npu.npu_rms_norm")
+    @patch("omni_npu.layers.npu_rms_norm.get_tensor_model_parallel_world_size", return_value=2)
+    @patch("omni_npu.layers.npu_rms_norm.get_tp_group")
+    @patch("omni_npu.layers.npu_rms_norm.torch_npu.npu_rms_norm")
     @patch.object(NPUMiniMaxText01RMSNormTP, "all_gather_qk_heads")
     def test_forward_qk_decoder_returns_current_rank_slice(
         self, mock_all_gather_qk, mock_rms_norm, mock_get_tp_group, mock_world
@@ -374,7 +374,7 @@ class TestNPUMiniMaxText01RMSNormTP:
         assert torch.equal(out_q, torch.tensor([[13.0, 14.0]], dtype=torch.float32))
         assert torch.equal(out_k, torch.tensor([[27.0, 28.0]], dtype=torch.float32))
 
-    @patch("omni.layers.npu_rms_norm.get_forward_context")
+    @patch("omni_npu.layers.npu_rms_norm.get_forward_context")
     @patch.object(NPUMiniMaxText01RMSNormTP, "forward_qk_prefill", return_value=("q_prefill", "k_prefill"))
     @patch.object(NPUMiniMaxText01RMSNormTP, "forward_qk_decoder", return_value=("q_decoder", "k_decoder"))
     def test_forward_qk_dispatches_to_prefill(
@@ -390,7 +390,7 @@ class TestNPUMiniMaxText01RMSNormTP:
         mock_prefill.assert_called_once()
         mock_decoder.assert_not_called()
 
-    @patch("omni.layers.npu_rms_norm.get_forward_context")
+    @patch("omni_npu.layers.npu_rms_norm.get_forward_context")
     @patch.object(NPUMiniMaxText01RMSNormTP, "forward_qk_prefill", return_value=("q_prefill", "k_prefill"))
     @patch.object(NPUMiniMaxText01RMSNormTP, "forward_qk_decoder", return_value=("q_decoder", "k_decoder"))
     def test_forward_qk_dispatches_to_decoder_when_decode_only(

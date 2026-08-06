@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for omni.diagnostics.watchdog.heartbeat.
+"""Unit tests for omni_npu.diagnostics.watchdog.heartbeat.
 
 Covers the progress API, sleep exemption and stalled-engine detection.
 Pure CPU; no NPU needed.
@@ -9,7 +9,7 @@ Pure CPU; no NPU needed.
 
 import pytest
 
-from omni.diagnostics.watchdog import heartbeat
+from omni_npu.diagnostics.watchdog import heartbeat
 
 
 @pytest.fixture(autouse=True)

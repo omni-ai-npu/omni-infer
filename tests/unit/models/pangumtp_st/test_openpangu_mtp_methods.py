@@ -24,7 +24,7 @@ from unittest.mock import patch, MagicMock
 
 def _make_minimal_mtp():
     """Create OpenPanguMTP with __new__ + manual setup (same pattern as test_deepseek_mtp.py)."""
-    import omni.v1.models.pangu.pangu_ultra_moe_mtp as mtp_mod
+    import omni_npu.v1.models.pangu.pangu_ultra_moe_mtp as mtp_mod
 
     m = mtp_mod.OpenPanguMTP.__new__(mtp_mod.OpenPanguMTP)
     nn.Module.__init__(m)  # sets up _modules etc.
@@ -54,7 +54,7 @@ def _make_minimal_mtp():
 
 class TestComputeLogitsDtype:
     def test_compute_logits_casts_hidden_states_to_head_dtype(self):
-        import omni.v1.models.pangu.pangu_ultra_moe_mtp as mtp_mod
+        import omni_npu.v1.models.pangu.pangu_ultra_moe_mtp as mtp_mod
 
         pred = mtp_mod.OpenPanguMultiTokenPredictor.__new__(
             mtp_mod.OpenPanguMultiTokenPredictor
@@ -420,19 +420,19 @@ class TestPostWeightLoad:
 
 class TestInsertConvBefore:
     def test_inserts_conv_before_conv_suffix(self):
-        from omni.v1.models.pangu.pangu_ultra_moe_mtp import insert_conv_before
+        from omni_npu.v1.models.pangu.pangu_ultra_moe_mtp import insert_conv_before
         # "model.layers.2.qa_conv.weight" -> "model.layers.2.conv.qa_conv.weight"
         result = insert_conv_before("model.layers.2.qa_conv.weight")
         assert "conv.qa_conv" in result
         assert result == "model.layers.2.conv.qa_conv.weight"
 
     def test_compresskv_conv(self):
-        from omni.v1.models.pangu.pangu_ultra_moe_mtp import insert_conv_before
+        from omni_npu.v1.models.pangu.pangu_ultra_moe_mtp import insert_conv_before
         result = insert_conv_before("model.layers.3.compresskv_conv.weight")
         assert "conv.compresskv_conv" in result
 
     def test_o_conv(self):
-        from omni.v1.models.pangu.pangu_ultra_moe_mtp import insert_conv_before
+        from omni_npu.v1.models.pangu.pangu_ultra_moe_mtp import insert_conv_before
         result = insert_conv_before("model.layers.2.o_conv.bias")
         assert "conv.o_conv" in result
 

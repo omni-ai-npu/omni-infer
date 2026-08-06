@@ -2,8 +2,8 @@
 import pytest
 import torch
 
-from omni.vllm_patches.patches.models.pangu_sink_swa_mla import patch_static_sink_attention as patch_mod
-from omni.vllm_patches.patches.models.pangu_sink_swa_mla.patch_static_sink_attention import (
+from omni_npu.vllm_patches.patches.models.pangu_sink_swa_mla import patch_static_sink_attention as patch_mod
+from omni_npu.vllm_patches.patches.models.pangu_sink_swa_mla.patch_static_sink_attention import (
     StaticSinkAttentionClassPatch,
 )
 from vllm.config import CacheConfig

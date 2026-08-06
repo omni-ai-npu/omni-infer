@@ -16,7 +16,7 @@ FIRST_DIE_NO, VISIBLE_DIE_LIST = parse_ascend_devices()
 # --- Logic Functions ---
 
 def _logic_column_parallel_flash_comm_linear(device, local_rank, world_size, dtype):
-    from omni.v1.layers.linear import ColumnParallelFlashCommLinear
+    from omni_npu.v1.layers.linear import ColumnParallelFlashCommLinear
 
     device = torch.device(f"npu:{device}")
     input_size = 8
@@ -54,9 +54,9 @@ def _logic_column_parallel_flash_comm_linear(device, local_rank, world_size, dty
     assert torch.allclose(out_bias, full_bias[start:end], atol=atol, rtol=rtol)
 
 def _logic_column_parallel_flash_comm_linear_quant(device, local_rank, world_size, dtype):
-    from omni.v1.layers.linear import ColumnParallelFlashCommLinear
-    from omni.layers.quantization.compressed_tensors.compressed_tensors import NPUCompressedTensorsConfig
-    from omni.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear import W8A8Int8FCLinearMethod
+    from omni_npu.v1.layers.linear import ColumnParallelFlashCommLinear
+    from omni_npu.layers.quantization.compressed_tensors.compressed_tensors import NPUCompressedTensorsConfig
+    from omni_npu.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear import W8A8Int8FCLinearMethod
 
     quant_config = NPUCompressedTensorsConfig(None, None, None, None, None)
 
@@ -67,7 +67,7 @@ def _logic_column_parallel_flash_comm_linear_quant(device, local_rank, world_siz
 
     with patch.dict(os.environ, {"VLLM_PLUGINS": "omni_custom_models"}):
         with patch(
-            "omni.layers.quantization.compressed_tensors.compressed_tensors.NPUCompressedTensorsConfig.get_fc_method",
+            "omni_npu.layers.quantization.compressed_tensors.compressed_tensors.NPUCompressedTensorsConfig.get_fc_method",
             return_value=W8A8Int8FCLinearMethod(quant_config)
         ):
             layer = ColumnParallelFlashCommLinear(
@@ -118,8 +118,8 @@ def _logic_column_parallel_flash_comm_linear_quant(device, local_rank, world_siz
     assert torch.allclose(out, expected, atol=atol, rtol=rtol, equal_nan=True)
 
 def _logic_merged_column_parallel_flash_comm_linear(device, local_rank, world_size, dtype):
-    from omni.v1.layers.linear import MergedColumnParallelFlashCommLinear
-    from omni.v1.distributed.communication_op_ext import layer_parallel_all_gather
+    from omni_npu.v1.layers.linear import MergedColumnParallelFlashCommLinear
+    from omni_npu.v1.distributed.communication_op_ext import layer_parallel_all_gather
 
     device = torch.device(f"npu:{device}")
     input_size = 6
@@ -171,7 +171,7 @@ def _logic_merged_column_parallel_flash_comm_linear(device, local_rank, world_si
     assert out_bias is None
 
 def _logic_row_parallel_flash_comm_linear(device, local_rank, world_size, dtype):
-    from omni.v1.layers.linear import RowParallelFlashCommLinear
+    from omni_npu.v1.layers.linear import RowParallelFlashCommLinear
 
     device = torch.device(f"npu:{device}")
     input_size = 8
@@ -216,7 +216,7 @@ def _logic_row_parallel_flash_comm_linear(device, local_rank, world_size, dtype)
     assert out_bias_ar is None
 
 def _logic_row_parallel_flash_comm_linear_rs(device, local_rank, world_size, dtype):
-    from omni.v1.layers.linear import RowParallelFlashCommLinear
+    from omni_npu.v1.layers.linear import RowParallelFlashCommLinear
 
     device = torch.device(f"npu:{device}")
     input_size = 8
@@ -263,8 +263,8 @@ def _logic_row_parallel_flash_comm_linear_rs(device, local_rank, world_size, dty
 
 
 def _logic_qkv_parallel_flash_comm_linear(device, local_rank, world_size, dtype):
-    from omni.v1.layers.linear import QKVParallelFlashCommLinear
-    from omni.v1.distributed.communication_op_ext import layer_parallel_all_gather
+    from omni_npu.v1.layers.linear import QKVParallelFlashCommLinear
+    from omni_npu.v1.distributed.communication_op_ext import layer_parallel_all_gather
 
     device = torch.device(f"npu:{device}")
     hidden_size = 8
@@ -326,8 +326,8 @@ def _logic_qkv_parallel_flash_comm_linear(device, local_rank, world_size, dtype)
     assert out_bias is None
 
 def _logic_qkv_parallel_flash_comm_linear_a2a_4q_4kv(device, local_rank, world_size, dtype):
-    from omni.v1.layers.linear import QKVParallelFlashCommLinear
-    from omni.v1.distributed.communication_op_ext import layer_parallel_all2all_single
+    from omni_npu.v1.layers.linear import QKVParallelFlashCommLinear
+    from omni_npu.v1.distributed.communication_op_ext import layer_parallel_all2all_single
     device = torch.device(f"npu:{device}")
     hidden_size = 8
     head_size = 2
@@ -395,8 +395,8 @@ def _logic_qkv_parallel_flash_comm_linear_a2a_4q_4kv(device, local_rank, world_s
     assert out_bias is None
 
 def _logic_qkv_parallel_flash_comm_linear_a2a_8q_4kv(device, local_rank, world_size, dtype):
-    from omni.v1.layers.linear import QKVParallelFlashCommLinear
-    from omni.v1.distributed.communication_op_ext import layer_parallel_all2all_single
+    from omni_npu.v1.layers.linear import QKVParallelFlashCommLinear
+    from omni_npu.v1.distributed.communication_op_ext import layer_parallel_all2all_single
 
     device = torch.device(f"npu:{device}")
     hidden_size = 8
@@ -527,8 +527,8 @@ def get_test_configs_none() -> Tuple[Mock, Dict]:
 
 
 def _logic_sharded_linear(device, local_rank, world_size, dtype):
-    from omni.v1.layers.linear import ShardedLinear
-    from omni.v1.distributed.parallel_state_ext import get_layer_parallel_group
+    from omni_npu.v1.layers.linear import ShardedLinear
+    from omni_npu.v1.distributed.parallel_state_ext import get_layer_parallel_group
 
     device = torch.device(f"npu:{device}")
     input_size = 8
@@ -559,9 +559,9 @@ def _logic_sharded_linear(device, local_rank, world_size, dtype):
     assert bias is None
 
 def _logic_sharded_linear_w8a8(device, local_rank, world_size, dtype):
-    from omni.v1.layers.linear import ShardedLinear
-    from omni.v1.distributed.parallel_state_ext import get_layer_parallel_group
-    from omni.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear import W8A8Int8ShardedLinearMethod
+    from omni_npu.v1.layers.linear import ShardedLinear
+    from omni_npu.v1.distributed.parallel_state_ext import get_layer_parallel_group
+    from omni_npu.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear import W8A8Int8ShardedLinearMethod
 
     device = torch.device(f"npu:{device}")
     input_size = 8
@@ -605,8 +605,8 @@ def _logic_sharded_linear_w8a8(device, local_rank, world_size, dtype):
     assert bias is None
 
 def _logic_sharded_flash_comm_linear_xag(device, local_rank, world_size, dtype):
-    from omni.v1.layers.linear import ShardedFlashCommLinear
-    from omni.v1.distributed.parallel_state_ext import get_layer_parallel_group
+    from omni_npu.v1.layers.linear import ShardedFlashCommLinear
+    from omni_npu.v1.distributed.parallel_state_ext import get_layer_parallel_group
 
     device = torch.device(f"npu:{device}")
     input_size = 8
@@ -637,8 +637,8 @@ def _logic_sharded_flash_comm_linear_xag(device, local_rank, world_size, dtype):
     assert bias is None
 
 def _logic_sharded_flash_comm_linear_yag(device, local_rank, world_size, dtype):
-    from omni.v1.layers.linear import ShardedFlashCommLinear
-    from omni.v1.distributed.parallel_state_ext import get_layer_parallel_group
+    from omni_npu.v1.layers.linear import ShardedFlashCommLinear
+    from omni_npu.v1.distributed.parallel_state_ext import get_layer_parallel_group
 
     device = torch.device(f"npu:{device}")
     input_size = 8

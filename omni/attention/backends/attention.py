@@ -5,7 +5,7 @@ NPU Attention backend vendored into omni_npu.attention.backends.
 
 This is a minimized, self-contained version derived from omniinfer sources,
 with the following adjustments:
-- Replaced omni.* imports with local shims or safe defaults.
+- Replaced omni_npu.* imports with local shims or safe defaults.
 - Kept the core torch_npu kernels usage for prefill and decode.
 - Removed optional features (best_ep, omni_cache, DSA, SP) for an MVP.
 """

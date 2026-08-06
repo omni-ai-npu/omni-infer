@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from omni.diagnostics.dump import stats_flush
+from omni_npu.diagnostics.dump import stats_flush
 
 pytestmark = pytest.mark.unit
 

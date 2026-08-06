@@ -73,10 +73,10 @@ def mock_npu_dynamic_quant(x):
 def mock_dependencies():
     mock_torch_npu = SimpleNamespace(npu_dynamic_quant=mock_npu_dynamic_quant)
     with patch(
-        "omni.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear.torch_npu",
+        "omni_npu.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear.torch_npu",
         mock_torch_npu,
     ), patch(
-        "omni.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear.get_npu_execution_type",
+        "omni_npu.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear.get_npu_execution_type",
         mock_get_npu_execution_type,
     ):
         yield mock_torch_npu
@@ -87,7 +87,7 @@ def w8a8_mlp_method(mock_dependencies):
     quant_config = MockQuantConfig()
     # 延迟导入真实类，避免 pytest 收集阶段循环导入
     compressed = importlib.import_module(
-        "omni.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear"
+        "omni_npu.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear"
     )
     W8A8Int8MlpMethod = getattr(compressed, "W8A8Int8MlpMethod")
     return W8A8Int8MlpMethod(quant_config)
@@ -155,7 +155,7 @@ class TestW8A8Int8MlpMethod:
 @pytest.mark.unit
 def test_fc_linear_dp2tp_all2all_communicates_before_dynamic_quant(monkeypatch):
     compressed = importlib.import_module(
-        "omni.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear"
+        "omni_npu.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear"
     )
     call_order = []
     communicated = torch.full((4, 2), 7, dtype=torch.int8)
@@ -209,7 +209,7 @@ def test_fc_linear_dp2tp_all2all_gathers_existing_scale_without_requantizing(
     monkeypatch,
 ):
     compressed = importlib.import_module(
-        "omni.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear"
+        "omni_npu.v1.layers.quantization.compressed_tensors.npu_compressed_tensors_linear"
     )
     input_int8 = torch.ones(2, 4, dtype=torch.int8)
     input_scale = torch.tensor([0.5, 1.0])

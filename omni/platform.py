@@ -82,7 +82,7 @@ class NPUPlatform(Platform):
         from omni_npu.connector import register_connectors
         register_connectors()
         
-        for ep in entry_points().select(group="omni.kv_connectors"):
+        for ep in entry_points().select(group="omni_npu.kv_connectors"):
             try:
                 register_fn = ep.load()
                 register_fn()

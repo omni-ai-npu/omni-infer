@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import torch
 
-from omni.attention.backends.dsa import NPUDSAMetadataBuilder
-from omni.v1.layers.attention.npu_pangu import _get_slot_mapping_2d
+from omni_npu.attention.backends.dsa import NPUDSAMetadataBuilder
+from omni_npu.v1.layers.attention.npu_pangu import _get_slot_mapping_2d
 
 
 class TestGetSlotMapping2d(unittest.TestCase):

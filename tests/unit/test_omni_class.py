@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 import inspect
 
-from omni.connector.llmdatadist_connector_v1 import LLMDataDistConnector, KVConnectorBase_V1
-from omni.distributed.communicator import NPUCommunicator, CudaCommunicator
+from omni_npu.connector.llmdatadist_connector_v1 import LLMDataDistConnector, KVConnectorBase_V1
+from omni_npu.distributed.communicator import NPUCommunicator, CudaCommunicator
 
 
 def check_class_methods(cls, base_cls):

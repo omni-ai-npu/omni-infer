@@ -38,9 +38,9 @@ import torch
 
 from transformers import DeepseekV3Config as _DeepseekConfig
 
-from omni.attention.backends.mla import NPUMLAImpl
-from omni.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
-from omni.v1.layers.linear import (
+from omni_npu.attention.backends.mla import NPUMLAImpl
+from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+from omni_npu.v1.layers.linear import (
     ColumnParallelFlashCommLinear,
     RowParallelFlashCommLinear,
 )
@@ -428,11 +428,11 @@ def _build_module(
         lambda: dummy_config,
     )
     monkeypatch.setattr(
-        "omni.attention.backends.mla.get_current_vllm_config",
+        "omni_npu.attention.backends.mla.get_current_vllm_config",
         lambda: dummy_config,
     )
     monkeypatch.setattr(
-        "omni.v1.layers.attention.npu_mla.get_tensor_model_parallel_world_size",
+        "omni_npu.v1.layers.attention.npu_mla.get_tensor_model_parallel_world_size",
         lambda: 1,
     )
     monkeypatch.setattr(
@@ -457,7 +457,7 @@ def _build_module(
     )
     ctx = DummyForwardContext(attn_metadata)
     monkeypatch.setattr(
-        "omni.v1.layers.attention.npu_mla.get_forward_context",
+        "omni_npu.v1.layers.attention.npu_mla.get_forward_context",
         lambda: ctx,
     )
     monkeypatch.setattr(
@@ -471,7 +471,7 @@ def _build_module(
     # - make dynamic quant a no-op (keep float tensor)
     # - wrap q_b_proj.forward to accept that dict and unwrap it back to a tensor
     monkeypatch.setattr(
-        "omni.v1.layers.attention.npu_mla.torch_npu.npu_dynamic_quant",
+        "omni_npu.v1.layers.attention.npu_mla.torch_npu.npu_dynamic_quant",
         lambda x: (x, None),
     )
 

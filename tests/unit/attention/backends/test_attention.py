@@ -179,26 +179,26 @@ def npu_attention_classes(monkeypatch):
     model_utils_mod.extract_layer_index = MagicMock(return_value=0)
     monkeypatch.setitem(sys.modules, "vllm.model_executor.models.utils", model_utils_mod)
 
-    dsa_mod = types.ModuleType("omni.attention.backends.dsa")
+    dsa_mod = types.ModuleType("omni_npu.attention.backends.dsa")
     dsa_mod.NPUDSABackend = MagicMock()
-    monkeypatch.setitem(sys.modules, "omni.attention.backends.dsa", dsa_mod)
+    monkeypatch.setitem(sys.modules, "omni_npu.attention.backends.dsa", dsa_mod)
 
-    mla_mod = types.ModuleType("omni.attention.backends.mla")
+    mla_mod = types.ModuleType("omni_npu.attention.backends.mla")
     mla_mod.NPUMLABackend = MagicMock()
-    monkeypatch.setitem(sys.modules, "omni.attention.backends.mla", mla_mod)
+    monkeypatch.setitem(sys.modules, "omni_npu.attention.backends.mla", mla_mod)
 
-    mome_mod = types.ModuleType("omni.attention.backends.mome")
+    mome_mod = types.ModuleType("omni_npu.attention.backends.mome")
     mome_mod.NPUPanguMomeBackend = MagicMock()
-    monkeypatch.setitem(sys.modules, "omni.attention.backends.mome", mome_mod)
+    monkeypatch.setitem(sys.modules, "omni_npu.attention.backends.mome", mome_mod)
 
     try:
-        import omni.attention.backends.attention as attn_mod
-        import omni.attention.backends as backends_mod
+        import omni_npu.attention.backends.attention as attn_mod
+        import omni_npu.attention.backends as backends_mod
         importlib.reload(attn_mod)
         importlib.reload(backends_mod)
 
         # Now it's safe to import omni_npu — its backend will inherit from REAL base classes
-        from omni.attention.backends import (
+        from omni_npu.attention.backends import (
             NPUAttentionBackendImpl as _impl,
             NPUMetadata as _meta,
             NPUAttentionBackend as _backend,
@@ -404,7 +404,7 @@ class TestNPUAttentionBackendDefaultMetadataBuilder(unittest.TestCase):
                 'vllm.v1.attention.backends.utils.split_decodes_and_prefills',
                 return_value=(0, 2, 0, 20)
         ), patch(
-                'omni.attention.backends.attention.split_decodes_and_prefills',
+                'omni_npu.attention.backends.attention.split_decodes_and_prefills',
                 return_value=(0, 2, 0, 20)
         ), patch.object(
                 self.attention_module,
@@ -455,7 +455,7 @@ class TestNPUAttentionBackendDefaultMetadataBuilder(unittest.TestCase):
         )
 
         with patch(
-                'omni.attention.backends.attention.split_decodes_and_prefills',
+                'omni_npu.attention.backends.attention.split_decodes_and_prefills',
                 return_value=(0, 1, 0, 4)):
             meta = builder.build(common_prefix_len=0,
                                  common_attn_metadata=common_meta)
@@ -1244,7 +1244,7 @@ class TestNPUAttentionBackendDefaultImpl(unittest.TestCase):
 
         with patch('torch_npu.npu_scatter_nd_update_', side_effect=fake_scatter_nd_update_), \
              patch('torch_npu._npu_fused_infer_attention_score_v2_infer_output', side_effect=fake_fused_infer_attention_score_infer_output), \
-             patch('omni.attention.backends.attention.capture_graph_task') as mock_capture:
+             patch('omni_npu.attention.backends.attention.capture_graph_task') as mock_capture:
             impl.forward(layer=layer, query=query, key=key, value=value, kv_cache=kv_cache, attn_metadata=metadata_decode, output=output)
             mock_capture.assert_called_once()
         

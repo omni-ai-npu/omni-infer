@@ -11,7 +11,7 @@ from .distributed_test_common import distributed_worker_pool
 
 
 def _logic_vocab_parallel_embedding_parallel(device, local_rank, world_size, dtype):
-    from omni.v1.layers.vocab_parallel_embedding import NPUVocabParallelEmbedding
+    from omni_npu.v1.layers.vocab_parallel_embedding import NPUVocabParallelEmbedding
 
     device = torch.device(f"npu:{device}")
     vocab_size = 8
@@ -47,7 +47,7 @@ def _logic_vocab_parallel_embedding_parallel(device, local_rank, world_size, dty
 def _logic_vocab_parallel_embedding_reduce_scatter_padding(
     device, local_rank, world_size, dtype
 ):
-    from omni.v1.layers.vocab_parallel_embedding import NPUVocabParallelEmbedding
+    from omni_npu.v1.layers.vocab_parallel_embedding import NPUVocabParallelEmbedding
 
     device = torch.device(f"npu:{device}")
     vocab_size = 10

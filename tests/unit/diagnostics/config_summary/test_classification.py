@@ -1,10 +1,10 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # SPDX-License-Identifier: MIT
-"""Unit tests for omni.diagnostics.config_summary.classification (stdlib-only, no NPU)."""
+"""Unit tests for omni_npu.diagnostics.config_summary.classification (stdlib-only, no NPU)."""
 
 import pytest
 
-from omni.diagnostics.config_summary import classification as cls
+from omni_npu.diagnostics.config_summary import classification as cls
 
 
 class TestDotPathCodec:
