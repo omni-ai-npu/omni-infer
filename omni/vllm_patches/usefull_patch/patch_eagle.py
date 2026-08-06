@@ -63,12 +63,11 @@ class EagleProposerPatch(VLLMPatch):
         'prepare_inputs_padded',
         'dummy_run',
         'load_model',
+        '_sample_draft_tokens',
         'propose',
-        'propose_multi_mtp',  # new
+        'set_inputs_first_pass',
         'initialize_attn_backend',
-        # draft groups are built in initialize_attn_backend; do not list
-        # validate_same_kv_cache_group here (method not defined) — PatchManager
-        # catches apply errors and leaves later attrs (e.g. _save_*) unpatched.
+        'validate_same_kv_cache_group',
         '_build_common_attn_metadata_for_group',
         'build_per_group_and_layer_attn_metadata',
         '_rebuild_per_group_metadata_for_step',
@@ -81,7 +80,9 @@ class EagleProposerPatch(VLLMPatch):
             device: torch.device,
             runner=None,
     ):
-        EagleProposer_original_init(self, vllm_config, device, runner)
+        EagleProposer_original_init(
+            self, vllm_config=vllm_config, device=device, runner=runner
+        )
         self.runner = runner
         self._draft_attn_layer_names: set[str] = set()
         self.attn_layer_names: list[str] = []
@@ -259,19 +260,16 @@ class EagleProposerPatch(VLLMPatch):
 
             # Adapt: pass attn_metadata and batch_descriptor to set_forward_context, change cudagraph_runtime_mode
             with set_forward_context(
-                    per_layer_attn_metadata,
-                    self.vllm_config,
+                    attn_metadata=per_layer_attn_metadata,
+                    vllm_config=self.vllm_config,
                     num_tokens=num_input_tokens,
                     num_tokens_across_dp=num_tokens_across_dp,
                     cudagraph_runtime_mode=cudagraph_mode,
-                    batch_descriptor=batch_descriptor
+                    batch_descriptor=batch_descriptor,
             ):
                 forward_context = get_forward_context()
                 forward_context.capturing = False
-                if self.supports_mm_inputs:
-                    input_ids = None
-                    inputs_embeds = self.inputs_embeds[:num_input_tokens]
-                elif self.n_predict > 1:
+                if self.supports_mm_inputs or self.n_predict > 1:
                     input_ids = None
                     inputs_embeds = self.inputs_embeds[:num_input_tokens]
                 else:
@@ -280,7 +278,7 @@ class EagleProposerPatch(VLLMPatch):
 
                 model_kwargs = dict(
                     input_ids=input_ids,
-                    positions=self._get_positions(num_input_tokens),
+                    positions=self._get_positions(num_tokens=num_input_tokens),
                     hidden_states=self.hidden_states[:num_input_tokens],
                     inputs_embeds=inputs_embeds,
                 )
@@ -290,7 +288,7 @@ class EagleProposerPatch(VLLMPatch):
 
                 # Mirror active rank's per-iter (forward, compute_logits)
                 # order so idle DP ranks stay lock-step on the DP collectives
-                # inside compute_logits. Active's propose/propose_multi_mtp
+                # inside compute_logits. Active propose's regular/multi-MTP
                 # interleaves these two calls per spec step; batching all
                 # compute_logits after the loop deadlocks with num_spec > 1.
                 if (
@@ -298,14 +296,16 @@ class EagleProposerPatch(VLLMPatch):
                         or getattr(self.runner, "local_parallel_lmhead", False)
                 ) and not is_profile:
                     last_hs = (
-                        ret_hidden_states if self.method == "mtp"
+                        ret_hidden_states if not self.model_returns_tuple()
                         else ret_hidden_states[0]
                     )
                     sample_hs = last_hs[:1]
                     if self.method == "mtp" and self.n_predict > 1:
-                        self.model.compute_logits(sample_hs, spec_step_idx=fwd_idx)
+                        self.model.compute_logits(
+                            hidden_states=sample_hs, spec_step_idx=fwd_idx
+                        )
                     else:
-                        self.model.compute_logits(sample_hs)
+                        self.model.compute_logits(hidden_states=sample_hs)
 
     def load_model(self, target_model: nn.Module) -> None:
         target_attn_layer_names = set(
@@ -339,7 +339,9 @@ class EagleProposerPatch(VLLMPatch):
             # text-only draft models
             try:
                 dummy_input_ids = torch.tensor([[1]], device=self.input_ids.device)
-                self.model.embed_input_ids(dummy_input_ids, multimodal_embeddings=None)
+                self.model.embed_input_ids(
+                    input_ids=dummy_input_ids, multimodal_embeddings=None
+                )
             except (NotImplementedError, AttributeError, TypeError):
                 logger.warning(
                     "Draft model does not support multimodal inputs, "
@@ -351,20 +353,34 @@ class EagleProposerPatch(VLLMPatch):
             # handle multimodality
             assert hasattr(target_model, "config")
             if self.get_model_name(target_model) in [
+                "Cohere2VisionForConditionalGeneration",
+                "Exaone4_5_ForConditionalGeneration",
+                "GlmOcrForConditionalGeneration",
+                "HunYuanVLForConditionalGeneration",
+                "InternS2PreviewForConditionalGeneration",
+                "MiMoV2OmniForCausalLM",
                 "Qwen2_5_VLForConditionalGeneration",
+                "Qwen3_5ForConditionalGeneration",
+                "Qwen3_5MoeForConditionalGeneration",
                 "Qwen3VLForConditionalGeneration",
-                #####patch start: for pangu72B-VL/OMNI
+                "Qwen3VLMoeForConditionalGeneration",
+                "Gemma4ForConditionalGeneration",
+                "Gemma4UnifiedForConditionalGeneration",
+                "Step3p7ForConditionalGeneration",
+                ### patch start: for pangu72B-VL/OMNI
                 "OpenPanguVLForConditionalGeneration",
                 "OpenPanguV2VLForConditionalGeneration",
                 "OpenPanguUltraOmniForConditionalGeneration",
-                #####patch end
-                "Qwen3_5ForConditionalGeneration",
-                "Qwen3_5MoeForConditionalGeneration",
+                ### patch end
             ]:
                 self.model.config.image_token_index = target_model.config.image_token_id
             elif self.get_model_name(target_model) == "PixtralForConditionalGeneration":
                 self.model.config.image_token_index = (
                     target_model.config.vision_config.image_token_id
+                )
+            elif self.get_model_name(target_model) == "KimiK25ForConditionalGeneration":
+                self.model.config.image_token_index = (
+                    target_model.config.media_placeholder_token_id
                 )
             else:
                 self.model.config.image_token_index = (
@@ -379,8 +395,24 @@ class EagleProposerPatch(VLLMPatch):
         self._maybe_share_embeddings(target_language_model)
         self._maybe_share_lm_head(target_language_model)
 
+        if (
+                self.parallel_drafting
+                and self.pass_hidden_states_to_model
+                and self.parallel_drafting_hidden_state_tensor is not None
+        ):
+            flat_mask = self.model.mask_hidden.view(-1)
+            if self.eagle3_use_aux_hidden_state:
+                # EAGLE3: mask_hidden stores all aux hidden states,
+                # project through combine_hidden_states
+                self.parallel_drafting_hidden_state_tensor.copy_(
+                    self.model.combine_hidden_states(flat_mask)
+                )
+            else:
+                self.parallel_drafting_hidden_state_tensor.copy_(flat_mask)
+        ### patch start
         if hasattr(self.model, "set_shared_weight"):
             self.model.set_shared_weight(target_language_model)
+        ### patch end
 
     def initialize_attn_backend(
             self,
@@ -466,8 +498,8 @@ class EagleProposerPatch(VLLMPatch):
                     self.runner.num_prompt_tokens.gpu[:num_reqs]
 
             cm = self._build_common_attn_metadata_for_group(
-                group.kv_cache_group_id,
-                common_attn_metadata,
+                kv_cache_group_id=group.kv_cache_group_id,
+                base_cm=common_attn_metadata,
             )
             attn_metadata = group.builder.build_for_drafting(
                 common_attn_metadata=cm,
@@ -550,11 +582,76 @@ class EagleProposerPatch(VLLMPatch):
             for name in group.layer_names:
                 per_layer_attn_metadata[name] = attn_metadata
 
+    def _sample_draft_tokens(
+            self,
+            hidden_states: torch.Tensor,
+            sampling_metadata: SamplingMetadata,
+            spec_step_idx: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        # NOTE: vs upstream `_sample_draft_tokens`:
+        #   - add optional ``spec_step_idx`` so multi-MTP can select the MTP head
+        #   - always ``compute_logits`` (+ optional spec_step_idx) then
+        #     ``_sample_from_logits`` (supports greedy / probabilistic draft)
+
+        if spec_step_idx is not None:
+            logits = self.model.compute_logits(
+                hidden_states=hidden_states,
+                spec_step_idx=spec_step_idx,
+            )
+        else:
+            logits = self.model.compute_logits(hidden_states=hidden_states)
+
+        draft_token_ids, draft_probs = self._sample_from_logits(
+            logits=logits, sampling_metadata=sampling_metadata
+        )
+
+        return draft_token_ids, draft_probs
+
+    def set_inputs_first_pass(
+            self,
+            target_token_ids: torch.Tensor,
+            next_token_ids: torch.Tensor,
+            target_positions: torch.Tensor,
+            target_hidden_states: torch.Tensor,
+            token_indices_to_sample: torch.Tensor | None,
+            cad: CommonAttentionMetadata,
+            num_rejected_tokens_gpu: torch.Tensor | None,
+    ) -> tuple[int, torch.Tensor, CommonAttentionMetadata]:
+        # NOTE: vs upstream ``set_inputs_first_pass``:
+        #   - keep the simpler NPU/0.14.0-style path (shift packed tokens + insert
+        #     next_token_ids); do not use upstream Triton extra-slot expansion
+        #   - ``token_indices_to_sample`` only uses the unpadded request range
+        #     ``query_start_loc[1:batch_size+1]`` to avoid DP padding tails
+        #   - ``cad`` is returned unchanged (no needs_extra_input_slots reshape)
+
+        batch_size = next_token_ids.shape[0]
+        if token_indices_to_sample is None:
+            # query_start_loc may contain a DP-padded tail. Only consume entries
+            # belonging to actual requests represented by next_token_ids.
+            token_indices_to_sample = (
+                    cad.query_start_loc[1: batch_size + 1] - 1
+            )
+
+        num_tokens = target_token_ids.shape[0]
+
+        # Shift the packed ids, then overwrite every request boundary slot.
+        self.input_ids[: num_tokens - 1] = target_token_ids[1:]
+        self.input_ids[token_indices_to_sample] = next_token_ids
+
+        # Populate the first-pass buffers used by model execution/cudagraph.
+        self._set_positions(
+            num_tokens=num_tokens, positions=target_positions
+        )
+        self.hidden_states[:num_tokens] = target_hidden_states
+
+        return num_tokens, token_indices_to_sample, cad
+
     def propose(
             self,
             num_speculative_tokens,
             target_token_ids: torch.Tensor,  # shape: [num_tokens]
-            target_positions: torch.Tensor,  # shape: [num_tokens] or [3, num_tokens] when M-RoPE
+            target_positions: torch.Tensor,
+            # shape: [num_tokens] or [3, num_tokens] when M-RoPE
             target_hidden_states: torch.Tensor,  # shape: [num_tokens, hidden_size]
             next_token_ids: torch.Tensor,  # shape: [batch_size]
             token_indices_to_sample: torch.Tensor | None,
@@ -566,39 +663,40 @@ class EagleProposerPatch(VLLMPatch):
                            | list[dict[str, torch.Tensor]]
                            | None = None,
     ) -> torch.Tensor:
+        # NOTE: This patch merges latest upstream vLLM Eagle/MTP propose flow
+        # with the earlier Omni patch based on vLLM 0.14.0. Main deltas:
+        #   - use_multi_mtp: multi-layer MTP (n_predict > 1) path
+        #   - additional Eagle-path adaptations for NPU (metadata / hybrid KV /
+        #     DP padding / cudagraph padding behavior)
+        #   - small NPU optimizations, e.g. reuse
+        #     runner.batch_execution_and_padding_state instead of re-running
+        #     _determine_batch_execution_and_padding in propose
+
         self.num_speculative_tokens = num_speculative_tokens
         self._last_draft_probs = None
-        batch_size = common_attn_metadata.batch_size()
-
-        if (self.method == 'mtp' and self.n_predict > 1
-                and self.num_speculative_tokens <= self.n_predict
-        ):
-            return self.propose_multi_mtp(
-                num_speculative_tokens=num_speculative_tokens,
-                target_token_ids=target_token_ids,
-                target_positions=target_positions,
-                target_hidden_states=target_hidden_states,
-                next_token_ids=next_token_ids,
-                token_indices_to_sample=token_indices_to_sample,
-                common_attn_metadata=common_attn_metadata,
-                sampling_metadata=sampling_metadata,
-                mm_embed_inputs=mm_embed_inputs,
-                num_rejected_tokens_gpu=num_rejected_tokens_gpu,
-                slot_mappings=slot_mappings,
-            )
-
-        num_tokens = target_token_ids.shape[0]
         batch_size = next_token_ids.shape[0]
 
-        # Adapt: handle the padding of query_start_loc
-        if last_token_indices is None:
-            last_token_indices = common_attn_metadata.query_start_loc[1:batch_size + 1] - 1
-        # End Adapt
+        use_multi_mtp = (
+                self.method == "mtp"
+                and self.n_predict > 1
+                and self.num_speculative_tokens <= self.n_predict
+        )
 
-        if self.method == "eagle3":
-            draft_model = self.model.unwrap() if hasattr(self.model, "unwrap") else self.model
-            if not isinstance(draft_model, Eagle3LlamaForCausalLM):
-                raise TypeError("draft_model must be Eagle3LlamaForCausalLM")
+        if self.method in ("eagle3", "dflash"):
+            if hasattr(self.model, "unwrap"):
+                draft_model = self.model.unwrap()
+            else:
+                draft_model = self.model
+            assert isinstance(
+                draft_model,
+                (
+                    Eagle3LlamaForCausalLM,
+                    Eagle3DeepseekV2ForCausalLM,
+                    DFlashQwen3ForCausalLM,
+                    Eagle3Qwen3ForCausalLM,
+                    DFlashLagunaForCausalLM,
+                ),
+            )
             target_hidden_states = draft_model.combine_hidden_states(
                 target_hidden_states
             )
@@ -607,370 +705,321 @@ class EagleProposerPatch(VLLMPatch):
                     f"target_hidden_states shape mismatch: "
                     f"{target_hidden_states.shape[-1]} != {self.hidden_size}"
                 )
-        # Shift the input ids by one token.
-        # E.g., [a1, b1, b2, c1, c2, c3] -> [b1, b2, c1, c2, c3, c3]
-        self.input_ids[: num_tokens - 1] = target_token_ids[1:]
-        # Replace the last token with the next token.
-        # E.g., [b1, b2, c1, c2, c3, c3] -> [a2, b2, b3, c2, c3, c4]
-        self.input_ids[last_token_indices] = next_token_ids
 
-        if self.runner is None:
-            raise ValueError("runner is not initialized")
+        if use_multi_mtp:
+            if token_indices_to_sample is None:
+                token_indices_to_sample = (
+                        common_attn_metadata.query_start_loc[1: batch_size + 1] - 1
+                )
 
-        _, per_layer_attn_metadata = self.build_per_group_and_layer_attn_metadata(
-            common_attn_metadata,
+            self._save_and_change_target_input(
+                target_token_ids=target_token_ids,
+                target_positions=target_positions,
+                target_hidden_states=target_hidden_states,
+                next_token_ids=next_token_ids,
+                token_indices_to_sample=token_indices_to_sample,
+                common_attn_metadata=common_attn_metadata,
+                num_rejected_tokens_gpu=num_rejected_tokens_gpu,
+            )
+
+        num_tokens, token_indices_to_sample, common_attn_metadata = (
+            self.set_inputs_first_pass(
+                target_token_ids=target_token_ids,
+                next_token_ids=next_token_ids,
+                target_positions=target_positions,
+                target_hidden_states=target_hidden_states,
+                token_indices_to_sample=token_indices_to_sample,
+                cad=common_attn_metadata,
+                num_rejected_tokens_gpu=num_rejected_tokens_gpu,
+            )
+        )
+
+        (
+            per_group_attn_metadata,
+            per_layer_attn_metadata,
+        ) = self.build_per_group_and_layer_attn_metadata(
+            common_attn_metadata=common_attn_metadata,
             draft_index=0,
         )
 
-        # Adapt start: get token info from target model batch descriptor
+        if self.runner is None:
+            raise ValueError("Runner is not initialized")
+
         if self.runner.batch_execution_and_padding_state is None:
             raise ValueError(
-                "propose of drafter should be executed after "
+                "Propose of drafter should be executed after "
                 "runner._determine_batch_execution_and_padding"
             )
-        cudagraph_runtime_mode, batch_descriptor, num_tokens_across_dp = self.runner.batch_execution_and_padding_state
+        (
+            cudagraph_runtime_mode,
+            batch_descriptor,
+            num_tokens_across_dp,
+        ) = self.runner.batch_execution_and_padding_state
         self.runner.batch_execution_and_padding_state = None
         num_input_tokens = batch_descriptor.num_tokens
-        # Adapt end
 
-        # copy inputs to buffer for cudagraph
-        self._set_positions(num_tokens, target_positions)
-        self.hidden_states[:num_tokens] = target_hidden_states
+        model_kwargs, slot_mapping_size = self.build_model_inputs_first_pass(
+            num_tokens=num_tokens,
+            num_input_tokens=num_input_tokens,
+            mm_embed_inputs=mm_embed_inputs,
+        )
+        if use_multi_mtp:
+            model_kwargs["spec_step_idx"] = 0
 
-        if self.supports_mm_inputs:
-            mm_embeds, is_mm_embed = mm_embed_inputs or (None, None)
-
+        # Multi-layer MTP always embeds; upstream first-pass may leave input_ids.
+        if use_multi_mtp and model_kwargs["inputs_embeds"] is None:
             self.inputs_embeds[:num_tokens] = self.model.embed_input_ids(
-                self.input_ids[:num_tokens],
-                multimodal_embeddings=mm_embeds,
-                is_multimodal=is_mm_embed,
+                input_ids=self.input_ids[:num_tokens],
             )
-            input_ids = None
-            inputs_embeds = self.inputs_embeds[:num_input_tokens]
-        elif self.n_predict > 1:
-            self.inputs_embeds[:num_tokens] = self.model.embed_input_ids(
-                self.input_ids[:num_tokens],
-            )
-            input_ids = None
-            inputs_embeds = self.inputs_embeds[:num_input_tokens]
-        else:
-            input_ids = self.input_ids[:num_input_tokens]
-            inputs_embeds = None
+            model_kwargs["input_ids"] = None
+            model_kwargs["inputs_embeds"] = self.inputs_embeds[:num_input_tokens]
 
-        # Adapt: pass batch_descriptor to set_forward_context
         with set_forward_context(
-                per_layer_attn_metadata,
-                self.vllm_config,
+                attn_metadata=per_layer_attn_metadata,
+                vllm_config=self.vllm_config,
                 num_tokens=num_input_tokens,
                 num_tokens_across_dp=num_tokens_across_dp,
-                cudagraph_runtime_mode=cudagraph_runtime_mode,  # Adapt : get cudagraph mode from model runner
-                batch_descriptor=batch_descriptor,  # Adapt : get batch_descriptor from model runner
+                cudagraph_runtime_mode=cudagraph_runtime_mode,
+                slot_mapping=self._get_slot_mapping(
+                    num_tokens=slot_mapping_size,
+                    slot_mapping=common_attn_metadata.slot_mapping,
+                ),
+                batch_descriptor=batch_descriptor,
         ):
             forward_context = get_forward_context()
             forward_context.capturing = False
-            # End Adapt
-            ret_hidden_states = self.model(
-                input_ids=input_ids,
-                positions=self._get_positions(num_input_tokens),
-                hidden_states=self.hidden_states[:num_input_tokens],
-                inputs_embeds=inputs_embeds,
-            )
-            if self.method == "mtp":
-                last_hidden_states = ret_hidden_states
-                hidden_states = last_hidden_states
-            else:
-                last_hidden_states, hidden_states = ret_hidden_states
-        sample_hidden_states = last_hidden_states[last_token_indices]
-        logits = self.model.compute_logits(sample_hidden_states)
+            ret_hidden_states = self.model(**model_kwargs)
+
+        if not self.model_returns_tuple():
+            last_hidden_states = ret_hidden_states
+            hidden_states = last_hidden_states
+        else:
+            last_hidden_states, hidden_states = ret_hidden_states
+
+        sample_hidden_states = last_hidden_states[token_indices_to_sample]
+
+        first_spec_step_idx = 0 if use_multi_mtp else None
 
         # Early exit if there is only one draft token to be generated.
-        if self.num_speculative_tokens == 1:
-            draft_token_ids = logits.argmax(dim=-1)
-            return draft_token_ids.view(-1, 1)
+        if self.num_speculative_tokens == 1 or self.parallel_drafting:
+            draft_token_ids, draft_probs = self._sample_draft_tokens(
+                hidden_states=sample_hidden_states,
+                sampling_metadata=sampling_metadata,
+                spec_step_idx=first_spec_step_idx,
+            )
+            if use_multi_mtp:
+                draft_token_ids = draft_token_ids.int()
+            if draft_probs is not None:
+                self._last_draft_probs = draft_probs.view(
+                    -1, self.num_speculative_tokens, draft_probs.shape[-1]
+                ).contiguous()
+            return draft_token_ids.view(-1, self.num_speculative_tokens)
 
-        if self.uses_mrope:
-            positions = target_positions[:, last_token_indices]
-        else:
-            positions = target_positions[last_token_indices]
-        # Adapt: remove deepseek_mtp
-        if self.method in (
-                "ernie_mtp",
-                "longcat_flash_mtp",
-                "openpangu_mtp",
-        ):
-            hidden_states = self.hidden_states[last_token_indices]
-        else:
-            hidden_states = hidden_states[last_token_indices]
+        if not use_multi_mtp:
+            if self.uses_mrope:
+                positions = self.mrope_positions[:, token_indices_to_sample]
+            else:
+                positions = self.positions[token_indices_to_sample]
 
-        draft_token_ids = logits.argmax(dim=-1)
+            hidden_states = hidden_states[token_indices_to_sample]
+
+        draft_token_ids, draft_probs = self._sample_draft_tokens(
+            hidden_states=sample_hidden_states,
+            sampling_metadata=sampling_metadata,
+            spec_step_idx=first_spec_step_idx,
+        )
+        if use_multi_mtp:
+            draft_token_ids = draft_token_ids.int()
+        draft_probs_list = None if draft_probs is None else [draft_probs]
 
         if self.allowed_attn_types is not None:
-            for layer_name, metadata in per_layer_attn_metadata.items():
-                if not isinstance(metadata, self.allowed_attn_types):
+            for group_md in per_group_attn_metadata:
+                if not isinstance(group_md, self.allowed_attn_types):
                     raise ValueError(
                         f"Unsupported attention metadata type for speculative "
-                        f"decoding with num_speculative_tokens > 1: "
-                        f"{type(metadata)} (layer {layer_name}). Supported types "
-                        f"are: {self.allowed_attn_types}"
+                        "decoding with num_speculative_tokens > 1: "
+                        f"{type(group_md)}. Supported types are: "
+                        f"{self.allowed_attn_types}"
                     )
 
         # Generate the remaining draft tokens.
         draft_token_ids_list = [draft_token_ids]
 
-        if cudagraph_runtime_mode == CUDAGraphMode.NONE:
-            batch_descriptor = None
-            batch_size_dp_padded, batch_size_across_dp = self._pad_batch_across_dp(
-                num_tokens_unpadded=batch_size, num_tokens_padded=batch_size
-            )
-            input_batch_size = batch_size_dp_padded
-            if batch_size_across_dp is not None:
-                batch_size_across_dp[self.dp_rank] = input_batch_size
-        else:
+        if use_multi_mtp:
+            # Multi-layer MTP reuses the packed first-pass shape and advances
+            # spec_step_idx for each remaining prediction head.
+            previous_input_ids = self.input_ids[:num_tokens]
+            previous_hidden_states = hidden_states[:num_tokens]
             input_batch_size = num_input_tokens
             batch_size_across_dp = num_tokens_across_dp
-
-        common_attn_metadata.num_actual_tokens = input_batch_size
-        common_attn_metadata.max_query_len = 1
-        common_attn_metadata.query_start_loc[: batch_size + 1] = self.arange[: batch_size + 1]
-        common_attn_metadata.query_start_loc[batch_size:] = self.arange[batch_size]
-        common_attn_metadata.query_start_loc_cpu[: batch_size + 1] = torch.from_numpy(
-            self.token_arange_np[: batch_size + 1]
-        ).clone()
-        common_attn_metadata.query_start_loc_cpu[batch_size:] = common_attn_metadata.query_start_loc_cpu[batch_size]
-
-        # In padded drafter batch, we need to adjust the sequence lengths
-        # to remove the "padding" (i.e. rejected tokens).
-        # Only apply this adjustment when we have rejected tokens
-        # (i.e., not the first proposal).
-        if self.num_speculative_tokens > 1 and num_rejected_tokens_gpu is not None:
-            actual_batch_size = num_rejected_tokens_gpu.shape[0]
-            common_attn_metadata.seq_lens[:actual_batch_size] -= num_rejected_tokens_gpu
-            # Invalidate the CPU-side shadows to avoid H<>D sync.
-            common_attn_metadata._seq_lens_cpu = None
-            common_attn_metadata._num_computed_tokens_cpu = None
-
-        for token_index in range(self.num_speculative_tokens - 1):
-            # Update the inputs.
-            # cast to int32 is crucial when eagle model is compiled.
-            # tensor.argmax() returns int64 by default.
-            input_ids = draft_token_ids_list[-1].int()
-            if self.uses_mrope:
-                positions += 1
-                # NOTE(woosuk): We should handle the case where the draft model
-                # generates tokens beyond the max model length.
-                # Since it is complex to remove such requests from the batch,
-                # we keep them in the batch but adjust the position ids
-                # and slot mappings to avoid the
-                # out-of-range access during the model execution.
-                # The draft tokens generated with this adjustment
-                # should be ignored.
-                exceeds_max_model_len = positions[0] >= self.max_model_len
-                # Mask out the position ids that exceed the max model length.
-                # Otherwise, we may get out-of-range error in RoPE.
-                clamped_positions = torch.where(
-                    exceeds_max_model_len.unsqueeze(0),
-                    torch.zeros_like(positions),
-                    positions,
-                )
-            else:
-                positions += 1
-                exceeds_max_model_len = positions >= self.max_model_len
-                clamped_positions = torch.where(exceeds_max_model_len, 0, positions)
-            # For data integrity when async scheduling, we shouldn't use in place
-            # operations in case they are modified in next step's `prepare_input`
-            # of main model.
-            # Increment the sequence lengths.
-            common_attn_metadata.seq_lens[:batch_size] += 1
-            # For the requests that exceed the max model length, we set the
-            # sequence length to 1 to minimize their overheads in attention.
-            common_attn_metadata.seq_lens[:batch_size].masked_fill_(exceeds_max_model_len, 1)
-
-            # Also update the CPU-side shadow; NOTE: this is hacky and should be
-            # removed in when common_attn_metadata.seq_lens_cpu is deprecated.
-            if common_attn_metadata._seq_lens_cpu is not None:
-                common_attn_metadata._seq_lens_cpu[:batch_size] += 1
-            if common_attn_metadata._num_computed_tokens_cpu is not None:
-                common_attn_metadata._num_computed_tokens_cpu[:batch_size] += 1
-
-            # Compute slot mapping and rebuild attention metadata for all
-            # draft groups (each with its own block table and block size).
-            self._rebuild_per_group_metadata_for_step(
-                common_attn_metadata=common_attn_metadata,
-                clamped_positions=clamped_positions,
-                exceeds_max_model_len=exceeds_max_model_len,
-                token_index=token_index,
-                per_layer_attn_metadata=per_layer_attn_metadata,
+        else:
+            cudagraph_runtime_mode, input_batch_size, batch_size_across_dp = (
+                self._determine_batch_execution_and_padding(batch_size)
             )
 
-            # copy inputs to buffer for cudagraph
-            self.input_ids[:batch_size] = input_ids
-            self._set_positions(batch_size, clamped_positions)
-            self.hidden_states[:batch_size] = hidden_states
-            if self.supports_mm_inputs:
-                self.inputs_embeds[:batch_size] = self.model.embed_input_ids(input_ids)
+            common_attn_metadata.num_actual_tokens = input_batch_size
+            common_attn_metadata.max_query_len = 1
+            common_attn_metadata.query_start_loc[: batch_size + 1] = self.arange[: batch_size + 1]
+            common_attn_metadata.query_start_loc[batch_size:] = self.arange[batch_size]
+            common_attn_metadata.query_start_loc_cpu[: batch_size + 1] = torch.from_numpy(
+                self.token_arange_np[: batch_size + 1]).clone()
+            common_attn_metadata.query_start_loc_cpu[batch_size:] = common_attn_metadata.query_start_loc_cpu[batch_size]
 
-                input_ids = None
-                inputs_embeds = self.inputs_embeds[:input_batch_size]
+            # In padded drafter batch, we need to adjust the sequence lengths
+            # to remove the "padding" (i.e. rejected tokens).
+            # Only apply this adjustment when we have rejected tokens
+            # (i.e., not the first proposal).
+            if self.num_speculative_tokens > 1 and num_rejected_tokens_gpu is not None:
+                actual_batch_size = num_rejected_tokens_gpu.shape[0]
+                common_attn_metadata.seq_lens[:actual_batch_size] -= num_rejected_tokens_gpu
+                # Invalidate the CPU-side shadows to avoid H<>D sync.
+                common_attn_metadata._seq_lens_cpu = None
+                common_attn_metadata._num_computed_tokens_cpu = None
+
+        for token_index in range(self.num_speculative_tokens - 1):
+            spec_step_idx = None
+
+            if use_multi_mtp:
+                spec_step_idx = token_index + 1
+                self.input_ids[:num_tokens] = torch.roll(previous_input_ids, -1)
+                self.input_ids[token_indices_to_sample] = draft_token_ids_list[-1].int()
+                self.hidden_states[:num_tokens] = previous_hidden_states
+
+                model_kwargs, _ = self.build_model_inputs_first_pass(
+                    num_tokens=num_tokens,
+                    num_input_tokens=input_batch_size,
+                    mm_embed_inputs=mm_embed_inputs,
+                )
+                if model_kwargs["inputs_embeds"] is None:
+                    self.inputs_embeds[:num_tokens] = self.model.embed_input_ids(
+                        input_ids=self.input_ids[:num_tokens]
+                    )
+                    model_kwargs["input_ids"] = None
+                    model_kwargs["inputs_embeds"] = (
+                        self.inputs_embeds[:input_batch_size]
+                    )
+                model_kwargs["spec_step_idx"] = spec_step_idx
+                sample_indices = token_indices_to_sample
             else:
-                input_ids = self.input_ids[:input_batch_size]
-                inputs_embeds = None
+                # NOTE: Latest upstream GPU path uses a Triton fused kernel
+                # (eagle_step_update_slot_mapping_and_metadata). Keep the
+                # vLLM 0.14.0-style torch implementation here for NPU until
+                # that kernel path is fully validated on Ascend.
 
-            # Run the model.
+                # The regular path advances logical positions and rebuilds KV
+                # slot/attention metadata for one token per request.
+                input_ids = draft_token_ids_list[-1].int()
+
+                positions += 1
+                if self.uses_mrope:
+                    exceeds_max_model_len = positions[0] >= self.max_model_len
+                    clamped_positions = torch.where(
+                        exceeds_max_model_len.unsqueeze(0),
+                        torch.zeros_like(positions),
+                        positions,
+                    )
+                else:
+                    exceeds_max_model_len = positions >= self.max_model_len
+                    clamped_positions = torch.where(
+                        exceeds_max_model_len,
+                        0,
+                        positions,
+                    )
+                # For data integrity when async scheduling, we shouldn't use
+                # in place operations in case they are modified in next step's
+                # `prepare_input` of main model.
+                # Increment the sequence lengths.
+                common_attn_metadata.seq_lens[:batch_size] += 1
+                # For the requests that exceed the max model length, we set the
+                # sequence length to 1 to minimize their overheads in attention.
+                common_attn_metadata.seq_lens[:batch_size].masked_fill_(exceeds_max_model_len, 1)
+
+                # Also update the CPU-side shadow; NOTE: this is hacky and
+                # should be removed in the future when
+                # common_attn_metadata.seq_lens_cpu is deprecated.
+                if common_attn_metadata._seq_lens_cpu is not None:
+                    common_attn_metadata._seq_lens_cpu[:batch_size] += 1
+                if common_attn_metadata._num_computed_tokens_cpu is not None:
+                    common_attn_metadata._num_computed_tokens_cpu[:batch_size] += 1
+
+                # Compute slot mapping and rebuild attention metadata for all
+                # draft groups (each with its own block table and block size).
+                self._rebuild_per_group_metadata_for_step(
+                    common_attn_metadata=common_attn_metadata,
+                    clamped_positions=clamped_positions,
+                    exceeds_max_model_len=exceeds_max_model_len,
+                    token_index=token_index,
+                    per_layer_attn_metadata=per_layer_attn_metadata,
+                )
+
+                # copy inputs to buffer for cudagraph
+                self.input_ids[:batch_size] = input_ids
+                self._set_positions(
+                    num_tokens=batch_size,
+                    positions=clamped_positions,
+                )
+                self.hidden_states[:batch_size] = hidden_states
+                if self.supports_mm_inputs:
+                    self.inputs_embeds[:batch_size] = self.model.embed_input_ids(
+                        input_ids=input_ids
+                    )
+                    input_ids = None
+                    inputs_embeds = self.inputs_embeds[:input_batch_size]
+                else:
+                    input_ids = self.input_ids[:input_batch_size]
+                    inputs_embeds = None
+
+                model_kwargs = {
+                    "input_ids": input_ids,
+                    "positions": self._get_positions(num_tokens=input_batch_size),
+                    "inputs_embeds": inputs_embeds,
+                }
+                if self.pass_hidden_states_to_model:
+                    model_kwargs["hidden_states"] = self.hidden_states[:input_batch_size]
+                sample_indices = slice(0, batch_size)
+
             with set_forward_context(
-                    per_layer_attn_metadata,
-                    self.vllm_config,
+                    attn_metadata=per_layer_attn_metadata,
+                    vllm_config=self.vllm_config,
                     num_tokens=input_batch_size,
                     num_tokens_across_dp=batch_size_across_dp,
                     cudagraph_runtime_mode=cudagraph_runtime_mode,
-                    batch_descriptor=batch_descriptor,  # Adapt : get batch_descriptor from model runner
+                    slot_mapping=self._get_slot_mapping(num_tokens=input_batch_size),
+                    batch_descriptor=batch_descriptor,
             ):
                 forward_context = get_forward_context()
                 forward_context.capturing = False
-                ret_hidden_states = self.model(
-                    input_ids=input_ids,
-                    positions=self._get_positions(input_batch_size),
-                    hidden_states=self.hidden_states[:input_batch_size],
-                    inputs_embeds=inputs_embeds,
-                )
-                if self.method == "mtp":
-                    last_hidden_states = ret_hidden_states
-                    hidden_states = ret_hidden_states
-                else:
-                    last_hidden_states, hidden_states = ret_hidden_states
-            hidden_states = hidden_states[:batch_size]
-            logits = self.model.compute_logits(last_hidden_states[:batch_size])
-            draft_token_ids = logits.argmax(dim=-1)
+                ret_hidden_states = self.model(**model_kwargs)
+
+            if not self.model_returns_tuple():
+                last_hidden_states = ret_hidden_states
+                hidden_states = last_hidden_states
+            else:
+                last_hidden_states, hidden_states = ret_hidden_states
+
+            draft_token_ids, draft_probs = self._sample_draft_tokens(
+                hidden_states=last_hidden_states[sample_indices],
+                sampling_metadata=sampling_metadata,
+                spec_step_idx=spec_step_idx,
+            )
+            if use_multi_mtp:
+                draft_token_ids = draft_token_ids.int()
+            if draft_probs is not None:
+                assert draft_probs_list is not None
+                draft_probs_list.append(draft_probs)
             draft_token_ids_list.append(draft_token_ids)
+
+            if use_multi_mtp:
+                previous_input_ids = self.input_ids[:num_tokens]
+                previous_hidden_states = hidden_states[:num_tokens]
+            else:
+                hidden_states = hidden_states[:batch_size]
 
         # Output shape: [batch_size, num_speculative_tokens]
         draft_token_ids = torch.stack(draft_token_ids_list, dim=1)
+        if draft_probs_list is not None:
+            self._last_draft_probs = torch.stack(draft_probs_list, dim=1).contiguous()
         return draft_token_ids
-
-    def propose_multi_mtp(
-            self,
-            num_speculative_tokens,
-            target_token_ids: torch.Tensor,  # shape: [num_tokens]
-            target_positions: torch.Tensor,  # shape: [num_tokens] or [3, num_tokens] when M-RoPE
-            target_hidden_states: torch.Tensor,  # shape: [num_tokens, hidden_size]
-            next_token_ids: torch.Tensor,  # shape: [batch_size]
-            token_indices_to_sample: torch.Tensor | None,
-            common_attn_metadata: CommonAttentionMetadata,
-            sampling_metadata: SamplingMetadata,
-            mm_embed_inputs: tuple[list[torch.Tensor], torch.Tensor] | None = None,
-            num_rejected_tokens_gpu: torch.Tensor | None = None,
-            slot_mappings: dict[str, torch.Tensor]
-                           | list[dict[str, torch.Tensor]]
-                           | None = None,
-    ) -> torch.Tensor:
-        self.num_speculative_tokens = num_speculative_tokens
-        self._last_draft_probs = None
-        batch_size = common_attn_metadata.batch_size()
-        last_token_indices = token_indices_to_sample
-        num_tokens = target_token_ids.shape[0]
-        if last_token_indices is None:
-            last_token_indices = common_attn_metadata.query_start_loc[1:batch_size + 1] - 1
-
-        self._save_and_change_target_input(
-            target_token_ids,
-            target_positions,
-            target_hidden_states,
-            next_token_ids,
-            last_token_indices,
-            common_attn_metadata,
-            num_rejected_tokens_gpu,
-        )
-
-        if self.runner is None:
-            raise ValueError("runner is not initialized")
-
-        _, per_layer_attn_metadata = self.build_per_group_and_layer_attn_metadata(
-            common_attn_metadata,
-            draft_index=0,
-        )
-
-        # Adapt start: get token info from target model batch descriptor
-        if self.runner.batch_execution_and_padding_state is None:
-            raise ValueError(
-                "propose of drafter should be executed after "
-                "runner._determine_batch_execution_and_padding"
-            )
-        cudagraph_runtime_mode, batch_descriptor, num_tokens_across_dp = self.runner.batch_execution_and_padding_state
-        self.runner.batch_execution_and_padding_state = None
-        num_input_tokens = batch_descriptor.num_tokens
-        # Adapt end
-
-        # copy inputs to buffer for cudagraph
-        self._set_positions(num_tokens, target_positions)
-
-        previous_input_ids = target_token_ids
-        previous_next_token_ids = next_token_ids
-        previous_hidden_states = target_hidden_states
-        draft_token_ids_list = []
-        with set_forward_context(
-                per_layer_attn_metadata,
-                self.vllm_config,
-                num_tokens=num_input_tokens,
-                num_tokens_across_dp=num_tokens_across_dp,
-                cudagraph_runtime_mode=cudagraph_runtime_mode,  # Adapt : get cudagraph mode from model runner
-                batch_descriptor=batch_descriptor,  # Adapt : get batch_descriptor from model runner
-        ):
-            forward_context = get_forward_context()
-            forward_context.capturing = False
-            for token_index in range(self.num_speculative_tokens):
-
-                # Shift the input ids by one token.
-                # E.g., [a1, b1, b2, c1, c2, c3] -> [b1, b2, c1, c2, c3, c3]
-                self.input_ids[: num_tokens] = torch.roll(previous_input_ids, -1)
-                # Replace the last token with the next token.
-                # E.g., [b1, b2, c1, c2, c3, c3] -> [a2, b2, b3, c2, c3, c4]
-                self.input_ids[last_token_indices] = previous_next_token_ids
-
-                self.hidden_states[:num_tokens] = previous_hidden_states
-
-                if self.supports_mm_inputs:
-                    mm_embeds, is_mm_embed = mm_embed_inputs or (None, None)
-
-                    self.inputs_embeds[:num_tokens] = self.model.embed_input_ids(
-                        self.input_ids[:num_tokens],
-                        multimodal_embeddings=mm_embeds,
-                        is_multimodal=is_mm_embed,
-                    )
-
-                    input_ids = None
-                    inputs_embeds = self.inputs_embeds[:num_input_tokens]
-                else:
-                    self.inputs_embeds[:num_tokens] = self.model.embed_input_ids(
-                        self.input_ids[:num_tokens],
-                    )
-                    input_ids = None
-                    inputs_embeds = self.inputs_embeds[:num_input_tokens]
-
-                ret_hidden_states = self.model(
-                    input_ids=input_ids,
-                    positions=self._get_positions(num_input_tokens),
-                    hidden_states=self.hidden_states[:num_input_tokens],
-                    inputs_embeds=inputs_embeds,
-                    spec_step_idx=token_index,
-                )
-                if self.method == "mtp":
-                    last_hidden_states = ret_hidden_states
-                    hidden_states = last_hidden_states
-                else:
-                    last_hidden_states, hidden_states = ret_hidden_states
-                sample_hidden_states = last_hidden_states[last_token_indices]
-                logits = self.model.compute_logits(
-                    hidden_states=sample_hidden_states,
-                    spec_step_idx=token_index,
-                )
-                new_next_token_ids = logits.argmax(dim=-1).int()
-                draft_token_ids_list.append(new_next_token_ids)
-
-                # update previous
-                previous_input_ids = self.input_ids[: num_tokens]
-                previous_hidden_states = last_hidden_states[: num_tokens]
-                previous_next_token_ids = new_next_token_ids
-
-        return torch.stack(draft_token_ids_list, dim=1)
 
     def _save_and_change_target_input(
             self,
@@ -978,7 +1027,7 @@ class EagleProposerPatch(VLLMPatch):
             target_positions,
             target_hidden_states,
             next_token_ids,
-            last_token_indices,
+            token_indices_to_sample,
             common_attn_metadata,
             num_rejected_tokens_gpu,
     ):
@@ -1034,7 +1083,7 @@ class EagleProposerPatch(VLLMPatch):
             self.input_batch.target_model_hidden_states_cache[:batch_size] = seleted_hidden_states.view(
                 batch_size, -1, seleted_hidden_states.shape[-1])
 
-            last_token_indices[:] = common_attn_metadata.query_start_loc[1:batch_size + 1] - 1
+            token_indices_to_sample[:] = common_attn_metadata.query_start_loc[1:batch_size + 1] - 1
             if num_rejected_tokens_gpu is not None:
                 target_positions[final_n_token_indices.view(-1)] = torch.where(
                     has_draft_tokens[:, None],

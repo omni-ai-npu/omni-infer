@@ -138,16 +138,16 @@ class InputIdsPiggybackPatch(VLLMPatch):
     _attr_names_to_apply = ["preprocess_chat"]
 
     async def preprocess_chat(
-        self,
-        request: Any,
-        messages: list[Any],
-        default_template: str | None,
-        default_template_content_format: ChatTemplateContentFormatOption,
-        default_template_kwargs: dict[str, Any] | None,
-        tool_dicts: list[dict[str, Any]] | None = None,
-        parser: type[Parser] | None = None,
-        *,
-        skip_mm_cache: bool = False,
+            self,
+            request: Any,
+            messages: list[Any],
+            default_template: str | None,
+            default_template_content_format: ChatTemplateContentFormatOption,
+            default_template_kwargs: dict[str, Any] | None,
+            tool_dicts: list[dict[str, Any]] | None = None,
+            parser: type[Parser] | None = None,
+            *,
+            skip_mm_cache: bool = False,
     ) -> tuple[list[ConversationMessage], list[EngineInput]]:
         enabled = envs.OMNI_PIGGYBACK_INPUT_IDS
         if enabled:
@@ -161,12 +161,12 @@ class InputIdsPiggybackPatch(VLLMPatch):
         caller_ids = _caller_input_ids(request) if enabled else None
 
         is_fast_path_candidate = (
-            caller_ids is not None
-            and parse_chat_messages is not None
-            and resolve_chat_template_content_format is not None
-            and isinstance(request, ChatCompletionRequest)
-            and getattr(request, "truncate_prompt_tokens", None) is None
-            and not _has_multimodal(messages)
+                caller_ids is not None
+                and parse_chat_messages is not None
+                and resolve_chat_template_content_format is not None
+                and isinstance(request, ChatCompletionRequest)
+                and getattr(request, "truncate_prompt_tokens", None) is None
+                and not _has_multimodal(messages)
         )
 
         if is_fast_path_candidate:
@@ -187,7 +187,7 @@ class InputIdsPiggybackPatch(VLLMPatch):
                 tokenizer,
                 model_config=self.model_config,
             )
-            
+
             conversation, mm_data, _mm_uuids = parse_chat_messages(
                 messages, self.model_config, content_format=resolved
             )
@@ -254,15 +254,15 @@ class InputIdsPiggybackPatch(VLLMPatch):
                     tool_parser = parser.tool_parser_cls
                     tool_choice = getattr(request, "tool_choice", "none")
                     is_mistral_grammar_eligible = (
-                        tool_parser is not None
-                        and is_mistral_tool_parser(tool_parser)
-                        and is_mistral_tokenizer(tokenizer)
-                        and getattr(tokenizer, "supports_grammar", False)
+                            tool_parser is not None
+                            and is_mistral_tool_parser(tool_parser)
+                            and is_mistral_tokenizer(tokenizer)
+                            and getattr(tokenizer, "supports_grammar", False)
                     )
                     should_adjust_request = (
-                        parser.reasoning_parser_cls is not None
-                        or tool_choice != "none"
-                        or is_mistral_grammar_eligible
+                            parser.reasoning_parser_cls is not None
+                            or tool_choice != "none"
+                            or is_mistral_grammar_eligible
                     )
                     if should_adjust_request:
                         if not isinstance(request, ChatCompletionRequest | ResponsesRequest):
