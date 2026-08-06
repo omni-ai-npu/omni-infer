@@ -1,311 +1,441 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-# 颜色输出函数
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+set -Eeuo pipefail
+
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
+readonly PYTHON_BIN="${OMNIINFER_PYTHON_BIN:-python3}"
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    readonly RED='\033[0;31m'
+    readonly GREEN='\033[0;32m'
+    readonly YELLOW='\033[1;33m'
+    readonly NC='\033[0m'
+else
+    readonly RED=''
+    readonly GREEN=''
+    readonly YELLOW=''
+    readonly NC=''
+fi
+
 ALL_MODULES=()
+MODULES_TO_BUILD=()
+COMMIT_MODULES=()
+ROOT_PIP_ARGS=()
+
+declare -A COMMIT_OF_MODULE=()
+
 SKIP_PULL=0
 SKIP_INSTALL=0
-
-# 定义各模块所用的git仓库及分支
-declare -A GIT_PATH_OF_MODULE
-GIT_PATH_OF_MODULE["omni-npu"]="-b master https://gitee.com/omniai/omni-npu.git"
-GIT_PATH_OF_MODULE["omni-cache"]="-b master https://gitee.com/omniai/omni-cache.git"
-GIT_PATH_OF_MODULE["omni-eplb"]="-b master https://gitee.com/omniai/omni-eplb.git"
-GIT_PATH_OF_MODULE["omni-proxy"]="-b master https://gitee.com/omniai/omni-proxy.git"
-
-declare -A COMMIT_OF_MODULE
+SKIP_COMPONENTS=0
+SKIP_ROOT=0
+USE_BUILD_ISOLATION=0
+ROOT_BUILD_MODE="wheel"
+ROOT_BUILD_MODE_SET=0
 
 log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
+    printf '%b[INFO]%b %s\n' "${GREEN}" "${NC}" "$*"
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+    printf '%b[WARN]%b %s\n' "${YELLOW}" "${NC}" "$*"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    printf '%b[ERROR]%b %s\n' "${RED}" "${NC}" "$*" >&2
 }
 
-# 统计所有子模块
-read_all_modules(){
-    local project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-    cd $project_root
-    ALL_MODULES=($(grep "\[submodule " .gitmodules | sed 's/.*"components\///; s/"\]//'))
-    log_info "所有子模块: ${ALL_MODULES[*]}"
+die() {
+    log_error "$*"
+    exit 1
 }
 
-# 检查 git 是否安装
-check_git() {
-    if ! command -v git &> /dev/null; then
-        log_error "git 未安装，请先安装 git"
-        exit 1
-    fi
-    local project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-    cd $project_root
-    if [ ! -f ".gitmodules" ]; then
-        log_error ".gitmodules文件不存在"
-        exit 1
-    fi
-}
-
-# 设置子模块的commitid
-set_submodule_commit(){
-    local module_commit=$1 # 格式：模块=commit
-    local module="${module_commit%%=*}"
-    local commit="${module_commit#*=}"
-
-    # 写入commit
-    COMMIT_OF_MODULE["$module"]="$commit"
-}
-
-# 初始化并更新子模块
-init_submodules() {
-    local base_dir="$1"
-    cd $base_dir
-    log_info "---Step1：初始化子模块...---"
-    for mod in "${MODULES_TO_BUILD[@]}"; do
-        if [ -e "components/$mod" ]; then
-            log_warn "路径 components/$mod 存在"
-            cp -f .gitmodules .gitmodules.bak
-            git submodule deinit -f components/$mod || true
-            git rm -f components/$mod || true
-            rm -rf .git/modules/components/$mod
-            rm -rf components/$mod
-            cp -f .gitmodules.bak .gitmodules
-        fi
-        local url=$(git config -f .gitmodules --get "submodule.components/$mod.url" 2>/dev/null)
-        local path=$(git config -f .gitmodules --get "submodule.components/$mod.path" 2>/dev/null)
-        local branch=$(git config -f .gitmodules --get "submodule.components/$mod.branch" 2>/dev/null)
-        log_info "添加 components/$mod, url:$url, path:$path, branch:$branch"
-        git submodule add --force -b $branch $url $path
-    done
-    log_info "初始化子模块..."
-    git submodule init
-    
-    log_info "更新子模块..."
-    git submodule update --recursive --remote
-    
-    if [ $? -ne 0 ]; then
-        log_warn "子模块更新失败，尝试仅同步当前提交..."
-        git submodule update --recursive
-    fi
-
-    for mod in "${MODULES_TO_BUILD[@]}"; do
-        cd $base_dir
-        if [[ -v COMMIT_OF_MODULE["$mod"] ]]; then
-            log_info "子模块${mod}更新到commitid ${COMMIT_OF_MODULE["$mod"]}"
-            cd components/$mod
-            git checkout "${COMMIT_OF_MODULE["$mod"]}"
+join_by() {
+    local delimiter="$1"
+    shift
+    local first=1
+    local value
+    for value in "$@"; do
+        if ((first)); then
+            printf '%s' "${value}"
+            first=0
+        else
+            printf '%s%s' "${delimiter}" "${value}"
         fi
     done
 }
 
-# 递归遍历子模块
-traverse_submodules() {
-    local base_dir="$1"
-    # 获取所有子模块
-    local submodules="${MODULES_TO_BUILD[@]}"
-    
-    # 遍历每个子仓UT测试
-    log_info "---Step2：遍历子模块执行UT测试...---"
-    for submodule in $submodules; do
-        local submodule_path="$base_dir/components/$submodule"
-        
-        if [ -d "$submodule_path" ]; then
-            log_info "开始子模块: $submodule"
-            
-            # 检查并执行UT测试 run_test.sh
-            # check_and_test "$submodule_path"
-            
-        else
-            log_warn "子模块路径不存在: $submodule_path"
-        fi
-    done
-
-    # 遍历每个子仓编译
-    log_info "---Step3：遍历子模块执行编译...---"
-    for submodule in $submodules; do
-        local submodule_path="$base_dir/components/$submodule"
-        
-        if [ -d "$submodule_path" ]; then  #
-            log_info "子模块: $submodule"
-                
-            # 检查并执行 build.sh
-            check_and_build "$submodule_path"
-            
-        else
-            log_warn "子模块路径不存在: $submodule_path"
-        fi
-    done    
+check_repository() {
+    command -v git >/dev/null 2>&1 || die "git 未安装，请先安装 git"
+    [[ -f "${PROJECT_ROOT}/.gitmodules" ]] || die ".gitmodules 文件不存在: ${PROJECT_ROOT}/.gitmodules"
+    git -C "${PROJECT_ROOT}" rev-parse --show-toplevel >/dev/null 2>&1 \
+        || die "项目根目录不是有效的 git 仓库: ${PROJECT_ROOT}"
 }
 
-# 执行UT测试
-# check_and_test() {
-# }
+read_all_modules() {
+    local key
+    local module_path
+    local module
 
-# 检查并执行 build.sh
-check_and_build() {
-    local module_dir="$1"
-    local build_script="$module_dir/build/build.sh"
-  
-    # 检查 build.sh 是否存在
-    if [ -f "$build_script" ]; then
-        log_info "找到 build.sh，开始编译安装: $module_dir"
-        
-        # 进入目录
-        cd "$module_dir"
-        
-        # 给 build.sh 添加执行权限（如果需要）
-        if [ ! -x "$build_script" ]; then
-            chmod +x "$build_script"
+    ALL_MODULES=()
+    while read -r key module_path; do
+        [[ -n "${key}" && "${module_path}" == components/* ]] || continue
+        module="${module_path#components/}"
+        [[ -n "${module}" && "${module}" != */* ]] || continue
+        ALL_MODULES+=("${module}")
+    done < <(
+        git config -f "${PROJECT_ROOT}/.gitmodules" \
+            --get-regexp '^submodule\..*\.path$' 2>/dev/null || true
+    )
+
+    for module in "${ALL_MODULES[@]}"; do
+        if [[ "${module}" == "omni-npu" ]]; then
+            die "omni-npu 已集成到根项目，请先从 .gitmodules 中移除 components/omni-npu"
         fi
-        
-        # 执行编译安装
-        if bash "$build_script"; then
-            log_info "编译安装成功: $module_dir"
-        else
-            log_error "编译安装失败: $module_dir"
-            # 失败1个即退出
-            exit 1
-        fi
-        
-        # 返回原目录
-        cd - > /dev/null
-    else
-        log_error "未找到 build.sh 在: $module_dir/build/"
-        exit 1
-    fi
+    done
 }
 
 show_help() {
-    cat <<EOF
-用法: $0 [-m|--modules <module1,module2,...>]
+    local available_modules="无"
+    if ((${#ALL_MODULES[@]} > 0)); then
+        available_modules="$(join_by ',' "${ALL_MODULES[@]}")"
+    fi
 
-选项:
-  -m, --modules <列表>   指定要编译的模块（以逗号分隔）
-                        若不指定，则编译所有模块。
-                        模块列表"${ALL_MODULES[*]}"
+    cat <<EOF
+用法: $0 [选项] [-- <pip 参数>]
+
+默认行为:
+  更新并构建全部 components 子模块，最后将根项目构建为 wheel，
+  输出到 build/dist。
+
+组件选项:
+  -m, --modules <列表>       指定 components 模块，多个模块以逗号分隔
+  -s, --set <模块=commit>   将指定模块检出到固定 commit；可以重复指定
+  -sp, --skip-pull          不更新子模块，使用本地已有源码
+  --skip-components         不更新也不构建 components，只构建根项目
+
+根项目选项:
+  --wheel                   构建 wheel（默认），输出到 build/dist
+  --editable                以 editable 模式安装根项目
+  --build-isolation         启用 pip 构建隔离；默认使用当前 NPU Python 环境
+  --skip-root               跳过根项目构建
+
+通用选项:
+  -si, --skip-install       跳过所有构建/安装，仅按需更新子模块
+  -h, --help                显示帮助
+  -- <pip 参数>             将剩余参数传递给根项目的 pip 命令
+
+可用组件:
+  ${available_modules}
+
+环境变量:
+  OMNIINFER_PYTHON_BIN      指定 Python 可执行文件，默认 python3
 
 示例:
   $0
-  $0 -m module1,module3
-  $0 --modules module2
+  $0 --editable
+  $0 -m omni-cache,omni-eplb --wheel
+  $0 --skip-pull --editable -- -v
+  $0 --skip-components --wheel
+  $0 --skip-root -m omni-cache
 EOF
 }
 
-validate_modules() {
-    local valid=1
-    for mod in "${MODULES_TO_BUILD[@]}"; do
-        local found=0
-        for avail in "${ALL_MODULES[@]}"; do
-            if [[ "$mod" == "$avail" ]]; then
-                found=1
-                break
-            fi
-        done
-        if [[ $found -eq 0 ]]; then
-            log_error "错误: 未知模块 '$mod'" >&2
-            valid=0
-        fi
+module_is_known() {
+    local target="$1"
+    local module
+    for module in "${ALL_MODULES[@]}"; do
+        [[ "${target}" == "${module}" ]] && return 0
     done
-    if [[ $valid -eq 0 ]]; then
-        exit 1
+    return 1
+}
+
+module_is_selected() {
+    local target="$1"
+    local module
+    for module in "${MODULES_TO_BUILD[@]}"; do
+        [[ "${target}" == "${module}" ]] && return 0
+    done
+    return 1
+}
+
+set_submodule_commit() {
+    local module_commit="$1"
+    local module="${module_commit%%=*}"
+    local commit="${module_commit#*=}"
+
+    [[ -n "${module}" && -n "${commit}" && "${module_commit}" == *=* ]] \
+        || die "--set 参数必须使用非空的 模块=commit 格式"
+    [[ "${module}" =~ ^[[:alnum:]_.-]+$ ]] \
+        || die "--set 中包含非法模块名: ${module}"
+
+    if [[ -z "${COMMIT_OF_MODULE[$module]+configured}" ]]; then
+        COMMIT_MODULES+=("${module}")
     fi
+    COMMIT_OF_MODULE["${module}"]="${commit}"
+}
+
+set_root_build_mode() {
+    local requested_mode="$1"
+    if ((ROOT_BUILD_MODE_SET)) && [[ "${ROOT_BUILD_MODE}" != "${requested_mode}" ]]; then
+        die "--wheel 与 --editable 不能同时使用"
+    fi
+    ROOT_BUILD_MODE="${requested_mode}"
+    ROOT_BUILD_MODE_SET=1
+}
+
+validate_selection() {
+    local module
+
+    for module in "${MODULES_TO_BUILD[@]}"; do
+        [[ -n "${module}" ]] || die "模块列表中不能包含空模块名"
+        module_is_known "${module}" || die "未知模块: ${module}"
+    done
+
+    for module in "${COMMIT_MODULES[@]}"; do
+        module_is_known "${module}" || die "--set 指定了未知模块: ${module}"
+        module_is_selected "${module}" \
+            || die "--set 指定的模块不在本次构建列表中: ${module}"
+    done
 }
 
 parse_args() {
     local modules_str=""
-    while [[ $# -gt 0 ]]; do
+
+    while (($# > 0)); do
         case "$1" in
-            -m|--modules)
-                if [[ -z "$2" || "$2" == -* ]]; then
-                    log_error "错误: 选项 '$1' 需要一个非空参数（模块名，多个用逗号分隔）" >&2
-                    exit 1
-                fi
+            -m | --modules)
+                (($# >= 2)) || die "选项 '$1' 需要模块列表参数"
+                [[ -n "$2" && "$2" != -* ]] || die "选项 '$1' 需要非空模块列表参数"
+                [[ "$2" != ,* && "$2" != *, && "$2" != *,,* ]] \
+                    || die "模块列表不能以逗号开头、结尾或包含连续逗号"
                 modules_str="$2"
                 shift 2
                 ;;
-            -s|--set)
-                if [ -n "$2" ] && [[ $2 == *=* ]]; then
-                    set_submodule_commit "$2"
-                    shift 2
-                else
-                    log_error "--set 参数需要 模块=commit 格式, 如--set omni-proxy=xxxxx"
-                    exit 1
-                fi
+            -s | --set)
+                (($# >= 2)) || die "选项 '$1' 需要 模块=commit 参数"
+                set_submodule_commit "$2"
+                shift 2
                 ;;
-            -sp|--skip-pull)
+            -sp | --skip-pull)
                 SKIP_PULL=1
                 shift
                 ;;
-            -si|--skip-install)
+            -si | --skip-install)
                 SKIP_INSTALL=1
                 shift
                 ;;
-            -h|--help)
+            --skip-components)
+                SKIP_COMPONENTS=1
+                shift
+                ;;
+            --skip-root)
+                SKIP_ROOT=1
+                shift
+                ;;
+            --wheel)
+                set_root_build_mode "wheel"
+                shift
+                ;;
+            --editable)
+                set_root_build_mode "editable"
+                shift
+                ;;
+            --build-isolation)
+                USE_BUILD_ISOLATION=1
+                shift
+                ;;
+            -h | --help)
                 show_help
                 exit 0
                 ;;
+            --)
+                shift
+                ROOT_PIP_ARGS=("$@")
+                break
+                ;;
             *)
-                log_error "未知选项: $1" >&2
-                show_help >&2
-                exit 1
+                die "未知选项: $1（使用 --help 查看帮助）"
                 ;;
         esac
     done
 
-    # 如果指定了模块，按逗号分割；否则返回空数组
-    if [[ -n "$modules_str" ]]; then
-        IFS=',' read -r -a MODULES_TO_BUILD <<< "$modules_str"
+    if [[ -n "${modules_str}" ]]; then
+        IFS=',' read -r -a MODULES_TO_BUILD <<<"${modules_str}"
     else
-        MODULES_TO_BUILD=()
+        MODULES_TO_BUILD=("${ALL_MODULES[@]}")
     fi
 
-    read_all_modules
+    validate_selection
+}
 
-    if [[ ${#MODULES_TO_BUILD[@]} -eq 0 ]]; then
-        log_warn "未指定模块，将编译所有模块。${ALL_MODULES}"
-        MODULES_TO_BUILD=("${ALL_MODULES[@]}")
-    else
-        log_info "将编译以下模块: ${MODULES_TO_BUILD[*]}"
-        validate_modules
+check_root_build_requirements() {
+    [[ -f "${PROJECT_ROOT}/pyproject.toml" ]] \
+        || die "根项目缺少 pyproject.toml"
+    [[ -f "${PROJECT_ROOT}/setup.py" ]] \
+        || die "根项目缺少 setup.py"
+    [[ -f "${PROJECT_ROOT}/omni/__init__.py" ]] \
+        || die "未找到 omni/__init__.py，请先将 omni/src/omni_npu 中的内容迁移到 omni"
+    [[ -n "${ASCEND_TOOLKIT_HOME:-}" ]] \
+        || die "构建根项目需要设置 ASCEND_TOOLKIT_HOME"
+
+    command -v "${PYTHON_BIN}" >/dev/null 2>&1 \
+        || die "找不到 Python 可执行文件: ${PYTHON_BIN}"
+    "${PYTHON_BIN}" -m pip --version >/dev/null 2>&1 \
+        || die "${PYTHON_BIN} 环境中未安装 pip"
+    "${PYTHON_BIN}" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' \
+        || die "omni_infer 需要 Python 3.11 或更高版本"
+
+    if ((USE_BUILD_ISOLATION == 0)); then
+        "${PYTHON_BIN}" -c 'import pybind11, torch' >/dev/null 2>&1 \
+            || die "非隔离构建要求当前 Python 环境已安装 torch 和 pybind11"
     fi
 }
 
-# 主函数
-main() {
+update_components() {
+    local module
+    local module_dir
+    local -a module_paths=()
 
+    ((${#MODULES_TO_BUILD[@]} > 0)) || {
+        log_warn "没有需要更新的 components 模块"
+        return
+    }
+
+    for module in "${MODULES_TO_BUILD[@]}"; do
+        module_paths+=("components/${module}")
+    done
+
+    log_info "同步子模块配置: $(join_by ',' "${MODULES_TO_BUILD[@]}")"
+    git -C "${PROJECT_ROOT}" submodule sync --recursive -- "${module_paths[@]}"
+
+    log_info "初始化并更新子模块"
+    git -C "${PROJECT_ROOT}" submodule update \
+        --init --recursive --remote -- "${module_paths[@]}"
+
+    for module in "${COMMIT_MODULES[@]}"; do
+        module_dir="${PROJECT_ROOT}/components/${module}"
+        log_info "将 ${module} 检出到 commit ${COMMIT_OF_MODULE[$module]}"
+        git -C "${module_dir}" checkout --detach "${COMMIT_OF_MODULE[$module]}"
+    done
+}
+
+build_components() {
+    local module
+    local module_dir
+    local build_script
+
+    ((${#MODULES_TO_BUILD[@]} > 0)) || {
+        log_warn "没有需要构建的 components 模块"
+        return
+    }
+
+    for module in "${MODULES_TO_BUILD[@]}"; do
+        module_dir="${PROJECT_ROOT}/components/${module}"
+        build_script="${module_dir}/build/build.sh"
+
+        [[ -d "${module_dir}" ]] || die "子模块目录不存在: ${module_dir}"
+        [[ -f "${build_script}" ]] || die "未找到子模块构建脚本: ${build_script}"
+
+        log_info "开始构建组件: ${module}"
+        (
+            cd -- "${module_dir}"
+            bash "${build_script}"
+        )
+        log_info "组件构建成功: ${module}"
+    done
+}
+
+build_root_project() {
+    local -a isolation_args=()
+    local -a command=()
+
+    if ((USE_BUILD_ISOLATION == 0)); then
+        isolation_args+=("--no-build-isolation")
+    fi
+
+    case "${ROOT_BUILD_MODE}" in
+        wheel)
+            local dist_dir="${PROJECT_ROOT}/build/dist"
+            mkdir -p -- "${dist_dir}"
+            command=(
+                "${PYTHON_BIN}" -m pip wheel
+                --no-deps
+                --wheel-dir "${dist_dir}"
+                "${isolation_args[@]}"
+                "${ROOT_PIP_ARGS[@]}"
+                "${PROJECT_ROOT}"
+            )
+            log_info "构建 omni_infer wheel，输出目录: ${dist_dir}"
+            "${command[@]}"
+            log_info "omni_infer wheel 构建完成"
+            ;;
+        editable)
+            command=(
+                "${PYTHON_BIN}" -m pip install
+                "${isolation_args[@]}"
+                "${ROOT_PIP_ARGS[@]}"
+                --editable "${PROJECT_ROOT}"
+            )
+            log_info "以 editable 模式安装根项目 omni_infer"
+            "${command[@]}"
+            log_info "omni_infer editable 安装完成"
+            ;;
+        *)
+            die "不支持的根项目构建模式: ${ROOT_BUILD_MODE}"
+            ;;
+    esac
+}
+
+main() {
+    check_repository
+    read_all_modules
     parse_args "$@"
 
-    log_info "开始处理 Omniinfer 子模块UT测试编译安装..."
-    
-    # 检查 git
-    check_git
+    if ((SKIP_INSTALL == 0 && SKIP_ROOT == 0)); then
+        check_root_build_requirements
+    fi
 
-    # 获取项目根目录
-    local project_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-    
-    # 初始化子模块
-    if [[ "$SKIP_PULL" == "0" ]]; then
-        init_submodules "$project_root"
+    if ((SKIP_COMPONENTS)); then
+        log_info "已跳过 components 更新与构建"
+        if ((${#COMMIT_MODULES[@]} > 0)); then
+            log_warn "--skip-components 已启用，--set 参数不会生效"
+        fi
+    else
+        if ((${#MODULES_TO_BUILD[@]} > 0)); then
+            log_info "本次处理组件: $(join_by ',' "${MODULES_TO_BUILD[@]}")"
+        else
+            log_warn ".gitmodules 中没有可处理的 components 模块"
+        fi
+
+        if ((SKIP_PULL)); then
+            log_info "已跳过 components 更新"
+            if ((${#COMMIT_MODULES[@]} > 0)); then
+                log_warn "--skip-pull 已启用，--set 参数不会生效"
+            fi
+        else
+            update_components
+        fi
     fi
-    
-    log_info "项目根目录: $project_root"
-    
-    # 遍历并处理所有子模块
-    if [[ "$SKIP_INSTALL" == "0" ]]; then
-        traverse_submodules "$project_root"
+
+    if ((SKIP_INSTALL)); then
+        log_info "已跳过所有组件构建和根项目构建"
+        return
     fi
-    
-    log_info "${MODULES_TO_BUILD[*]}子模块处理完成！"
+
+    if ((SKIP_COMPONENTS == 0)); then
+        build_components
+    fi
+
+    if ((SKIP_ROOT)); then
+        log_info "已跳过根项目构建"
+    else
+        build_root_project
+    fi
+
+    log_info "构建流程完成"
 }
 
-# 运行主函数
 main "$@"
-
 
