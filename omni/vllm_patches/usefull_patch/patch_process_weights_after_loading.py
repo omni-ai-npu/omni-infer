@@ -2,79 +2,43 @@
 import torch
 from torch import nn
 
-from vllm.model_executor.layers.attention.attention import Attention
-from vllm.model_executor.layers.attention.mla_attention import MLAAttention
 from vllm.config import ModelConfig
-from vllm.logger import init_logger
-from vllm.model_executor.layers.quantization.base_config import (
-    QuantizeMethodBase,
-)
 
 import vllm.model_executor.model_loader.utils as model_loader_utils
 import vllm.model_executor.model_loader.base_loader as base_loader_module
-from vllm.model_executor.layers.fused_moe.runner.moe_runner import MoERunner
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from omni_npu.v1.layers.attention.npu_pangu import NPUPanguSparseAttention
 from omni_npu.layers.mhc.npu_mhc import NPUmHC
 from omni_npu.layers.npu_rms_norm import NPURMSNorm
 
-logger = init_logger(__name__)
+
+_ORIGINAL_PROCESS_WEIGHTS_AFTER_LOADING = (
+    model_loader_utils.process_weights_after_loading
+)
 
 
 def _patched_process_weights_after_loading(
-    model: nn.Module, model_config: ModelConfig, target_device: torch.device
+    model: nn.Module,
+    model_config: ModelConfig,
+    target_device: torch.device,
 ) -> None:
-    if getattr(model, "process_weights_after_loading_already_called", False):
-        # In case `process_weights_after_loading` is called multiple times
-        # we'll skip it at later times
-        logger.debug_once(
-            "process_weights_after_loading already called for model %s", model
-        )
-        return
-
-    # vLLM <0.25 used online_quantization; 0.25+ moved reload metadata
-    # recording into initialize_model() via record_metadata_for_reloading().
-    try:
-        from vllm.model_executor.model_loader.online_quantization import (
-            maybe_save_metadata_and_attributes_for_weight_reloading,
-        )
-
-        maybe_save_metadata_and_attributes_for_weight_reloading(model, model_config)
-    except ModuleNotFoundError:
-        pass
+    _ORIGINAL_PROCESS_WEIGHTS_AFTER_LOADING(
+        model,
+        model_config,
+        target_device,
+    )
 
     for _, module in model.named_modules():
-        if isinstance(module, MoERunner):
-            # Weights are owned by module.routed_experts; processing the
-            # runner again would double-apply transposes/NPU layout casts.
-            continue
-        quant_method = getattr(module, "quant_method", None)
-        if isinstance(quant_method, QuantizeMethodBase):
-            # When quant methods need to process weights after loading
-            # (for repacking, quantizing, etc), they expect parameters
-            # to be on the global target device. This scope is for the
-            # case where cpu offloading is used, where we will move the
-            # parameters onto device for processing and back off after.
-            with model_loader_utils.device_loading_context(module, target_device):
-                quant_method.process_weights_after_loading(module)
-
-    # Initialize post-load attention weights for both Attention and MLA.
-    # NOTE: Happens after other modules so we can easily decompress weights.
-    for _, module in model.named_modules():
-        if isinstance(module, (Attention, MLAAttention)) and hasattr(
-            module, "process_weights_after_loading"
-        ):
-            # TODO(lucas): see if there is a way to unify the signatures
-            # of process_weights_after_loading
-            module.process_weights_after_loading(model_config.dtype)
-
-        if isinstance(module, (NPUPanguSparseAttention, NPUmHC, NPURMSNorm)) and hasattr(
-            module, "process_weights_after_loading"
-        ):
-            # TODO(lucas): see if there is a way to unify the signatures
-            # of process_weights_after_loading
-            module.process_weights_after_loading()
+        if isinstance(
+            module,
+            (NPUPanguSparseAttention, NPUmHC, NPURMSNorm),
+        ) and hasattr(module, "process_weights_after_loading"):
+            with model_loader_utils.device_loading_context(
+                module,
+                target_device,
+            ):
+                module.process_weights_after_loading()
 
 
 @register_patch("PanguV2MoeProcessWeightsUtilsPatch", model_loader_utils)
