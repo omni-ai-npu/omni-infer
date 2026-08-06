@@ -9,18 +9,15 @@ Add new KV cache spec classes for Pangu V2 hybrid attention:
 - MomeSpec: Mamba-like state management
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import prod
 
 from vllm.v1 import kv_cache_interface
 from vllm.v1.kv_cache_interface import (
-    ChunkedLocalAttentionSpec,
-    CrossAttentionSpec,
     FullAttentionSpec,
     KVCacheSpec,
     MambaSpec,
     SlidingWindowSpec,
-    UniformTypeKVCacheSpecs,
 )
 from vllm.utils.math_utils import cdiv
 from vllm.utils.torch_utils import get_dtype_size
@@ -73,17 +70,15 @@ class DSAAttentionSpec(FullAttentionSpec):
             "All attention layers in the same KV cache group must use the same "
             "quantization method."
         )
-        merged_spec = cls(
-            block_size=specs[0].block_size,
-            num_kv_heads=specs[0].num_kv_heads,
-            head_size=specs[0].head_size,
-            dtype=specs[0].dtype,
-            page_size_padded=specs[0].page_size_padded,
-            cache_dtype_str=cache_dtype_str_set.pop(),
+        cache_dtype_str = next(iter(cache_dtype_str_set))
+        merged_spec = super().merge(specs)
+        return replace(
+            merged_spec,
+            cache_dtype_str=cache_dtype_str,
         )
-        return merged_spec
 
     def __post_init__(self):
+        super().__post_init__()
         assert self.sliding_window is None, (
             "For DSAAttentionSpec, sliding window should not be enabled, "
             f"but got {self.sliding_window}."
@@ -116,6 +111,7 @@ class ShareKVSlidingWindowSpec(SlidingWindowSpec):
         )
 
     def __post_init__(self):
+        super().__post_init__()
         assert self.num_kv_heads == 1, (
             f"Only support single KV head, but got {self.num_kv_heads}."
         )
@@ -155,6 +151,15 @@ class MomeSpec(MambaSpec):
         max_model_len = vllm_config.model_config.max_model_len
         return cdiv(max_model_len, self.block_size) * self.page_size_bytes
 
+    def is_uniform_with_collection(
+        self, kv_cache_specs: dict[str, KVCacheSpec]
+    ) -> bool:
+        return all(
+            isinstance(spec, MomeSpec)
+            and spec.num_total_tokens == self.num_total_tokens
+            for spec in kv_cache_specs.values()
+        )
+
     def __post_init__(self):
         if len(self.shapes) != 3:
             raise ValueError(
@@ -168,61 +173,6 @@ class MomeSpec(MambaSpec):
             raise ValueError(
                 "Mome should have positive kernel_size, "
                 f"but got {self.kernel_size}."
-            )
-
-
-@register_patch("UniformTypeKVCacheSpecsPatch", UniformTypeKVCacheSpecs)
-class UniformTypeKVCacheSpecsPatch(VLLMPatch):
-    """Patch to add MomeSpec support to is_uniform_type method"""
-
-    _attr_names_to_apply = ["is_uniform_type"]
-
-    @classmethod
-    def is_uniform_type(cls, kv_cache_specs: dict[str, KVCacheSpec]) -> bool:
-        """
-        Whether all layers have the same type of KV cache spec.
-        """
-        block_sizes = set(spec.block_size for spec in kv_cache_specs.values())
-        if len(block_sizes) > 1:
-            # Different block sizes, not uniform.
-            return False
-        one_spec = next(iter(kv_cache_specs.values()))
-        if isinstance(one_spec, FullAttentionSpec):
-            return all(
-                isinstance(spec, FullAttentionSpec) for spec in kv_cache_specs.values()
-            )
-        elif isinstance(one_spec, CrossAttentionSpec):
-            return all(
-                isinstance(spec, CrossAttentionSpec) for spec in kv_cache_specs.values()
-            )
-        elif isinstance(one_spec, SlidingWindowSpec):
-            return all(
-                isinstance(spec, SlidingWindowSpec)
-                and spec.sliding_window == one_spec.sliding_window
-                for spec in kv_cache_specs.values()
-            )
-        elif isinstance(one_spec, ChunkedLocalAttentionSpec):
-            return all(
-                isinstance(spec, ChunkedLocalAttentionSpec)
-                and spec.attention_chunk_size == one_spec.attention_chunk_size
-                for spec in kv_cache_specs.values()
-            )
-        elif isinstance(one_spec, MomeSpec):
-            return all(
-                isinstance(spec, MomeSpec)
-                and spec.num_total_tokens == one_spec.num_total_tokens
-                for spec in kv_cache_specs.values()
-            )
-        elif isinstance(one_spec, MambaSpec):
-            return all(
-                isinstance(spec, MambaSpec)
-                and spec.num_speculative_blocks == one_spec.num_speculative_blocks
-                for spec in kv_cache_specs.values()
-            )
-        else:
-            # NOTE(Chen): Please add new branches for new KV cache spec types.
-            raise NotImplementedError(
-                f"Unsupported KV cache spec type: {type(one_spec)}"
             )
 
 
