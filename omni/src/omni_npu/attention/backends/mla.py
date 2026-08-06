@@ -22,7 +22,8 @@ from vllm.v1.attention.backend import (
     AttentionLayer,
     AttentionType,
     AttentionCGSupport,
-    CommonAttentionMetadata
+    CommonAttentionMetadata,
+    MLAAttentionImpl,
 )
 from vllm.model_executor.layers.attention.mla_attention import (
     MLACommonBackend,
@@ -31,12 +32,6 @@ from vllm.model_executor.layers.attention.mla_attention import (
     MLACommonMetadataBuilder,
     MLACommonPrefillMetadata,
     QueryLenSupport,
-)
-from vllm.v1.attention.backend import (
-    AttentionBackend,  # type: ignore
-    AttentionCGSupport,
-    MLAAttentionImpl
-
 )
 from vllm.v1.attention.backends.utils import (
     get_dcp_local_seq_lens,
@@ -74,7 +69,7 @@ NPUMLA = "NPUMLA"
 
 
 @register_attention_backend(NPUMLA)
-class NPUMLABackend(AttentionBackend):
+class NPUMLABackend(MLACommonBackend):
     @staticmethod
     def get_name() -> str:
         return NPUMLA
@@ -86,20 +81,6 @@ class NPUMLABackend(AttentionBackend):
     @staticmethod
     def get_impl_cls() -> type["NPUMLAImpl"]:
         return NPUMLAImpl
-
-    @staticmethod
-    def get_kv_cache_shape(
-        num_blocks: int,
-        block_size: int,
-        num_kv_heads: int,  # assumed to be 1 for MLA
-        head_size: int,
-        cache_dtype_str: str = "auto",
-    ) -> tuple[int, ...]:
-        return (num_blocks, block_size, head_size)
-
-    @classmethod
-    def is_mla(cls) -> bool:
-        return True
 
     @classmethod
     def indexes_kv_by_block_stride(cls) -> bool:
@@ -264,23 +245,22 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
 
         prefill_metadata = None
         if num_prefills > 0:
-            reqs_start = num_decodes  # prefill_start
-
-            # vLLM 0.25.1 provides a CPU upper bound that is exact for
-            # prefill rows. Prefer it over the deprecated ``seq_lens_cpu``
-            # property, which may introduce a device-to-host synchronization.
+            # MLA_SYNC_FIX[1/4]: reuse existing CPU data instead of
+            # compute_num_computed_tokens().cpu(), which triggers a GPU->CPU sync.
+            query_lens_cpu = (
+                common_attn_metadata.query_start_loc_cpu[1:]
+                - common_attn_metadata.query_start_loc_cpu[:-1]
+            )
             seq_lens_cpu = common_attn_metadata.seq_lens_cpu_upper_bound
             if seq_lens_cpu is None:
-                # Keep compatibility with unit tests and callers that do not
-                # populate the 0.25.1 upper-bound buffer.
                 seq_lens_cpu = common_attn_metadata.seq_lens_cpu
-            prefill_query_lens_cpu = (
-                query_start_loc_cpu[reqs_start + 1 : num_reqs + 1]
-                - query_start_loc_cpu[reqs_start:num_reqs]
+            num_computed_tokens_cpu = (
+                seq_lens_cpu - query_lens_cpu
             )
-            context_lens_cpu = (
-                seq_lens_cpu[reqs_start:num_reqs] - prefill_query_lens_cpu
-            )
+
+            reqs_start = num_decodes  # prefill_start
+
+            context_lens_cpu = num_computed_tokens_cpu[reqs_start:num_reqs]
             max_context_len_cpu = context_lens_cpu.max().item()
             num_prefills_with_context_cpu = (context_lens_cpu > 0).sum().item()
             prefill_query_start_loc = (

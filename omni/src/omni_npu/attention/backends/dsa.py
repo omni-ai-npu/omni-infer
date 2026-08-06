@@ -112,7 +112,7 @@ class NPUDSABackend(AttentionBackend):
             dtypes = (torch.bfloat16, torch.int8, torch.float16)
         else:
             shapes = ((576,), (128,))
-            dtypes = (kv_cache_spec.dtype, kv_cache_spec.dtype)
+            dtypes = (model_extra_config.dtype, model_extra_config.dtype)
 
         return _maybe_padded_raw_tensor_to_strided_caches(
             raw_tensor,
