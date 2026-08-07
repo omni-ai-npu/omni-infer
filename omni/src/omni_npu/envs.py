@@ -219,8 +219,9 @@ env_variables: Dict[str, Callable[[], Any]] = {
 
     # =========================================================================
     # Profiler (two INDEPENDENT mechanisms)
-    #   A) worker-side NPU profiler (the four *TOKEN/STOP/PREFILL/SKIP* vars),
-    #      requires VLLM_TORCH_PROFILER_DIR (vLLM native) to be set.
+    #   A) worker-side NPU profiler:
+    #      - manual: unset PROFILER_TOKEN_THRESHOLD, use /start_profile API
+    #      - auto: set PROFILER_TOKEN_THRESHOLD + other OMNI env vars below
     #   B) omni-trace dynamic wrapper (the *NAMELIST* var), independent of (A).
     # =========================================================================
 
@@ -234,15 +235,14 @@ env_variables: Dict[str, Callable[[], Any]] = {
     "OMNI_PROFILE_NAMELIST":
     lambda: get_env_with_fallback("OMNI_PROFILE_NAMELIST", ["PROFILING_NAMELIST"], None),
 
-    # Mechanism A (worker profiler): token-count trigger threshold. Non-None
-    # enables "trigger-by-token-count" mode AND disables vLLM's native
-    # profile() API (npu_worker.py:283-285 short-circuits). Prefill batches
-    # trigger only when prefill profiling is enabled and their token count
-    # exceeds the threshold; decode batches trigger when their token count
-    # reaches the threshold (npu_worker.py:325-354).
+    # Mechanism A (auto mode only): token-count trigger threshold. Non-None
+    # enables auto profiling AND disables vLLM's manual profile() API.
+    # Prefill batches trigger only when prefill profiling is enabled and their
+    # token count exceeds the threshold; decode batches trigger when their token
+    # count reaches the threshold (npu_worker.py execute_model).
     # Note: value 0 makes decode trigger impossible (num_tokens is never 0
-    # on a real decode step), so use None to disable and >=1 to enable.
-    # Requires VLLM_TORCH_PROFILER_DIR; otherwise _init_profiler returns None.
+    # on a real decode step), so use >=1.
+    # Requires --profiler-config.profiler=torch.
     "OMNI_PROFILE_TOKEN_THRESHOLD":
     lambda: get_env_with_fallback(
         "OMNI_PROFILE_TOKEN_THRESHOLD", ["PROFILER_TOKEN_THRESHOLD"], None, _as_int),
