@@ -12,7 +12,6 @@ from types import NoneType
 import torch
 import torch_npu
 
-import vllm.envs as envs
 from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.logger import init_logger
 from vllm.v1.worker.utils import request_memory
@@ -54,14 +53,10 @@ from omni_npu.compilation.acl_graph import (
     set_aclgraph_recapture,
 )
 from omni_npu.v1.utils import on_ascend950, switch_torch_device
+from omni_npu.profiler.wrapper import NpuProfilerWrapper
 import omni_npu.envs as omni_envs
 
 logger = init_logger(__name__)
-
-
-def _env_to_bool(value) -> bool:
-    """Interpret "1"/"true" (case-insensitive) as True, anything else as False."""
-    return str(value).strip().lower() in ("1", "true")
 
 
 @dataclass
@@ -119,7 +114,7 @@ class NPUWorker(Worker):
             raise ValueError(f"Expected device_type 'npu', got '{device_config.device_type}'")
         if current_platform.device_type != "npu":
             raise ValueError(f"Expected platform device_type 'npu', got '{current_platform.device_type}'")
-        self.profiler = None
+
         current_platform.pre_register_and_update()
 
     @instrument(span_name="Init device")
@@ -244,8 +239,9 @@ class NPUWorker(Worker):
         if self.rank == 0:
             report_usage_stats(self.vllm_config)
 
-        # TODO: profiler feature need to adapt vllm 0.25.1
-        # self.profiler = self._init_profiler()
+        if self._is_auto_profiler_mode():
+            self._init_token_profiler_state()
+            self._init_profiler()
 
         # TODO: eplb feature need to adapt vllm 0.25.1
         # from omni_placement.utils import _init_omni_eplb_configs
@@ -309,15 +305,75 @@ class NPUWorker(Worker):
         )
         return max(available, 0)
 
-    def profile(self, is_start: bool = True):
+    def _is_auto_profiler_mode(self) -> bool:
+        return (
+            self.profiler_config.profiler == "torch"
+            and omni_envs.OMNI_PROFILE_TOKEN_THRESHOLD is not None and omni_envs.OMNI_PROFILE_TOKEN_THRESHOLD > 0
+        )
+
+    def _init_token_profiler_state(self) -> None:
+        """State for auto profiling when PROFILER_TOKEN_THRESHOLD is set."""
+        self.profile_already_start = False
+        self.profile_step = 0
+        self.profile_finished = False
+        self._requests_seen = 0
+
+        _token_thr = omni_envs.OMNI_PROFILE_TOKEN_THRESHOLD
+        self.profiler_token_threshold = (
+            _token_thr if _token_thr is not None else 1
+        )
+        self.profiler_stop_step = omni_envs.OMNI_PROFILE_STOP_STEP
+        self.enable_prefill_profiler = omni_envs.OMNI_ENABLE_PREFILL_PROFILER
+        self.profiler_skip_requests = omni_envs.OMNI_PROFILE_SKIP_REQUESTS
+
+    def _init_profiler(self, profile_prefix: str | None = None) -> None:
         if self.profiler is None:
-            raise RuntimeError("Profiler is not enabled.")
-        if getattr(self, '_use_token_for_profile', False):
-            logger.info("origin profiler is disabled because PROFILER_TOKEN_THRESHOLD is set.")
-            return
+            # Generate the trace name by combining prefix with comprehensive rank suffix
+            from vllm.distributed.utils import get_worker_rank_suffix
+
+            rank_suffix = get_worker_rank_suffix(global_rank=self.rank)
+
+            # Build the full trace name
+            if profile_prefix:
+                trace_name = f"{profile_prefix}_{rank_suffix}"
+            else:
+                trace_name = rank_suffix
+
+            profiler_type = self.profiler_config.profiler
+            if profiler_type == "torch":
+                self.profiler = NpuProfilerWrapper(
+                    self.profiler_config,
+                    worker_name=trace_name,
+                    local_rank=self.local_rank,
+                )
+                logger.info(
+                    "Starting torch profiler with trace name: %s", trace_name
+                )
+            else:
+                # Config validation should prevent this code being reached
+                raise ValueError(
+                    f"Invalid profiler value of {self.profiler_config.profiler}"
+                )
+
+    def profile(self, is_start: bool = True, profile_prefix: str | None = None):
+        # Check if profiling is enabled
+        if self.profiler_config is None or self.profiler_config.profiler is None:
+            raise RuntimeError(
+                "Profiling is not enabled. Please set --profiler-config to enable "
+                "profiling. Example: "
+                "'--profiler-config.profiler=torch --profiler-config.torch_profiler_dir"
+                "=YOUR_DIR_PATH_TO_DUMP_TRACE'"
+            )
+
         if is_start:
+            self._init_profiler(profile_prefix)
+            # If profiler already initialized, restart profiling but keep
+            # the original trace name from the first initialization.
             self.profiler.start()
         else:
+            if self.profiler is None:
+                logger.warning("Profiler was not started, nothing to stop.")
+                return
             self.profiler.stop()
 
     def compile_or_warm_up_model(self) -> CompilationTimes:
@@ -362,7 +418,7 @@ class NPUWorker(Worker):
         self,
         scheduler_output: "SchedulerOutput",  # type: ignore[name-defined]
     ) -> Optional[Union[ModelRunnerOutput, AsyncModelRunnerOutput]]:
-        if self.profiler is not None and self._use_token_for_profile:
+        if self._is_auto_profiler_mode():
             new_reqs = getattr(scheduler_output, "scheduled_new_reqs", None) or []
             if len(new_reqs) > 0 and not self.profile_already_start:
                 self._requests_seen += len(new_reqs)
@@ -417,59 +473,13 @@ class NPUWorker(Worker):
                 all_gather_tensors={"hidden_states": False, "residual": False},
             )
             res = None
-        if self.profiler is not None and self._use_token_for_profile:
+        if self._is_auto_profiler_mode():
             if self.profile_already_start and not self.profile_finished:
                 self.profile_step += 1
             if not self.profile_finished and self.profile_step > self.profiler_stop_step:
                 self.profiler.stop()
                 self.profile_finished = True
         return res
-
-    def _init_profiler(self):
-        # Torch profiler. Enabled and configured through env vars:
-        # VLLM_TORCH_PROFILER_DIR=/path/to/save/trace
-        self.profile_already_start = False
-        self.profile_step = 0
-        self.profile_finished = False
-        self._requests_seen = 0
-        self._use_token_for_profile = (
-            omni_envs.OMNI_PROFILE_TOKEN_THRESHOLD is not None
-        )
-
-        if self.profiler is not None:
-            _token_thr = omni_envs.OMNI_PROFILE_TOKEN_THRESHOLD
-            self.profiler_token_threshold = (
-                _token_thr if _token_thr is not None else 1
-            )
-            self.profiler_stop_step = omni_envs.OMNI_PROFILE_STOP_STEP
-            self.enable_prefill_profiler = (
-                omni_envs.OMNI_ENABLE_PREFILL_PROFILER
-            )
-            self.profiler_skip_requests = omni_envs.OMNI_PROFILE_SKIP_REQUESTS
-            torch_profiler_trace_dir = envs.VLLM_TORCH_PROFILER_DIR
-            logger.info("Profiling enabled. Traces will be saved to: %s",
-                        torch_profiler_trace_dir)
-
-            experimental_config = torch_npu.profiler._ExperimentalConfig(
-                aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
-                profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
-            )
-            self.profile_already_start = False
-            self.profile_finished = False
-            return torch_npu.profiler.profile(
-                activities=[
-                    torch_npu.profiler.ProfilerActivity.CPU,
-                    torch_npu.profiler.ProfilerActivity.NPU,
-                ],
-                record_shapes=_env_to_bool(envs.VLLM_TORCH_PROFILER_RECORD_SHAPES),
-                profile_memory=_env_to_bool(envs.VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY),
-                with_stack=_env_to_bool(envs.VLLM_TORCH_PROFILER_WITH_STACK),
-                with_flops=_env_to_bool(envs.VLLM_TORCH_PROFILER_WITH_FLOPS),
-                experimental_config=experimental_config,
-                on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(
-                    torch_profiler_trace_dir))
-        else:
-            return None
 
     def sleep(self, level: int = 1) -> None:
         if self.is_full_async_rl:

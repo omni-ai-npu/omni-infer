@@ -58,6 +58,10 @@ class NPUPanguMomeBackend(AttentionBackend):
         return NPUAttentionBackendImpl
 
     @classmethod
+    def is_ssm(cls) -> bool:
+        return True
+
+    @classmethod
     def indexes_kv_by_block_stride(cls) -> bool:
         return True
 
@@ -364,7 +368,10 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         fc2_metadata.rearrange_ratio = rearrange_ratio
         fc2_metadata.cache_indices_rearranged = cache_indices_rearranged
 
-    def build(
+    # vLLM uses isinstance(builder, GDNAttentionMetadataBuilder) to decide
+    # whether to pass speculative-decoding metadata. MoME participates in that
+    # builder protocol but intentionally produces its own metadata type.
+    def build(  # type: ignore[override]
         self,
         common_prefix_len: int,
         common_attn_metadata: CommonAttentionMetadata,
