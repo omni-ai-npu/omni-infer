@@ -17,14 +17,19 @@
 # ==============================================================================
 
 """
-Generate endpoint configuration files from HCCL topology, rootinfo, and route.conf.
+Generate endpoint configuration files from HCCL topology and rootinfo.
 
 Input files (supports POD and SERVER topologies):
 - hccl_rootinfo.json (contains topo_file_path reference)
 - atlas_xxx.json (topology file)
-- route.conf (CPU-device pair EID mappings)
 
-Output files: ub_endpoint_npu_*.json (one file per NPU device_id)
+Output files: ub_endpoint_npu_<device_id>.json (one file per NPU device_id).
+The name uses device_id so it matches the lookup done by the consumer side
+(omni_npu DatadistEngine._get_cluster_device_id), while topology edges are
+looked up by local_id. The two differ on any machine placed in a pod.
+
+Output directory: $HIXLP_ENDPOINT_PATH, defaulting to /etc/hixlep. The consumer
+reads the same variable, so one setting keeps writer and reader in sync.
 
 CLI Arguments:
 - --local, -l: Use local testing paths (default, supports --pod or --server modes)
@@ -33,61 +38,23 @@ CLI Arguments:
 - --dry-run, -n: Parse files but do not write output
 - --rootinfo-path: Path to hccl_rootinfo.json file (only valid with --local)
 - --topo-path: Path to topology JSON file (only valid with --local)
-- --route-path: Path to route.conf file (only valid with --local)
 
 Example topologies:
 - POD mode: 1D PoD topology with devices 8-15
 - SERVER mode: 0+8 server topology with devices 0-7
 
 Example usage:
-python generate_endpoint_configs.py --local --pod
-python generate_endpoint_configs.py --local --server
-python generate_endpoint_configs.py --local --pod --rootinfo-path pod06_cpu5/hccl_rootinfo.json
-     --topo-path pod06_cpu5/atlas_950_1.json --route-path pod06_cpu5/route.conf
-python generate_endpoint_configs.py --local --server --rootinfo-path server/hccl_rootinfo_08server.json
-     --topo-path server/atlas_850_1.json --route-path server/route.conf
+python generate_ep_server_pod.py --pod
+python generate_ep_server_pod.py --local --pod
+python generate_ep_server_pod.py --local --pod --rootinfo-path pod06_cpu5/hccl_rootinfo.json
+     --topo-path pod06_cpu5/atlas_950_1.json
 """
 import argparse
 import json
+import os
+import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
-
-
-def parse_route_conf(route_conf_path: Path) -> Dict[int, Dict[str, str]]:
-    """
-    Parse route.conf file to extract device-to-EID mappings.
-
-    Returns: {device_id: {'local_eid': '...', 'remote_eid': '...'}}
-    """
-    pairs = {}
-    current_device_id = None
-    current_pair = {}
-
-    with open(route_conf_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-
-            if '_dev_id=' in line:
-                # Extract device_id: pairX_dev_id=32 -> device_id=32
-                parts = line.split('=')
-                current_device_id = int(parts[1])
-                current_pair = {'dev_id': current_device_id, 'local_eid': None, 'remote_eid': None}
-                pairs[current_device_id] = current_pair
-                print(f"current_device_local_id: {current_device_id}")
-            elif '_local_eid=' in line:
-                # Extract local EID: pairX_chan0_local_eid=0x...
-                eid = line.split('=')[1].strip().replace('0x', '')
-                if current_device_id is not None:
-                    current_pair['local_eid'] = eid
-            elif '_remote_eid=' in line:
-                # Extract remote EID: pairX_chan0_remote_eid=0x...
-                eid = line.split('=')[1].strip().replace('0x', '')
-                if current_device_id is not None:
-                    current_pair['remote_eid'] = eid
-
-    return pairs
+from typing import Dict, List
 
 
 def build_eid_to_device_map(hccl_rootinfo: Dict) -> Dict[str, int]:
@@ -113,15 +80,6 @@ def build_device_id_to_local_id_map(hccl_rootinfo: Dict) -> Dict[int, int]:
     Returns: {device_id: local_id}
     """
     return {rank['device_id']: rank['local_id'] for rank in hccl_rootinfo.get('rank_list', [])}
-
-
-def build_local_id_to_device_id_map(hccl_rootinfo: Dict) -> Dict[int, int]:
-    """
-    Build mapping from local_id to device_id using hccl_rootinfo.
-
-    Returns: {local_id: device_id}
-    """
-    return {rank['local_id']: rank['device_id'] for rank in hccl_rootinfo.get('rank_list', [])}
 
 
 def find_peer_eid_from_1dmesh(
@@ -243,32 +201,6 @@ def get_protocol_from_eid(
     return 'ub_ctp'
 
 
-def get_h2d_plane_id(device_id: int, rootinfo: Dict, mode: str) -> str:
-    """
-    Find the host endpoint and return its plane_id.
-
-    POD mode: H2D has 6 ports (1DPoD topology)
-    SERVER mode: H2D has 8 ports (0+8 server topology) or 4 ports (2+4 topo)
-
-    Args:
-        device_id: The NPU device ID (e.g., 32, 33, 34, etc.)
-        rootinfo: Parsed hccl_rootinfo.json data
-        mode: Topology mode ('pod' or 'server')
-
-    Returns:
-        The plane_id from the H2D endpoint, or 'plane_x' if not found
-    """
-    port_count = 4 if mode == 'server' else 6
-    for rank in rootinfo.get('rank_list', []):
-        if rank['device_id'] == device_id:
-            for level in rank.get('level_list', []):
-                if level.get('net_layer') == 1:  # CLOS layer
-                    for addr_entry in level.get('rank_addr_list', []):
-                        if len(addr_entry.get('ports', [])) >= port_count:
-                            return addr_entry.get('plane_id', 'plane_x')
-    return 'plane_x'
-
-
 def generate_endpoint_list(
         local_id: int,
         device_info: Dict,
@@ -337,7 +269,7 @@ def generate_endpoint_list(
 if __name__ == "__main__":
     """Main entry point for endpoint config generation."""
     parser = argparse.ArgumentParser(
-        description="Generate NPU endpoint configuration files from HCCL topology and route.conf."
+        description="Generate NPU endpoint configuration files from HCCL topology and rootinfo."
     )
     parser.add_argument("--local", "-l", action="store_true", default=False,
                         help="Use local testing paths (supports --pod or --server modes)")
@@ -351,8 +283,6 @@ if __name__ == "__main__":
                         help="Path to hccl_rootinfo.json file (only valid with --local)")
     parser.add_argument("--topo-path", type=str, default=None,
                         help="Path to topology JSON file (only valid with --local)")
-    parser.add_argument("--route-path", type=str, default=None,
-                        help="Path to route.conf file (only valid with --local)")
 
     args = parser.parse_args()
 
@@ -365,27 +295,19 @@ if __name__ == "__main__":
         if mode == 'pod':
             args.rootinfo_path = "./pod/hccl_rootinfo.json"
             args.topo_path = "./pod/atlas_950_1.json"
-            args.route_path = "./pod/route.conf"
         else:  # server mode
             args.rootinfo_path = "./server/hccl_rootinfo_08server.json"
             args.topo_path = "./server/atlas_850_1.json"
-            args.route_path = "./server/route.conf"
 
     mode_str = f"local {mode}" if use_local else "production"
     print(f"Running in {mode_str} mode")
 
-    # Production mode: use /etc and /lib paths (same for both modes)
+    # Production mode: use /etc paths (same for both modes)
     if not use_local:
         args.rootinfo_path = "/etc/hccl_rootinfo.json"
-        args.route_path = "/lib/route.conf"
 
     if args.dry_run:
         print("Dry run mode: parsing only, no output files will be written")
-
-    # Parse route.conf
-    print(f"Loading: {args.route_path}")
-    route_pairs = parse_route_conf(args.route_path)
-    print(f"Found {len(route_pairs)} device pairs (local_id: {sorted(route_pairs.keys())})")
 
     # Load hccl_rootinfo.json
     print(f"Loading: {args.rootinfo_path}")
@@ -400,19 +322,24 @@ if __name__ == "__main__":
     with open(args.topo_path) as f:
         topo_data = json.load(f)
 
-    # Build local_id to device_id mapping (route.conf uses local_id, hccl_rootinfo uses device_id)
-    local_id_to_device_id = build_local_id_to_device_id_map(hccl_rootinfo)
-    print(f"Built local_id to device_id mapping: {local_id_to_device_id}")
+    # Files are named by device_id (what the consumer looks up), topology edges are keyed by
+    # local_id. The two are equal only on machines that are not placed in a pod.
+    device_id_to_local_id = build_device_id_to_local_id_map(hccl_rootinfo)
+    print(f"Built device_id to local_id mapping: {device_id_to_local_id}")
+
+    if not device_id_to_local_id:
+        print(f"Error: rank_list in {args.rootinfo_path} is empty, no device to generate for",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # The consumer reads the same variable, so one setting keeps writer and reader in sync
+    output_dir = Path("./hixlep") if use_local else Path(os.getenv("HIXLP_ENDPOINT_PATH", "/etc/hixlep"))
+    if not args.dry_run:
+        output_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate endpoint files for each device
-    print(f"Generating endpoints for {len(route_pairs)} NPUs...")
-    for local_id, route_pair_info in route_pairs.items():
-        # route.conf uses local_id (named dev_id), convert to device_id for hccl_rootinfo lookup
-        device_id = local_id_to_device_id.get(local_id)
-        if device_id is None:
-            print(f"Warning: device_id not found for local_id {local_id}")
-            continue
-
+    print(f"Generating endpoints for {len(device_id_to_local_id)} NPUs into {output_dir}...")
+    for device_id, local_id in sorted(device_id_to_local_id.items()):
         # Find device info in hccl_rootinfo by device_id
         device_info = None
         for rank in hccl_rootinfo.get('rank_list', []):
@@ -421,42 +348,19 @@ if __name__ == "__main__":
                 break
 
         if not device_info:
-            print(f"Warning: device_id {device_id} not found in hccl_rootinfo")
-            continue
+            print(f"Error: device_id {device_id} not found in hccl_rootinfo", file=sys.stderr)
+            sys.exit(1)
 
         # Generate endpoint list using local_id for topology edge lookups
         endpoint_list = generate_endpoint_list(
             local_id, device_info, topo_data, hccl_rootinfo
         )
 
-        # Add CPU host endpoint from route.conf
-        if 'local_eid' in route_pair_info:
-            h2d_plane_id = get_h2d_plane_id(device_id, hccl_rootinfo, mode)
-            h2d_device_eid = route_pair_info['remote_eid']
-            if h2d_plane_id == 'plane_x':
-                print(f"Warning: host plane not found in hccl_rootinfo")
-                ub_host_endpoint = {
-                    "protocol": "ub_ctp",
-                    "comm_id": route_pair_info['local_eid'],
-                    "placement": "host",
-                    "dst_eid": "None"
-                }
-            else:
-                ub_host_endpoint = {
-                    "protocol": "ub_ctp",
-                    "comm_id": route_pair_info['local_eid'],
-                    "placement": "host",
-                    "plane": h2d_plane_id
-                }
-            ub_host_endpoint_d = {
-                "protocol": "ub_ctp",
-                "comm_id": route_pair_info['local_eid'],
-                "placement": "host",
-                "dst_eid": h2d_device_eid
-            }
-            # Insert host endpoint at the end
-            # endpoint_list.append(ub_host_endpoint_d)
-            # endpoint_list.append(ub_host_endpoint)
+        # An empty list would link to nothing, so fail instead of writing a useless file
+        if not endpoint_list:
+            print(f"Error: no endpoint resolved for device_id {device_id} (local_id {local_id}); "
+                  f"check that {args.topo_path} covers this device", file=sys.stderr)
+            sys.exit(1)
 
         net_instance_id = next(
             (item.get('net_instance_id')
@@ -464,25 +368,28 @@ if __name__ == "__main__":
              if item.get('net_layer') == 1),
             None  # 默认值：没找到就返回 None
         )
+        if net_instance_id is None:
+            print(f"Warning: device_id {device_id} has no net_layer 1 (CLOS) entry, "
+                  f"net_instance_id will be null")
+
         output = {
             "version": "1.3",
             "net_instance_id": net_instance_id,
             "endpoint_list": endpoint_list
         }
 
-        if use_local:
-            output_path = Path(f"./hixlep/ub_endpoint_npu_{local_id}.json")
-        else:
-            output_path = Path(f"/etc/hixlep/ub_endpoint_npu_{local_id}.json")
+        output_path = output_dir / f"ub_endpoint_npu_{device_id}.json"
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if not args.dry_run:
-            with open(output_path, "w", encoding='utf-8') as f:
-                json.dump(output, f, indent=2)
-            print(f"Generated: {output_path}")
-        else:
+        if args.dry_run:
             print(f"[Dry run] Would generate: {output_path}")
+            continue
 
-    print(
-        f"{'Dry run: Would generate' if args.dry_run else 'Generated'} {len(route_pairs)} endpoint configuration files.")
+        # Write then rename, so a concurrent reader never sees a half-written file
+        tmp_path = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
+        with open(tmp_path, "w", encoding='utf-8') as f:
+            json.dump(output, f, indent=2)
+        os.replace(tmp_path, output_path)
+        print(f"Generated: {output_path}")
+
+    print(f"{'Dry run: Would generate' if args.dry_run else 'Generated'} "
+          f"{len(device_id_to_local_id)} endpoint configuration files.")
