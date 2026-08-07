@@ -1,0 +1,38 @@
+diff --git a/tests/v1/kv_connector/unit/test_remote_decode_lifecycle.py b/tests/v1/kv_connector/unit/test_remote_decode_lifecycle.py
+index b2ec2ddfb..be2c43ce0 100644
+--- a/tests/v1/kv_connector/unit/test_remote_decode_lifecycle.py
++++ b/tests/v1/kv_connector/unit/test_remote_decode_lifecycle.py
+@@ -15,6 +15,9 @@ from .utils import (
+     create_vllm_config,
+ )
+ 
++from omni_npu.connector import register_connectors
++register_connectors()
++
+ pytestmark = pytest.mark.cpu_test
+ 
+ 
+diff --git a/tests/v1/kv_connector/unit/utils.py b/tests/v1/kv_connector/unit/utils.py
+index 98f1f4492..3c47b8d62 100644
+--- a/tests/v1/kv_connector/unit/utils.py
++++ b/tests/v1/kv_connector/unit/utils.py
+@@ -83,7 +83,7 @@ def assert_scheduler_empty(scheduler: Scheduler):
+ 
+ 
+ def create_vllm_config(
+-    model: str = "facebook/opt-125m",
++    model: str = "/data/models/Qwen2.5-0.5B-Instruct",
+     max_num_seqs: int = 16,
+     max_num_batched_tokens: int = 64,
+     block_size: int = 16,
+@@ -114,8 +114,8 @@ def create_vllm_config(
+         enable_prefix_caching=True,
+     )
+     kv_transfer_config = KVTransferConfig(
+-        kv_connector="NixlConnector",
+-        kv_role="kv_both",
++        kv_connector="LLMDataDistConnector",
++        kv_role="kv_producer",
+         enable_permute_local_kv=enable_permute_local_kv,
+     )
+     return VllmConfig(

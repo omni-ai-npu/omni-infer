@@ -61,7 +61,7 @@ sync_code_profile: {}
 # run_server_prefill_profile：控制 Prefill 启动脚本的生成与执行。
 run_server_prefill_profile_defaults:
   # workdir 下执行的 Prefill runner 文件名。
-  runner: pd_run.sh
+  runner: pd_run_pangu_ultra_moe.sh
   # runner 在容器内的工作目录。
   workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
   # 通过 docker exec -e 注入启动进程的环境变量字典。
@@ -78,7 +78,7 @@ run_server_prefill_profile: {}
 # run_server_decode_profile：控制 Decode 启动脚本的生成与执行。
 run_server_decode_profile_defaults:
   # workdir 下执行的 Decode runner 文件名。
-  runner: pd_run.sh
+  runner: pd_run_pangu_ultra_moe.sh
   # runner 在容器内的工作目录。
   workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
   # 通过 docker exec -e 注入启动进程的环境变量字典。
@@ -102,6 +102,17 @@ run_server_common_profile_defaults:
   restart_proxy: false
 # Playbook 只需在该字典中覆盖与默认值不同的字段。
 run_server_common_profile: {}
+
+# mooncake_profile：控制 Mooncake 配置和服务；普通部署通常无需覆盖。
+mooncake_profile_defaults:
+  # 是否生成 Mooncake 和 LMCache 配置文件。
+  generate_config: true
+  # 是否在 Proxy 容器中启动 etcd 和 Mooncake master。
+  start_services: false
+  # 停止 Mooncake 相关进程后的等待秒数。
+  wait_seconds: 0
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+mooncake_profile: {}
 
 # run_proxy_profile：控制 Omni Proxy 的启动方式。
 run_proxy_profile_defaults:
@@ -145,3 +156,46 @@ start_docker_cmd_d: '{{ resolved_docker_run_cmd }} -d --name $DOCKER_NAME_D $DOC
 start_docker_cmd_c: '{{ resolved_docker_run_cmd }} -e PROXY_NODE_PORT=$NODE_PORT -d --name $DOCKER_NAME_C $DOCKER_IMAGE_ID
 
   '
+
+generate_mooncake_config_json: |
+  {
+    "metadata_server": "etcd://{{ ETCD_IP }}:{{ ETCD_PORT }}",
+    "local_hostname": "{{ HOST_IP }}",
+    "protocol": "tcp",
+    "transfer_timeout": 60,
+    "global_segment_size": 17179869184,
+    "master_server_address": "{{ MOONCAKE_MASTER_IP }}:{{ MOONCAKE_MASTER_PORT }}"
+  }
+
+generate_lmcache_mooncake_config_yml: |
+  # 256 Tokens per kV Chunk
+  chunk_size: 256
+  # Enable CPU memory backend
+  local_cpu: false # default
+  # 5GB of Pinned CPU memory
+  max_local_cpu_size: 5.0 # default
+
+  remote_url: "mooncakestore://{{ MOONCAKE_MASTER_IP }}:{{ MOONCAKE_MASTER_PORT }}"
+  remote_serde: "naive"
+  external_lookup_client: "mooncakestore://{{ MOONCAKE_MASTER_IP }}:{{ MOONCAKE_MASTER_PORT }}"
+
+  extra_config:
+    retmote_enable_mla_worker_id_as0: true
+
+docker_start_etcd_cmd: >-
+  {{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c
+  'nohup etcd
+  --listen-client-urls http://{{ ETCD_IP }}:{{ ETCD_PORT }}
+  --advertise-client-urls http://{{ ETCD_IP }}:{{ ETCD_PORT }}
+  &> ${LOG_PATH}/etcd.log &'
+docker_start_mooncake_master_cmd: >-
+  {{ docker_exec_cmd }} $DOCKER_NAME_C /bin/bash -c
+  'source ~/.bashrc &&
+  nohup mooncake_master
+  -rpc_address={{ MOONCAKE_MASTER_IP }}
+  -rpc_port={{ MOONCAKE_MASTER_PORT }}
+  -metrics_port={{ MOONCAKE_METRICS_PORT }}
+  -v 2
+  -eviction_high_watermark_ratio=0.8
+  -eviction_ratio=0.1
+  &> ${LOG_PATH}/mooncake_master.log &'

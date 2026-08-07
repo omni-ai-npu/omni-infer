@@ -76,6 +76,7 @@ bash pd_run.sh \
     --kv-parallel-size "${KV_PARALLEL_SIZE}" \
     --kv-connector ${KV_CONNECTOR} \
     --gpu-util "${GPU_UTIL}" \
+    --vllm-enable-mc2 "${VLLM_ENABLE_MC2}" \
     --extra-args "${EXTRA_ARGS}" \
     --hccl-buffsize "${HCCL_BUFFSIZE}" \
     --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}" \

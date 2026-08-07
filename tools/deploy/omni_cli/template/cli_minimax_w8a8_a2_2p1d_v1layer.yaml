@@ -67,8 +67,9 @@ all:
             OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
             VLLM_DISABLE_COMPILE_CACHE: 1
+            OMNI_NPU_VLLM_PATCHES_ALL: 1
             ASCEND_PLATFORM: A2
-            OMNI_VLLM_PATCHES: ALL
+            OMNI_NPU_VLLM_PATCHES: ALL
             API_PORT: 9100
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: "AIV"
@@ -112,8 +113,9 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            OMNI_LLMDATADIST_ZMQ_PORT: 5668
+            VLLM_LLMDATADIST_ZMQ_PORT: 5668
             VLLM_LOGGING_LEVEL: INFO
+            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.3
           master_node: d0
@@ -160,8 +162,9 @@ all:
             OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
             VLLM_DISABLE_COMPILE_CACHE: 1
+            OMNI_NPU_VLLM_PATCHES_ALL: 1
             ASCEND_PLATFORM: A2
-            OMNI_VLLM_PATCHES: ALL
+            OMNI_NPU_VLLM_PATCHES: ALL
             API_PORT: 9000
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: "AIV"
@@ -207,8 +210,9 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            OMNI_LLMDATADIST_ZMQ_PORT: 5569
+            VLLM_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
+            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.1
           master_node: p0
@@ -253,8 +257,9 @@ all:
             OMNI_SKIP_DECODE_TOKENIZE: 1
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
             VLLM_DISABLE_COMPILE_CACHE: 1
+            OMNI_NPU_VLLM_PATCHES_ALL: 1
             ASCEND_PLATFORM: A2
-            OMNI_VLLM_PATCHES: ALL
+            OMNI_NPU_VLLM_PATCHES: ALL
             API_PORT: 9016
             ASCEND_GLOBAL_LOG_LEVEL: 3
             HCCL_OP_EXPANSION_MODE: "AIV"
@@ -300,8 +305,9 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            OMNI_LLMDATADIST_ZMQ_PORT: 5584
+            VLLM_LLMDATADIST_ZMQ_PORT: 5584
             VLLM_LOGGING_LEVEL: INFO
+            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.2
           master_node: p1

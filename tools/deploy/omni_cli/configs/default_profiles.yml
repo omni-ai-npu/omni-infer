@@ -10,7 +10,7 @@ profiles:
           SOCKET_IFNAME: enp23s0f3
           API_PORT: 9000
           MASTER_PORT: 8000
-          OMNI_LLMDATADIST_ZMQ_PORT: 5568
+          VLLM_LLMDATADIST_ZMQ_PORT: 5568
           TNG_HOST_COPY: 1
           MODEL_LEN_MAX_PREFILL: 32768
           LOCAL_DECODE_SERVER_IP_LIST: ""
@@ -24,6 +24,7 @@ profiles:
           GLOO_SOCKET_IFNAME: enp23s0f3
           TP_SOCKET_IFNAME: enp23s0f3
           HOST_IP: ""
+          VLLM_USE_V1: 1
           CODE_PATH: "/workspace/omniinfer"
           LOG_PATH: "/tmp/omni_logs"
           GLOBAL_DECODE_SERVER_IP_LIST: "${SERVER_IP_LIST}"
@@ -31,6 +32,7 @@ profiles:
           ROLE: "prefill"
           TASK_QUEUE_ENABLE: 2
           SHLVL: 1
+          VLLM_ENABLE_MC2: 1
           DECODE_POD_NUM: 1
           PREFILL_POD_NUM: ""
           VLLM_LOGGING_LEVEL: INFO
@@ -126,7 +128,7 @@ profiles:
           SOCKET_IFNAME: enp23s0f3
           API_PORT: 9000
           MASTER_PORT: 8000
-          OMNI_LLMDATADIST_ZMQ_PORT: 5568
+          VLLM_LLMDATADIST_ZMQ_PORT: 5568
           TNG_HOST_COPY: 1
           MODEL_LEN_MAX_DECODE: 16384
 
@@ -141,12 +143,14 @@ profiles:
           GLOO_SOCKET_IFNAME: enp23s0f3
           TP_SOCKET_IFNAME: enp23s0f3
           HOST_IP: ""
+          VLLM_USE_V1: 1
           CODE_PATH: "/workspace/omniinfer"
           LOG_PATH: "/tmp/omni_logs"
           GLOBAL_DECODE_SERVER_IP_LIST: "${SERVER_IP_LIST}"
           ROLE: "decode"
           TASK_QUEUE_ENABLE: 2
           SHLVL: 1
+          VLLM_ENABLE_MC2: 1
           DECODE_POD_NUM: 1
           PREFILL_POD_NUM: ""
           VLLM_LOGGING_LEVEL: INFO

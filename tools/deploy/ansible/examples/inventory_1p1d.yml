@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 ---
-# Safe single-node topology fixture for syntax, list and check-mode validation
-# only. P, D and C use distinct Inventory names but connect to the same loopback
-# host. Do not use it for a full deployment because run_docker and lifecycle
-# tags can still modify local Docker.
+# Safe topology fixture for syntax, list and check-mode validation only.
+# It uses loopback addresses and a local connection; do not use it for a full
+# deployment because run_docker and lifecycle tags can still modify local Docker.
 all:
   vars:
     ansible_connection: local
@@ -33,8 +32,8 @@ all:
         D0:
           hosts:
             d0:
-              ansible_host: 127.0.0.1
-              host_ip: 127.0.0.1
+              ansible_host: 127.0.0.2
+              host_ip: 127.0.0.2
               node_rank: 0
               node_port: 8502
               api_port: 9101
@@ -43,7 +42,7 @@ all:
     C:
       hosts:
         c0:
-          ansible_host: 127.0.0.1
-          host_ip: 127.0.0.1
+          ansible_host: 127.0.0.3
+          host_ip: 127.0.0.3
           node_rank: 0
           node_port: 7000

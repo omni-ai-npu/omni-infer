@@ -19,20 +19,6 @@
       }}
   tags: sync_code
 
-- name: Select one code synchronization owner per physical host.
-  ansible.builtin.set_fact:
-    resolved_host_sync_owner: >-
-      {%- set ns=namespace(owner='') -%}
-      {%- set candidates=(groups.get('P', []) + groups.get('D', []) + groups.get('C', [])) | unique | list -%}
-      {%- for candidate in candidates -%}
-        {%- set candidate_address=hostvars[candidate].ansible_host | default(candidate) -%}
-        {%- if not ns.owner and candidate_address == (ansible_host | default(inventory_hostname)) -%}
-          {%- set ns.owner=candidate -%}
-        {%- endif -%}
-      {%- endfor -%}
-      {{ ns.owner }}
-  tags: sync_code
-
 - name: Validate the host code synchronization profile.
   ansible.builtin.assert:
     that:
@@ -66,9 +52,7 @@
   ansible.builtin.file:
     path: "{{ ansible_env.CODE_PATH }}"
     state: directory
-  when:
-    - resolved_sync_code_profile.host_sync.enabled | bool
-    - inventory_hostname == resolved_host_sync_owner
+  when: resolved_sync_code_profile.host_sync.enabled | bool
   tags: sync_code
 
 - name: Synchronize code from the executor.
@@ -81,7 +65,16 @@
   throttle: "{{ resolved_sync_code_profile.host_sync.throttle | int }}"
   when:
     - resolved_sync_code_profile.host_sync.enabled | bool
-    - inventory_hostname == resolved_host_sync_owner
+    - >
+      'P' in group_names or
+      'D' in group_names or
+      (
+        'C' in group_names and
+        ansible_host not in
+        (groups.get('P', []) | map('extract', hostvars, 'ansible_host') | list) and
+        ansible_host not in
+        (groups.get('D', []) | map('extract', hostvars, 'ansible_host') | list)
+      )
   tags: sync_code
 
 - name: Copy the code into the Prefill container.

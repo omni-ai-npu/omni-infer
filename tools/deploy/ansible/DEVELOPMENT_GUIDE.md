@@ -36,7 +36,6 @@ tools/deploy/ansible/
 │   ├── inventory_1p1d.yml             # 仅供本地解析/check 的安全拓扑 fixture
 │   └── omni_infer_server_template_example.yml  # 可复制的通用 Playbook 示例
 ├── inventories/
-│   ├── omni_infer_inventory_used_for_1P1D_single_node.yml
 │   ├── omni_infer_inventory_used_for_1P1D.yml
 │   ├── omni_infer_inventory_used_for_2P1D.yml
 │   └── omni_infer_inventory_used_for_4P1D.yml
@@ -293,6 +292,7 @@ run_docker（容器名初始化）
 → sync_code / pip_install
 → set_topology
 → stop_server
+→ manage_mooncake
 → run_server
 → proc_bind
 → run_proxy
@@ -307,7 +307,7 @@ run_docker（容器名初始化）
 | `run_docker` 的 `always` task | 3 | `run_docker` 及之后的全部阶段。 |
 | `run_docker` / `clean_up` | 0 | 只生成容器检查结果和内部 Docker 命令。 |
 | `sync_code` / `pip_install` | 0 | 只生成 `resolved_*` 内部变量。 |
-| `set_topology` | 15 | `stop_server`、`run_server`、`proc_bind`、`run_proxy`、`fetch_log` 以及排在其后的专用任务。 |
+| `set_topology` | 15 | `stop_server`、Mooncake、`run_server`、`proc_bind`、`run_proxy`、`fetch_log` 以及排在其后的专用任务。 |
 | 后续公共阶段和 Elastic 生命周期 | 0 | 只生成阶段内部变量或重新计算现有拓扑。 |
 
 因此，拓扑变量不能用于 `run_docker_profile`、`sync_code_profile` 或
@@ -374,7 +374,7 @@ run_server_decode_profile:
 ```
 
 `decode_inventory_groups`、`decode_inventory_scope_groups`、`default_interface`、
-所有 `resolved_*`、`*_cmd*` 和 `register` 结果属于 Role
+Mooncake 临时 facts、所有 `resolved_*`、`*_cmd*` 和 `register` 结果属于 Role
 内部实现，不作为用户接口。需要公共拓扑的专用 Role 应在自己的任务序列中先导入
 `common: set_topology`，或放在完整 `common` Role 之后。
 
@@ -460,8 +460,7 @@ vars:
 
 | 文件 | 用途和兼容性 |
 | --- | --- |
-| `examples/inventory_1p1d.yml` | 当前 roles 可解析的安全单机 1P1D+C fixture；仅用于语法、列表和 check-mode 验证，不能完整部署。 |
-| `inventories/omni_infer_inventory_used_for_1P1D_single_node.yml` | P、D、C 共用一个连接地址，并将 16 张物理卡均分给 P/D 的单机 1P1D 模板。 |
+| `examples/inventory_1p1d.yml` | 当前 roles 可解析的安全 1P1D+C fixture；仅用于语法、列表和 check-mode 验证，不能完整部署。 |
 | `inventories/omni_infer_inventory_used_for_1P1D.yml` | 1P1D 拓扑模板。 |
 | `inventories/omni_infer_inventory_used_for_2P1D.yml` | 2P1D 拓扑模板，也可用于验证新增 Prefill 节点后的拓扑。 |
 | `inventories/omni_infer_inventory_used_for_4P1D.yml` | 4P1D 拓扑模板。 |
@@ -523,15 +522,9 @@ all:
           node_port: "{{ proxy_port + node_rank }}"
 ```
 
-同一物理机可以同时承载 P、D 和 C，方法是让多个 Inventory host 使用相同的
+同一物理机可以同时承载 P 和 C，方法是让两个 Inventory host 使用相同的
 `ansible_host`，但 host 名称仍必须唯一。不要把 P、D、C 合并为同一个 Inventory
-host，因为公共 tasks 通过组成员身份决定容器和服务类型。同一 `ansible_host` 上
-所有 P/D host 的 `ascend_rt_visible_devices` 必须互不重叠。单机 1P1D 的完整结构见
-`inventories/omni_infer_inventory_used_for_1P1D_single_node.yml`。
-
-拓扑中的 Pod 数量按唯一 `host_ip` 计算，因此不能只把 2P1D 或 4P1D 模板的所有
-地址改成同一个值。需要在一台机器上均分 P/D 设备时，应使用一个 P host 和一个 D
-host；两者共享地址、使用独立容器名和端口，并分配互斥的物理卡列表。
+host，因为公共 tasks 通过组成员身份决定容器和服务类型。
 
 ### 5.2 固定分组
 
@@ -565,6 +558,9 @@ Decode Pod 数量；同一多节点 Pod 的所有 Inventory host 必须配置相
 | `proxy_port` | 是 | Proxy 监听端口基准。 |
 | `port_offset.P` | 是 | Prefill 端口偏移。 |
 | `port_offset.D` | 是 | Decode 端口偏移。 |
+| `etcd_port` | 否 | Mooncake/LMCache 使用；普通部署不用关注。 |
+| `mooncake_master_port` | 否 | Mooncake/LMCache 使用；普通部署不用关注。 |
+| `mooncake_metrics_port` | 否 | Mooncake/LMCache 使用；普通部署不用关注。 |
 
 ### 5.4 Host 变量
 
@@ -576,7 +572,7 @@ Decode Pod 数量；同一多节点 Pod 的所有 Inventory host 必须配置相
 | `kv_rank` | 是 | 否 | 否 | Prefill KV rank，从 0 开始。 |
 | `node_port` | 是 | 是 | 是 | Prefill/Decode master port 或 Proxy 监听端口。 |
 | `api_port` | 是 | 是 | 否 | Prefill/Decode API Server 起始端口。 |
-| `ascend_rt_visible_devices` | 是 | 是 | 否 | 当前实例使用的物理 NPU，例如 `"0,1,2,3"`；启动器会按 API Server 的 TP/PP 切片。同一宿主机的 P/D 列表不能重叠，也不要包含空格或多余逗号。 |
+| `ascend_rt_visible_devices` | 是 | 是 | 否 | 当前实例使用的 NPU，例如 `"0,1,2,3"`；不要包含空格或多余逗号。 |
 
 容器实际名称由 playbook 环境中的基础名称加 Inventory host 名组成：
 
@@ -644,8 +640,6 @@ playbook 中的其他列表自动拼接；playbook 一旦设置该字段，就�
 `host_sync` 控制执行机到远端宿主机的 rsync：
 
 公共和弹性同步 task 保持使用 `ansible.builtin.synchronize`。
-当多个 Inventory host 使用相同的 `ansible_host` 时，Role 按 P、D、C 的顺序选择
-一个 host 作为同步 owner，同一物理机只执行一次 rsync；后续容器复制仍按角色执行。
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -690,7 +684,7 @@ playbook 中声明空 profile。
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `runner` | `pd_run.sh` | `workdir` 下的 Prefill 启动脚本文件名。 |
+| `runner` | `pd_run_pangu_ultra_moe.sh` | `workdir` 下的 Prefill 启动脚本文件名。 |
 | `workdir` | `{{ container_workspace }}/omniinfer/tools/deploy/start_server` | 容器内启动脚本目录。 |
 | `docker_envs` | `{}` | 通过 `docker exec -e` 传入启动进程的环境变量。 |
 | `prepare_commands` | `""` | 加载 `.bashrc` 后、CLI 启动前执行的 Bash；环境变量使用显式 `export`。 |
@@ -701,7 +695,7 @@ playbook 中声明空 profile。
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `runner` | `pd_run.sh` | `workdir` 下的 Decode 启动脚本文件名。 |
+| `runner` | `pd_run_pangu_ultra_moe.sh` | `workdir` 下的 Decode 启动脚本文件名。 |
 | `workdir` | `{{ container_workspace }}/omniinfer/tools/deploy/start_server` | 容器内启动脚本目录。 |
 | `docker_envs` | `{}` | 通过 `docker exec -e` 传入启动进程的环境变量。 |
 | `prepare_commands` | `""` | 加载 `.bashrc` 后、CLI 启动前执行的 Bash；环境变量使用显式 `export`。 |
@@ -729,9 +723,9 @@ Profile 合并、通信网卡检测以及 P/D 的 `docker exec` 命令均直接�
 通过 `model_path` 配置，KV Connector 通过
 `run_server_common_profile.kv_connector` 配置。
 
-Prefill 和 Decode 模板都会传入 `--ascend-rt-visible-devices` 和
-`--use-inventory-devices 1`，启动器按照 Inventory 中的物理卡号为每个 API Server
-切片。
+Prefill 模板会传入 `--ascend-rt-visible-devices`，Decode 模板不直接传入该参数；
+两者都不会强制追加 `--use-inventory-devices`，设备分配继续使用 runner 的默认
+行为。
 
 Prefill 和 Decode 启动模板中的 `KV_PARALLEL_SIZE` 都固定为 Prefill Pod 数加
 一个 Decode rank，即 `OMNI_PD_PREFILL_POD_NUM + 1`。
@@ -751,7 +745,28 @@ Prefill 和 Decode 的 `runner` 分开配置。两边使用同一 runner 时可�
 这些值都不常改。全部使用默认值时，不要在 playbook 中声明空的
 `run_server_common_profile`。
 
-### 7.8 `run_proxy_profile`
+### 7.8 `mooncake_profile`
+
+Mooncake 不常用，普通部署不用关注，也不建议在新 playbook 中显式配置。
+仅当 `run_server_common_profile.kv_connector=LMCacheConnectorV1` 且确实需要
+Mooncake/etcd 时才查看：
+
+```yaml
+run_server_common_profile:
+  kv_connector: LMCacheConnectorV1
+
+mooncake_profile:
+  generate_config: true
+  start_services: false
+  wait_seconds: 0
+```
+
+- `generate_config` 生成 Mooncake 和 LMCache 配置文件。
+- `start_services` 在 Proxy 容器内启动 etcd 和 mooncake master。
+- `wait_seconds` 是停止 Mooncake 进程后的等待时间。
+- 使用时 Inventory 还必须提供三个 Mooncake 端口。
+
+### 7.9 `run_proxy_profile`
 
 | 字段 | 说明 |
 | --- | --- |
@@ -769,7 +784,7 @@ Prefill 和 Decode 的 `runner` 分开配置。两边使用同一 runner 时可�
 `reload_proxy` 在原 `args` 后追加 `--reload`。
 当前只有 `elastic_server` 入口导入该任务。
 
-### 7.9 `proc_bind_profile`
+### 7.10 `proc_bind_profile`
 
 ```yaml
 proc_bind_profile:
@@ -781,7 +796,7 @@ proc_bind_profile:
 Decode 服务就绪，并通过 task 环境中的 `ROLE`、`SCRIPTS_PATH` 执行该脚本。
 该 helper 路径由 `container_workspace` 决定，不跟随 Prefill/Decode `workdir`。
 
-### 7.10 `fetch_log_profile`
+### 7.11 `fetch_log_profile`
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -790,7 +805,7 @@ Decode 服务就绪，并通过 task 环境中的 `ROLE`、`SCRIPTS_PATH` 执行
 
 一般不需要在 playbook 中配置。只想部署、不想拉日志时通过 extra vars 临时关闭。
 
-### 7.11 `delete_node_profile`
+### 7.12 `delete_node_profile`
 
 该 profile 属于 `elastic_server`，仅用于显式 `delete_node` tag：
 
@@ -815,7 +830,7 @@ Inventory 的 P/D 分组中移除目标节点，使 Proxy 按删除后的拓扑�
 | `clean_up` | 只停止并删除旧容器。 | 不重新创建容器。 |
 | `sync_code` | rsync 到远端，并按需复制进容器。 | 默认会删除目标端多余文件；执行前必须确认源和目标目录。 |
 | `pip_install` | 执行 `pip_install_profile` 中的完整命令。 | 未配置或为 `null` 时跳过。 |
-| `stop_server` | 停止 Prefill/Decode/Ray。 | 不删除容器。 |
+| `stop_server` | 停止 Prefill/Decode/Ray，并处理 Mooncake 停止。 | 不删除容器。 |
 | `run_server` | 计算启动命令并启动 Prefill/Decode。 | 假设容器、代码和依赖已经准备好。 |
 | `proc_bind` | 按需执行 CPU 绑核。 | `enabled=false` 时不会执行实际绑核。 |
 | `run_proxy` | 停止旧 Proxy 并启动新 Omni Proxy。 | 使用 `run_proxy_profile` 配置工作目录、命令和参数。 |

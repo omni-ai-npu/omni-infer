@@ -70,4 +70,4 @@ VLLM_PLUGINS="omni-npu" vllm serve "$MODEL_PATH" \
   --tensor-parallel-size 16 \
   --data-parallel-size 1 \
   --enable-expert-parallel \
-  --compilation-config '{"mode": 3, "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16], "backend":"eager", "compile_sizes":[1,2,8]}' 2>&1 | tee "${LOG_FILE}" &
+  --compilation-config '{"level": 3, "cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16], "backend":"eager", "compile_sizes":[1,2,8]}' 2>&1 | tee "${LOG_FILE}" &

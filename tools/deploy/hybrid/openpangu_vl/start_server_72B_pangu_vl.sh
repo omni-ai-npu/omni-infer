@@ -18,7 +18,7 @@ OUTPUT_TEXT_DIR=${OUTPUT_TEXT_DIR:=./}
 mkdir -p ${OUTPUT_TEXT_DIR}
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
 export ASCEND_GLOBAL_LOG_LEVEL=3
-export OMNI_VLLM_PATCHES=ALL
+export OMNI_NPU_VLLM_PATCHES=ALL
 export ASCEND_PLATFORM="A2"
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export VLLM_HTTP_TIMEOUT_KEEP_ALIVE=${VLLM_HTTP_TIMEOUT_KEEP_ALIVE:=1200}
@@ -42,6 +42,6 @@ VLLM_PLUGINS="omni-npu,omni_npu_add_models,omni_npu_patches" vllm serve "$LOAD_C
 --tensor-parallel-size 4 \
 --data-parallel-size 1 \
 --enable-expert-parallel \
---compilation-config '{"mode": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16], "backend":"eager", "compile_sizes":[1,2,8]}' 2>&1 | tee "$OUTPUT_TEXT_DIR/inference_$VPC_PREFIX.log"
+--compilation-config '{"level": 3, "cudagraph_mode":"FULL_DECODE_ONLY", "cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16], "backend":"eager", "compile_sizes":[1,2,8]}' 2>&1 | tee "$OUTPUT_TEXT_DIR/inference_$VPC_PREFIX.log"
 #--speculative_config '{"method": "deepseek_mtp", "num_speculative_tokens": 1}' \
 #--enforce-eager

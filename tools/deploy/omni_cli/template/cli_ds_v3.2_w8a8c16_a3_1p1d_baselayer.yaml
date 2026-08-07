@@ -67,7 +67,7 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: dsv32_1p1d_d0
           env:
-            OMNI_VLLM_PATCHES: "ALL"
+            OMNI_NPU_VLLM_PATCHES: "ALL"
             API_PORT: 19001
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -143,8 +143,10 @@ all:
             TP_SOCKET_IFNAME: enp23s0f3
             HCCL_SOCKET_IFNAME:  enp23s0f3
             USING_LCCL_COM: 0
-            OMNI_LLMDATADIST_ZMQ_PORT: 5569
+            VLLM_ENABLE_MC2: 0
+            VLLM_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
+            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.2
@@ -194,7 +196,7 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: dsv32_1p1d_d1
           env:
-            OMNI_VLLM_PATCHES: "ALL"
+            OMNI_NPU_VLLM_PATCHES: "ALL"
             API_PORT: 19002
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -270,8 +272,10 @@ all:
             TP_SOCKET_IFNAME: enp23s0f3
             HCCL_SOCKET_IFNAME:  enp23s0f3
             USING_LCCL_COM: 0
-            OMNI_LLMDATADIST_ZMQ_PORT: 5569
+            VLLM_ENABLE_MC2: 0
+            VLLM_LLMDATADIST_ZMQ_PORT: 5569
             VLLM_LOGGING_LEVEL: INFO
+            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.2
@@ -317,7 +321,7 @@ all:
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
           container_name: dsv32_1p1d_p0
           env:
-            OMNI_VLLM_PATCHES: "ALL"
+            OMNI_NPU_VLLM_PATCHES: "ALL"
             API_PORT: '19036'
             ASCEND_AICPU_PATH: /usr/local/Ascend/latest
             ASCEND_HOME_PATH: /usr/local/Ascend/latest
@@ -395,8 +399,10 @@ all:
             TP_SOCKET_IFNAME: enp23s0f3
             HCCL_SOCKET_IFNAME:  enp23s0f3
             USING_LCCL_COM: 0
-            OMNI_LLMDATADIST_ZMQ_PORT: 5568
+            VLLM_ENABLE_MC2: 0
+            VLLM_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
+            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
             VLLM_PLUGINS: omni-npu,omni_npu_patches
           host_ip: 127.0.0.1

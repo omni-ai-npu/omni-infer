@@ -21,6 +21,9 @@ all:
     global_port_base: 8000
     base_api_port: 9000
     proxy_port: 7000
+    etcd_port: 6000
+    mooncake_master_port: 6001
+    mooncake_metrics_port: 6002
     port_offset:
       P: 0      # Actual port range for group P: 8000-8099
       D: 100    # Actual port range for group D: 8100-8199

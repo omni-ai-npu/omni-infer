@@ -51,7 +51,6 @@
     run_server_prefill_profile:
       prepare_commands: |-
         export SERVER_IP_LIST={{ DECODE_SERVER_IP_LIST_ALL | replace(' ', '') | trim | quote }}
-        export VLLM_DISABLE_PYNCCL=1
         export HCCL_CONNECT_TIMEOUT=1800
         export HCCL_EXEC_TIMEOUT=1800
         export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
@@ -59,8 +58,8 @@
         export ASCEND_GLOBAL_LOG_LEVEL=3
         export TASK_QUEUE_ENABLE=2
         export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
-        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
-        export OMNI_VLLM_PATCHES="ALL"
+        export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+        export OMNI_NPU_VLLM_PATCHES="ALL"
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
         export HCCL_BUFFSIZE=100
         export OMNI_REUSE_PREFILLED_TOKENS=1
@@ -74,6 +73,7 @@
       - --max-model-len 524288
       - '--additional-config ''{"enable_low_latency": true}'''
       - --gpu-util 0.8
+      - --vllm-enable-mc2 1
       - >-
         --extra-args '--no-disable-hybrid-kv-cache-manager
         --max-num-batched-tokens 16384 --enable-expert-parallel
@@ -90,7 +90,6 @@
       prepare_commands: |-
         export DECODE_DATA_PARALLEL_SIZE={{ DECODE_SERVER_BY_GROUP | quote }}
         export SERVER_IP_LIST={{ DECODE_SERVER_IP_LIST_BY_GROUP | replace(' ', '') | trim | quote }}
-        export VLLM_DISABLE_PYNCCL=1
         export HCCL_BUFFSIZE=1200
         export HCCL_CONNECT_TIMEOUT=1800
         export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
@@ -98,10 +97,14 @@
         export ASCEND_GLOBAL_LOG_LEVEL=3
         export HCCL_OP_EXPANSION_MODE="AI_CPU"
         export VLLM_PLUGINS="omni-npu,omni_pangu_models,omni_npu_patches,omni_custom_models"
-        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
-        export OMNI_VLLM_PATCHES="ALL"
+        export OMNI_NPU_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+        export OMNI_NPU_VLLM_PATCHES="ALL"
         export ENABLE_DP_LB=false
+        export VLLM_DATA_PARALLEL_EXTERNAL_LB=false
         export VLLM_CACHE_ROOT='./graph_cache'
+        export VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY=False
+        export VLLM_TORCH_PROFILER_WITH_STACK=False
+        export VLLM_TORCH_PROFILER_WITH_FLOPS=False
         export TASK_QUEUE_ENABLE=1
         export LOCAL_WORLD_SIZE=16
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
@@ -122,12 +125,13 @@
       - --tp 1
       - '--additional-config ''{"enable_low_latency": true, "npugraph_ex_config":{"enable": true, "super_kernel_optimize": false, "static_kernel_compile": false}}'''
       - --gpu-util 0.82
+      - --vllm-enable-mc2 1
       - >-
         --extra-args '--no-disable-hybrid-kv-cache-manager
-        --enable-expert-parallel
+        --enable-expert-parallel --disable-log-requests
         --max-num-seqs 3 --enable-prefix-caching
         --enable-chunked-prefill --distributed-executor-backend mp
-        --dtype bfloat16 --compilation-config {"mode": 3,
+        --dtype bfloat16 --compilation-config {"level": 3,
         "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[12],
         "backend":"", "compile_sizes":[12]} --reasoning-parser pangu
         --enable-auto-tool-choice --tool-call-parser pangu --enable-lopt

@@ -117,7 +117,9 @@ pip list | grep omni_infer
 set -e
 
 export GLOO_SOCKET_IFNAME=enp23s0f3
+export VLLM_USE_V1=1
 export VLLM_WORKER_MULTIPROC_METHOD=fork
+export VLLM_ENABLE_MC2=0
 export USING_LCCL_COM=0
 export VLLM_LOGGING_LEVEL=DEBUG
 export ASCEND_RT_VISIBLE_DEVICES=0

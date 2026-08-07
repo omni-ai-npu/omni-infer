@@ -2,7 +2,7 @@
 requires = [
     "setuptools>=64",
     "wheel",
-    "pybind11",
+    "pybind11>=2.10",
     "torch",
     "numpy"
 ]
@@ -12,41 +12,80 @@ build-backend = "setuptools.build_meta"
 name = "omni_infer"
 version = "0.5.0"
 description = "Omni_Infer is a powerful suite of inference accelerators tailored for the Ascend NPU platform, fully compatible with vLLM, and designed to deliver high-performance, enterprise-grade inference with native support and a growing feature set."
+readme = "README.md"
 authors = [
     { name = "Huawei" }
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
+keywords = ["npu", "vllm", "plugin", "torch_npu"]
 dependencies = [
     "numpy",
     "torch",
-    "pybind11",
+    "pybind11>=2.10",
     "pyyaml>=6.0",
     "chardet"
 ]
 classifiers = [
-    "License :: OSI Approved :: Apache Software License"
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent"
 ]
+
+[project.optional-dependencies]
+npu = [
+    "torch-npu",
+]
+test = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.urls]
+Homepage = "https://gitee.com/omniai/omniinfer"
 
 [project.entry-points."vllm.platform_plugins"]
-npu = "omni.adaptors.vllm.platform:register"
+omni-npu = "omni_npu.vllm_plugin:plugin"
 
 [project.entry-points."vllm.general_plugins"]
-npu_optimized_models = "omni.models:register_model"
-kv_connectors = "omni.accelerators.pd:register"
-tool_parsers = "omni.adaptors.vllm.entrypoints.openai.tool_parsers:register_tool"
-reasoning = "omni.adaptors.vllm.reasoning:register_reasoning"
+omni_npu_patches = "omni_npu.vllm_patches:apply_patches"
+omni_custom_models = "omni_npu.v1.models:register_models"
+
+[project.entry-points."vllm.stat_logger_plugins"]
+omni_npu_metrics = "omni_npu.diagnostics.watchdog.stat_logger:OmniNpuStatLogger"
 
 [tool.setuptools]
-packages.find.where = ["."]
-packages.find.include = ["omni*"]
-packages.find.exclude = [
-    "omni.accelerators.placement.tests",
-    "omni.accelerators.placement.utils",
-    "omni.accelerators.placement.scripts",
-    "omni.accelerators.placement.patterns",
-    "omni.accelerators.placement..cloudbuild"
-]
-
-cmdclass.build_ext = "pybind11.setup_helpers.build_ext"
 include-package-data = true
 license-files = ["LICEN[CS]E*", "COPYING*", "NOTICE*", "AUTHORS*"]
+
+[tool.setuptools.package-data]
+"omni_npu" = ["model_config/configs/**/*.json"]
+"omni_npu.script" = ["*.sh"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers --disable-warnings"
+markers = [
+    "unit: unit tests that do not require NPU hardware",
+    "integration: integration tests that require NPU hardware",
+    "slow: tests that take a long time to run",
+    "multi_device: tests that require multiple NPU devices",
+    "npu: tests that require NPU hardware and torch.npu",
+    "anyio: asynchronous tests using pytest-anyio",
+]
+
+[tool.coverage.run]
+source = ["omni_npu"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+

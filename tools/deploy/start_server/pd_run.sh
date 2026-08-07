@@ -5,34 +5,34 @@
 # Default parameters
 # llmdatadist-specific parameters
 GLOBAL_RANK_TABLE_FILE_PATH="1p1d_save_dir/global_ranktable_merge.json"
-RANK_TABLE_FILE_PATH="save_dir_64/local_ranktable_127.0.0.1_0123.json"
-LOCAL_DECODE_SERVER_IP_LIST="127.0.0.1"
-GLOBAL_DECODE_SERVER_IP_LIST="127.0.0.1"
+RANK_TABLE_FILE_PATH="save_dir_64/local_ranktable_7.242.108.64_0123.json"
+LOCAL_DECODE_SERVER_IP_LIST="7.242.108.196"
+GLOBAL_DECODE_SERVER_IP_LIST="7.242.108.196"
 OMNI_PD_ROLE="${OMNI_PD_ROLE:-prefill}"
 OMNI_PD_PREFILL_POD_NUM="${OMNI_PD_PREFILL_POD_NUM:-1}"
 OMNI_PD_DECODE_POD_NUM="${OMNI_PD_DECODE_POD_NUM:-1}"
-OMNI_LLMDATADIST_ZMQ_PORT="${VLLM_LLMDATADIST_ZMQ_PORT:-${OMNI_LLMDATADIST_ZMQ_PORT:-5568}}"
+VLLM_LLMDATADIST_ZMQ_PORT="5568"
 # Ascend-specific parameters
 HCCL_INTRA_ROCE_ENABLE=1
 HCCL_INTRA_PCIE_ENABLE=0
 ascend_rt_set=0
-USE_INVENTORY_DEVICES=0
 # Multi-API Server specific parameters
 NUM_SERVERS=1
 NUM_DP=1
 SERVER_OFFSET=0
-MASTER_IP="127.0.0.1"
+MASTER_IP="7.242.108.64"
 MASTER_PORT=8503
 BASE_API_PORT=9001
 # vLLM framework parameters
 GLOO_SOCKET_IFNAME="enp23s0f3"
 TP_SOCKET_IFNAME="enp23s0f3"
-VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-INFO}"
+VLLM_LOGGING_LEVEL="INFO"
+VLLM_USE_V1=1
 VLLM_WORKER_MULTIPROC_METHOD="fork"
-MODEL_PATH=""
+MODEL_PATH="/home/dsv3/models/DeepSeek-V3-w8a8-0423"
 TP=4
 PP=1
-SERVED_MODEL_NAME="pangu_v2_moe"
+SERVED_MODEL_NAME="deepseek"
 MAX_MODEL_LEN=4096
 LOG_DIR="apiserverlog"
 # PD separation parameters
@@ -46,6 +46,7 @@ KV_PARALLEL_SIZE=2
 GPU_UTIL=0.9
 EXTRA_ARGS=""
 ADDITIONAL_CONFIG=""
+VLLM_ENABLE_MC2=0
 HCCL_BUFFSIZE=0
 HCCL_OP_EXPANSION_MODE=""
 NUM_SPECULATIVE_TOKENS=1
@@ -62,11 +63,10 @@ print_help() {
     echo "  --role                           llmdatadist-specific: Instance role type. Use 'prefill' for P, 'decode' for D (default: $OMNI_PD_ROLE)"
     echo "  --prefill-pod-num                llmdatadist-specific: Number of P instances (default: $OMNI_PD_PREFILL_POD_NUM)"
     echo "  --decode-pod-num                 llmdatadist-specific: Number of D instances (default: $OMNI_PD_DECODE_POD_NUM)"
-    echo "  --omni-llmdatadist-zmq-port      llmdatadist-specific: ZMQ port for llmdatadist connector (must be string) (default: $OMNI_LLMDATADIST_ZMQ_PORT)"
+    echo "  --vllm-llmdatadist-zmq-port      llmdatadist-specific: ZMQ port for llmdatadist connector (must be string) (default: $VLLM_LLMDATADIST_ZMQ_PORT)"
     echo "  --hcc-intra-roce-enable          Ascend-specific: Set to 1 for A3, enable intra-HCCL ROCE (default: $HCCL_INTRA_ROCE_ENABLE)"
     echo "  --hcc-intra-pcie-enable          Ascend-specific: Set to 0 for A3, enable intra-HCCL PCIE (default: $HCCL_INTRA_PCIE_ENABLE)"
     echo "  --ascend-rt-visible-devices      Ascend-specific: Visible physical devices for the instance. (default: $ASCEND_RT_VISIBLE_DEVICES)"
-    echo "  --use-inventory-devices          Ascend-specific: Set to 1 to derive each server's ASCEND_RT_VISIBLE_DEVICES by slicing the inherited (inventory) ascend_rt_visible_devices per rank, so vLLM can start from arbitrary physical devices instead of always 0,1 (default: $USE_INVENTORY_DEVICES)"
     echo "  --num-servers                    Multi-API Server: Number of API servers (default: $NUM_SERVERS)"
     echo "  --num-dp                         Multi-API Server: Data parallel size (≥ number of servers) (default: $NUM_DP)"
     echo "  --server-offset                  Multi-API Server: Server offset for multi-node setup. For dual-node A3, set to 16 on d_2 instance (default: $SERVER_OFFSET)"
@@ -76,6 +76,7 @@ print_help() {
     echo "  --gloo-socket-ifname             vLLM framework: DP communication parameter. Your network interface. Query with: ip -4 route list 0/0 | awk '{print $5}' | head -n 1 (default: $GLOO_SOCKET_IFNAME)"
     echo "  --tp-socket-ifname               vLLM framework: DP communication parameter. Your network interface. Query with: ip -4 route list 0/0 | awk '{print $5}' | head -n 1 (default: $TP_SOCKET_IFNAME)"
     echo "  --vllm-logging-level             vLLM framework: VLLM logging level. Default INFO, set to DEBUG for debugging (default: $VLLM_LOGGING_LEVEL)"
+    echo "  --vllm-use-v1                    vLLM framework: Use VLLM V1 version (1 to enable) (default: $VLLM_USE_V1)"
     echo "  --vllm-worker-multiproc-method   vLLM framework: VLLM worker process method (fork or spawn) (default: $VLLM_WORKER_MULTIPROC_METHOD)"
     echo "  --model-path                     vLLM framework: Model path (default: $MODEL_PATH)"
     echo "  --max-model-len                  vLLM framework: Maximum model length (default: $MAX_MODEL_LEN)"
@@ -91,6 +92,7 @@ print_help() {
     echo "  --kv-parallel-size               vLLM framework: PD separation parameter, kv parallel size (equal to num_p + num_d) (default: $KV_PARALLEL_SIZE)"
     echo "  --extra-args                     vLLM framework: Additional VLLM arguments (space-separated, e.g., '--enable-expert-parallel') (default: $EXTRA_ARGS)"
     echo "  --additional-args                vLLM framework: Additional VLLM arguments"
+    echo "  --vllm-enable-mc2                vLLM framework: GRAPH parameter (default: $VLLM_ENABLE_MC2)"
     echo "  --hccl-op-expansion-mode         vLLM framework: HCCL_OP_EXPANSION_MODE"
     echo "  --hccl-buffsize                  vLLM framework: HCCL_BUFFSIZE"
     echo "  --num-speculative-tokens         vLLM framework: Speculative decoding parameter, number of speculative tokens per step (default: $NUM_SPECULATIVE_TOKENS)"
@@ -121,8 +123,8 @@ parse_long_option() {
         --decode-pod-num)
             OMNI_PD_DECODE_POD_NUM="$2"
             ;;
-        --omni-llmdatadist-zmq-port)
-            OMNI_LLMDATADIST_ZMQ_PORT="$2"
+        --vllm-llmdatadist-zmq-port)
+            VLLM_LLMDATADIST_ZMQ_PORT="$2"
             ;;
         --hcc-intra-roce-enable)
             HCCL_INTRA_ROCE_ENABLE="$2"
@@ -133,9 +135,6 @@ parse_long_option() {
         --ascend-rt-visible-devices)
             ASCEND_RT_VISIBLE_DEVICES="$2"
             ascend_rt_set=1
-            ;;
-        --use-inventory-devices)
-            USE_INVENTORY_DEVICES="$2"
             ;;
         --num-servers)
             NUM_SERVERS="$2"
@@ -163,6 +162,9 @@ parse_long_option() {
             ;;
         --vllm-logging-level)
             VLLM_LOGGING_LEVEL="$2"
+            ;;
+        --vllm-use-v1)
+            VLLM_USE_V1="$2"
             ;;
         --vllm-worker-multiproc-method)
             VLLM_WORKER_MULTIPROC_METHOD="$2"
@@ -208,6 +210,9 @@ parse_long_option() {
             ;;
         --gpu-util)
             GPU_UTIL="$2"
+            ;;
+        --vllm-enable-mc2)
+            VLLM_ENABLE_MC2="$2"
             ;;
         --additional-config)
             ADDITIONAL_CONFIG="$2"
@@ -256,8 +261,7 @@ KV_TRANSFER_CONFIG=$(cat <<EOF
     "kv_connector": "$KV_CONNECTOR",
     "kv_role": "$KV_ROLE",
     "kv_rank": $KV_RANK,
-    "kv_parallel_size": $KV_PARALLEL_SIZE,
-    "kv_port": $OMNI_LLMDATADIST_ZMQ_PORT
+    "kv_parallel_size": $KV_PARALLEL_SIZE
 }
 EOF
 )
@@ -270,7 +274,7 @@ export GLOBAL_DECODE_SERVER_IP_LIST
 export OMNI_PD_ROLE
 export OMNI_PD_PREFILL_POD_NUM
 export OMNI_PD_DECODE_POD_NUM
-export OMNI_LLMDATADIST_ZMQ_PORT
+export VLLM_LLMDATADIST_ZMQ_PORT
 
 export HCCL_INTRA_ROCE_ENABLE
 export HCCL_INTRA_PCIE_ENABLE
@@ -281,10 +285,15 @@ fi
 export GLOO_SOCKET_IFNAME
 export TP_SOCKET_IFNAME
 export VLLM_LOGGING_LEVEL
+export VLLM_USE_V1
 export VLLM_WORKER_MULTIPROC_METHOD
 export SERVER_OFFSET
 export PYTHONPATH=/usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
+export VLLM_USE_V1=1
+export VLLM_WORKER_MULTIPROC_METHOD=fork
 export USING_LCCL_COM=0
+export VLLM_ENABLE_MC2
+
 # Turn on these two variables to enable proc_bind
 # export CPU_AFFINITY_CONF=2
 # export OMNI_PROFILE_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml
@@ -304,7 +313,6 @@ export HCCL_EXEC_TIMEOUT=120
 export TNG_HOST_COPY=1
 # 使能双页表 pd 分离
 export AUTO_USE_UC_MEMORY=1
-# export TASK_QUEUE_ENABLE=2
 
 # enable to overwrite request IDs
 export ENABLE_OVERWRITE_REQ_IDS=1
@@ -318,7 +326,7 @@ echo "GLOBAL_DECODE_SERVER_IP_LIST: $GLOBAL_DECODE_SERVER_IP_LIST"
 echo "OMNI_PD_ROLE: $OMNI_PD_ROLE"
 echo "OMNI_PD_PREFILL_POD_NUM: $OMNI_PD_PREFILL_POD_NUM"
 echo "OMNI_PD_DECODE_POD_NUM: $OMNI_PD_DECODE_POD_NUM"
-echo "OMNI_LLMDATADIST_ZMQ_PORT: $OMNI_LLMDATADIST_ZMQ_PORT"
+echo "VLLM_LLMDATADIST_ZMQ_PORT: $VLLM_LLMDATADIST_ZMQ_PORT"
 echo "HCCL_INTRA_ROCE_ENABLE: $HCCL_INTRA_ROCE_ENABLE"
 echo "HCCL_INTRA_PCIE_ENABLE: $HCCL_INTRA_PCIE_ENABLE"
 echo "NUM_SERVERS: $NUM_SERVERS"
@@ -330,6 +338,7 @@ echo "BASE_API_PORT: $BASE_API_PORT"
 echo "GLOO_SOCKET_IFNAME: $GLOO_SOCKET_IFNAME"
 echo "TP_SOCKET_IFNAME: $TP_SOCKET_IFNAME"
 echo "VLLM_LOGGING_LEVEL: $VLLM_LOGGING_LEVEL"
+echo "VLLM_USE_V1: $VLLM_USE_V1"
 echo "VLLM_WORKER_MULTIPROC_METHOD: $VLLM_WORKER_MULTIPROC_METHOD"
 echo "MODEL_PATH: $MODEL_PATH"
 echo "MAX_MODEL_LEN: $MAX_MODEL_LEN"
@@ -341,13 +350,13 @@ echo "KV_TRANSFER_CONFIG: $KV_TRANSFER_CONFIG"
 echo "EXTRA_ARGS: $EXTRA_ARGS"
 echo "GPU_UTIL: $GPU_UTIL"
 echo "ADDITIONAL_CONFIG: $ADDITIONAL_CONFIG"
+echo "VLLM_ENABLE_MC2: $VLLM_ENABLE_MC2"
 echo "TNG_HOST_COPY: $TNG_HOST_COPY"
 echo "CPU_AFFINITY_CONF: $CPU_AFFINITY_CONF"
 echo "AUTO_USE_UC_MEMORY: $AUTO_USE_UC_MEMORY"
 echo "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: $RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"
 echo "RAY_CGRAPH_get_timeout: $RAY_CGRAPH_get_timeout"
 echo "TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
-echo "USE_INVENTORY_DEVICES: $USE_INVENTORY_DEVICES"
 echo "=================="
 
 EXTRA_ARGS="$EXTRA_ARGS"
@@ -357,10 +366,6 @@ common_operations() {
   local mtp_args=""
   if [ "$NUM_SPECULATIVE_TOKENS" -ne 0 ]; then
     mtp_args="--enable-mtp"
-  fi
-  local inventory_devices_args=""
-  if [ "$USE_INVENTORY_DEVICES" = "1" ]; then
-    inventory_devices_args="--use-inventory-devices"
   fi
   python start_api_servers.py \
     --num-servers "$NUM_SERVERS" \
@@ -379,7 +384,6 @@ common_operations() {
     --gpu-util "$GPU_UTIL" \
     --additional-config "$ADDITIONAL_CONFIG" \
     $mtp_args \
-    $inventory_devices_args \
     --num-speculative-tokens "$NUM_SPECULATIVE_TOKENS" \
     --extra-args "$EXTRA_ARGS"
 }

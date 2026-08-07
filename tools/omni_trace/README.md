@@ -22,6 +22,6 @@ export ROLE="prefill"
 export ROLE="decode"
 
 # 6. 需要配置patch环境变量
-unset OMNI_VLLM_PATCHES
-export OMNI_VLLM_PATCHES="ALL"
+unset OMNI_NPU_VLLM_PATCHES
+export OMNI_NPU_VLLM_PATCHES="ALL"
 # ==============================================================

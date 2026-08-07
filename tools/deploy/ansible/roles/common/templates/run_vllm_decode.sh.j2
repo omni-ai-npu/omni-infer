@@ -20,6 +20,11 @@ declare -A config_dict=(
     {% endfor %}
 )
 
+{% if common_profile.kv_connector == "LMCacheConnectorV1" -%}
+export MOONCAKE_CONFIG_PATH={{ ansible_env.SCRIPTS_PATH }}/mooncake_config.json
+export LMCACHE_CONFIG_FILE={{ ansible_env.SCRIPTS_PATH }}/lmcache_mooncake_config.yml
+{% endif %}
+
 cd {{ profile.workdir }}
 bash {{ profile.workdir }}/{{ profile.runner }} \
   --local-decode-server-ip-list "$SERVER_IP_LIST" \
@@ -36,8 +41,6 @@ bash {{ profile.workdir }}/{{ profile.runner }} \
   --kv-role "kv_consumer" \
   --master-port ${MASTER_PORT} \
   --base-api-port ${API_PORT} \
-  --ascend-rt-visible-devices {{ ascend_rt_visible_devices | quote }} \
-  --use-inventory-devices 1 \
   --kv-rank ${OMNI_PD_PREFILL_POD_NUM} \
   --kv-engine-id ${OMNI_PD_PREFILL_POD_NUM} \
   --kv-parallel-size ${KV_PARALLEL_SIZE} \
