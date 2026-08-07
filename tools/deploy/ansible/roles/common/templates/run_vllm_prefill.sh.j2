@@ -12,11 +12,6 @@ unset proxy
 {{ profile.prepare_commands }}
 
 kv_role="kv_producer"
-{% if common_profile.kv_connector == "LMCacheConnectorV1" -%}
-export MOONCAKE_CONFIG_PATH={{ ansible_env.SCRIPTS_PATH }}/mooncake_config.json
-export LMCACHE_CONFIG_FILE={{ ansible_env.SCRIPTS_PATH }}/lmcache_mooncake_config.yml
-kv_role="kv_both"
-{% endif %}
 
 if [ $(echo -n "$NODE_IP_LIST" | tr -cd ',' | wc -c) -ge 1 ]; then
   export MASTER_NODE_IP=$HOST_IP
@@ -49,6 +44,7 @@ bash {{ profile.workdir }}/{{ profile.runner }} \
   --base-api-port ${API_PORT} \
   --tp ${PREFILL_TENSOR_PARALLEL_SIZE} \
   --ascend-rt-visible-devices {{ ascend_rt_visible_devices | quote }} \
+  --use-inventory-devices 1 \
   --kv-rank {{ kv_rank | quote }} \
   --kv-engine-id {{ kv_rank | quote }} \
   --kv-parallel-size ${KV_PARALLEL_SIZE} \

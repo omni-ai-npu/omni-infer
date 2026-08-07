@@ -17,7 +17,6 @@
 - `deploy_code`
 - `set_topology`
 - `stop_server`
-- `manage_mooncake`
 - `run_server`
 - `bind_cpus`
 - `run_proxy`
@@ -55,8 +54,6 @@
   不存在的主机变量。
 - `run_server_common_profile` 管理 Prefill 和 Decode 共用的 KV Connector、等待时间
   以及弹性流程中可选的 Proxy 刷新行为。
-- `mooncake_profile` 管理 Mooncake 配置生成、服务启动和停止后的等待时间。
-  Mooncake 不常用，并且独立于两个服务启动 profile。
 - `run_proxy_profile` 属于 `run_proxy`，管理 Omni Proxy 的工作目录、命令和
   有序 CLI 参数。`elastic_server` 的 Proxy reload 复用同一份配置，其中
   `prepare_commands` 同时用于普通启动和 reload。模板负责规范化端点，并生成

@@ -62,6 +62,7 @@ def test_recent_runtime_defaults_are_typed():
     assert isinstance(envs.OMNI_HEALTH_HANG_SEC, int)
     assert envs.OMNI_METRICS_KV_TRANSFER_SELFTEST is False
     assert envs.OMNI_METRICS_WORKER_MEM_EVERY == 50
+    assert envs.OMNI_NPU_PENALTY_CACHE is False
     assert envs.OMNI_NPU_TOP_K_TOP_P_SAMPLE_NOT_SUPPORT_FLOAT is False
 
 
@@ -71,6 +72,7 @@ def test_recent_runtime_values_are_parsed(monkeypatch):
     monkeypatch.setenv("OMNI_HEALTH_HANG_SEC", "12")
     monkeypatch.setenv("OMNI_METRICS_KV_TRANSFER_SELFTEST", "1")
     monkeypatch.setenv("OMNI_METRICS_WORKER_MEM_EVERY", "25")
+    monkeypatch.setenv("OMNI_NPU_PENALTY_CACHE", "1")
     monkeypatch.setenv(
         "OMNI_NPU_TOP_K_TOP_P_SAMPLE_NOT_SUPPORT_FLOAT", "1"
     )
@@ -81,6 +83,7 @@ def test_recent_runtime_values_are_parsed(monkeypatch):
     assert envs.OMNI_HEALTH_HANG_SEC == 12
     assert envs.OMNI_METRICS_KV_TRANSFER_SELFTEST is True
     assert envs.OMNI_METRICS_WORKER_MEM_EVERY == 25
+    assert envs.OMNI_NPU_PENALTY_CACHE is True
     assert envs.OMNI_NPU_TOP_K_TOP_P_SAMPLE_NOT_SUPPORT_FLOAT is True
 
 
@@ -131,17 +134,71 @@ def test_lazy_eval_picks_up_runtime_changes(monkeypatch):
     assert envs.OMNI_PD_ROLE == "decode"  # Lazy access observes updates.
 
 
-def test_no_old_name_vars_still_work(monkeypatch):
-    monkeypatch.setenv("OMNI_NPU_VLLM_PATCHES", "foo,bar")
+@pytest.mark.parametrize(
+    ("new_name", "old_name", "old_value", "expected", "new_value"),
+    [
+        (
+            "OMNI_VLLM_PATCHES",
+            "OMNI_NPU_VLLM_PATCHES",
+            "foo,bar",
+            "foo,bar",
+            "new-patch",
+        ),
+        (
+            "OMNI_VLLM_PATCHES_DIR",
+            "OMNI_NPU_PATCHES_DIR",
+            "pangu_v2_hybrid",
+            "pangu_v2_hybrid",
+            "deepseek",
+        ),
+        (
+            "OMNI_LMHEAD_USE_DEVICE_COMM_A2A",
+            "OMNI_NPU_USE_DEVICE_COMM_A2A",
+            "1",
+            True,
+            "0",
+        ),
+        (
+            "OMNI_PD_BENCH_ALIGNED_DECODE_THRESHOLD",
+            "OMNI_NPU_BENCH_ALIGNED_DECODE_THRESHOLD",
+            "40",
+            40,
+            "24",
+        ),
+    ],
+)
+def test_omni_npu_names_are_compatibility_aliases(
+    monkeypatch,
+    caplog,
+    new_name,
+    old_name,
+    old_value,
+    expected,
+    new_value,
+):
     import omni_npu.envs as envs
-    assert envs.OMNI_NPU_VLLM_PATCHES == "foo,bar"
+
+    monkeypatch.setenv(old_name, old_value)
+    with caplog.at_level(logging.WARNING, logger="omni_npu.envs"):
+        assert getattr(envs, new_name) == expected
+    assert any(
+        old_name in record.message
+        and new_name in record.message
+        and "deprecated" in record.message
+        for record in caplog.records
+    )
+
+    caplog.clear()
+    monkeypatch.setenv(new_name, new_value)
+    assert getattr(envs, new_name) != expected
+    assert not caplog.records
 
 
 def test_dir_lists_all_registered():
     import omni_npu.envs as envs
     names = set(dir(envs))
     for must in {"OMNI_PD_ROLE", "OMNI_PD_PREFILL_POD_NUM", "OMNI_ENABLE_OMNI_CACHE",
-                 "OMNI_NPU_VLLM_PATCHES", "OMNI_CONFIG_SUMMARY",
+                 "OMNI_VLLM_PATCHES", "OMNI_CONFIG_SUMMARY",
                  "OMNI_DUMP_ENABLE", "OMNI_HEALTH_HANG_SEC",
                  "OMNI_METRICS_WORKER_MEM_EVERY"}:
         assert must in names
@@ -257,19 +314,19 @@ def test_benchmark_vars_are_registered_and_typed(monkeypatch):
     monkeypatch.setenv("OMNI_HYBRID_ALIGNED_DECODE", "ALL")
     monkeypatch.setenv("OMNI_HYBRID_ALIGNED_DECODE_THRESHOLD", "32")
     monkeypatch.setenv("OMNI_DP_ROUND_ROBIN", "true")
-    monkeypatch.setenv("OMNI_NPU_BENCH_ALIGNED_DECODE_THRESHOLD", "40")
+    monkeypatch.setenv("OMNI_PD_BENCH_ALIGNED_DECODE_THRESHOLD", "40")
 
     assert envs.OMNI_HYBRID_ALIGNED_DECODE is True
     assert envs.OMNI_HYBRID_ALIGNED_DECODE_THRESHOLD == 32
     assert envs.OMNI_DP_ROUND_ROBIN is True
-    assert envs.OMNI_NPU_BENCH_ALIGNED_DECODE_THRESHOLD == 40
+    assert envs.OMNI_PD_BENCH_ALIGNED_DECODE_THRESHOLD == 40
 
 
 @pytest.mark.parametrize(
     ("name", "default"),
     [
         ("OMNI_HYBRID_ALIGNED_DECODE_THRESHOLD", 16),
-        ("OMNI_NPU_BENCH_ALIGNED_DECODE_THRESHOLD", 20),
+        ("OMNI_PD_BENCH_ALIGNED_DECODE_THRESHOLD", 20),
     ],
 )
 def test_invalid_benchmark_threshold_preserves_default(

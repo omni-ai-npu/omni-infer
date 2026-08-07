@@ -47,7 +47,7 @@ class NPULogitsProcessor(LogitsProcessor):
             comm_group = (
                 get_local_world_group() if use_local_comm else get_dp_group()
             )
-            if envs.OMNI_NPU_USE_DEVICE_COMM_A2A:
+            if envs.OMNI_LMHEAD_USE_DEVICE_COMM_A2A:
                 logits = comm_group.device_communicator.all_to_all(
                     logits, scatter_dim=0, gather_dim=-1,
                 )[:local_n]

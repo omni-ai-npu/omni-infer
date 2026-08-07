@@ -64,7 +64,7 @@ class GetKwargsHelloWorldPatch(VLLMPatch):
 补丁文件需要经过两个环节：
 
 - 注册：补丁文件被导入后，`@register_patch`会把补丁注册到`PatchManager`
-- 执行：通过`OMNI_NPU_VLLM_PATCHES`决定实际应用哪些已注册补丁
+- 执行：通过`OMNI_VLLM_PATCHES`决定实际应用哪些已注册补丁
 
 ### 补丁文件注册
 
@@ -72,24 +72,24 @@ class GetKwargsHelloWorldPatch(VLLMPatch):
 
 模型补丁支持两种注册方式：
 
-- 手动注册：通过`OMNI_NPU_PATCHES_DIR`直接指定目录
+- 手动注册：通过`OMNI_VLLM_PATCHES_DIR`直接指定目录
 - 自动注册：通过模型`config.json`中的`model_type`自动匹配目录
 
 手动注册优先于自动注册。
 
 #### 手动注册
 
-当设置`OMNI_NPU_PATCHES_DIR=xxxmodel`时，会导入`patches/models/xxxmodel`目录下的补丁文件。
+当设置`OMNI_VLLM_PATCHES_DIR=xxxmodel`时，会导入`patches/models/xxxmodel`目录下的补丁文件。
 
 ```bash
-export OMNI_NPU_PATCHES_DIR="pangu72b-vl"
+export OMNI_VLLM_PATCHES_DIR="pangu72b-vl"
 # 对应目录：patches/models/pangu72b-vl
 ```
 
-`OMNI_NPU_PATCHES_DIR`支持逗号分隔多个目录，目录会按顺序依次加载：
+`OMNI_VLLM_PATCHES_DIR`支持逗号分隔多个目录，目录会按顺序依次加载：
 
 ```bash
-export OMNI_NPU_PATCHES_DIR="pangu_v2_base,pangu_sink_swa_mla"
+export OMNI_VLLM_PATCHES_DIR="pangu_v2_base,pangu_sink_swa_mla"
 # 先加载pangu_v2_base/，再加载pangu_sink_swa_mla/
 ```
 
@@ -127,11 +127,11 @@ VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models" vllm serve "$model"
 
 ### 补丁文件执行
 
-通过环境变量`OMNI_NPU_VLLM_PATCHES`指定具体执行哪些补丁。
+通过环境变量`OMNI_VLLM_PATCHES`指定具体执行哪些补丁。
 
 默认行为如下：
 
-- 未设置`OMNI_NPU_VLLM_PATCHES`时，默认执行所有已注册补丁
+- 未设置`OMNI_VLLM_PATCHES`时，默认执行所有已注册补丁
 - 设置为空字符串时，默认执行所有已注册补丁
 - 设置为`"ALL"`时，默认执行所有已注册补丁
 
@@ -145,7 +145,7 @@ VLLM_PLUGINS="omni-npu,omni_npu_patches" vllm serve /path/to/model
 
 ```bash
 VLLM_PLUGINS="omni-npu,omni_npu_patches" \
-OMNI_NPU_VLLM_PATCHES="ALL" \
+OMNI_VLLM_PATCHES="ALL" \
 vllm serve /path/to/model
 ```
 
@@ -153,7 +153,7 @@ vllm serve /path/to/model
 
 ```bash
 VLLM_PLUGINS="omni-npu,omni_npu_patches" \
-OMNI_NPU_VLLM_PATCHES="PatchA,PatchB" \
+OMNI_VLLM_PATCHES="PatchA,PatchB" \
 vllm serve /path/to/model
 ```
 
@@ -232,7 +232,7 @@ VLLM_PLUGINS="omni-npu,omni_npu_patches" vllm serve /data/models/DeepSeek-V3.2-I
 
 ```bash
 VLLM_PLUGINS="omni-npu,omni_npu_patches" \
-OMNI_NPU_PATCHES_DIR="deepseek" \
+OMNI_VLLM_PATCHES_DIR="deepseek" \
 vllm serve /data/models/DeepSeek-V3.2-INT8
 ```
 
@@ -242,7 +242,7 @@ vllm serve /data/models/DeepSeek-V3.2-INT8
 
 ```bash
 VLLM_PLUGINS="omni-npu,omni_npu_patches" \
-OMNI_NPU_PATCHES_DIR="pangu_v2_base,pangu_sink_swa_mla" \
+OMNI_VLLM_PATCHES_DIR="pangu_v2_base,pangu_sink_swa_mla" \
 vllm serve /path/to/openpangu_v2_model
 ```
 
@@ -252,7 +252,7 @@ vllm serve /path/to/openpangu_v2_model
 
 ```bash
 VLLM_PLUGINS="omni-npu,omni_npu_patches" \
-OMNI_NPU_VLLM_PATCHES="EngineArgsConfig,DSV32Indexer" \
+OMNI_VLLM_PATCHES="EngineArgsConfig,DSV32Indexer" \
 vllm serve /data/models/DeepSeek-V3.2-INT8
 ```
 
@@ -282,4 +282,3 @@ INFO omni-npu[patch_manager.py:21] patch class XXXPatch registered as PatchName
 ### 补丁是否可以重复应用
 
 不可以。重复应用的补丁会被跳过，并在日志中输出告警。
-

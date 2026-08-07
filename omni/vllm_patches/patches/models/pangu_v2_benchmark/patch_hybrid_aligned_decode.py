@@ -60,8 +60,8 @@ all ranks stop calling the barrier on the same step.
 Enabling
 --------
 Lives in the shared ``pangu_v2_benchmark`` model-patch directory, so it is only
-imported/registered when that directory is selected via ``OMNI_NPU_PATCHES_DIR``
-(e.g. ``OMNI_NPU_PATCHES_DIR="..., pangu_v2_benchmark"``). Because it replaces
+imported/registered when that directory is selected via ``OMNI_VLLM_PATCHES_DIR``
+(e.g. ``OMNI_VLLM_PATCHES_DIR="..., pangu_v2_benchmark"``). Because it replaces
 the global ``Scheduler.schedule``, it additionally engages only when
 ``OMNI_HYBRID_ALIGNED_DECODE=1`` -- otherwise both hooks are strict no-ops, so the
 directory is safe to leave loaded. Mutually exclusive with the other decode-gate

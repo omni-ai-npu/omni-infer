@@ -134,8 +134,8 @@ all:
             LCCL_DETERMINISTIC: 0
             LCCL_PARALLEL: 0
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
-            OMNI_NPU_VLLM_PATCHES: ALL
-            OMNI_NPU_PATCHES_DIR: kimi
+            OMNI_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES_DIR: kimi
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
@@ -156,10 +156,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.3
           master_node: d0
@@ -268,8 +266,8 @@ all:
             LCCL_DETERMINISTIC: 0
             LCCL_PARALLEL: 0
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
-            OMNI_NPU_VLLM_PATCHES: ALL
-            OMNI_NPU_PATCHES_DIR: kimi
+            OMNI_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES_DIR: kimi
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
@@ -290,10 +288,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.3
           master_node: d0
@@ -402,8 +398,8 @@ all:
             LCCL_DETERMINISTIC: 0
             LCCL_PARALLEL: 0
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
-            OMNI_NPU_VLLM_PATCHES: ALL
-            OMNI_NPU_PATCHES_DIR: kimi
+            OMNI_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES_DIR: kimi
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
@@ -424,10 +420,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.3
           master_node: d0
@@ -536,8 +530,8 @@ all:
             LCCL_DETERMINISTIC: 0
             LCCL_PARALLEL: 0
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
-            OMNI_NPU_VLLM_PATCHES: ALL
-            OMNI_NPU_PATCHES_DIR: kimi
+            OMNI_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES_DIR: kimi
             LOCAL_DECODE_SERVER_IP_LIST: ${SERVER_IP_LIST}
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
@@ -558,10 +552,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.3
           master_node: d0
@@ -663,8 +655,8 @@ all:
             LCCL_DETERMINISTIC: 0
             LCCL_PARALLEL: 0
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
-            OMNI_NPU_VLLM_PATCHES: ALL
-            OMNI_NPU_PATCHES_DIR: kimi
+            OMNI_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES_DIR: kimi
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
@@ -687,10 +679,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.1
           master_node: p0
@@ -790,8 +780,8 @@ all:
             LCCL_DETERMINISTIC: 0
             LCCL_PARALLEL: 0
             VLLM_PLUGINS: omni-npu,omni_npu_patches,omni_custom_models
-            OMNI_NPU_VLLM_PATCHES: ALL
-            OMNI_NPU_PATCHES_DIR: kimi
+            OMNI_VLLM_PATCHES: ALL
+            OMNI_VLLM_PATCHES_DIR: kimi
             LOCAL_DECODE_SERVER_IP_LIST: ''
             LOG_PATH: /tmp/log_path
             MASTER_PORT: 8000
@@ -814,10 +804,8 @@ all:
             TOOLCHAIN_HOME: /usr/local/Ascend/latest/toolkit
             TP_SOCKET_IFNAME: enp67s0f5
             USING_LCCL_COM: 0
-            VLLM_ENABLE_MC2: 0
-            VLLM_LLMDATADIST_ZMQ_PORT: 5568
+            OMNI_LLMDATADIST_ZMQ_PORT: 5568
             VLLM_LOGGING_LEVEL: INFO
-            VLLM_USE_V1: 1
             VLLM_WORKER_MULTIPROC_METHOD: fork
           host_ip: 127.0.0.1
           master_node: p0

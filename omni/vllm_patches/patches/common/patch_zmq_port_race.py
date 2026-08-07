@@ -36,7 +36,7 @@ logger = init_logger(__name__)
 
 
 def _patch_enabled_in_env(patch_name: str) -> bool:
-    patches = envs.OMNI_NPU_VLLM_PATCHES.strip()
+    patches = envs.OMNI_VLLM_PATCHES.strip()
     if not patches or patches == "ALL":
         return True
     return patch_name in {item.strip() for item in patches.split(",") if item.strip()}

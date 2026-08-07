@@ -49,14 +49,14 @@ class PatchManager:
 
     def apply_patches_from_env(self):
         """
-        apply patches in OMNI_NPU_VLLM_PATCHES environment variable.
+        apply patches in OMNI_VLLM_PATCHES environment variable.
 
-        example: OMNI_NPU_VLLM_PATCHES="PatchA,PatchB"
+        example: OMNI_VLLM_PATCHES="PatchA,PatchB"
         """
-        patches_from_env = envs.OMNI_NPU_VLLM_PATCHES.strip()
+        patches_from_env = envs.OMNI_VLLM_PATCHES.strip()
 
         if not patches_from_env:
-            logger.info("no patches specified in env OMNI_NPU_VLLM_PATCHES")
+            logger.info("no patches specified in env OMNI_VLLM_PATCHES")
             return
 
         patch_list = [p.strip() for p in patches_from_env.split(',') if p.strip()]
@@ -66,7 +66,7 @@ class PatchManager:
             self.apply_patch(patch_name)
 
     def apply_patches(self):
-        apply_all_env = envs.OMNI_NPU_VLLM_PATCHES.strip()
+        apply_all_env = envs.OMNI_VLLM_PATCHES.strip()
 
         # New logic: apply all patches when unset, empty, or 'ALL'
         if not apply_all_env or apply_all_env == 'ALL':

@@ -60,11 +60,9 @@ export HCCL_CONNECT_TIMEOUT=600
 export HCCL_EXEC_TIMEOUT=120
 export ASCEND_GLOBAL_LOG_LEVEL=3
 
-export VLLM_USE_V1=1
 export VLLM_WORKER_MULTIPROC_METHOD=fork
 export OMNI_USE_DSV3=1
 export USING_LCCL_COM=0
-export VLLM_ENABLE_MC2=0
 
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export HCCL_OP_EXPANSION_MODE="AIV"
@@ -95,7 +93,6 @@ vllm serve $MODEL_PATH \
   --data-parallel-size-local 8 \
   --data-parallel-address $MASTER_IP \
   --data-parallel-rpc-port 9001 \
-  --disable-log-requests \
   --gpu-memory-utilization 0.9 \
   --max-num-seqs 32 \
   --max-model-len 4096 \

@@ -23,7 +23,7 @@ from omni_npu.layers.rotary_embedding.llama3_rope import NPULlama3RotaryEmbeddin
 from omni_npu.layers.rotary_embedding.deepseek_scaling_rope import NPUDeepseekScalingRotaryEmbedding
 from omni_npu.layers.rotary_embedding.mrope import NPUMRotaryEmbedding
 from omni_npu.layers.rotary_embedding.yarn_scaling_rope import NPUYaRNScalingRotaryEmbedding
-patches_dir = envs.OMNI_NPU_PATCHES_DIR
+patches_dir = envs.OMNI_VLLM_PATCHES_DIR
 if any(
     d.strip() in ["pangu_sink_swa_mla"]
     for d in patches_dir.split(",")
