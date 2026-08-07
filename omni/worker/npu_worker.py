@@ -139,7 +139,7 @@ class NPUWorker(Worker):
 
                 # DP_LOCAL_RANK * TP_PP_WORLD_SIZE + TP_LOCAL_RANK
                 self.local_rank += dp_local_rank * tp_pp_world_size
-            
+
             visible_device_index = current_platform.logical_device_id_to_visible_device_id(self.local_rank)
             self.device = torch.device(f"npu:{visible_device_index}")
             torch.npu.set_device(self.device)
@@ -191,7 +191,7 @@ class NPUWorker(Worker):
             # explicitly enabled by the high-performance launcher script.
             if "omni_custom_models" in os.environ.get("VLLM_PLUGINS", ""):
                 # Initialize the model best practice configs.
-                from omni_npu.v1.distributed.parallel_state_ext import ( 
+                from omni_npu.v1.distributed.parallel_state_ext import (
                     ensure_layer_parallel_initialized,
                 )
 
@@ -285,7 +285,7 @@ class NPUWorker(Worker):
         )
 
         weights_memory = getattr(self.model_runner, 'model_memory_usage', 0)
-        # MemorySnapshot.torch_peak is measured 
+        # MemorySnapshot.torch_peak is measured
         # via method torch.npu.memory_stats(device).get("allocated_bytes.all.peak", 0)
         peak_activation = after_profile.torch_peak - before_profile.torch_peak
 
@@ -491,7 +491,7 @@ class NPUWorker(Worker):
             return b / (1 << 30)
 
         def cast_module_to_nd(module: torch.nn.Module, tag: str) -> None:
-            """when using .to('cpu'), the ND format is required. First, 
+            """when using .to('cpu'), the ND format is required. First,
             convert the model weights back to ND format uniformly."""
             format_counter: dict = {}
 
@@ -605,7 +605,6 @@ class NPUWorker(Worker):
         free_bytes_after = torch.npu.mem_get_info()[0]
         use_bytes = free_bytes_before - free_bytes_after
         logger.info(f"wake_up {tags=} use %.2f GiB memory.", GiB(use_bytes))
-
 
     def recapture_model(self) -> None:
         """Re-capture ACLGraph against the current model weights."""

@@ -314,6 +314,7 @@ def rejection_sample(
         draft_probs,
         target_probs,
         sampling_metadata,
+        device,
         stream
     )
 
@@ -461,9 +462,10 @@ def sample_recovered_tokens(
     vocab_size = target_probs.shape[-1]
     cur_stream = torch.npu.current_stream()
     with torch.npu.stream(stream):
-        q = torch.empty_like(
-            target_probs,
+        q = torch.empty(
+            (batch_size, vocab_size),
             dtype=torch.float32,
+            device=device,
         )
         q.exponential_()
         for i, generator in sampling_metadata.generators.items():
