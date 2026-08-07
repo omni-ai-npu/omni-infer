@@ -25,6 +25,7 @@ from vllm.utils.torch_utils import kv_cache_dtype_str_to_dtype
 from vllm.v1.kv_cache_interface import KVCacheSpec
 from vllm.config import get_current_vllm_config
 from vllm.v1.attention.backend import AttentionBackend
+from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
 from vllm.model_executor.layers.attention.mla_attention import MLAAttention
 from vllm.model_executor.layers.mamba.abstract import MambaBase
 
@@ -248,9 +249,9 @@ class MomeAttention(MambaBase):
         compilation_config.static_forward_context[prefix] = self
 
     @property
-    def mamba_type(self) -> str:
-        return "mome"
-    
+    def mamba_type(self) -> MambaAttentionBackendEnum:
+        return MambaAttentionBackendEnum.CUSTOM
+
     def get_attn_backend(self) -> type[AttentionBackend]:
         return NPUPanguMomeBackend
 
@@ -278,10 +279,16 @@ class MomeAttention(MambaBase):
         """
         from vllm.v1.kv_cache_interface import MomeSpec
 
-        enable_prefix_caching = vllm_config.cache_config.enable_prefix_caching
-        block_size = vllm_config.cache_config.block_size
-        max_model_len = vllm_config.model_config.max_model_len
-        mamba_block_size = block_size if enable_prefix_caching else max_model_len
+        # vLLM resolves this during MambaModelConfig verification (including a
+        # user-provided --mamba-block-size). Do not derive it a second time.
+        mamba_block_size = vllm_config.cache_config.mamba_block_size
+        assert mamba_block_size is not None
+        mamba_cache_mode = vllm_config.cache_config.mamba_cache_mode
+        if mamba_cache_mode == "align":
+            raise NotImplementedError(
+                "MoME does not support mamba_cache_mode='align' yet because "
+                "PanguV2 has no MoME state-copy contract. Use 'all' or 'none'."
+            )
 
         return MomeSpec(
             shapes=self.get_state_shape(),
@@ -289,6 +296,7 @@ class MomeAttention(MambaBase):
             block_size=mamba_block_size,
             page_size_padded=self.page_size_padded,
             mamba_type=self.mamba_type,
+            mamba_cache_mode=mamba_cache_mode,
             kernel_size=self.kernel_size,
             num_spec_tokens=self.num_spec_tokens,
             num_extra_reserved_blocks=self.num_extra_reserved_blocks,
