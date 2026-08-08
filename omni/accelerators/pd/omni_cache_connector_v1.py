@@ -14,7 +14,7 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional, Tuple, List, Dict
+from typing import TYPE_CHECKING, Any, Optional, Tuple, List, Dict, Set
 from dataclasses import dataclass, field
 from omni.accelerators.pd.ox_process_manager import OxProcessManager
 
@@ -363,6 +363,20 @@ class LLMDataDistConnector(KVConnectorBase_V1):
             raise RuntimeError("self.connector_scheduler cannot be None")
         return self.connector_scheduler.request_finished(request, block_ids, spec_token_ids or [])
 
+    def get_load_kv_failure_reqs(self) -> Optional[Set[str]]:
+        """Return request IDs to abort due to KV loading failure (recompute case).
+
+        Scheduler-side detection: requests preempted (recompute) after a
+        successful KV pull. Delegates to the decode connector scheduler.
+        Returns None when there is no scheduler (worker role / prefill).
+        """
+        if self.connector_scheduler is None:
+            return None
+        method = getattr(self.connector_scheduler, "get_load_kv_failure_reqs", None)
+        if method is None:
+            return None
+        return method()
+
     ############################################################
     # Worker Side Methods
     ############################################################
@@ -592,6 +606,10 @@ class DecodeConnectorScheduler:
         self.block_size = vllm_config.cache_config.block_size
         self._reqs_need_recv: Dict[str, Tuple[Request, List[int]]] = {}
         self.processed_request: set[str] = set()
+        # Request IDs to abort: preempted (recompute) after KV was already pulled
+        # and the prefill side freed its blocks. Re-pull would fail and local
+        # recompute is wrong in P/D, so abort and let the client retry to prefill.
+        self._abort_request_ids: Set[str] = set()
 
         additional_config = vllm_config.additional_config or {}
         self.async_pull_kv = additional_config.get("async_pull_kv", False)
@@ -605,6 +623,15 @@ class DecodeConnectorScheduler:
             self, request: "Request",
             num_computed_tokens: int) -> Tuple[int, bool]:
         if request.request_id in self.processed_request:
+            # Preempted (recompute mode) after KV was already pulled and the
+            # prefill side freed its blocks. Re-pull would fail and local
+            # recompute is wrong in P/D -> mark for abort so the scheduler can
+            # finish the request as aborted and the client retries to prefill.
+            logger.warning(
+                "Recompute-after-KV-pull detected for req_id=%s; "
+                "marking for abort.", request.request_id)
+            self.processed_request.discard(request.request_id)
+            self._abort_request_ids.add(request.request_id)
             return 0, False
         params = request.kv_transfer_params
         if params is None:
@@ -678,6 +705,20 @@ class DecodeConnectorScheduler:
         if request.request_id in self.processed_request:
             self.processed_request.remove(request.request_id)
         return False, None
+
+    def get_load_kv_failure_reqs(self) -> Optional[Set[str]]:
+        """Return and clear request IDs to abort (preempted after KV pull).
+
+        These requests were preempted with recompute mode after a successful KV
+        pull. The prefill node already freed its KV blocks (ack was sent), so
+        re-pulling would fail and local recompute is wrong in P/D. Abort is the
+        only correct option.
+        """
+        if not self._abort_request_ids:
+            return None
+        result = self._abort_request_ids.copy()
+        self._abort_request_ids.clear()
+        return result
 
 
 class DecodeConnectorWorker:

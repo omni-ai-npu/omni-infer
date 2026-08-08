@@ -1,0 +1,100 @@
+diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
+index fab1b1005..fe9838419 100644
+--- a/vllm/entrypoints/openai/protocol.py
++++ b/vllm/entrypoints/openai/protocol.py
+@@ -247,7 +247,11 @@ class ChatCompletionRequest(OpenAIBaseModel):
+         ChatCompletionNamedToolChoiceParam,
+     ]] = "none"
+ 
+-    reasoning_effort: Optional[Literal["low", "medium", "high"]] = None
++    # "none" disables thinking for this request (drives enable_thinking=False
++    # downstream). low/medium/high keep thinking on. omni: for GLM the
++    # low/medium/high levels are accepted but currently equivalent at the
++    # model level; "none" vs the rest is the functional distinction.
++    reasoning_effort: Optional[Literal["none", "low", "medium", "high"]] = None
+     include_reasoning: bool = True
+ 
+     # NOTE this will be ignored by vLLM -- the model determines the behavior
+diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
+index 1d6f608e8..d742ed8b6 100644
+--- a/vllm/entrypoints/openai/serving_chat.py
++++ b/vllm/entrypoints/openai/serving_chat.py
+@@ -231,10 +231,42 @@ class OpenAIServingChat(OpenAIServing):
+             ]
+ 
+             if not self.use_harmony or not enable_openai_harmony_encode:
+-                if not enable_openai_harmony_encode and request.reasoning_effort is not None:
+-                    request.chat_template_kwargs = (request.chat_template_kwargs or {}) | {
+-                            "reasoning_effort": REASONING_EFFORT[request.reasoning_effort]
++                if request.reasoning_effort is not None:
++                    # omni: derive enable_thinking from reasoning_effort so the
++                    # field actually takes effect for models (e.g. GLM) whose
++                    # reasoning parser reads the enable_thinking/thinking bool
++                    # rather than reasoning_effort directly. "none" turns
++                    # thinking OFF; low/medium/high keep it ON. Mirrors the
++                    # latest vLLM behavior. Only set when the client hasn't.
++                    # NOTE: this runs for all non-harmony models (GLM, DeepSeek,
++                    # Qwen, ...); the outer `not self.use_harmony` guard already
++                    # excludes gpt-oss, which uses the Harmony path below.
++                    if "enable_thinking" not in (request.chat_template_kwargs or {}):
++                        request.chat_template_kwargs = (
++                            request.chat_template_kwargs or {}) | {
++                            "enable_thinking": request.reasoning_effort != "none"
+                         }
++                    # Pass the effort as a plain STRING into chat_template_kwargs
++                    # so the Jinja template can compare `reasoning_effort == 'high'`
++                    # (chat_template.jinja line 2). Do NOT use the ReasoningEffort
++                    # enum here - the template expects a string, and the enum would
++                    # make the `== 'high'` check always False (everything -> "Max").
++                    # The enum is only needed by the Harmony (gpt-oss) path below.
++                    if request.reasoning_effort != "none":
++                        request.chat_template_kwargs = (
++                            request.chat_template_kwargs or {}) | {
++                            "reasoning_effort": request.reasoning_effort
++                        }
++                    # omni: debug log so the rendered reasoning_effort kwarg and the
++                    # derived enable_thinking can be inspected when verifying that
++                    # low/medium/high/none reach the chat template.
++                    logger.debug(
++                        "omni reasoning_effort: request=%r -> enable_thinking=%s, "
++                        "chat_template_kwargs=%r",
++                        request.reasoning_effort,
++                        request.chat_template_kwargs.get("enable_thinking"),
++                        request.chat_template_kwargs,
++                    )
+                 if isinstance(tokenizer, DeepseekV32Tokenizer):
+                     is_validate, error_info = DeepseekV32Tokenizer.validate_messages(request.messages)
+                     if not is_validate:
+@@ -261,6 +293,17 @@ class OpenAIServingChat(OpenAIServing):
+                     truncate_prompt_tokens=request.truncate_prompt_tokens,
+                     add_special_tokens=request.add_special_tokens,
+                 )
++                # omni: log the fully rendered prompt (debug) so the effect of
++                # reasoning_effort on the chat template (e.g. the leading
++                # "Reasoning Effort: High/Max" line) can be inspected. Only
++                # logs when reasoning_effort was set by the client, to avoid
++                # noise.
++                if request.reasoning_effort is not None and request_prompts:
++                    logger.debug(
++                        "omni rendered prompt [reasoning_effort=%s]:\n%s",
++                        request.reasoning_effort,
++                        request_prompts[0],
++                    )
+             else:
+                 # For GPT-OSS.
+                 (
+@@ -1773,8 +1816,13 @@ class OpenAIServingChat(OpenAIServing):
+         # if the model supports it. TODO: Support browsing.
+         assert not self.supports_browsing
+         assert not self.supports_code_interpreter
++        # omni: Harmony (gpt-oss) only accepts low/medium/high; "none" has no
++        # enum entry. Pass None so the effort is simply omitted from the
++        # system message rather than raising KeyError.
++        harmony_effort = None if request.reasoning_effort == "none" \
++            else request.reasoning_effort
+         sys_msg = get_system_message(
+-            reasoning_effort=request.reasoning_effort,
++            reasoning_effort=harmony_effort,
+             browser_description=None,
+             python_description=None,
+             with_custom_tools=request.tools is not None)

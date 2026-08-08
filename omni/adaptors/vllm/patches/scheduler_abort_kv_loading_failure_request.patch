@@ -21,7 +21,7 @@ diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
 
              # Extract sample logprobs if needed.
              if request.sampling_params.logprobs is not None and logprobs:
-@@ -840,8 +846,10 @@
+@@ -840,8 +846,15 @@
                  # Invariant: EngineCore returns no partial prefill outputs.
                  assert not prompt_logprobs_tensors
 
@@ -29,25 +29,29 @@ diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
 +            if not stopped and not aborted:
                  new_running.append(request)
 +        # KVTransfer: if loading kv failed, abort the requests
-+        self._abort_loading_kv_failure_reqs(model_runner_output, outputs)
++        self._abort_loading_kv_failure_reqs(model_runner_output.loading_kv_failure, outputs)
++        # KVTransfer: also abort scheduler-side recompute/preempt failures
++        # (e.g. omni-cache request preempted after KV pull, prefill freed its blocks)
++        if self.connector is not None:
++            self._abort_loading_kv_failure_reqs(
++                self.connector.get_load_kv_failure_reqs(), outputs)
 
          # P/D: update state for finished KV Transfers.
          self._update_from_kv_xfer_finished(model_runner_output)
-@@ -1044,3 +1052,29 @@
+@@ -1044,3 +1057,28 @@
              logger.debug("Finished sending KV transfer for request %s", req_id)
              if req_id in self.requests:
                  self._free_blocks(self.requests[req_id])
 +
-+    def _abort_loading_kv_failure_reqs(self, model_runner_output: ModelRunnerOutput, outputs: list[EngineCoreOutput]):
++    def _abort_loading_kv_failure_reqs(self, loading_kv_failure, outputs: list[EngineCoreOutput]):
 +        """
-+        get loading kv failure request ids from the output
-+        The Worker side connectors add loading_kv_failure to the output.
-+        if loading_kv_failure: abort the requests
-+
-+        return True if request_id in model_runner_output.loading_kv_failure
++        get loading kv failure request ids and abort them.
++        Sources: worker side via ModelRunnerOutput.loading_kv_failure, and
++        scheduler side via connector.get_load_kv_failure_reqs() (e.g. omni-cache
++        requests preempted after KV pull).
 +        """
-+        for req_id in (model_runner_output.loading_kv_failure or ()):
-+            logger.debug("Loading KV failed request %s", req_id)
++        for req_id in (loading_kv_failure or ()):
++            logger.warning("Aborting request %s: KV loading failure (e.g. preempted/recompute after KV pull)", req_id)
 +            request = self.requests.get(req_id)
 +            if request is None:
 +                # Invalid request ID.
@@ -97,7 +101,7 @@ diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/base.py b/vllm/distrib
 @@ -190,6 +190,12 @@
          """
          return None, None
- 
+
 +    def get_load_kv_failure_reqs(self) -> Optional[set[str]]:
 +        """
 +        Return kv loading failure requests
