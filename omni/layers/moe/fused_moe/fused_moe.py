@@ -1246,15 +1246,38 @@ def fused_experts_allgather_ep_a2(layer: torch.nn.Module,
                                                                               group_index=expert_tokens,
                                                                               activate_left=True, quant_mode=1)
 
-            output = torch_npu.npu_grouped_matmul_finalize_routing(gate_up_proj, layer.w2_weight,
-                                                                   group_list=expert_tokens, scale=layer.w2_weight_int4_scale,
-                                                                   bias=layer.w2_weight_bias,
-                                                                   pertoken_scale=pertoken_scale,
-                                                                   shared_input=share_input, logit=sorted_topk_weight,
-                                                                   row_index=row_index,
-                                                                   output_bs=batch_size,
-                                                                   group_list_type=1,
-                                                                   tuning_config=tuning_config).to(torch.bfloat16)
+            if os.getenv('ROLE', None) == 'prefill':
+                out = torch_npu.npu_grouped_matmul(
+                    [gate_up_proj], [layer.w2_weight],
+                    scale=[layer.w2_weight_int4_scale],
+                    per_token_scale=[pertoken_scale],
+                    bias=[layer.w2_weight_bias],
+                    group_list=expert_tokens,
+                    split_item=3,
+                    output_dtype=torch.bfloat16,
+                    group_type=0,
+                    group_list_type=1,
+                    tuning_config=tuning_config)[0]
+                output = torch_npu.npu_moe_finalize_routing(
+                    out.unsqueeze(1),
+                    None, None, None,
+                    topk_weights.to(torch.bfloat16),
+                    expanded_x_idx,
+                    topk_ids,
+                    drop_pad_mode=3)
+            else:
+                output = torch_npu.npu_grouped_matmul_finalize_routing(
+                    gate_up_proj, layer.w2_weight,
+                    group_list=expert_tokens,
+                    scale=layer.w2_weight_int4_scale,
+                    bias=layer.w2_weight_bias,
+                    pertoken_scale=pertoken_scale,
+                    shared_input=share_input,
+                    logit=sorted_topk_weight,
+                    row_index=row_index,
+                    output_bs=batch_size,
+                    group_list_type=1,
+                    tuning_config=tuning_config).to(torch.bfloat16)
 
         if not is_prefill and (
                 model_extra_config.operator_opt_config.enable_round_pipeline_comm or model_extra_config.operator_opt_config.enable_pipeline_comm):

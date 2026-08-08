@@ -7,7 +7,7 @@
     },
     "operator_optimization_config": {
       "enable_kv_rmsnorm_rope_cache": true,
-      "prefill_moe_all_to_all": true,
+      "prefill_moe_all_to_all": false,
       "moe_multi_stream_tune": false,
       "best_ep": false,
       "two_stage_comm":false,
