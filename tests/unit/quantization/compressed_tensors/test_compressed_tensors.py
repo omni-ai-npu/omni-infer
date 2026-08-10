@@ -53,6 +53,9 @@ class DummyCompressedTensorsConfig:
         self.ignore = []
         self.packed_modules_mapping = {}
 
+    def _add_fused_moe_to_target_scheme_map(self):
+        pass
+
 
 class DummyCompressedTensorsLinearMethod:
     def __init__(self, config):
@@ -221,6 +224,19 @@ def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
         monkeypatch, "vllm.model_executor.layers.fused_moe.layer"
     )
     fused_moe_module.FusedMoE = DummyFusedMoE
+    fused_moe_package = _make_module(
+        monkeypatch, "vllm.model_executor.layers.fused_moe"
+    )
+    fused_moe_package.RoutedExperts = DummyFusedMoE
+
+    vocab_embedding_module = _make_module(
+        monkeypatch,
+        "vllm.model_executor.layers.vocab_parallel_embedding",
+    )
+    vocab_embedding_module.ParallelLMHead = type("ParallelLMHead", (), {})
+    vocab_embedding_module.VocabParallelEmbedding = type(
+        "VocabParallelEmbedding", (), {}
+    )
 
     linear_module = _make_module(
         monkeypatch, "vllm.model_executor.layers.linear"
@@ -364,7 +380,7 @@ class TestNPUCompressedTensorsConfig:
         scheme = config._get_scheme_from_parts(
             weight_quant=weight_quant,
             input_quant=input_quant,
-            quant_format="activation",
+            format="activation",
             layer_name="Linear",
         )
         assert isinstance(scheme, DummyNPUCompressedTensorsW8A8Int8)

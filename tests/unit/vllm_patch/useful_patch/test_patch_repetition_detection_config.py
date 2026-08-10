@@ -214,7 +214,48 @@ def _load_patch():
     return mod
 
 
+_STUBBED_MODULE_NAMES = (
+    "vllm",
+    "vllm.config",
+    "vllm.sampling_params",
+    "vllm.logger",
+    "vllm.v1",
+    "vllm.v1.engine",
+    "vllm.v1.engine.input_processor",
+    "omni_npu",
+    "omni_npu.vllm_patches",
+    "omni_npu.vllm_patches.core",
+)
+_MISSING = object()
+_saved_modules = {
+    name: sys.modules.get(name, _MISSING) for name in _STUBBED_MODULE_NAMES
+}
+_saved_vllm_engine_args = getattr(
+    sys.modules.get("vllm"), "EngineArgs", _MISSING
+)
+_saved_omni_envs = getattr(sys.modules.get("omni_npu"), "envs", _MISSING)
+
 PATCH = _load_patch()
+
+for _name, _module_value in _saved_modules.items():
+    if _module_value is _MISSING:
+        sys.modules.pop(_name, None)
+    else:
+        sys.modules[_name] = _module_value
+
+_vllm_module = sys.modules.get("vllm")
+if _vllm_module is not None:
+    if _saved_vllm_engine_args is _MISSING:
+        delattr(_vllm_module, "EngineArgs")
+    else:
+        _vllm_module.EngineArgs = _saved_vllm_engine_args
+
+_omni_module = sys.modules.get("omni_npu")
+if _omni_module is not None:
+    if _saved_omni_envs is _MISSING:
+        delattr(_omni_module, "envs")
+    else:
+        _omni_module.envs = _saved_omni_envs
 
 
 # --------------------------------------------------------------------------

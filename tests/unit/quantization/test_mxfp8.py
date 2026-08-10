@@ -360,9 +360,9 @@ class TestMxfp8Config:
         assert isinstance(result, mxfp8_module.Mxfp8MlpMethod)
 
     def test_dispatch_fused_moe(self, mxfp8_module, moe_patches):
-        from vllm.model_executor.layers.fused_moe import FusedMoE
+        from vllm.model_executor.layers.fused_moe import RoutedExperts
 
-        layer = MagicMock(spec=FusedMoE)
+        layer = MagicMock(spec=RoutedExperts)
         layer.moe_config = SimpleNamespace(num_experts=4, has_bias=False)
         layer.layer_name = "model.moe"
         cfg = mxfp8_module.Mxfp8Config()

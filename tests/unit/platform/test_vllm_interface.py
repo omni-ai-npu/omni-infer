@@ -51,7 +51,7 @@ GPU_MODEL_RUNNER_SNAPSHOTS = [
     {
         "class_path": "vllm.v1.worker.gpu_model_runner.GPUModelRunner",
         "method_name": "load_model",
-        "params": ["eep_scale_up"],  # Has default value False
+        "params": ["load_dummy_weights"],  # Has default value False
         "return_type": None,
     },
     {

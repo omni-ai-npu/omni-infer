@@ -330,6 +330,58 @@ class TestCommunicationOpExtensions(unittest.TestCase):
         mock_get_world_size.assert_called_once_with(group=group.device_group)
         mock_all_to_all_single.assert_called_once()
 
+    @patch("omni_npu.v1.distributed.communication_op_ext._get_group", return_value=None)
+    def test_layer_parallel_dp2tp_single_returns_input_without_group(self, _):
+        tensor = torch.randn(2, 4)
+        self.assertIs(
+            communication_op_ext.layer_parallel_dp2tp_single(tensor, "layer"),
+            tensor,
+        )
+
+    @patch("omni_npu.v1.distributed.communication_op_ext._get_group")
+    def test_layer_parallel_dp2tp_single_validates_arguments(self, mock_get_group):
+        group = Mock(world_size=2, device_group=object())
+        mock_get_group.return_value = group
+        tensor = torch.randn(2, 4)
+
+        with self.assertRaises(TypeError):
+            communication_op_ext.layer_parallel_dp2tp_single(
+                tensor, "layer", dim="0"
+            )
+        group.device_group = None
+        with self.assertRaises(RuntimeError):
+            communication_op_ext.layer_parallel_dp2tp_single(tensor, "layer")
+        group.device_group = object()
+        with self.assertRaises(ValueError):
+            communication_op_ext.layer_parallel_dp2tp_single(
+                tensor, "layer", dim=2
+            )
+        with self.assertRaises(ValueError):
+            communication_op_ext.layer_parallel_dp2tp_single(
+                torch.randn(3, 4), "layer", dim=0
+            )
+
+    @patch("omni_npu.v1.distributed.communication_op_ext.dist.get_world_size", return_value=2)
+    @patch("omni_npu.v1.distributed.communication_op_ext.dist.all_to_all_single")
+    @patch("omni_npu.v1.distributed.communication_op_ext._get_group")
+    def test_layer_parallel_dp2tp_single_happy_path(
+        self, mock_get_group, mock_all_to_all_single, mock_get_world_size
+    ):
+        group = Mock(world_size=None, device_group=object())
+        mock_get_group.return_value = group
+        mock_all_to_all_single.side_effect = (
+            lambda output, input_, group=None: output.copy_(input_)
+        )
+        tensor = torch.arange(16, dtype=torch.float32).reshape(2, 8)
+
+        result = communication_op_ext.layer_parallel_dp2tp_single(
+            tensor, "layer", dim=1
+        )
+
+        self.assertEqual(tuple(result.shape), (4, 4))
+        mock_get_world_size.assert_called_once_with(group=group.device_group)
+        mock_all_to_all_single.assert_called_once()
+
 
 class TestParallelStateExtensions(unittest.TestCase):
     """Unit tests for parallel_state helper functions."""
@@ -347,6 +399,102 @@ class TestParallelStateExtensions(unittest.TestCase):
         parallel_state_ext._LOCAL_WORLD = self._orig_local_world
         parallel_state_ext._TP_SIZE_OR_RANKS_GROUP_CACHE.clear()
         parallel_state_ext._TP_SIZE_OR_RANKS_GROUP_CACHE.update(self._orig_group_cache)
+
+    def test_get_npu_device_count_for_supported_families(self):
+        with patch.object(parallel_state_ext, "device_name", "Ascend910B"):
+            self.assertEqual(parallel_state_ext.get_npu_device_count(), 8)
+        with patch.object(parallel_state_ext, "device_name", "Ascend950"):
+            self.assertEqual(parallel_state_ext.get_npu_device_count(), 16)
+        with patch.object(parallel_state_ext, "device_name", "Ascend910C"):
+            self.assertEqual(parallel_state_ext.get_npu_device_count(), 16)
+
+    def test_destroy_extension_groups(self):
+        local = [Mock(), Mock()]
+        cross = [Mock()]
+        rounds = [Mock(), Mock()]
+        parallel_state_ext._LOCAL_COMM_LIST = local
+        parallel_state_ext._CROSS_COMM_LIST = cross
+        parallel_state_ext._CROSS_ROUND_COMM_LIST = rounds
+
+        parallel_state_ext.destroy_parallel_state_ext_groups()
+
+        for group in local + cross + rounds:
+            group.destroy.assert_called_once_with()
+        self.assertIsNone(parallel_state_ext._LOCAL_COMM_LIST)
+        self.assertIsNone(parallel_state_ext._CROSS_COMM_LIST)
+        self.assertIsNone(parallel_state_ext._CROSS_ROUND_COMM_LIST)
+
+    @patch("omni_npu.v1.distributed.parallel_state_ext._get_world_group")
+    def test_world_and_list_group_getters(self, mock_world_group):
+        world = Mock()
+        mock_world_group.return_value = world
+        parallel_state_ext._LOCAL_COMM_LIST = ["local"]
+        parallel_state_ext._CROSS_COMM_LIST = ["cross"]
+        parallel_state_ext._CROSS_ROUND_COMM_LIST = ["round"]
+
+        self.assertIs(parallel_state_ext.get_world_group(), world)
+        self.assertEqual(parallel_state_ext.get_local_group_from_list(0), "local")
+        self.assertEqual(parallel_state_ext.get_cross_group_from_list(0), "cross")
+        self.assertEqual(
+            parallel_state_ext.get_round_cross_group_from_list(0), "round"
+        )
+
+    def test_initialized_group_getters(self):
+        local = Mock()
+        moe = Mock()
+        parallel_state_ext._LOCAL_WORLD = local
+
+        with patch.object(
+            parallel_state_ext.parallel_state,
+            "_MOE_DISPATCH_EP",
+            moe,
+            create=True,
+        ):
+            self.assertIs(parallel_state_ext.get_moe_dispatch_ep_group(), moe)
+        self.assertIs(parallel_state_ext.get_local_world_group(), local)
+
+    def test_layer_metadata_and_group_rank_defaults(self):
+        parallel_state_ext._LAYER_COMM_DICT = {
+            "layer": {
+                "x_transform": {"type": "AllGather", "dim": 1},
+            }
+        }
+        group = Mock(world_size=4, rank_in_group=2)
+
+        self.assertEqual(
+            parallel_state_ext.get_layer_transform_type("missing", "x"), "NoOp"
+        )
+        self.assertEqual(parallel_state_ext.get_layer_dim("missing", "x"), 0)
+        with patch.object(
+            parallel_state_ext, "get_layer_parallel_group", return_value=group
+        ):
+            self.assertEqual(
+                parallel_state_ext.get_layer_parallel_world_size("layer"), 4
+            )
+            self.assertEqual(parallel_state_ext.get_layer_parallel_rank("layer"), 2)
+        with patch.object(
+            parallel_state_ext, "get_layer_parallel_group", return_value=None
+        ):
+            self.assertEqual(
+                parallel_state_ext.get_layer_parallel_world_size("layer"), 1
+            )
+            self.assertEqual(parallel_state_ext.get_layer_parallel_rank("layer"), 0)
+
+    @patch("omni_npu.v1.distributed.parallel_state_ext._get_model_parallel_config")
+    def test_load_layer_parallel_config(self, mock_get_config):
+        mock_get_config.return_value = None
+        self.assertIsNone(
+            parallel_state_ext._load_layer_parallel_config_from_model_extra_config()
+        )
+        mock_get_config.return_value = Mock(
+            layer_parallel_config={"layer": {"tp_size_or_ranks": 2}},
+            input_split=True,
+        )
+        self.assertEqual(
+            parallel_state_ext._load_layer_parallel_config_from_model_extra_config(),
+            {"layer_parallel_config": {"layer": {"tp_size_or_ranks": 2}}},
+        )
+        self.assertTrue(parallel_state_ext.is_layer_parallel_input_split_enabled())
 
     def test_normalize_comm_op_type_aliases_and_canonical(self):
         mapping = {
@@ -774,6 +922,49 @@ class TestParallelStateExtensions(unittest.TestCase):
     def test_tp_size_or_ranks_unsupported_type_returns_none(self):
         self.assertIsNone(parallel_state_ext._tp_size_or_ranks_to_group_ranks("invalid", "layer"))
 
+    def test_tp_size_or_ranks_empty_spec_returns_none(self):
+        self.assertIsNone(
+            parallel_state_ext._tp_size_or_ranks_to_group_ranks(None, "layer")
+        )
+
+    @patch("omni_npu.v1.distributed.parallel_state_ext.dist.get_world_size", return_value=2)
+    @patch("omni_npu.v1.distributed.parallel_state_ext.dist.is_initialized", return_value=True)
+    def test_tp_size_or_ranks_accepts_flat_rank_list(self, *_):
+        self.assertEqual(
+            parallel_state_ext._tp_size_or_ranks_to_group_ranks([0, 1], "layer"),
+            [[0, 1]],
+        )
+
+    @patch("omni_npu.v1.distributed.parallel_state_ext.dist.get_world_size", return_value=2)
+    @patch("omni_npu.v1.distributed.parallel_state_ext.dist.is_initialized", return_value=True)
+    def test_tp_size_or_ranks_rejects_empty_group_and_non_integer_rank(self, *_):
+        with self.assertRaises(RuntimeError, msg="empty group"):
+            parallel_state_ext._tp_size_or_ranks_to_group_ranks(
+                [[], [0, 1]], "layer"
+            )
+        with self.assertRaises(RuntimeError, msg="non-integer rank"):
+            parallel_state_ext._tp_size_or_ranks_to_group_ranks(
+                [[0, "1"]], "layer"
+            )
+
+    @patch("omni_npu.v1.distributed.parallel_state_ext.dist.get_world_size", return_value=2)
+    @patch("omni_npu.v1.distributed.parallel_state_ext.dist.is_initialized", return_value=True)
+    def test_tp_size_or_ranks_rejects_negative_rank(self, *_):
+        with self.assertRaises(RuntimeError):
+            parallel_state_ext._tp_size_or_ranks_to_group_ranks(
+                [[-1, 0]], "layer"
+            )
+
+    @patch("omni_npu.v1.distributed.parallel_state_ext.dist.is_initialized", return_value=False)
+    def test_tp_size_requires_initialized_dist(self, _):
+        with self.assertRaises(RuntimeError):
+            parallel_state_ext._tp_size_or_ranks_to_group_ranks(1, "layer")
+
+    @patch("omni_npu.v1.distributed.parallel_state_ext.dist.is_initialized", return_value=True)
+    def test_tp_size_rejects_non_positive_value(self, _):
+        with self.assertRaises(RuntimeError):
+            parallel_state_ext._tp_size_or_ranks_to_group_ranks(-1, "layer")
+
     def test_ensure_layer_parallel_initialized_uses_passed_backend(self):
         # Force re-init within this test.
         parallel_state_ext._LAYER_COMM_DICT = None
@@ -807,8 +998,7 @@ class TestParallelStateExtensions(unittest.TestCase):
     def test_openpangu_o_proj_dp2tp_all2all_config_initializes_transforms(self):
         config_path = (
             Path(__file__).resolve().parents[3]
-            / "src"
-            / "omni_npu"
+            / "omni"
             / "model_config"
             / "configs"
             / "low_latency"

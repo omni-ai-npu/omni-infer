@@ -1776,6 +1776,7 @@ def test_unpermute_finalize_serial_prefill_gmmfr_float_cast(prepare_module, monk
 
 def test_agrs_prepare_permute_hifloat8_with_routed_experts_cv_runs_shared_gate_up(
     prepare_module,
+    monkeypatch,
 ):
     """When shared_expert_parallel_schedule == 'with_routed_experts_cv', prepare_permute
     schedules layer.shared_experts.gate_up_proj on the side stream and records an event
@@ -1819,8 +1820,8 @@ def test_agrs_prepare_permute_hifloat8_with_routed_experts_cv_runs_shared_gate_u
             return False
 
     import torch as _torch
-    _torch.npu.Event = FakeEvent
-    _torch.npu.stream = FakeStreamCtx
+    monkeypatch.setattr(_torch.npu, "Event", FakeEvent)
+    monkeypatch.setattr(_torch.npu, "stream", FakeStreamCtx)
 
     shared_gate_up_proj = MagicMock(return_value=torch.full((2, 4), 7.0))
     shared_experts = SimpleNamespace(gate_up_proj=shared_gate_up_proj)

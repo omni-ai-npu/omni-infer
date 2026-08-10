@@ -148,8 +148,8 @@ class NPUModelRunner(GPUModelRunner):
         )
         self.block_size = vllm_config.cache_config.block_size
         self.max_num_blocks_per_req = (
-                cdiv(self.model_config.max_model_len,
-                     self.block_size * self.combine_block) * self.combine_block
+            cdiv(self.model_config.max_model_len,
+                 self.block_size * self.combine_block) * self.combine_block
         )
         self.graph_block_tables = np.zeros(
             (self.max_num_reqs * num_tokens_per_reqs_decode,
@@ -172,10 +172,10 @@ class NPUModelRunner(GPUModelRunner):
             )
 
         self.batch_execution_and_padding_state: tuple[
-                                                    CUDAGraphMode,
-                                                    BatchDescriptor,
-                                                    torch.Tensor | None,
-                                                ] | None = None
+            CUDAGraphMode,
+            BatchDescriptor,
+            torch.Tensor | None,
+        ] | None = None
 
         self._is_mm_encoder_only = False
 
@@ -183,9 +183,9 @@ class NPUModelRunner(GPUModelRunner):
         # self._init_npu_input_batch()
 
     def _init_npu_input_batch(
-            self,
-            block_sizes=None,
-            kernel_block_sizes=None,
+        self,
+        block_sizes=None,
+        kernel_block_sizes=None,
     ):
         self.input_batch = NPUInputBatch(
             max_num_reqs=self.max_num_reqs,
@@ -217,7 +217,7 @@ class NPUModelRunner(GPUModelRunner):
 
     @reinitialize_input_batch_decorator
     def may_reinitialize_input_batch(
-            self, kv_cache_config: KVCacheConfig, kernel_block_sizes: list[int]
+        self, kv_cache_config: KVCacheConfig, kernel_block_sizes: list[int]
     ) -> None:
         """
         Re-initialize the input batch if the block sizes are different from
@@ -241,15 +241,15 @@ class NPUModelRunner(GPUModelRunner):
             )
             if isinstance(kv_cache_group.kv_cache_spec, MambaSpec):
                 max_num_blocks_per_req = (
-                                             max_num_blocks_per_req
-                                             if self.cache_config.enable_prefix_caching
-                                             else 1
-                                         ) + kv_cache_group.kv_cache_spec.num_speculative_blocks
+                    max_num_blocks_per_req
+                    if self.cache_config.enable_prefix_caching
+                    else 1
+                ) + kv_cache_group.kv_cache_spec.num_speculative_blocks
             max_num_blocks.append(max_num_blocks_per_req)
 
         if (
-                block_sizes != self._init_block_sizes
-                or kernel_block_sizes != self._init_kernel_block_sizes
+            block_sizes != self._init_block_sizes
+            or kernel_block_sizes != self._init_kernel_block_sizes
         ):
             self._init_block_sizes = block_sizes
             self._init_kernel_block_sizes = kernel_block_sizes
@@ -265,12 +265,12 @@ class NPUModelRunner(GPUModelRunner):
         )
 
     def _model_forward(
-            self,
-            input_ids: torch.Tensor | None = None,
-            positions: torch.Tensor | None = None,
-            intermediate_tensors: IntermediateTensors | None = None,
-            inputs_embeds: torch.Tensor | None = None,
-            **model_kwargs: dict[str, Any],
+        self,
+        input_ids: torch.Tensor | None = None,
+        positions: torch.Tensor | None = None,
+        intermediate_tensors: IntermediateTensors | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        **model_kwargs: dict[str, Any],
     ) -> Any:
         """Helper method to call the model forward pass.
 
@@ -304,9 +304,9 @@ class NPUModelRunner(GPUModelRunner):
         yield from self._kv_cache_spec_attn_group_iterator()
 
     def _reshape_kv_cache_tensors(
-            self,
-            kv_cache_raw_tensors: dict[str, torch.Tensor],
-            kernel_block_sizes: list[int],
+        self,
+        kv_cache_raw_tensors: dict[str, torch.Tensor],
+        kernel_block_sizes: list[int],
     ) -> dict[str, torch.Tensor]:
         kv_caches: dict[str, torch.Tensor] = {}
         has_tensor, has_tuple = False, False
@@ -344,16 +344,16 @@ class NPUModelRunner(GPUModelRunner):
         return kv_caches
 
     def _update_hybrid_attention_mamba_layout(
-            self, kv_caches: dict[str, Union[torch.Tensor, tuple[torch.Tensor, ...]]]
+        self, kv_caches: dict[str, Union[torch.Tensor, tuple[torch.Tensor, ...]]]
     ) -> None:
         for group in self.iter_kv_cache_attn_groups():
             kv_cache_spec = group.kv_cache_spec
             for layer_name in group.layer_names:
                 kv_cache = kv_caches[layer_name]
                 if (
-                        isinstance(kv_cache_spec, AttentionSpec)
-                        and isinstance(kv_cache, torch.Tensor)
-                        and kv_cache.shape[0] == 2
+                    isinstance(kv_cache_spec, AttentionSpec)
+                    and isinstance(kv_cache, torch.Tensor)
+                    and kv_cache.shape[0] == 2
                 ):
                     assert kv_cache.shape[1] != 2, (
                         "Fail to determine whether the layout is "
@@ -371,20 +371,20 @@ class NPUModelRunner(GPUModelRunner):
         torch.npu.synchronize()
 
     def _determine_batch_execution_and_padding(
-            self,
-            num_tokens: int,
-            num_reqs: int,
-            num_scheduled_tokens_np: np.ndarray,
-            max_num_scheduled_tokens: int,
-            use_cascade_attn: bool,
-            allow_microbatching: bool = True,
-            force_eager: bool = False,
-            # For cudagraph capture TODO(lucas): Refactor how we capture cudagraphs (will
-            # be improved in model runner v2)
-            force_uniform_decode: bool | None = None,
-            force_has_lora: bool | None = None,
-            force_num_active_loras: int | None = None,
-            num_encoder_reqs: int = 0,
+        self,
+        num_tokens: int,
+        num_reqs: int,
+        num_scheduled_tokens_np: np.ndarray,
+        max_num_scheduled_tokens: int,
+        use_cascade_attn: bool,
+        allow_microbatching: bool = True,
+        force_eager: bool = False,
+        # For cudagraph capture TODO(lucas): Refactor how we capture cudagraphs (will
+        # be improved in model runner v2)
+        force_uniform_decode: bool | None = None,
+        force_has_lora: bool | None = None,
+        force_num_active_loras: int | None = None,
+        num_encoder_reqs: int = 0,
     ) -> tuple[
         CUDAGraphMode,
         BatchDescriptor,
@@ -402,7 +402,7 @@ class NPUModelRunner(GPUModelRunner):
         # Encoder-decoder models only support CG for decoder_step > 0 (no enc_output
         # is present). Also, chunked-prefill is disabled, so batch are uniform.
         has_encoder_output = (
-                self.model_config.is_encoder_decoder and num_encoder_reqs > 0
+            self.model_config.is_encoder_decoder and num_encoder_reqs > 0
         )
 
         # Compute LoRA state for cudagraph dispatch
@@ -416,9 +416,9 @@ class NPUModelRunner(GPUModelRunner):
         num_tokens_padded = self._pad_for_sequence_parallelism(num_tokens)
 
         def dispatch_cudagraph(
-                num_tokens: int,
-                disable_full: bool = False,
-                valid_modes=None,
+            num_tokens: int,
+            disable_full: bool = False,
+            valid_modes=None,
         ):
             if force_eager:
                 return (CUDAGraphMode.NONE, BatchDescriptor(num_tokens_padded))
@@ -437,9 +437,9 @@ class NPUModelRunner(GPUModelRunner):
         num_tokens_padded = batch_descriptor.num_tokens
         if self.compilation_config.pass_config.enable_sp:
             assert (
-                    batch_descriptor.num_tokens
-                    % self.vllm_config.parallel_config.tensor_parallel_size
-                    == 0
+                batch_descriptor.num_tokens
+                % self.vllm_config.parallel_config.tensor_parallel_size
+                == 0
             ), (
                 "Sequence parallelism requires num_tokens to be "
                 "a multiple of tensor parallel size"
@@ -584,11 +584,11 @@ class NPUModelRunner(GPUModelRunner):
             attn_layer_names = list(attn_layer_names)
 
             self.model = ACLGraphWrapper(self.model.runnable,
-                                         self.vllm_config,
-                                         runtime_mode=CUDAGraphMode.FULL,
-                                         update_stream=self.update_stream,
-                                         attn_layer_names=attn_layer_names,
-                                         )
+                self.vllm_config,
+                runtime_mode=CUDAGraphMode.FULL,
+                update_stream=self.update_stream,
+                attn_layer_names=attn_layer_names,
+            )
             logger.debug("<<< Wrapped original model with ACLGraphWrapper")
             if hasattr(self, "drafter") and isinstance(self.drafter, EagleProposer):
                 n_predict = getattr(self.drafter, "n_predict", 1)
@@ -717,9 +717,9 @@ class NPUModelRunner(GPUModelRunner):
     @model_output_decorator
     @maybe_dump_kv
     def execute_model(
-            self,
-            scheduler_output: "SchedulerOutput",
-            intermediate_tensors: Optional[IntermediateTensors] = None,
+        self,
+        scheduler_output: "SchedulerOutput",
+        intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> Union[ModelRunnerOutput, AsyncModelRunnerOutput, IntermediateTensors]:
         with (switch_torch_device()
               if self.use_async_scheduling else nullcontext()):
@@ -807,10 +807,10 @@ class NPUModelRunner(GPUModelRunner):
     # dummy_run loop (patch_eagle.py), pairing forward+compute_logits per
     # spec iteration with active rank's propose.
     def _dp_sync_main_compute_logits(
-            self,
-            hidden_states: torch.Tensor,
-            num_scheduled_tokens: np.ndarray,
-            is_profile: bool,
+        self,
+        hidden_states: torch.Tensor,
+        num_scheduled_tokens: np.ndarray,
+        is_profile: bool,
     ) -> None:
         if not (self.dp_parallel_lmhead or self.local_parallel_lmhead) or is_profile:
             return
@@ -822,10 +822,10 @@ class NPUModelRunner(GPUModelRunner):
 
     @torch.inference_mode()
     def sync_and_slice_intermediate_tensors_dummy_run(
-            self,
-            num_tokens: int,
-            intermediate_tensors: IntermediateTensors | None,
-            sync_self: bool,
+        self,
+        num_tokens: int,
+        intermediate_tensors: IntermediateTensors | None,
+        sync_self: bool,
     ) -> IntermediateTensors:
         assert sync_self == False
         assert self.intermediate_tensors is not None
@@ -844,19 +844,19 @@ class NPUModelRunner(GPUModelRunner):
 
     @torch.inference_mode()
     def _dummy_run(
-            self,
-            num_tokens: int,
-            cudagraph_runtime_mode: CUDAGraphMode | None = None,
-            force_attention: bool = False,
-            uniform_decode: bool = False,
-            allow_microbatching: bool = True,
-            skip_eplb: bool = False,
-            is_profile: bool = False,
-            create_mixed_batch: bool = False,
-            remove_lora: bool = True,
-            is_graph_capturing: bool = False,
-            num_active_loras: int = 0,
-            profile_seq_lens: int | None = None,
+        self,
+        num_tokens: int,
+        cudagraph_runtime_mode: CUDAGraphMode | None = None,
+        force_attention: bool = False,
+        uniform_decode: bool = False,
+        allow_microbatching: bool = True,
+        skip_eplb: bool = False,
+        is_profile: bool = False,
+        create_mixed_batch: bool = False,
+        remove_lora: bool = True,
+        is_graph_capturing: bool = False,
+        num_active_loras: int = 0,
+        profile_seq_lens: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Run a dummy forward pass to warm up/profile run or capture the
@@ -892,8 +892,8 @@ class NPUModelRunner(GPUModelRunner):
             return torch.tensor([]), torch.tensor([])
 
         assert (
-                cudagraph_runtime_mode is None
-                or cudagraph_runtime_mode.valid_runtime_modes()
+            cudagraph_runtime_mode is None
+            or cudagraph_runtime_mode.valid_runtime_modes()
         )
 
         # If cudagraph_mode.decode_mode() == FULL and
@@ -1075,11 +1075,11 @@ class NPUModelRunner(GPUModelRunner):
                 )
 
         with self.maybe_dummy_run_with_lora(
-                self.lora_config,
-                num_scheduled_tokens,
-                num_sampled_tokens,
-                remove_lora,
-                num_active_loras,
+            self.lora_config,
+            num_scheduled_tokens,
+            num_sampled_tokens,
+            remove_lora,
+            num_active_loras,
         ):
             # Make sure padding doesn't exceed max_num_tokens
             assert num_tokens_padded <= self.max_num_tokens
@@ -1168,15 +1168,15 @@ class NPUModelRunner(GPUModelRunner):
                 assert isinstance(self.drafter, EagleProposer)
                 # Adapt start: enable mtp acl graph mode
                 use_cudagraphs = (
-                                         (
-                                                 is_graph_capturing
-                                                 and cudagraph_runtime_mode == CUDAGraphMode.FULL
-                                         )
-                                         or (
-                                                 not is_graph_capturing
-                                                 and cudagraph_runtime_mode != CUDAGraphMode.NONE
-                                         )
-                                 ) and not self.speculative_config.enforce_eager
+                    (
+                        is_graph_capturing
+                        and cudagraph_runtime_mode == CUDAGraphMode.FULL
+                    )
+                    or (
+                        not is_graph_capturing
+                        and cudagraph_runtime_mode != CUDAGraphMode.NONE
+                    )
+                ) and not self.speculative_config.enforce_eager
                 # Adapt end: enable mtp acl graph mode
 
                 # Note(gnovack) - We need to disable cudagraphs for one of the two
@@ -1184,8 +1184,8 @@ class NPUModelRunner(GPUModelRunner):
                 # short term mitigation for issue mentioned in
                 # https://github.com/vllm-project/vllm/issues/28334
                 if (
-                        self.compilation_config.cudagraph_specialize_lora
-                        and num_active_loras > 0
+                    self.compilation_config.cudagraph_specialize_lora
+                    and num_active_loras > 0
                 ):
                     use_cudagraphs = False
 
@@ -1225,9 +1225,9 @@ class NPUModelRunner(GPUModelRunner):
 
     @prepare_inputs_decorator
     def _prepare_inputs(
-            self,
-            scheduler_output: "SchedulerOutput",
-            num_scheduled_tokens: np.ndarray,
+        self,
+        scheduler_output: "SchedulerOutput",
+        num_scheduled_tokens: np.ndarray,
     ) -> tuple[
         torch.Tensor,
         SpecDecodeMetadata | None,
@@ -1238,9 +1238,9 @@ class NPUModelRunner(GPUModelRunner):
 
     @init_config_decorator
     def initialize_kv_cache(
-            self,
-            kv_cache_config: KVCacheConfig,
-            is_profiling: bool = False,
+        self,
+        kv_cache_config: KVCacheConfig,
+        is_profiling: bool = False,
     ) -> None:
         super().initialize_kv_cache(kv_cache_config, is_profiling)
 
@@ -1250,7 +1250,7 @@ class NPUModelRunner(GPUModelRunner):
         # patch end
 
     def initialize_kv_cache_tensors(
-            self, kv_cache_config: KVCacheConfig, kernel_block_sizes: list[int]
+        self, kv_cache_config: KVCacheConfig, kernel_block_sizes: list[int]
     ) -> dict[str, torch.Tensor]:
         kv_caches = super().initialize_kv_cache_tensors(kv_cache_config, kernel_block_sizes)
         if has_kv_transfer_group():
@@ -1296,8 +1296,8 @@ class NPUModelRunner(GPUModelRunner):
     def unregister_kv_caches(self):
         kv_transfer_config = self.vllm_config.kv_transfer_config
         is_llmdatadist = (
-                kv_transfer_config is not None
-                and kv_transfer_config.kv_connector == "LLMDataDistConnector"
+            kv_transfer_config is not None
+            and kv_transfer_config.kv_connector == "LLMDataDistConnector"
         )
         if is_llmdatadist:
             if has_kv_transfer_group():
@@ -1307,8 +1307,8 @@ class NPUModelRunner(GPUModelRunner):
     def reregister_kv_caches(self):
         kv_transfer_config = self.vllm_config.kv_transfer_config
         is_llmdatadist = (
-                kv_transfer_config is not None
-                and kv_transfer_config.kv_connector == "LLMDataDistConnector"
+            kv_transfer_config is not None
+            and kv_transfer_config.kv_connector == "LLMDataDistConnector"
         )
         if is_llmdatadist:
             if has_kv_transfer_group():

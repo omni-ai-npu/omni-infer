@@ -68,8 +68,15 @@ def hifloat8_module(monkeypatch):
         def __init__(self, *_args, **_kwargs):
             pass
 
+    class RoutedExperts:
+        pass
+
     fused_moe_module.FusedMoE = FusedMoE
     fused_moe_module.FusedMoEMethodBase = FusedMoEMethodBase
+    fused_moe_module.RoutedExperts = RoutedExperts
+    fused_moe_module.FusedMoeWeightScaleSupported = SimpleNamespace(
+        CHANNEL=SimpleNamespace(value="channel")
+    )
 
     fused_moe_layer_module = _make_module(
         monkeypatch, "vllm.model_executor.layers.fused_moe.layer"
@@ -198,7 +205,31 @@ def hifloat8_module(monkeypatch):
     class FlashCommLinearMethodBase:
         pass
 
+    class FlashCommLinearBase:
+        pass
+
+    class UnquantizedFlashCommLinearMethod:
+        pass
+
     v1_linear_module.FlashCommLinearMethodBase = FlashCommLinearMethodBase
+    v1_linear_module.FlashCommLinearBase = FlashCommLinearBase
+    v1_linear_module.UnquantizedFlashCommLinearMethod = (
+        UnquantizedFlashCommLinearMethod
+    )
+
+    fused_mlp_module = _make_module(
+        monkeypatch, "omni_npu.v1.layers.fused_mlp.layer"
+    )
+
+    class FusedMLP:
+        pass
+
+    fused_mlp_module.FusedMLP = FusedMLP
+
+    v1_layers_utils_module = _make_module(
+        monkeypatch, "omni_npu.v1.layers.utils"
+    )
+    v1_layers_utils_module.get_npu_execution_type = lambda _label: _NoopStreamCtx()
 
     # omni_npu.layers.mhc — load the real cube_side_task_ops module from disk
     # so torch.ops.vllm.cube_side_run / cube_side_wait can be bound to its
@@ -307,6 +338,140 @@ def _linear_layer(weight_shape=(2, 3), scale_shape=(2, 1)):
     )
     layer.orig_dtype = torch.bfloat16
     return layer
+
+
+@pytest.mark.parametrize(
+    ("patterns", "prefix", "expected"),
+    [
+        (["model.layer"], "model.layer", True),
+        (["layer"], "model.layer", True),
+        (["re:.*expert.*"], "model.expert.0", True),
+        (["re:^expert"], "model.expert.0", False),
+    ],
+)
+def test_is_layer_ignored(hifloat8_module, patterns, prefix, expected):
+    assert hifloat8_module._is_layer_ignored(prefix, patterns) is expected
+
+
+def test_hifloat8_config_metadata(hifloat8_module):
+    config = hifloat8_module.Hifloat8Config.from_config({"ignore": ["lm_head"]})
+
+    assert config.ignored_layers == ["lm_head"]
+    assert hifloat8_module.Hifloat8Config.from_config({}).ignored_layers is None
+    assert config.get_name() == "hifloat8"
+    assert config.get_supported_act_dtypes() == [torch.bfloat16]
+    assert config.get_config_filenames() == []
+    with pytest.raises(NotImplementedError):
+        config.get_min_capability()
+
+
+def test_hifloat8_config_requires_custom_model_plugin(
+    hifloat8_module, monkeypatch
+):
+    monkeypatch.delenv("VLLM_PLUGINS", raising=False)
+    with pytest.raises(NotImplementedError):
+        hifloat8_module.Hifloat8Config().get_quant_method(torch.nn.Module(), "x")
+
+
+def test_hifloat8_config_routes_to_custom_method(hifloat8_module, monkeypatch):
+    monkeypatch.setenv("VLLM_PLUGINS", "omni_custom_models")
+    config = hifloat8_module.Hifloat8Config()
+    config.get_quant_method_custom = MagicMock(return_value="method")
+
+    assert config.get_quant_method(torch.nn.Module(), "x") == "method"
+
+
+def test_hifloat8_config_dispatches_supported_layers(hifloat8_module):
+    from omni_npu.v1.layers.fused_mlp.layer import FusedMLP
+    from omni_npu.v1.layers.linear import FlashCommLinearBase
+    from vllm.model_executor.layers.linear import LinearBase
+
+    config = hifloat8_module.Hifloat8Config()
+    assert isinstance(
+        config.get_quant_method_custom(FlashCommLinearBase(), "fc"),
+        hifloat8_module.Hifloat8FCLinearMethod,
+    )
+    assert isinstance(
+        config.get_quant_method_custom(LinearBase(), "linear"),
+        hifloat8_module.Hifloat8LinearMethod,
+    )
+    assert isinstance(
+        config.get_quant_method_custom(FusedMLP(), "mlp"),
+        hifloat8_module.Hifloat8MlpMethod,
+    )
+    assert config.get_quant_method_custom(torch.nn.Module(), "unknown") is None
+
+
+def test_hifloat8_config_dispatches_ignored_layers(hifloat8_module):
+    from omni_npu.v1.layers.linear import (
+        FlashCommLinearBase,
+        UnquantizedFlashCommLinearMethod,
+    )
+    from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMethod
+
+    config = hifloat8_module.Hifloat8Config(ignored_layers=["skip"])
+    assert isinstance(
+        config.get_quant_method_custom(FlashCommLinearBase(), "skip"),
+        UnquantizedFlashCommLinearMethod,
+    )
+    assert isinstance(
+        config.get_quant_method_custom(LinearBase(), "skip"),
+        UnquantizedLinearMethod,
+    )
+
+
+@pytest.mark.parametrize(
+    "method_class",
+    ["Hifloat8LinearMethod", "Hifloat8FCLinearMethod"],
+)
+def test_linear_create_weights(hifloat8_module, monkeypatch, method_class):
+    monkeypatch.setattr(
+        hifloat8_module,
+        "ModelWeightParameter",
+        lambda data, **_kwargs: torch.nn.Parameter(data, requires_grad=False),
+    )
+    monkeypatch.setattr(
+        hifloat8_module,
+        "ChannelQuantScaleParameter",
+        lambda data, **_kwargs: torch.nn.Parameter(data, requires_grad=False),
+    )
+    layer = torch.nn.Module()
+    method = getattr(hifloat8_module, method_class)(object())
+
+    method.create_weights(
+        layer,
+        input_size_per_partition=4,
+        output_partition_sizes=[2, 3],
+        input_size=4,
+        output_size=5,
+        params_dtype=torch.bfloat16,
+        weight_loader=lambda *_args: None,
+    )
+
+    assert layer.weight.shape == (5, 4)
+    assert layer.weight_scale.shape == (5, 1)
+    assert layer.orig_dtype == torch.bfloat16
+
+
+def test_hifloat8_mlp_pipeline(hifloat8_module, mock_torch_npu):
+    method = hifloat8_module.Hifloat8MlpMethod(object())
+    layer = SimpleNamespace(
+        gate_up_proj=MagicMock(return_value=(torch.ones(2, 4), None)),
+        act_fn=MagicMock(return_value=torch.ones(2, 2)),
+        down_proj=MagicMock(return_value=(torch.ones(2, 3), None)),
+    )
+    layer.gate_up_proj.weight_scale = torch.nn.Parameter(torch.ones(2))
+
+    method.process_weights_after_loading(layer)
+    output = method.apply(layer, torch.ones(2, 3), stream_label="mlp")
+
+    assert output.shape == (2, 3)
+    mock_torch_npu.npu_dtype_cast.assert_called()
+    layer.gate_up_proj.assert_called_once()
+    layer.act_fn.assert_called_once()
+    assert layer.act_fn.call_args.kwargs == {"quant_symbol": True}
+    assert layer.act_fn.call_args.args[0]["quant_type"] == 1
+    layer.down_proj.assert_called_once()
 
 
 def test_linear_process_weights_transforms_scale(hifloat8_module, mock_torch_npu):

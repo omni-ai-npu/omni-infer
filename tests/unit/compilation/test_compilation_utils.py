@@ -8,10 +8,85 @@ from unittest.mock import MagicMock, patch
 import torch
 
 from omni_npu.compilation.utils import (
+    _compute_fia_dynamic_kwargs,
     _capture_kwargs,
+    _extract_fia_params,
     _get_or_create_workspace,
+    _pad_list,
     capture_graph_task,
 )
+
+
+def test_pad_list_covers_copy_truncate_and_fill_modes():
+    original = [1, 2]
+
+    assert _pad_list([], 3) == []
+    assert _pad_list(original, 2) == original
+    assert _pad_list([1, 2, 3], 2) == [1, 2]
+    assert _pad_list(original, 4) == [1, 2, 2, 2]
+    assert _pad_list(original, 4, 0) == [1, 2, 0, 0]
+
+    copied = _pad_list(original, 2)
+    assert copied is not original
+
+
+def test_extract_fia_params_handles_gqa_padding_and_default_num_reqs():
+    metadata = SimpleNamespace(query_start_loc=[0, 2], seq_lens=[7])
+    config = SimpleNamespace(scheduler_config=SimpleNamespace(max_num_seqs=4))
+    batch_descriptor = SimpleNamespace(num_reqs=None, num_tokens=3)
+
+    seq_q, seq_kv = _extract_fia_params(metadata, config, batch_descriptor)
+
+    assert seq_q == [3, 3, 3]
+    assert seq_kv == [7, 0, 0]
+
+
+def test_extract_fia_params_handles_mla_and_tensor_lengths():
+    decode = SimpleNamespace(query_cumlens=[0, 1], seq_lens=[5])
+    metadata = SimpleNamespace(decode=decode)
+    config = SimpleNamespace(scheduler_config=SimpleNamespace(max_num_seqs=8))
+
+    seq_q, seq_kv = _extract_fia_params(
+        metadata,
+        config,
+        SimpleNamespace(num_reqs=2, num_tokens=2),
+    )
+    assert seq_q == [0, 2]
+    assert seq_kv == [5, 0]
+
+    tensor_lengths = torch.tensor([5], dtype=torch.int32)
+    decode.seq_lens = tensor_lengths
+    seq_q, seq_kv = _extract_fia_params(
+        metadata,
+        config,
+        SimpleNamespace(num_reqs=2, num_tokens=2),
+    )
+    assert seq_q == [0, 2]
+    assert seq_kv is tensor_lengths
+
+
+def test_compute_fia_dynamic_kwargs_skips_missing_layer_and_maps_keys():
+    metadata = SimpleNamespace(query_start_loc=[0, 1], seq_lens=[4])
+    context = SimpleNamespace(
+        attn_metadata={"layer.0": metadata},
+        batch_descriptor=SimpleNamespace(num_reqs=1, num_tokens=1),
+    )
+    config = SimpleNamespace(scheduler_config=SimpleNamespace(max_num_seqs=8))
+
+    assert _compute_fia_dynamic_kwargs(
+        context,
+        "missing",
+        config,
+        seq_len_q_key="q",
+        seq_len_kv_key="kv",
+    ) is None
+    assert _compute_fia_dynamic_kwargs(
+        context,
+        "layer.0",
+        config,
+        seq_len_q_key="q",
+        seq_len_kv_key="kv",
+    ) == {"q": [1], "kv": [4]}
 
 
 class TestCaptureKwargs:
@@ -60,6 +135,24 @@ class TestGetOrCreateWorkspace:
         assert second is workspace
         workspace_fn.assert_called_once_with(query=query)
         assert graph_params.workspaces[num_tokens][workspace_fn] is workspace
+
+    def test_get_or_create_workspace_creates_token_bucket(self):
+        workspace = torch.randn(4)
+        workspace_fn = MagicMock(return_value=workspace)
+        op_desc = SimpleNamespace(workspace_fn=workspace_fn)
+        graph_params = SimpleNamespace(workspaces={})
+
+        with patch(
+            "omni_npu.compilation.utils.get_graph_params",
+            return_value=graph_params,
+        ), patch(
+            "omni_npu.compilation.utils.weak_ref_tensors",
+            side_effect=lambda value: value,
+        ):
+            result = _get_or_create_workspace(op_desc, {}, 8)
+
+        assert result is workspace
+        assert graph_params.workspaces[8][workspace_fn] is workspace
 
 
 class TestCaptureGraphTask:

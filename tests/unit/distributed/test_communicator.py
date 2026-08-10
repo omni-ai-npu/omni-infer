@@ -517,10 +517,10 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
             communicator.ranks = [0, 1]
 
             communicator.is_ep_communicator = True
-            class FusedMoE:
+            class MoERunner:
                 def maybe_init_modular_kernel(self):
                     self.call = True
-            fused = FusedMoE()
+            fused = MoERunner()
             model = MagicMock()
             model.modules.return_value = [fused]
             communicator.prepare_communication_buffer_for_model(model)
@@ -529,6 +529,74 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
             communicator.is_ep_communicator = False
             ret = communicator.prepare_communication_buffer_for_model(model)
             assert ret is None
+
+    def test_all_gather_into_tensor_delegates(self):
+        with mock_distributed_environment():
+            from omni_npu.distributed.communicator import NPUCommunicator
+
+            communicator = NPUCommunicator(
+                cpu_group=Mock(spec=ProcessGroup),
+                device_group=Mock(spec=ProcessGroup),
+            )
+            communicator.device_group = Mock(spec=ProcessGroup)
+            communicator.dist_module = MagicMock()
+            output = torch.empty(4, 2)
+            input_ = torch.ones(2, 2)
+
+            communicator.all_gather_into_tensor(output, input_)
+
+            communicator.dist_module.all_gather_into_tensor.assert_called_once_with(
+                output, input_, group=communicator.device_group
+            )
+
+    def test_all_to_all_validates_dimensions_and_sizes(self):
+        with mock_distributed_environment():
+            from omni_npu.distributed.communicator import NPUCommunicator
+
+            communicator = NPUCommunicator(
+                cpu_group=Mock(spec=ProcessGroup),
+                device_group=Mock(spec=ProcessGroup),
+            )
+            communicator.world_size = 2
+            tensor = torch.ones(4, 2)
+
+            with self.assertRaises(ValueError, msg="invalid dimension"):
+                communicator.all_to_all(tensor, scatter_dim=2)
+            with self.assertRaises(ValueError, msg="only one sizes list"):
+                communicator.all_to_all(tensor, scatter_sizes=[2, 2])
+            with self.assertRaises(ValueError, msg="wrong sizes-list length"):
+                communicator.all_to_all(
+                    tensor, scatter_sizes=[4], gather_sizes=[2]
+                )
+            with self.assertRaises(ValueError, msg="wrong scatter total"):
+                communicator.all_to_all(
+                    tensor, scatter_sizes=[1, 1], gather_sizes=[2, 2]
+                )
+
+    def test_all_to_all_with_variable_sizes(self):
+        with mock_distributed_environment():
+            from omni_npu.distributed.communicator import NPUCommunicator
+
+            communicator = NPUCommunicator(
+                cpu_group=Mock(spec=ProcessGroup),
+                device_group=Mock(spec=ProcessGroup),
+            )
+            communicator.world_size = 2
+            communicator.rank = 0
+            communicator.device_group = Mock(spec=ProcessGroup)
+            communicator.dist_module = MagicMock()
+            tensor = torch.arange(8, dtype=torch.float32).reshape(4, 2)
+
+            result = communicator.all_to_all(
+                tensor,
+                scatter_dim=0,
+                gather_dim=0,
+                scatter_sizes=[1, 3],
+                gather_sizes=[2, 2],
+            )
+
+            self.assertEqual(tuple(result.shape), (4, 2))
+            communicator.dist_module.all_to_all.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()

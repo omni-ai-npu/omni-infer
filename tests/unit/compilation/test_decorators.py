@@ -4,7 +4,6 @@ from unittest.mock import patch, MagicMock
 
 import torch
 import torch.nn as nn
-import os
 import pytest
 
 import vllm.compilation.decorators as _dec_mododule
@@ -25,14 +24,43 @@ def setup_teardown():
     """
     original_support_compile = _dec_mododule._support_torch_compile
     import vllm.compilation.piecewise_backend as _piecewise_module
+    import torch._dynamo as dynamo
+
     original_piecewise_call = _piecewise_module.PiecewiseBackend.__call__
-    original_piecewise_patched = getattr(
-        _piecewise_module.PiecewiseBackend, "_omni_npu_patched", False
+    had_piecewise_flag = hasattr(
+        _piecewise_module.PiecewiseBackend, "_omni_npu_static_range_patched"
     )
+    original_piecewise_flag = getattr(
+        _piecewise_module.PiecewiseBackend,
+        "_omni_npu_static_range_patched",
+        None,
+    )
+    original_compile_flag = decorators_mod._COMPILE_DECORATORS_PATCHED
+    original_mark_dynamic = dynamo.mark_dynamic
+    had_dynamic_flag = hasattr(dynamo, "_omni_npu_maybe_mark_dynamic")
+    original_dynamic_flag = getattr(dynamo, "_omni_npu_maybe_mark_dynamic", None)
+
+    decorators_mod._COMPILE_DECORATORS_PATCHED = False
+    if had_piecewise_flag:
+        delattr(_piecewise_module.PiecewiseBackend, "_omni_npu_static_range_patched")
+    if had_dynamic_flag:
+        delattr(dynamo, "_omni_npu_maybe_mark_dynamic")
     yield
+
     _dec_mododule._support_torch_compile = original_support_compile
     _piecewise_module.PiecewiseBackend.__call__ = original_piecewise_call
-    _piecewise_module.PiecewiseBackend._omni_npu_patched = original_piecewise_patched
+    decorators_mod._COMPILE_DECORATORS_PATCHED = original_compile_flag
+    dynamo.mark_dynamic = original_mark_dynamic
+    if had_piecewise_flag:
+        _piecewise_module.PiecewiseBackend._omni_npu_static_range_patched = (
+            original_piecewise_flag
+        )
+    elif hasattr(_piecewise_module.PiecewiseBackend, "_omni_npu_static_range_patched"):
+        delattr(_piecewise_module.PiecewiseBackend, "_omni_npu_static_range_patched")
+    if had_dynamic_flag:
+        dynamo._omni_npu_maybe_mark_dynamic = original_dynamic_flag
+    elif hasattr(dynamo, "_omni_npu_maybe_mark_dynamic"):
+        delattr(dynamo, "_omni_npu_maybe_mark_dynamic")
 
 
 class TestModel(nn.Module):
@@ -185,7 +213,7 @@ def test_patch_compile_decorators_skips_repatching_piecewise_backend():
     import vllm.compilation.piecewise_backend as _piecewise_module
 
     sentinel_call = _piecewise_module.PiecewiseBackend.__call__
-    _piecewise_module.PiecewiseBackend._omni_npu_patched = True
+    _piecewise_module.PiecewiseBackend._omni_npu_static_range_patched = True
 
     with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
         patch_compile_decorators()
@@ -193,175 +221,97 @@ def test_patch_compile_decorators_skips_repatching_piecewise_backend():
     assert _piecewise_module.PiecewiseBackend.__call__ is sentinel_call
 
 
-@pytest.mark.parametrize(
-    "compile_sizes, compile_ranges, expected_range, expected_ret",
-    [
-        ([64], [], (64, 64), "compile-size"),
-        ([], [(128, 256)], (128, 256), "compile-range"),
-    ]
-)
-def test_patched_call_runtime_shape_none_fallback_compile_sizes(
-    compile_sizes, compile_ranges, expected_range, expected_ret
-):
-    """Test patched call falls back to compile_sizes or compile_ranges when runtime shape is unavailable."""
+def test_patched_call_static_shape_dispatches_precompiled_range():
+    """Static dispatch infers batch size and runs the matching compiled entry."""
     import vllm.compilation.piecewise_backend as _piecewise_module
-    from vllm.config.utils import Range
 
-    mock_backend = MagicMock()
-    compile_range = Range(start=expected_range[0], end=expected_range[1])
     range_entry = MagicMock()
-    range_entry.runnable.return_value = expected_ret
-    mock_backend.range_entries = {compile_range: range_entry}
-    mock_backend.compile_sizes = compile_sizes
-    mock_backend.compile_ranges = [
-        Range(start=start, end=end) for start, end in compile_ranges
-    ]
-    mock_backend.sym_shape_indices = [0]
+    range_entry.runnable.return_value = "static-range"
+    mock_backend = SimpleNamespace(
+        sym_shape_indices=[],
+        compile_ranges=["configured-range"],
+        _find_range_for_shape=MagicMock(return_value=range_entry),
+    )
 
     with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
-        _piecewise_module.PiecewiseBackend._omni_npu_patched = False
         patch_compile_decorators()
+        tensor = torch.randn(16, 32)
+        ret = _piecewise_module.PiecewiseBackend.__call__(mock_backend, tensor, 64)
 
-        ret = _piecewise_module.PiecewiseBackend.__call__(mock_backend, None)
-
-    mock_backend._maybe_compile_for_range_entry.assert_called_once_with(range_entry, (None,))
-    range_entry.runnable.assert_called_once_with(None)
-    assert ret == expected_ret
+    mock_backend._find_range_for_shape.assert_called_once_with(16)
+    range_entry.runnable.assert_called_once_with(tensor, 64)
+    assert ret == "static-range"
 
 
-def test_patched_call_runtime_shape_none_without_fallback_raises():
-    """Test patched call raises when no runtime shape or fallback range can be determined."""
+def test_patched_call_static_shape_requires_tensor_input():
+    """Static dispatch cannot choose a range without a tensor batch dimension."""
     import vllm.compilation.piecewise_backend as _piecewise_module
 
     mock_backend = SimpleNamespace(
-        range_entries={},
-        to_be_compiled_ranges=set(),
-        compile_sizes=[],
         compile_ranges=[],
         sym_shape_indices=[],
         _find_range_for_shape=MagicMock(),
-        _maybe_compile_for_range_entry=MagicMock(),
     )
 
     with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
-        _piecewise_module.PiecewiseBackend._omni_npu_patched = False
         patch_compile_decorators()
-
-        with pytest.raises(RuntimeError, match="Cannot determine fallback compile range"):
+        with pytest.raises(AssertionError, match="Cannot infer runtime shape"):
             _piecewise_module.PiecewiseBackend.__call__(mock_backend, None, "x")
 
 
-def test_patched_call_runtime_shape_hits_existing_range():
-    """Test patched call forwards the runtime-shape input to range lookup."""
+def test_patched_call_static_shape_rejects_uncompiled_range():
+    """Static dispatch rejects shapes outside the precompiled ranges."""
     import vllm.compilation.piecewise_backend as _piecewise_module
 
-    range_entry = MagicMock()
-    range_entry.runnable.return_value = "existing-range"
     mock_backend = SimpleNamespace(
-        range_entries={},
-        to_be_compiled_ranges=set(),
-        compile_sizes=[],
-        compile_ranges=[],
-        sym_shape_indices=[0],
-        _find_range_for_shape=MagicMock(return_value=range_entry),
-        _maybe_compile_for_range_entry=MagicMock(),
-    )
-
-    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
-        _piecewise_module.PiecewiseBackend._omni_npu_patched = False
-        patch_compile_decorators()
-
-        test_tensor = torch.randn(16, 32)
-        ret = _piecewise_module.PiecewiseBackend.__call__(mock_backend, test_tensor, 64)
-
-    mock_backend._find_range_for_shape.assert_called_once()
-    runtime_shape = mock_backend._find_range_for_shape.call_args.args[0]
-    if isinstance(runtime_shape, torch.Tensor):
-        runtime_shape = runtime_shape.shape[0] if runtime_shape.dim() > 0 else runtime_shape.item()
-    assert runtime_shape in (16, 64)
-    mock_backend._maybe_compile_for_range_entry.assert_called_once_with(range_entry, (test_tensor, 64))
-    range_entry.runnable.assert_called_once_with(test_tensor, 64)
-    assert ret == "existing-range"
-
-
-def test_patched_call_runtime_shape_uses_sym_shape_index():
-    """Test patched call uses sym_shape_indices when provided."""
-    import vllm.compilation.piecewise_backend as _piecewise_module
-
-    range_entry = MagicMock()
-    range_entry.runnable.return_value = "indexed-range"
-    mock_backend = SimpleNamespace(
-        range_entries={},
-        to_be_compiled_ranges=set(),
-        compile_sizes=[],
-        compile_ranges=[],
-        sym_shape_indices=[1],
-        _find_range_for_shape=MagicMock(return_value=range_entry),
-        _maybe_compile_for_range_entry=MagicMock(),
-    )
-
-    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
-        _piecewise_module.PiecewiseBackend._omni_npu_patched = False
-        patch_compile_decorators()
-
-        test_tensor = torch.randn(16, 32)
-        ret = _piecewise_module.PiecewiseBackend.__call__(mock_backend, test_tensor, 64)
-
-    mock_backend._find_range_for_shape.assert_called_once_with(64)
-    mock_backend._maybe_compile_for_range_entry.assert_called_once_with(
-        range_entry, (test_tensor, 64)
-    )
-    range_entry.runnable.assert_called_once_with(test_tensor, 64)
-    assert ret == "indexed-range"
-
-
-def test_patched_mark_dynamic_raises_when_exec_lacks_support_torch_compile():
-    """Cover KeyError path when exec'd source no longer defines _support_torch_compile.
-
-    Patches ``inspect.getsource`` to return a trivial source (``pass``) so the
-    ``exec`` in ``_patched_mark_dynamic`` populates ``new_torch_compile`` without
-    the expected key, triggering the ``raise KeyError`` guard.
-    """
-    with patch("inspect.getsource", return_value="pass\n"):
-        with pytest.raises(KeyError, match="_support_torch_compile"):
-            decorators_mod._patched_mark_dynamic()
-
-
-def test_patched_call_creates_new_range_entry_when_no_existing_match():
-    """Cover middle branch of _get_fallback_range_entry.
-
-    When runtime_shape is not None AND _find_range_for_shape returns None AND
-    the resulting compile_range is not yet in range_entries, the patched code
-    must create a fresh RangeEntry, register it, and mark it for compilation.
-    """
-    import vllm.compilation.piecewise_backend as _piecewise_module
-    from vllm.config.utils import Range
-
-    mock_range_entry = MagicMock()
-    mock_range_entry.runnable.return_value = "new-range"
-
-    mock_backend = SimpleNamespace(
-        range_entries={},
-        to_be_compiled_ranges=set(),
-        compile_sizes=[],
-        compile_ranges=[],
-        sym_shape_indices=[0],
+        compile_ranges=["1-64"],
+        sym_shape_indices=[],
         _find_range_for_shape=MagicMock(return_value=None),
-        _maybe_compile_for_range_entry=MagicMock(),
     )
 
     with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
-        _piecewise_module.PiecewiseBackend._omni_npu_patched = False
         patch_compile_decorators()
+        test_tensor = torch.randn(16, 32)
+        with pytest.raises(AssertionError, match="outside compile ranges"):
+            _piecewise_module.PiecewiseBackend.__call__(mock_backend, test_tensor)
 
-        with patch.object(_piecewise_module, "RangeEntry", return_value=mock_range_entry):
-            ret = _piecewise_module.PiecewiseBackend.__call__(mock_backend, 128)
+    mock_backend._find_range_for_shape.assert_called_once_with(16)
 
-    expected_range = Range(start=128, end=128)
-    assert expected_range in mock_backend.range_entries
-    assert expected_range in mock_backend.to_be_compiled_ranges
-    mock_backend._maybe_compile_for_range_entry.assert_called_once()
-    assert ret == "new-range"
+
+def test_patched_call_symbolic_shape_delegates_to_upstream():
+    """Symbolic-shape dispatch remains owned by vLLM's original backend."""
+    import vllm.compilation.piecewise_backend as _piecewise_module
+
+    calls = MagicMock(return_value="upstream")
+
+    def upstream_call(self, *args):
+        return calls(self, *args)
+
+    _piecewise_module.PiecewiseBackend.__call__ = upstream_call
+    mock_backend = SimpleNamespace(
+        sym_shape_indices=[1],
+    )
+
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
+        patch_compile_decorators()
+        ret = _piecewise_module.PiecewiseBackend.__call__(mock_backend, "x", 64)
+
+    calls.assert_called_once_with(mock_backend, "x", 64)
+    assert ret == "upstream"
+
+
+def test_patched_mark_dynamic_skips_when_maybe_mark_dynamic_is_unavailable():
+    """Older torch builds without maybe_mark_dynamic keep mark_dynamic intact."""
+    import torch._dynamo as dynamo
+
+    original_mark_dynamic = dynamo.mark_dynamic
+    with patch.object(dynamo, "maybe_mark_dynamic", None), patch.object(
+        decorators_mod.logger, "warning"
+    ) as warning:
+        decorators_mod._patched_mark_dynamic()
+
+    assert dynamo.mark_dynamic is original_mark_dynamic
+    warning.assert_called_once()
 
 
 if __name__ == "__main__":

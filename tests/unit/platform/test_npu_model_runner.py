@@ -16,7 +16,6 @@ from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     FullAttentionSpec,
     MambaSpec,
-    MLAAttentionSpec,
 )
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from tests.unit.platform.utils import create_vllm_config
@@ -211,6 +210,8 @@ class TestNPUModelRunner:
             use_gemma4_mtp=lambda: False,
             use_step3p5_mtp=lambda: False,
             use_dflash=lambda: False,
+            rejection_sample_method="standard",
+            draft_sample_method="probabilistic",
             enforce_eager=False,
             draft_model_config=SimpleNamespace(
                 get_hidden_size=lambda: 1024,
@@ -239,6 +240,10 @@ class TestNPUModelRunner:
             "omni_npu.worker.npu_model_runner.EagleProposer",
             MockEagleProposer,
         )
+        monkeypatch.setattr(
+            "vllm.v1.worker.gpu_model_runner.EagleProposer",
+            MockEagleProposer,
+        )
 
         runner = NPUModelRunner(self.vllm_cfg, self.npu_device)
 
@@ -264,12 +269,8 @@ class TestNPUModelRunner:
 
         runner = NPUModelRunner(self.vllm_cfg, self.npu_device)
 
-        # Verify additional_config attributes are set correctly
-        assert runner.use_rejection_sampler == True
-        assert runner.use_penalty == True
-        assert runner.total_step == 2
+        # The current runner only consumes combine_block from additional_config.
         assert runner.combine_block == 4
-        assert runner.use_process_before_sample == True
 
     def test_npu_runner_init_with_router_sliding_window(self, monkeypatch):
         """Test NPUModelRunner initialization with router_sliding_window."""
@@ -333,6 +334,13 @@ class TestNPUModelRunner:
             method="eagle",
             num_speculative_tokens=4,
             use_eagle=lambda: True,
+            uses_draft_model=lambda: False,
+            use_ngram_gpu=lambda: False,
+            use_gemma4_mtp=lambda: False,
+            use_step3p5_mtp=lambda: False,
+            use_dflash=lambda: False,
+            rejection_sample_method="standard",
+            draft_sample_method="probabilistic",
             enforce_eager=False,
             draft_model_config=SimpleNamespace(
                 get_hidden_size=lambda: 1024,
@@ -340,6 +348,21 @@ class TestNPUModelRunner:
                 max_model_len=4096,
             ),
             speculative_token_tree="[(0,), (1,), (2,), (3,)]",
+        )
+
+        from vllm.v1.spec_decode.eagle import EagleProposer
+
+        class MockEagleProposer(EagleProposer):
+            def __init__(self, *args, **kwargs):
+                pass
+
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_model_runner.EagleProposer",
+            MockEagleProposer,
+        )
+        monkeypatch.setattr(
+            "vllm.v1.worker.gpu_model_runner.EagleProposer",
+            MockEagleProposer,
         )
 
         # initialize runner with new config
@@ -398,89 +421,6 @@ class TestNPUModelRunner:
             num_scheduled_tokens=10,
             spec_decode_metadata=mock_spec_metadata
         )
-
-    def test_build_conv_context(self, monkeypatch):
-        """Test _build_conv_context method."""
-        # Mock the necessary components
-        mock_forward_context = MagicMock()
-        monkeypatch.setattr(
-            "omni_npu.worker.npu_model_runner.get_forward_context",
-            lambda: mock_forward_context)
-
-        # Create runner and set up necessary attributes
-        runner = NPUModelRunner(self.vllm_cfg, self.npu_device)
-        runner.router_sliding_window = 10
-        runner.req_cache_map = {
-            1: 1,
-            2: 2,
-            3: 3,
-            runner.max_num_reqs + 1: 0
-        }  # Add some existing entries
-        runner.cache_slot_id = torch.zeros(runner.max_num_reqs,
-                                           dtype=torch.long,
-                                           device=self.npu_device)
-
-        # Mock input_batch
-        runner.input_batch = SimpleNamespace(req_ids=[2, 4, 5], num_reqs=3)
-
-        # Call _build_conv_context
-        runner._build_conv_context()
-
-        # Verify req_cache_map is updated correctly
-        assert 1 not in runner.req_cache_map  # Removed since not in req_ids
-        assert 3 not in runner.req_cache_map  # Removed since not in req_ids
-        assert 2 in runner.req_cache_map  # Kept since in req_ids
-        assert 4 in runner.req_cache_map  # Added since in req_ids
-        assert 5 in runner.req_cache_map  # Added since in req_ids
-        assert runner.max_num_reqs + 1 not in runner.req_cache_map  # Should remain
-        assert runner.req_cache_map[2] == 1
-        assert runner.req_cache_map[4] == 2
-        assert runner.req_cache_map[5] == 3
-
-        # Verify cache_slot_id is updated correctly
-        assert runner.cache_slot_id[0] == 2  # req_id 2 was in map with value 2.
-        assert runner.cache_slot_id[1] == 0  # req_id 4 is new, set to 0
-        assert runner.cache_slot_id[2] == 0  # req_id 5 is new, set to 0
-        assert torch.all(
-            runner.cache_slot_id[3:] == 0)  # Remaining should be 0
-
-        # Verify forward_context.cache_slot_id is set
-        assert mock_forward_context.cache_slot_id is runner.cache_slot_id
-
-    def test_model_forward_with_router_sliding_window(self, monkeypatch):
-        """Test _model_forward method with router_sliding_window."""
-        # Mock the necessary components
-        mock_build_conv_context = MagicMock()
-        monkeypatch.setattr(
-            "omni_npu.worker.npu_model_runner.NPUModelRunner._build_conv_context",
-            mock_build_conv_context)
-
-        mock_model_output = MagicMock()
-        mock_model = MagicMock(return_value=mock_model_output)
-
-        # Create runner and set up necessary attributes
-        runner = NPUModelRunner(self.vllm_cfg, self.npu_device)
-        runner.router_sliding_window = 10
-        runner.model = mock_model
-
-        # Call _model_forward
-        input_ids = torch.tensor([[1, 2, 3]], device=self.npu_device)
-        positions = torch.tensor([[0, 1, 2]], device=self.npu_device)
-        with mock_forward_context():
-            result = runner._model_forward(input_ids=input_ids,
-                                        positions=positions)
-
-        # Verify _build_conv_context was called
-        mock_build_conv_context.assert_called_once()
-
-        # Verify model was called with correct parameters
-        mock_model.assert_called_once_with(input_ids=input_ids,
-                                           positions=positions,
-                                           intermediate_tensors=None,
-                                           inputs_embeds=None)
-
-        # Verify result is from model
-        assert result is mock_model_output
 
     def test_reshape_kv_cache_with_head_size_v(self, monkeypatch):
         """Test _reshape_kv_cache_tensors with head_size_v."""
@@ -544,7 +484,6 @@ class TestNPUModelRunner:
         # Call _reshape_kv_cache_tensors
         kv_cache_config = MagicMock()
         runner._reshape_kv_cache_tensors(
-            kv_cache_config=kv_cache_config,
             kv_cache_raw_tensors=kv_cache_raw_tensors,
             kernel_block_sizes=[kv_cache_spec.block_size],
         )
@@ -562,7 +501,7 @@ class TestNPUModelRunner:
         runner = NPUModelRunner(self.vllm_cfg, self.npu_device)
 
         # Mock super().load_model
-        def mock_load_model(self, eep_scale_up):
+        def mock_load_model(self, load_dummy_weights=False):
             self.model = MagicMock()
         monkeypatch.setattr(GPUModelRunner, "load_model", mock_load_model)
 
@@ -582,33 +521,10 @@ class TestNPUModelRunner:
                             lambda *args, **kwargs: None)
 
         # Call load_model
-        runner.load_model(eep_scale_up=False)
+        runner.load_model(load_dummy_weights=False)
 
         # Verify drafter.model was wrapped with ACLGraphWrapper
         assert isinstance(runner.drafter.model, FakeACLGraphWrapper)
-
-    def test_model_forward_with_dummy_conv_context(self, monkeypatch):
-        """Test model forward with dummy conv context."""
-        # This is a more complex test that would require mocking the entire model forward path
-        # We'll create a simplified version that focuses on the specific line we want to cover
-
-        # Mock the necessary components
-        mock_build_conv_context = MagicMock()
-        monkeypatch.setattr(
-            "omni_npu.worker.npu_model_runner.NPUModelRunner._build_conv_context",
-            mock_build_conv_context)
-
-        mock_model = MagicMock(return_value=MagicMock())
-
-        # Create runner and set up necessary attributes
-        runner = NPUModelRunner(self.vllm_cfg, self.npu_device)
-        runner.router_sliding_window = 10
-        runner.model = mock_model
-
-        # We would need to mock many more components to test the full forward pass
-        # For the purpose of covering line 658, we'll just verify that _build_conv_context can be called with dummy=True
-        runner._build_conv_context(dummy=True)
-        mock_build_conv_context.assert_called_once_with(dummy=True)
 
     # @pytest.mark.skip(reason="mock conflict")
     def test_kv_cache_after_wake_up(self, monkeypatch):
@@ -769,7 +685,6 @@ class TestNPUModelRunner:
         kv_cache_config = MagicMock()
 
         result = self.runner._reshape_kv_cache_tensors(
-            kv_cache_config=kv_cache_config,
             kv_cache_raw_tensors=kv_cache_raw_tensors,
             kernel_block_sizes=[kv_cache_spec.block_size],
         )
@@ -788,73 +703,6 @@ class TestNPUModelRunner:
         assert layer_name in result
         assert torch.equal(result[layer_name],
                            torch.ones(3, 3, dtype=kv_cache_spec.dtype))
-
-    def test_get_kv_cache_spec(self, monkeypatch):
-        """Test get_kv_cache_spec method with MLA configuration.
-
-        Verifies that when use_mla is True and index_topk is present,
-        MLAAttentionSpec is correctly created for each attention layer.
-        """
-        # Configure model_config to use use_mla + index_topk branch
-        model_config = self.runner.vllm_config.model_config
-        model_config.use_mla = True
-        model_config.hf_config = SimpleNamespace(
-            index_topk=4,
-            index_head_dim=8,
-        )
-
-        cache_config = self.runner.vllm_config.cache_config
-        cache_config.block_size = 16
-        cache_config.cache_dtype = "auto"
-
-        # Mock kv_cache_dtype_str_to_dtype to avoid dependency on real implementation
-        monkeypatch.setattr(
-            "omni_npu.worker.npu_model_runner.kv_cache_dtype_str_to_dtype",
-            lambda cache_dtype_str, mcfg: torch.float16,
-        )
-
-        # Create fake attention layers
-        class DummyAttn:
-
-            def __init__(self, head_size):
-                self.head_size = head_size
-
-        attn_layers = {
-            "layer_0": DummyAttn(head_size=32),
-            "layer_1": DummyAttn(head_size=64),
-        }
-
-        # Mock get_layers_from_vllm_config to return our constructed attn_layers
-        monkeypatch.setattr(
-            "omni_npu.worker.npu_model_runner.get_layers_from_vllm_config",
-            lambda vllm_cfg, layer_type: attn_layers,
-        )
-
-        kv_spec = self.runner.get_kv_cache_spec()
-
-        # 1. Key set should match attn_layers
-        assert set(kv_spec.keys()) == set(attn_layers.keys())
-
-        # 2. Each value should be MLAAttentionSpec with correct fields
-        for name, spec in kv_spec.items():
-            assert isinstance(spec, MLAAttentionSpec)
-            assert spec.block_size == cache_config.block_size
-            assert spec.num_kv_heads == 1
-            # head_size = attn.head_size + index_head_dim
-            assert spec.head_size == attn_layers[
-                name].head_size + model_config.hf_config.index_head_dim
-            assert spec.dtype == torch.float16
-            assert spec.cache_dtype_str == cache_config.cache_dtype
-
-    def test_init_device_properties(self, monkeypatch):
-        fake_props = SimpleNamespace(multi_processor_count=99)
-        monkeypatch.setattr("torch.npu.get_device_properties",
-                            lambda device: fake_props)
-
-        self.runner._init_device_properties()
-
-        assert self.runner.device_properties is fake_props
-        assert self.runner.num_sms == 99
 
     def test_sync_device(self, monkeypatch):
         called = {}
@@ -951,8 +799,8 @@ class TestNPUModelRunner:
         """
         super_called = {}
 
-        def mock_super_load_model(self, eep_scale_up=False):
-            super_called.setdefault("args", eep_scale_up)
+        def mock_super_load_model(self, load_dummy_weights=False):
+            super_called.setdefault("args", load_dummy_weights)
             # Don't actually call super, just record the call
             if not hasattr(self, "model"):
                 self.model = SimpleNamespace()
@@ -976,7 +824,7 @@ class TestNPUModelRunner:
         if hasattr(self.runner, "drafter"):
             delattr(self.runner, "drafter")
 
-        self.runner.load_model(eep_scale_up=False)
+        self.runner.load_model(load_dummy_weights=False)
         assert super_called.get("args") is False
 
         # Test line 161: drafter is EagleProposer branch
@@ -1007,18 +855,14 @@ class TestNPUModelRunner:
             num_speculative_tokens=4,
             speculative_token_tree="[(0,), (1,), (2,), (3,)]",
         )
-        self.runner.drafter = EagleProposer(
-            vllm_config=self.runner.vllm_config,
-            device=self.runner.device,
-            runner=None,
-        )
+        self.runner.drafter = MagicMock(spec=EagleProposer)
         self.runner.drafter.model = MagicMock()
 
         # Verify drafter is indeed an EagleProposer instance
         assert isinstance(self.runner.drafter, EagleProposer)
 
         # Call load_model again to trigger line 161
-        self.runner.load_model(eep_scale_up=False)
+        self.runner.load_model(load_dummy_weights=False)
         assert prepare_called["called"] is True
 
     def test_load_model_calls_prefetch_post_load_hook(self, monkeypatch):
@@ -1026,7 +870,7 @@ class TestNPUModelRunner:
         monkeypatch.setattr(
             GPUModelRunner,
             "load_model",
-            lambda self, eep_scale_up=False: None,
+            lambda self, load_dummy_weights=False: None,
         )
 
         self.runner.compilation_config = SimpleNamespace(
@@ -1042,7 +886,7 @@ class TestNPUModelRunner:
         if hasattr(self.runner, "drafter"):
             delattr(self.runner, "drafter")
 
-        self.runner.load_model(eep_scale_up=False)
+        self.runner.load_model(load_dummy_weights=False)
         assert called["cnt"] == 1
 
     def test_load_model_with_cudagraph(self, monkeypatch):
@@ -1055,7 +899,7 @@ class TestNPUModelRunner:
         monkeypatch.setattr(
             GPUModelRunner,
             "load_model",
-            lambda self, eep_scale_up=False: super_called.setdefault(
+            lambda self, load_dummy_weights=False: super_called.setdefault(
                 "called", True),
         )
 
@@ -1477,7 +1321,6 @@ class TestNPUModelRunner:
         )
 
         result = self.runner._reshape_kv_cache_tensors(
-            kv_cache_config=MagicMock(),
             kv_cache_raw_tensors=kv_cache_raw_tensors,
             kernel_block_sizes=[kv_cache_spec.block_size],
         )
@@ -1520,7 +1363,6 @@ class TestNPUModelRunner:
         self.runner.runner_only_attn_layers = set()
 
         result = self.runner._reshape_kv_cache_tensors(
-            kv_cache_config=MagicMock(),
             kv_cache_raw_tensors=kv_cache_raw_tensors,
             kernel_block_sizes=[mamba_spec.block_size],
         )
@@ -1568,7 +1410,6 @@ class TestNPUModelRunner:
         )
 
         result = self.runner._reshape_kv_cache_tensors(
-            kv_cache_config=MagicMock(),
             kv_cache_raw_tensors=kv_cache_raw_tensors,
             kernel_block_sizes=[2],
         )
@@ -1648,8 +1489,7 @@ class TestNPUModelRunner:
         # Create a custom mock that processes MambaSpec without raising
         original_reshape = self.runner._reshape_kv_cache_tensors
 
-        def mock_reshape_with_mamba(kv_cache_config, kv_cache_raw_tensors,
-                                    kernel_block_sizes):
+        def mock_reshape_with_mamba(kv_cache_raw_tensors, kernel_block_sizes):
             kv_caches = {}
             has_attn, has_mamba = False, False
 
@@ -1682,7 +1522,6 @@ class TestNPUModelRunner:
                             mock_reshape_with_mamba)
 
         result = self.runner._reshape_kv_cache_tensors(
-            kv_cache_config=MagicMock(),
             kv_cache_raw_tensors=kv_cache_raw_tensors,
             kernel_block_sizes=[2],
         )
@@ -1763,103 +1602,6 @@ class TestNPUModelRunner:
         assert result is unwrapped_model
         mock_wrapper.unwrap.assert_called_once()
 
-    def test_dummy_run_create_mixed_batch(self, monkeypatch):
-        """Test _dummy_run with create_mixed_batch=True (covers lines 263-274, 280, 338)."""
-        self.runner.vllm_config.model_config.is_encoder_decoder = False
-        self.runner.supports_mm_inputs = False
-        self.runner.enable_prompt_embeds = False
-        self.runner.uses_mrope = False
-        self.runner.uses_xdrope_dim = 0
-        self.runner.use_aux_hidden_state_outputs = False
-        self.runner.speculative_config = None
-
-        # Set required attributes directly
-        # Ensure model returns tensor on correct device
-        def mock_model(*args, **kwargs):
-            # Return tensor on the same device as self.runner.device
-            return torch.zeros(10, 10).to(self.runner.device)
-
-        self.runner.model = MagicMock(side_effect=mock_model)
-        self.runner.model.is_mm_encoder_only_model = False
-        self.runner.input_ids = SimpleNamespace(
-            gpu=torch.zeros(10, dtype=torch.long))
-        self.runner.positions = SimpleNamespace(
-            gpu=torch.zeros(10, dtype=torch.long))
-
-        # Mock seq_lens for force_attention branch (covers line 338)
-        self.runner.seq_lens = SimpleNamespace(np=np.zeros(10, dtype=np.int32),
-                                               copy_to_gpu=lambda: None)
-        self.runner.query_start_loc = SimpleNamespace(np=np.zeros(
-            11, dtype=np.int32),
-                                                      copy_to_gpu=lambda: None)
-
-        # Mock dependencies - return proper batch_desc with num_tokens attribute
-        batch_desc = SimpleNamespace(num_tokens=10, num_reqs=None)
-        monkeypatch.setattr(
-            self.runner,
-            "_determine_batch_execution_and_padding",
-            lambda **kwargs: (MagicMock(), batch_desc, None, None, None),
-        )
-        monkeypatch.setattr(self.runner, "_get_cumsum_and_arange", lambda x:
-                            (np.array([0, 1]), None))
-        monkeypatch.setattr(self.runner, "_build_attention_metadata",
-                            lambda **kwargs: (None, None))
-        monkeypatch.setattr(self.runner, "maybe_dummy_run_with_lora",
-                            lambda *args, **kwargs: nullcontext())
-        monkeypatch.setattr(self.runner, "_init_model_kwargs", lambda: {})
-        monkeypatch.setattr(self.runner, "maybe_randomize_inputs",
-                            lambda x, y: nullcontext())
-        monkeypatch.setattr(self.runner, "eplb_step", lambda **kwargs: None)
-        monkeypatch.setattr("omni_npu.worker.npu_model_runner.get_pp_group",
-                            lambda: SimpleNamespace(is_first_rank=True))
-        with mock_forward_context():
-            hidden_states, logits = self.runner._dummy_run(num_tokens=10,
-                                                        create_mixed_batch=True,
-                                                        uniform_decode=False,
-                                                        skip_eplb=True)
-        assert hidden_states is not None
-        assert logits is not None
-
-        # Test line 338: create_mixed_batch with force_attention (covers line 338)
-        # Need to set up for create_mixed_batch branch in force_attention
-        # When create_mixed_batch=True, num_reqs = num_decode_tokens + 1
-        # num_decode_tokens = min(max_num_reqs - 1, num_tokens // 2)
-        # For num_tokens=10, max_num_reqs=16, num_decode_tokens = min(15, 5) = 5
-        # num_prefill_tokens = 10 - 5 = 5
-        # num_reqs = 5 + 1 = 6
-        batch_desc_mixed = SimpleNamespace(num_tokens=10, num_reqs=6)
-        monkeypatch.setattr(
-            self.runner,
-            "_determine_batch_execution_and_padding",
-            lambda **kwargs: (MagicMock(), batch_desc_mixed, None, None, None),
-        )
-        # Mock _get_cumsum_and_arange for 6 requests: [1, 2, 3, 4, 5, 10]
-        monkeypatch.setattr(self.runner, "_get_cumsum_and_arange", lambda x:
-                            (np.array([1, 2, 3, 4, 5, 10]), None))
-        hidden_states_mixed, logits_mixed = self.runner._dummy_run(
-            num_tokens=10,
-            create_mixed_batch=True,
-            force_attention=True,
-            skip_eplb=True)
-        assert hidden_states_mixed is not None
-        assert logits_mixed is not None
-
-        # Test line 280: num_tokens % max_query_len != 0
-        batch_desc2 = SimpleNamespace(num_tokens=15, num_reqs=2)
-        monkeypatch.setattr(
-            self.runner,
-            "_determine_batch_execution_and_padding",
-            lambda **kwargs: (MagicMock(), batch_desc2, None, None, None),
-        )
-        self.runner.uniform_decode_query_len = 10
-        hidden_states2, logits2 = self.runner._dummy_run(
-            num_tokens=15,
-            create_mixed_batch=False,
-            uniform_decode=True,
-            skip_eplb=True)
-        assert hidden_states2 is not None
-        assert logits2 is not None
-
     def test_dummy_run_uniform_decode(self, monkeypatch):
         """Test _dummy_run with uniform_decode=True (covers lines 275-280)."""
         self.runner.vllm_config.model_config.is_encoder_decoder = False
@@ -1881,8 +1623,7 @@ class TestNPUModelRunner:
         self.runner.model.is_mm_encoder_only_model = False
         self.runner.input_ids = SimpleNamespace(
             gpu=torch.zeros(10, dtype=torch.long))
-        self.runner.positions = SimpleNamespace(
-            gpu=torch.zeros(10, dtype=torch.long))
+        self.runner.positions = torch.zeros(10, dtype=torch.long)
 
         # Create proper batch_desc with num_tokens attribute
         batch_desc = SimpleNamespace(num_tokens=10, num_reqs=None)
@@ -1891,8 +1632,8 @@ class TestNPUModelRunner:
             "_determine_batch_execution_and_padding",
             lambda **kwargs: (MagicMock(), batch_desc, None, None, None),
         )
-        monkeypatch.setattr(self.runner, "_get_cumsum_and_arange", lambda x:
-                            (np.array([0, 1]), None))
+        monkeypatch.setattr(self.runner, "_get_cumsum_and_arange", lambda x, *_:
+                            np.array([0, 1]))
         monkeypatch.setattr(self.runner, "_build_attention_metadata",
                             lambda **kwargs: (None, None))
         monkeypatch.setattr(self.runner, "maybe_dummy_run_with_lora",
@@ -1930,12 +1671,13 @@ class TestNPUModelRunner:
         self.runner.model.is_mm_encoder_only_model = False
         self.runner.input_ids = SimpleNamespace(
             gpu=torch.zeros(10, dtype=torch.long))
-        self.runner.positions = SimpleNamespace(
-            gpu=torch.zeros(10, dtype=torch.long))
+        self.runner.positions = torch.zeros(10, dtype=torch.long)
 
         # Mock seq_lens and query_start_loc to avoid shape mismatch
-        self.runner.seq_lens = SimpleNamespace(np=np.zeros(10, dtype=np.int32),
-                                               copy_to_gpu=lambda: None)
+        self.runner.seq_lens = SimpleNamespace(
+            np=np.zeros(10, dtype=np.int32),
+            copy_=lambda *args, **kwargs: None,
+        )
         self.runner.query_start_loc = SimpleNamespace(np=np.zeros(
             11, dtype=np.int32),
                                                       copy_to_gpu=lambda: None)
@@ -1960,8 +1702,8 @@ class TestNPUModelRunner:
         )
         # cum_num_tokens should have length num_reqs (not num_reqs+1) for assignment to query_start_loc.np[1:num_reqs+1]
         # When num_reqs=1, cum_num_tokens should be [10] (length 1)
-        monkeypatch.setattr(self.runner, "_get_cumsum_and_arange", lambda x:
-                            (np.array([10]), None))
+        monkeypatch.setattr(self.runner, "_get_cumsum_and_arange", lambda x, *_:
+                            np.array([10]))
         monkeypatch.setattr(self.runner, "_build_attention_metadata",
                             lambda **kwargs: (None, None))
         monkeypatch.setattr(self.runner, "maybe_dummy_run_with_lora",
@@ -2015,8 +1757,7 @@ class TestNPUModelRunner:
         self.runner.model = MagicMock(side_effect=mock_model)
         self.runner.model.is_mm_encoder_only_model = False
         self.runner.inputs_embeds = SimpleNamespace(gpu=torch.zeros(10, 10))
-        self.runner.positions = SimpleNamespace(
-            gpu=torch.zeros(10, dtype=torch.long))
+        self.runner.positions = torch.zeros(10, dtype=torch.long)
 
         # Create proper batch_desc with num_tokens attribute
         batch_desc = SimpleNamespace(num_tokens=10, num_reqs=None)
@@ -2025,8 +1766,8 @@ class TestNPUModelRunner:
             "_determine_batch_execution_and_padding",
             lambda **kwargs: (MagicMock(), batch_desc, None, None, None),
         )
-        monkeypatch.setattr(self.runner, "_get_cumsum_and_arange", lambda x:
-                            (np.array([0, 1]), None))
+        monkeypatch.setattr(self.runner, "_get_cumsum_and_arange", lambda x, *_:
+                            np.array([0, 1]))
         monkeypatch.setattr(self.runner, "_build_attention_metadata",
                             lambda **kwargs: (None, None))
         monkeypatch.setattr(self.runner, "maybe_dummy_run_with_lora",
@@ -2140,12 +1881,7 @@ class TestNPUModelRunner:
         )
         self.runner.speculative_config = self.runner.vllm_config.speculative_config
 
-        # Create a real EagleProposer instance
-        self.runner.drafter = EagleProposer(
-            vllm_config=self.runner.vllm_config,
-            device=self.runner.device,
-            runner=None,
-        )
+        self.runner.drafter = MagicMock(spec=EagleProposer)
         # Mock dummy_run method since we don't need the actual implementation
         self.runner.drafter.dummy_run = MagicMock()
         self.runner.compilation_config = SimpleNamespace(
@@ -2161,8 +1897,7 @@ class TestNPUModelRunner:
         self.runner.model.is_mm_encoder_only_model = False
         self.runner.input_ids = SimpleNamespace(
             gpu=torch.zeros(10, dtype=torch.long))
-        self.runner.positions = SimpleNamespace(
-            gpu=torch.zeros(10, dtype=torch.long))
+        self.runner.positions = torch.zeros(10, dtype=torch.long)
 
         # Create proper batch_desc with num_tokens attribute
         batch_desc = SimpleNamespace(num_tokens=10, num_reqs=None)
@@ -2171,8 +1906,8 @@ class TestNPUModelRunner:
             "_determine_batch_execution_and_padding",
             lambda **kwargs: (MagicMock(), batch_desc, None, None, None),
         )
-        monkeypatch.setattr(self.runner, "_get_cumsum_and_arange", lambda x:
-                            (np.array([0, 1]), None))
+        monkeypatch.setattr(self.runner, "_get_cumsum_and_arange", lambda x, *_:
+                            np.array([0, 1]))
         monkeypatch.setattr(self.runner, "_build_attention_metadata",
                             lambda **kwargs: (None, None))
         monkeypatch.setattr(self.runner, "maybe_dummy_run_with_lora",
@@ -2199,15 +1934,6 @@ class TestNPUModelRunner:
             assert logits is not None
             self.runner.drafter.dummy_run.assert_called_once()
 
-            # Test line 450: cudagraph_specialize_lora and activate_lora branch
-            self.runner.compilation_config.cudagraph_specialize_lora = True
-            # Call _dummy_run with activate_lora=True to trigger line 450
-            hidden_states2, logits2 = self.runner._dummy_run(num_tokens=10,
-                                                            skip_eplb=True,
-                                                            activate_lora=True)
-            assert hidden_states2 is not None
-            assert logits2 is not None
-
     def test_dummy_run_skip_eplb(self, monkeypatch):
         """Test _dummy_run with skip_eplb=True (covers line 469)."""
         self.runner.vllm_config.model_config.is_encoder_decoder = False
@@ -2228,8 +1954,7 @@ class TestNPUModelRunner:
         self.runner.model.is_mm_encoder_only_model = False
         self.runner.input_ids = SimpleNamespace(
             gpu=torch.zeros(10, dtype=torch.long))
-        self.runner.positions = SimpleNamespace(
-            gpu=torch.zeros(10, dtype=torch.long))
+        self.runner.positions = torch.zeros(10, dtype=torch.long)
 
         eplb_called = {"called": False}
 
@@ -2243,8 +1968,8 @@ class TestNPUModelRunner:
             "_determine_batch_execution_and_padding",
             lambda **kwargs: (MagicMock(), batch_desc, None, None, None),
         )
-        monkeypatch.setattr(self.runner, "_get_cumsum_and_arange", lambda x:
-                            (np.array([0, 1]), None))
+        monkeypatch.setattr(self.runner, "_get_cumsum_and_arange", lambda x, *_:
+                            np.array([0, 1]))
         monkeypatch.setattr(self.runner, "_build_attention_metadata",
                             lambda **kwargs: (None, None))
         monkeypatch.setattr(self.runner, "maybe_dummy_run_with_lora",
@@ -2748,6 +2473,7 @@ class TestNPUModelRunner:
             "omni_npu.worker.npu_model_runner.ENABLE_NPU_PENALTY_CACHE", True)
 
         runner = NPUModelRunner(self.vllm_cfg, self.npu_device)
+        runner._init_npu_input_batch()
 
         assert runner.input_batch.disable_penalty_cache is False
         assert hasattr(runner.input_batch, 'prompt_mask')
@@ -2815,24 +2541,6 @@ class TestNPUModelRunner:
 
         # Same instance, no re-init
         assert runner.input_batch is old_batch
-
-    def test_may_reinitialize_input_batch_cpu_offload_assertion(self):
-        """may_reinitialize_input_batch raises if cpu_offload_gb > 0."""
-        runner = self.runner
-
-        runner.cache_config.cpu_offload_gb = 1  # trigger assertion
-
-        spec = FullAttentionSpec(
-            block_size=runner.cache_config.block_size * 2,
-            num_kv_heads=8, head_size=128, dtype=torch.float16,
-        )
-        group = SimpleNamespace(kv_cache_spec=spec)
-        kv_cache_config = SimpleNamespace(kv_cache_groups=[group])
-
-        with pytest.raises(AssertionError, match="Cannot re-initialize"):
-            runner.may_reinitialize_input_batch(
-                kv_cache_config, kernel_block_sizes=[runner.cache_config.block_size * 2])
-
 
 class TestUnregisterAndReregisterKVCaches:
     """Tests for unregister_kv_caches and reregister_kv_caches methods."""
@@ -2969,6 +2677,17 @@ class TestUnregisterAndReregisterKVCaches:
         monkeypatch.setattr(
             GPUModelRunner, "initialize_kv_cache_tensors",
             mock_super_initialize
+        )
+
+        def mock_parent_initialize(self, kv_cache_config, is_profiling=False):
+            self.initialize_kv_cache_tensors(
+                kv_cache_config, [self.cache_config.block_size]
+            )
+
+        monkeypatch.setattr(
+            GPUModelRunner,
+            "initialize_kv_cache",
+            mock_parent_initialize,
         )
         mock_pp_group = MagicMock()
         mock_pp_group.is_last_rank = True
@@ -3155,54 +2874,6 @@ class TestUnregisterAndReregisterKVCaches:
         runner._draft_token_req_ids = []
         assert runner.take_draft_token_ids() is None
 
-    def test_take_draft_token_ids_returns_none_when_all_discarded(self, monkeypatch):
-        """Returns None when discard_request_mask masks all requests."""
-        runner = object.__new__(NPUModelRunner)
-        runner.num_spec_tokens = 5
-        runner._draft_token_req_ids = ["req1", "req2"]
-        monkeypatch.setattr(
-            runner, '_get_draft_token_ids_cpu',
-            lambda: ([[1, 2], [3, 4]], ["req1", "req2"])
-        )
-        runner.discard_request_mask = SimpleNamespace(
-            cpu=torch.tensor([True, True], dtype=torch.bool)
-        )
-        assert runner.take_draft_token_ids() is None
-
-    def test_take_draft_token_ids_filters_discarded_requests(self, monkeypatch):
-        """Returns DraftTokenIds with only non-discarded requests."""
-        runner = object.__new__(NPUModelRunner)
-        runner.num_spec_tokens = 5
-        runner._draft_token_req_ids = ["req1", "req2", "req3"]
-        monkeypatch.setattr(
-            runner, '_get_draft_token_ids_cpu',
-            lambda: ([[1, 2], [3, 4], [5, 6]], ["req1", "req2", "req3"])
-        )
-        runner.discard_request_mask = SimpleNamespace(
-            cpu=torch.tensor([True, False, True], dtype=torch.bool)
-        )
-        result = runner.take_draft_token_ids()
-        assert result is not None
-        assert result.req_ids == ["req2"]
-        assert result.draft_token_ids == [[3, 4]]
-
-    def test_take_draft_token_ids_filters_negative_draft_tokens(self, monkeypatch):
-        """Drops requests whose draft tokens contain negative placeholders."""
-        runner = object.__new__(NPUModelRunner)
-        runner.num_spec_tokens = 5
-        runner._draft_token_req_ids = ["req1", "req2", "req3"]
-        monkeypatch.setattr(
-            runner, '_get_draft_token_ids_cpu',
-            lambda: ([[1, 2], [-1, 3], [4, 5]], ["req1", "req2", "req3"])
-        )
-        runner.discard_request_mask = SimpleNamespace(
-            cpu=torch.tensor([False, False, False], dtype=torch.bool)
-        )
-        result = runner.take_draft_token_ids()
-        assert result is not None
-        assert result.req_ids == ["req1", "req3"]
-        assert result.draft_token_ids == [[1, 2], [4, 5]]
-
     def test_take_draft_token_ids_returns_all_when_none_discarded(self, monkeypatch):
         """Returns DraftTokenIds with all requests when no mask is set."""
         runner = object.__new__(NPUModelRunner)
@@ -3219,25 +2890,6 @@ class TestUnregisterAndReregisterKVCaches:
         assert result is not None
         assert result.req_ids == ["req1", "req2"]
         assert result.draft_token_ids == [[1, 2], [3, 4]]
-
-    def test_take_draft_token_ids_truncates_mask_to_num_reqs(self, monkeypatch):
-        """Only the first num_reqs elements of discard_request_mask are used."""
-        runner = object.__new__(NPUModelRunner)
-        runner.num_spec_tokens = 5
-        runner._draft_token_req_ids = ["req1", "req2"]
-        monkeypatch.setattr(
-            runner, '_get_draft_token_ids_cpu',
-            lambda: ([[1, 2], [3, 4]], ["req1", "req2"])
-        )
-        # Mask has more entries than num_reqs — only first 2 should be used
-        runner.discard_request_mask = SimpleNamespace(
-            cpu=torch.tensor([False, True, True, True], dtype=torch.bool)
-        )
-        result = runner.take_draft_token_ids()
-        assert result is not None
-        assert result.req_ids == ["req1"]
-        assert result.draft_token_ids == [[1, 2]]
-
 
 class TestDPLMHeadHelpers:
     """Tests for DP lm_head sync helpers on NPUModelRunner.

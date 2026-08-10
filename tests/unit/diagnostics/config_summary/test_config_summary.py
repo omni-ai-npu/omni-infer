@@ -644,11 +644,20 @@ class TestCollectors:
             dispatch: str = "all2all"
 
         fake_mod = types.ModuleType("omni_npu.model_config.config_loader")
-        fake_mod.loader = types.SimpleNamespace(model_extra_config=MEC())
+        fake_loader = types.ModuleType(
+            "omni_npu.model_config.config_loader.loader"
+        )
+        fake_loader.model_extra_config = MEC()
+        fake_mod.loader = fake_loader
         monkeypatch.setitem(
             sys.modules, "omni_npu.model_config.config_loader", fake_mod)
+        monkeypatch.setitem(
+            sys.modules,
+            "omni_npu.model_config.config_loader.loader",
+            fake_loader,
+        )
         out = summ.collect_omni()
-        assert out["model.omni_npu.dispatch"] == "all2all"
+        assert out["model.omni.dispatch"] == "all2all"
 
     def test_collect_omni_missing_loader_degrades_to_warning(
             self, caplog_config_summary, monkeypatch):
@@ -663,7 +672,7 @@ class TestCollectors:
         # SUBMODULE (config_loader/loader.py), so `from ...config_loader import
         # loader` bypasses the fake parent, imports the real loader.py submodule
         # from sys.modules, and silently succeeds -> collect_omni returns the
-        # real model.omni_npu.* tree and `assert out == {}` blows up (real-env CI).
+        # real model.omni.* tree and `assert out == {}` blows up (real-env CI).
         # The None sentinel is package/submodule/attribute-shape agnostic.
         monkeypatch.setitem(
             sys.modules, "omni_npu.model_config.config_loader", None)
@@ -701,10 +710,19 @@ class TestRenderAndBuild:
             attn: str = "mla"
 
         fake_mod = types.ModuleType("omni_npu.model_config.config_loader")
-        fake_mod.loader = types.SimpleNamespace(model_extra_config=MEC())
+        fake_loader = types.ModuleType(
+            "omni_npu.model_config.config_loader.loader"
+        )
+        fake_loader.model_extra_config = MEC()
+        fake_mod.loader = fake_loader
         monkeypatch.setitem(
             sys.modules, "omni_npu.model_config.config_loader", fake_mod)
+        monkeypatch.setitem(
+            sys.modules,
+            "omni_npu.model_config.config_loader.loader",
+            fake_loader,
+        )
         with_omni = summ.build_entries(cfg, scope="worker", include_omni=True)
-        assert with_omni["model.omni_npu.attn"] == "mla"
+        assert with_omni["model.omni.attn"] == "mla"
         without = summ.build_entries(cfg, scope="worker", include_omni=False)
         assert not any(k.startswith("model.omni") for k in without)

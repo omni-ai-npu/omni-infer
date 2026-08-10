@@ -3,7 +3,7 @@
 
 """Integration tests for NPUModelRunner KV cache reshape via public iterator."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import torch
 
@@ -47,7 +47,6 @@ class TestNPUModelRunnerReshapeIntegration:
         raw = torch.zeros(page_bytes * 64, dtype=torch.uint8)
 
         result = self.runner._reshape_kv_cache_tensors(
-            kv_cache_config=MagicMock(),
             kv_cache_raw_tensors={"layer_0": raw},
             kernel_block_sizes=[kv_cache_spec.block_size],
         )
@@ -89,7 +88,6 @@ class TestNPUModelRunnerReshapeIntegration:
         }
 
         result = self.runner._reshape_kv_cache_tensors(
-            kv_cache_config=MagicMock(),
             kv_cache_raw_tensors=raw_tensors,
             kernel_block_sizes=[2],
         )
@@ -150,7 +148,6 @@ class TestNPUModelRunnerReshapeIntegration:
         }
 
         self.runner._reshape_kv_cache_tensors(
-            kv_cache_config=MagicMock(),
             kv_cache_raw_tensors=raw_tensors,
             kernel_block_sizes=[2],
         )

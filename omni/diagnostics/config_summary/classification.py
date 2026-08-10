@@ -143,11 +143,13 @@ RUNTIME_FIELD_EXCLUDE = frozenset({
     # cudagraph_capture_sizes is already captured, and dumping the full table
     # would add hundreds of derived lines. Same rationale as tokenizer token_ids.
     "CompilationConfig.bs_to_padded_graph_size",
-    # runtime-backfilled KV sizing (core.py:273), deliberately outside the
+    # runtime-backfilled KV sizing/capacity, deliberately outside the
     # snapshot contract (solution doc §3.3)
     "CacheConfig.num_gpu_blocks",
     "CacheConfig.num_cpu_blocks",
     "CacheConfig.num_gpu_blocks_override",
+    "CacheConfig.kv_cache_size_tokens",
+    "CacheConfig.kv_cache_max_concurrency",
     # private resolution state, EXPLICIT fq-names (no underscore wildcard)
     "CacheConfig._block_size_resolved",
     "ReasoningConfig._enabled",
