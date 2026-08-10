@@ -52,9 +52,12 @@ _HELP = (
     f"flag) to disable. {_ENV_NAME} overrides this flag."
 )
 
-# Resolved once per process by create_engine_config().  VllmConfig can only carry
-# the value as a plain attribute (see below), which a dataclasses.replace() or a
-# reconstruction elsewhere would silently drop; this is the safety net.
+# Where the engine-level default lives.  Resolved once per process by
+# create_engine_config().  Deliberately not an attribute on the VllmConfig
+# instance: it cannot be a declared field (pydantic dataclass, extra="forbid"),
+# and vllm.config.utils.replace() raises on undeclared keys, which killed every
+# spec-decode worker.  A module global is safe -- create_engine_config and
+# InputProcessor always run in the same (frontend) process.
 _PROCESS_DEFAULT: RepetitionDetectionParams | None = None
 
 _ENV_DEFAULT_UNRESOLVED = object()
@@ -198,7 +201,7 @@ class EngineArgsRepetitionDetectionPatch(VLLMPatch):
             cfg = env_cfg
             source = _ENV_NAME
 
-        vllm_config.repetition_detection = cfg
+        # Never set this on vllm_config -- see _PROCESS_DEFAULT.
         _PROCESS_DEFAULT = cfg
 
         if cfg is not None:
@@ -226,8 +229,8 @@ _ORIG_PROCESS_INPUTS = InputProcessor.process_inputs
 
 
 def _resolve_default(processor: InputProcessor) -> RepetitionDetectionParams | None:
-    """The default create_engine_config resolved, with two fallbacks in case a
-    dataclasses.replace() elsewhere dropped the plain attribute."""
+    """The default create_engine_config resolved.  The first layer only serves
+    callers that set the attribute themselves; this patch never does."""
     cfg = getattr(getattr(processor, "vllm_config", None), _KEY, None)
     if cfg is not None:
         return cfg

@@ -63,8 +63,29 @@ class _PoolingParams:
     pass
 
 
+@dataclass
 class _VllmConfig:
-    """Stands in for the pydantic dataclass; only needs to accept setattr."""
+    """Stands in for the pydantic dataclass.  A real dataclass, so _vllm_replace
+    below can run against it."""
+
+    seen_usage_context: object = None
+    seen_headless: bool = False
+
+
+def _vllm_replace(instance, /, **kwargs):
+    """Clone of vllm/config/utils.py `replace()`: an undeclared key raises
+    ValueError, it is not dropped."""
+    cls = type(instance)
+    names = {f.name for f in fields(cls)}
+
+    def _is_init_field(name):
+        if name not in names:
+            raise ValueError(f"Field '{name}' not found in {cls.__name__}.")
+        return True
+
+    merged = {k: v for k, v in instance.__dict__.items() if _is_init_field(k)}
+    merged.update(kwargs)
+    return cls(**merged)
 
 
 @dataclass
@@ -260,17 +281,15 @@ def test_cli_flag_parses_json():
 
 def test_cli_absent_leaves_it_off():
     _reset()
-    cfg = _config_from([])
-    assert cfg.repetition_detection is None
+    _config_from([])
     assert PATCH._PROCESS_DEFAULT is None
 
 
 def test_create_engine_config_carries_cli_value_and_forwards_args():
     _reset()
     cfg = _config_from(["--repetition-detection", GOOD_JSON])
-    assert cfg.repetition_detection == _RepetitionDetectionParams(10, 2, 3)
-    # module-level safety net populated for InputProcessor
     assert PATCH._PROCESS_DEFAULT == _RepetitionDetectionParams(10, 2, 3)
+    assert "repetition_detection" not in cfg.__dict__
     # the original create_engine_config still received its own arguments
     assert cfg.seen_usage_context is None and cfg.seen_headless is False
 
@@ -278,24 +297,24 @@ def test_create_engine_config_carries_cli_value_and_forwards_args():
 def test_env_fallback_when_cli_absent():
     _reset()
     ENVS.OMNI_REPETITION_DETECTION_CONFIG = '{"max_pattern_size":4,"min_count":2}'
-    cfg = _config_from([])
-    assert cfg.repetition_detection == _RepetitionDetectionParams(4, 0, 2)
+    _config_from([])
+    assert PATCH._PROCESS_DEFAULT == _RepetitionDetectionParams(4, 0, 2)
 
 
 def test_env_beats_cli():
     """Same order as the 0.14 backport: a valid env value overwrites the CLI."""
     _reset()
     ENVS.OMNI_REPETITION_DETECTION_CONFIG = '{"max_pattern_size":4,"min_count":2}'
-    cfg = _config_from(["--repetition-detection", GOOD_JSON])
-    assert cfg.repetition_detection == _RepetitionDetectionParams(4, 0, 2)
+    _config_from(["--repetition-detection", GOOD_JSON])
+    assert PATCH._PROCESS_DEFAULT == _RepetitionDetectionParams(4, 0, 2)
 
 
 def test_bad_env_leaves_the_cli_value_in_place():
     """A malformed env value must not silently disable a working CLI config."""
     _reset()
     ENVS.OMNI_REPETITION_DETECTION_CONFIG = "{not json"
-    cfg = _config_from(["--repetition-detection", GOOD_JSON])
-    assert cfg.repetition_detection == _RepetitionDetectionParams(10, 2, 3)
+    _config_from(["--repetition-detection", GOOD_JSON])
+    assert PATCH._PROCESS_DEFAULT == _RepetitionDetectionParams(10, 2, 3)
 
 
 def test_bad_cli_json_fails_the_launch():
@@ -324,8 +343,8 @@ def test_cli_rejects_semantically_invalid_config():
 def test_bad_env_json_is_logged_and_ignored():
     _reset()
     ENVS.OMNI_REPETITION_DETECTION_CONFIG = "{not json"
-    cfg = _config_from([])
-    assert cfg.repetition_detection is None  # no raise: node still starts
+    _config_from([])
+    assert PATCH._PROCESS_DEFAULT is None  # no raise: node still starts
 
 
 def test_flag_registered_twice_does_not_abort():
@@ -363,6 +382,33 @@ def test_injection_survives_a_config_that_lost_the_attribute():
     _config_from(["--repetition-detection", GOOD_JSON])  # populates _PROCESS_DEFAULT
     out = _process(_InputProcessor(_VllmConfig()), _SamplingParams())
     assert out["params"].repetition_detection == _RepetitionDetectionParams(10, 2, 3)
+
+
+def test_config_stays_reconstructible_for_spec_decode():
+    """The default must not be parked on the instance: 0.25.1's spec-decode path
+    rebuilds the config through replace(), which raises on undeclared keys and
+    took down every MTP worker at load_model."""
+    _reset()
+    cfg = _config_from(["--repetition-detection", GOOD_JSON])
+    assert "repetition_detection" not in cfg.__dict__
+
+    draft = _vllm_replace(cfg)  # must not raise
+
+    out = _process(_InputProcessor(draft), _SamplingParams())
+    assert out["params"].repetition_detection == _RepetitionDetectionParams(10, 2, 3)
+
+
+def test_replace_stub_rejects_unknown_keys():
+    """Guard for the test above: if the stub silently dropped extra keys instead
+    of raising, that regression test would pass no matter what the patch does."""
+    cfg = _VllmConfig()
+    cfg.injected_by_someone = 1
+    try:
+        _vllm_replace(cfg)
+    except ValueError as exc:
+        assert "injected_by_someone" in str(exc)
+    else:
+        raise AssertionError("the replace() stub no longer models 0.25.1")
 
 
 def test_env_only_process_still_injects():
@@ -405,7 +451,8 @@ def test_apply_actually_installs_the_attributes():
     ea = _EngineArgs.from_cli_args(args)
     assert ea.repetition_detection == _RepetitionDetectionParams(10, 2, 3)
     vllm_config = ea.create_engine_config()
-    assert vllm_config.repetition_detection == _RepetitionDetectionParams(10, 2, 3)
+    assert PATCH._PROCESS_DEFAULT == _RepetitionDetectionParams(10, 2, 3)
+    assert "repetition_detection" not in vllm_config.__dict__
     out = _InputProcessor(vllm_config).process_inputs(
         "req-1", "hi", _SamplingParams(), supported_tasks=("generate",)
     )
