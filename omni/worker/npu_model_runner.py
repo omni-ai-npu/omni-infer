@@ -1143,6 +1143,11 @@ class NPUModelRunner(GPUModelRunner):
                     slot_mapping=slot_mappings,
                 ),
             ):
+                forward_context = get_forward_context()
+                forward_context.capturing = False
+                # Idle DP ranks must use the same LMHead all-gather pad target
+                # as the active rank before entering dummy compute_logits.
+                self._capture_dp_pad_target(forward_context)
                 outputs = self.model(
                     input_ids=input_ids,
                     positions=positions,
