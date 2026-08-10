@@ -68,7 +68,8 @@ __all__ = [
     "maybe_unpad_and_all_gather",
     "get_local_group_from_list",
     "get_round_cross_group_from_list",
-    "get_moe_dispatch_ep_group"
+    "get_moe_dispatch_ep_group",
+    "destroy_parallel_state_ext_groups",
 ]
 
 _LOCAL_WORLD = None
@@ -92,6 +93,39 @@ _TP_SIZE_OR_RANKS_GROUP_CACHE: dict[tuple[tuple[int, ...], ...], GroupCoordinato
 
 # Supported tensor transform keys.
 _TENSOR_TRANSFORM_KEYS = ("x_transform", "y_transform")
+
+
+def destroy_parallel_state_ext_groups() -> None:
+    """Destroy the Ascend A2 (910B) extension groups owned by this module.
+
+    These three lists are only populated on Ascend910B, by
+    `initialize_local_comm_group_list` / `initialize_round_swap_comm_group_list` /
+    `initialize_cross_comm_group_list` (called from `ParallelStatePatch.
+    initialize_model_parallel`). On non-A2 devices they stay `None`, so each
+    block below is a no-op. Does not touch `_LOCAL_WORLD` or `_LAYER_COMM_DICT`,
+    which belong to the separate layer-parallel feature.
+    """
+    # Created by initialize_local_comm_group_list (single-node A2 groups).
+    global _LOCAL_COMM_LIST
+    if _LOCAL_COMM_LIST:
+        for group in _LOCAL_COMM_LIST:
+            group.destroy()
+    _LOCAL_COMM_LIST = None
+
+    # Created by initialize_cross_comm_group_list (cross-node A2 groups).
+    global _CROSS_COMM_LIST
+    if _CROSS_COMM_LIST:
+        for group in _CROSS_COMM_LIST:
+            group.destroy()
+    _CROSS_COMM_LIST = None
+
+    # Created by initialize_round_swap_comm_group_list (cross-node round-swap
+    # schedule, only when num_nodes >= 2 and even).
+    global _CROSS_ROUND_COMM_LIST
+    if _CROSS_ROUND_COMM_LIST:
+        for group in _CROSS_ROUND_COMM_LIST:
+            group.destroy()
+    _CROSS_ROUND_COMM_LIST = None
 
 
 def get_world_group():
@@ -185,7 +219,8 @@ def initialize_local_comm_group_list(backend) -> None:
     # Get world size and rank. Ensure some consistencies.
     if not torch.distributed.is_initialized():
         raise RuntimeError("torch.distributed must be initialized")
-    world_size: int = torch.distributed.get_world_size()
+    logical_ranks = list(get_world_group().ranks)
+    world_size = len(logical_ranks)
     local_size = get_npu_device_count()
 
     backend = backend or torch.distributed.get_backend(get_world_group().device_group)
@@ -197,7 +232,7 @@ def initialize_local_comm_group_list(backend) -> None:
     _LOCAL_COMM_LIST = list()
     group_ranks = []
     for i in range(num_local_groups):
-        ranks = list(range(i * local_size, (i + 1) * local_size))
+        ranks = logical_ranks[i * local_size : (i + 1) * local_size]
         group_ranks.append(ranks)
 
     # message queue broadcaster is only used in tensor model parallel group
@@ -221,7 +256,8 @@ def initialize_round_swap_comm_group_list(backend) -> None:
     from omni_npu.v1.distributed.utils import generate_round_swap_schedule
     if not torch.distributed.is_initialized():
         raise RuntimeError("torch.distributed must be initialized")
-    world_size: int = torch.distributed.get_world_size()
+    logical_ranks = list(get_world_group().ranks)
+    world_size = len(logical_ranks)
 
     local_size = get_npu_device_count()
     if not world_size % local_size == 0:
@@ -246,7 +282,12 @@ def initialize_round_swap_comm_group_list(backend) -> None:
         group_ranks = []
         for i in range(local_size):
             for a, b in round_pairs:
-                group_ranks.append([a * local_size + i, b * local_size + i])
+                group_ranks.append(
+                    [
+                        logical_ranks[a * local_size + i],
+                        logical_ranks[b * local_size + i],
+                    ]
+                )
         group_ranks_rounds.append(group_ranks)
 
     _CROSS_ROUND_COMM_LIST = [
@@ -262,7 +303,8 @@ def initialize_cross_comm_group_list(backend) -> None:
     # Get world size and rank. Ensure some consistencies.
     if not torch.distributed.is_initialized():
         raise RuntimeError("torch.distributed must be initialized")
-    world_size: int = torch.distributed.get_world_size()
+    logical_ranks = list(get_world_group().ranks)
+    world_size = len(logical_ranks)
     local_size = get_npu_device_count()
 
     server_size = world_size // local_size
@@ -277,7 +319,7 @@ def initialize_cross_comm_group_list(backend) -> None:
     _CROSS_COMM_LIST = list()
     group_ranks = []
     for i in range(num_cross_groups):
-        ranks = list(range(i, world_size, num_cross_groups))
+        ranks = [logical_ranks[index] for index in range(i, world_size, num_cross_groups)]
         group_ranks.append(ranks)
     # pipeline parallel does not need custom allreduce
 

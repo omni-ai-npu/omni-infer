@@ -7,11 +7,12 @@ from vllm.v1.engine.async_llm import AsyncLLM
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 logger = init_logger(__name__)
+_original_resume_generation = AsyncLLM.resume_generation
 
 
 @register_patch("AsyncLLMResumePatch", AsyncLLM)
 class AsyncLLMResumePatch(VLLMPatch):
-    """Re-capture ACLGraph on /resume."""
+    """Re-capture ACLGraph before resuming generation."""
 
     _attr_names_to_apply = ["resume_generation"]
 
@@ -25,6 +26,4 @@ class AsyncLLMResumePatch(VLLMPatch):
             )
             raise
 
-        async with self._pause_cond:
-            self._paused = False
-            self._pause_cond.notify_all()
+        await _original_resume_generation(self)
