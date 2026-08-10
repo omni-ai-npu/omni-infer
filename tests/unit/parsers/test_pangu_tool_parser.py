@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from omni_npu.v1.parsers import PanguToolParser
-from vllm.entrypoints.openai.protocol import ChatCompletionRequest
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 
 
 class TestPanguToolParserExtractToolCalls(unittest.TestCase):

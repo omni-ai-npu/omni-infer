@@ -12,7 +12,10 @@ from collections.abc import Sequence
 
 if TYPE_CHECKING:
     from vllm.multimodal.inputs import MultiModalKwargsItem
-from vllm.multimodal.processing import ResolvedPromptUpdate, PromptUpdateDetails
+from vllm.multimodal.processing.processor import (
+    PromptUpdateDetails,
+    ResolvedPromptUpdate,
+)
 from vllm.logger import init_logger
 
 from ..config import ConnectorConfig
@@ -149,16 +152,13 @@ class BaseMMFeatureConnector(ABC):
         from vllm.multimodal.inputs import (
             MultiModalBatchedField, MultiModalFieldElem, MultiModalKwargsItem
         )
-        field_elems = []
+        field_elems = {}
         for key, tensor in tensors.items():
-            elem = MultiModalFieldElem(
-                modality=metadata["modality"],
-                key=key,
+            field_elems[key] = MultiModalFieldElem(
                 data=tensor,
                 field=MultiModalBatchedField(),
             )
-            field_elems.append(elem)
-        mm_item = MultiModalKwargsItem.from_elems(field_elems)
+        mm_item = MultiModalKwargsItem(field_elems)
 
         prompt_updates = [deserialize_prompt_update(pu) 
                           for pu in serialized_updates]
@@ -226,4 +226,3 @@ class BaseMMFeatureConnector(ABC):
         serialized_updates: List[Dict[str, Any]],
     ) -> None:
         pass
-

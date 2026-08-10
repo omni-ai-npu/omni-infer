@@ -7,7 +7,8 @@ import time
 from unittest.mock import MagicMock, patch, call, ANY
 
 import pytest
-from vllm.multimodal.processing import ResolvedPromptUpdate, PromptUpdateDetails
+from vllm.multimodal.processing import PromptUpdateDetails
+from vllm.multimodal.processing.processor import ResolvedPromptUpdate
 
 from omni_npu.connector.mm_feature_transfer.config import DiskConnectorConfig
 from omni_npu.connector.mm_feature_transfer.mm_feature_connector.disk_connector import DiskMMFeatureConnector
@@ -119,13 +120,13 @@ def connector(tmp_path, mock_meta):
 
 # -------------------- Tests for has_item --------------------
 class TestHasItem:
-    def test_has_item_producer_returns_false_without_refcount(self, connector):
-        """Producer mode should not load from connector."""
+    def test_has_item_producer_returns_false_and_increments_refcount(self, connector):
+        """A missing producer-side item still participates in refcount tracking."""
         mm_hash = "producer_hash"
         with patch.object(connector, "is_profile_run", return_value=False):
             result = connector.has_item(mm_hash)
             assert result is False
-            connector._meta_mock.inc_refcount.assert_not_called()
+            connector._meta_mock.inc_refcount.assert_called_once_with(mm_hash)
 
     def test_has_item_consumer_file_exists_returns_true_and_increments_refcount(self, connector):
         """If metadata file exists in consumer mode, return True and inc refcount."""
@@ -258,9 +259,8 @@ class TestLoadItemWithUpdates:
     
     @patch("safetensors.torch.load_file")
     @patch("pickle.load")
-    @patch("omni_npu.connector.mm_feature_transfer.mm_feature_connector.disk_connector.MultiModalKwargsItem.from_elems")
     def test_load_successful(
-        self, mock_from_elems, mock_pickle_load, mock_safe_load,
+        self, mock_pickle_load, mock_safe_load,
         connector, real_prompt_updates
     ):
         """Full successful load: loads all tensors, reconstructs mm_item and prompt updates."""
@@ -285,21 +285,16 @@ class TestLoadItemWithUpdates:
         with open(prompt_path, "wb") as f:
             pickle.dump(serialized_data, f)
 
-        mock_safe_load.return_value = {"image": MagicMock()}
+        loaded_tensor = MagicMock()
+        mock_safe_load.return_value = {"image": loaded_tensor}
         mock_pickle_load.return_value = serialized_data
-        mock_mm_item = MagicMock()
-        mock_from_elems.return_value = mock_mm_item
 
         result = connector.load_item_with_updates(mm_hash)
 
         mock_safe_load.assert_called_once_with(tensor_path)
-        call_args = mock_from_elems.call_args[0][0]  # first arg is list of elems
-        assert len(call_args) == 1
-        elem = call_args[0]
-        assert elem.modality == "image"
-        assert elem.key == "image"
         mock_pickle_load.assert_called_once()
-        assert result[0] is mock_mm_item
+        assert list(result[0]) == ["image"]
+        assert result[0]["image"].data is loaded_tensor
         assert len(result[1]) == 1
         # dec_refcount called
         connector._meta_mock.dec_refcount.assert_called_once_with(mm_hash)

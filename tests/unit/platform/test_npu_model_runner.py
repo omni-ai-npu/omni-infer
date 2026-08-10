@@ -162,16 +162,16 @@ class TestNPUModelRunner:
 
         # NPU-specific buffer dtype and shape checks
         assert self.runner.query_start_loc.cpu.dtype == torch.int32
-        assert self.runner.seq_lens.cpu.dtype == torch.int32
+        assert self.runner.seq_lens.cpu().dtype == torch.int32
         assert self.runner.query_start_loc.cpu.shape[
             0] == self.runner.max_num_reqs + 1
-        assert self.runner.seq_lens.cpu.shape[0] == self.runner.max_num_reqs
+        assert self.runner.seq_lens.cpu().shape[0] == self.runner.max_num_reqs
 
         # sampled_token_ids_pinned_cpu dtype, device, and shape checks
         assert self.runner.sampled_token_ids_pinned_cpu.device.type == "cpu"
-        assert self.runner.sampled_token_ids_pinned_cpu.dtype == torch.int32
+        assert self.runner.sampled_token_ids_pinned_cpu.dtype == torch.int64
         assert self.runner.sampled_token_ids_pinned_cpu.shape[
-            0] == self.runner.max_model_len
+            0] == self.runner.max_num_reqs
         assert self.runner.sampled_token_ids_pinned_cpu.shape[1] == 1
 
         # Uses NPU-specific sampler
@@ -206,6 +206,11 @@ class TestNPUModelRunner:
         self.vllm_cfg.speculative_config = SimpleNamespace(
             method="eagle",
             use_eagle=lambda: True,
+            uses_draft_model=lambda: False,
+            use_ngram_gpu=lambda: False,
+            use_gemma4_mtp=lambda: False,
+            use_step3p5_mtp=lambda: False,
+            use_dflash=lambda: False,
             enforce_eager=False,
             draft_model_config=SimpleNamespace(
                 get_hidden_size=lambda: 1024,
@@ -2561,6 +2566,7 @@ class TestNPUModelRunner:
         self.runner.logits_indices = self.runner._make_buffer(max_num_tokens, dtype=torch.int32)
         self.runner.target_logits_indices = self.runner._make_buffer(max_num_tokens, dtype=torch.int32)
         self.runner.bonus_logits_indices = self.runner._make_buffer(max_num_tokens, dtype=torch.int32)
+        self.runner.input_ids = self.runner._make_buffer(max_num_tokens, dtype=torch.int32)
 
         # Test input data based on docstring example
         # cu_num_scheduled_tokens:  [  4, 104, 107, 207, 209]
@@ -2617,7 +2623,9 @@ class TestNPUModelRunner:
         runner = self.runner
         output_token_ids = torch.zeros(4, dtype=torch.int32,
                                        device=self.npu_device)
-        result = runner._update_states_after_model_execute(output_token_ids)
+        result = runner._update_states_after_model_execute(
+            output_token_ids, SimpleNamespace()
+        )
         assert result is None
 
     def test_update_states_after_model_execute_no_spec_config(self):
@@ -2628,7 +2636,9 @@ class TestNPUModelRunner:
         runner.speculative_config = None
         output_token_ids = torch.zeros(4, dtype=torch.int32,
                                        device=self.npu_device)
-        result = runner._update_states_after_model_execute(output_token_ids)
+        result = runner._update_states_after_model_execute(
+            output_token_ids, SimpleNamespace()
+        )
         assert result is None
 
     def test_update_states_after_model_execute_not_hybrid(self):
@@ -2643,7 +2653,9 @@ class TestNPUModelRunner:
         runner.model_config.is_hybrid = False
         output_token_ids = torch.zeros(4, dtype=torch.int32,
                                        device=self.npu_device)
-        result = runner._update_states_after_model_execute(output_token_ids)
+        result = runner._update_states_after_model_execute(
+            output_token_ids, SimpleNamespace()
+        )
         assert result is None
 
     def test_get_valid_sampled_token_count_returns_empty_when_no_event(self):

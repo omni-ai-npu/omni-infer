@@ -21,10 +21,10 @@ import types
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-# <repo>/omni/tests/vllm_patches/ -> parents[2] is <repo>/omni
+# <repo>/tests/unit/vllm_patch/useful_patch/ -> parents[4] is <repo>
 PATCH_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "src/omni_npu/vllm_patches/usefull_patch/patch_repetition_detection_config.py"
+    Path(__file__).resolve().parents[4]
+    / "omni/vllm_patches/usefull_patch/patch_repetition_detection_config.py"
 )
 
 REGISTERED = []

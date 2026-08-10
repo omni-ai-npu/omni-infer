@@ -11,8 +11,8 @@ from omni_npu.v1.parsers._streaming_relay import (
     reset_for_tests,
     stash_reasoning_from,
 )
-from vllm.entrypoints.openai.protocol import ChatCompletionRequest
-from vllm.entrypoints.openai.protocol import DeltaMessage
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+from vllm.entrypoints.openai.engine.protocol import DeltaMessage
 
 
 class TestPanguReasoningParserExtractReasoning(unittest.TestCase):

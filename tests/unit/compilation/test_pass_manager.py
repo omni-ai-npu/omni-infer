@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock, Mock
 from torch import fx
 
 from vllm.config import VllmConfig, ModelConfig
-from vllm.compilation.vllm_inductor_pass import VllmInductorPass
+from vllm.compilation.passes.vllm_inductor_pass import VllmInductorPass
 from omni_npu.compilation.pass_manager import GraphPassManager
 
 

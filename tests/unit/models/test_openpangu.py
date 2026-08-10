@@ -10,6 +10,13 @@ from unittest.mock import MagicMock, patch
 
 import torch
 import torch.nn as nn
+import pytest
+
+if importlib.util.find_spec("omni_models") is None:
+    pytest.skip(
+        "optional omni_models package is not installed",
+        allow_module_level=True,
+    )
 
 from omni_npu.vllm_patches.patches.models.pangu_v2_base.patch_mla import mlaPatch
 mlaPatch.apply()
