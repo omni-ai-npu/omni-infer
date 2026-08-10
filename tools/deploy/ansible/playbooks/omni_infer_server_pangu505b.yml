@@ -10,7 +10,7 @@
     LOG_PATH: /data/log_path
     LOG_PATH_IN_EXECUTOR: /data/log_path_in_executor
     CODE_PATH: /data/local_code_path
-    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer/ai-infra-infer-1.1.1-arm-openeuler-py311-a3-cann.9.1.t2.b020-pta_v2.9.0-op-1.2.1.post1-omni_dev_v1.0.0-vllm-202607090010:0.0.1"
+    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer_dev/ai-infra-infer-1.0.3-a3-arm-feature/vllm_0.25.1-202608031412-daily:0.0.1"
     DOCKER_NAME_P: "docker_name_p"
     DOCKER_NAME_D: "docker_name_d"
     DOCKER_NAME_C: "docker_name_c"
@@ -31,35 +31,41 @@
     sync_code_profile:
       container_copy:
         prefill: >-
-          docker exec $DOCKER_NAME_P rm -rf
-          {{ container_workspace }}/omniinfer/components/omni-npu
-          {{ container_workspace }}/omniinfer/tools &&
-          docker exec $DOCKER_NAME_P mkdir -p
-          {{ container_workspace }}/omniinfer/components &&
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer/omni
-          $DOCKER_NAME_P:{{ container_workspace }}/omniinfer/components/omni-npu &&
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer/tools
-          $DOCKER_NAME_P:{{ container_workspace }}/omniinfer/
+          docker exec "$DOCKER_NAME_P" mkdir -p
+          '{{ container_workspace }}/omniinfer/components' &&
+          docker exec "$DOCKER_NAME_P" find
+          '{{ container_workspace }}/omniinfer'
+          -mindepth 1 -maxdepth 1 ! -name components
+          -exec rm -rf -- '{}' + &&
+          docker cp '{{ ansible_env.CODE_PATH }}/omniinfer/.'
+          "${DOCKER_NAME_P}:{{ container_workspace }}/omniinfer/"
         decode: >-
-          docker exec $DOCKER_NAME_D rm -rf
-          {{ container_workspace }}/omniinfer/components/omni-npu
-          {{ container_workspace }}/omniinfer/tools &&
-          docker exec $DOCKER_NAME_D mkdir -p
-          {{ container_workspace }}/omniinfer/components &&
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer/omni
-          $DOCKER_NAME_D:{{ container_workspace }}/omniinfer/components/omni-npu &&
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer/tools
-          $DOCKER_NAME_D:{{ container_workspace }}/omniinfer/
-        proxy: >-
-          docker exec $DOCKER_NAME_C rm -rf
-          {{ container_workspace }}/omniinfer/components/omni-npu
-          {{ container_workspace }}/omniinfer/tools &&
-          docker exec $DOCKER_NAME_C mkdir -p
-          {{ container_workspace }}/omniinfer/components &&
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer/omni
-          $DOCKER_NAME_C:{{ container_workspace }}/omniinfer/components/omni-npu &&
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer/tools
-          $DOCKER_NAME_C:{{ container_workspace }}/omniinfer/
+          docker exec "$DOCKER_NAME_D" mkdir -p
+          '{{ container_workspace }}/omniinfer/components' &&
+          docker exec "$DOCKER_NAME_D" find
+          '{{ container_workspace }}/omniinfer'
+          -mindepth 1 -maxdepth 1 ! -name components
+          -exec rm -rf -- '{}' + &&
+          docker cp '{{ ansible_env.CODE_PATH }}/omniinfer/.'
+          "${DOCKER_NAME_D}:{{ container_workspace }}/omniinfer/"
+
+    pip_install_profile:
+      prefill: >-
+        docker exec "$DOCKER_NAME_P" bash -lc
+        'source ~/.bashrc &&
+        cd {{ container_workspace }}/omniinfer &&
+        python -m pip uninstall -y omni-npu &&
+        TORCH_DEVICE_BACKEND_AUTOLOAD=0
+        python -m pip install --force-reinstall
+        --no-deps --no-build-isolation --editable .'
+      decode: >-
+        docker exec "$DOCKER_NAME_D" bash -lc
+        'source ~/.bashrc &&
+        cd {{ container_workspace }}/omniinfer &&
+        python -m pip uninstall -y omni-npu &&
+        TORCH_DEVICE_BACKEND_AUTOLOAD=0
+        python -m pip install --force-reinstall
+        --no-deps --no-build-isolation --editable .'
 
     run_server_prefill_profile:
       prepare_commands: |-

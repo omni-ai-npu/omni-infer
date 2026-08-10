@@ -33,14 +33,32 @@
         delete: false
       container_copy:
         prefill: >-
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer
-          $DOCKER_NAME_P:{{ container_workspace }}/
+          docker exec "$DOCKER_NAME_P" mkdir -p
+          '{{ container_workspace }}/omniinfer/components' &&
+          docker exec "$DOCKER_NAME_P" find
+          '{{ container_workspace }}/omniinfer'
+          -mindepth 1 -maxdepth 1 ! -name components
+          -exec rm -rf -- '{}' + &&
+          docker cp '{{ ansible_env.CODE_PATH }}/omniinfer/.'
+          "${DOCKER_NAME_P}:{{ container_workspace }}/omniinfer/"
         decode: >-
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer
-          $DOCKER_NAME_D:{{ container_workspace }}/
+          docker exec "$DOCKER_NAME_D" mkdir -p
+          '{{ container_workspace }}/omniinfer/components' &&
+          docker exec "$DOCKER_NAME_D" find
+          '{{ container_workspace }}/omniinfer'
+          -mindepth 1 -maxdepth 1 ! -name components
+          -exec rm -rf -- '{}' + &&
+          docker cp '{{ ansible_env.CODE_PATH }}/omniinfer/.'
+          "${DOCKER_NAME_D}:{{ container_workspace }}/omniinfer/"
         proxy: >-
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer
-          $DOCKER_NAME_C:{{ container_workspace }}/
+          docker exec "$DOCKER_NAME_C" mkdir -p
+          '{{ container_workspace }}/omniinfer/components' &&
+          docker exec "$DOCKER_NAME_C" find
+          '{{ container_workspace }}/omniinfer'
+          -mindepth 1 -maxdepth 1 ! -name components
+          -exec rm -rf -- '{}' + &&
+          docker cp '{{ ansible_env.CODE_PATH }}/omniinfer/.'
+          "${DOCKER_NAME_C}:{{ container_workspace }}/omniinfer/"
     run_server_prefill_profile:
       runner: pd_run.sh
       prepare_commands: |-

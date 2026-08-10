@@ -32,35 +32,41 @@
     sync_code_profile:
       container_copy:
         prefill: >-
-          docker exec $DOCKER_NAME_P rm -rf
-          {{ container_workspace }}/omniinfer/components/omni-npu
-          {{ container_workspace }}/omniinfer/tools &&
-          docker exec $DOCKER_NAME_P mkdir -p
-          {{ container_workspace }}/omniinfer/components &&
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer/omni
-          $DOCKER_NAME_P:{{ container_workspace }}/omniinfer/components/omni-npu &&
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer/tools
-          $DOCKER_NAME_P:{{ container_workspace }}/omniinfer/
+          docker exec "$DOCKER_NAME_P" mkdir -p
+          '{{ container_workspace }}/omniinfer/components' &&
+          docker exec "$DOCKER_NAME_P" find
+          '{{ container_workspace }}/omniinfer'
+          -mindepth 1 -maxdepth 1 ! -name components
+          -exec rm -rf -- '{}' + &&
+          docker cp '{{ ansible_env.CODE_PATH }}/omniinfer/.'
+          "${DOCKER_NAME_P}:{{ container_workspace }}/omniinfer/"
         decode: >-
-          docker exec $DOCKER_NAME_D rm -rf
-          {{ container_workspace }}/omniinfer/components/omni-npu
-          {{ container_workspace }}/omniinfer/tools &&
-          docker exec $DOCKER_NAME_D mkdir -p
-          {{ container_workspace }}/omniinfer/components &&
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer/omni
-          $DOCKER_NAME_D:{{ container_workspace }}/omniinfer/components/omni-npu &&
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer/tools
-          $DOCKER_NAME_D:{{ container_workspace }}/omniinfer/
-        proxy: >-
-          docker exec $DOCKER_NAME_C rm -rf
-          {{ container_workspace }}/omniinfer/components/omni-npu
-          {{ container_workspace }}/omniinfer/tools &&
-          docker exec $DOCKER_NAME_C mkdir -p
-          {{ container_workspace }}/omniinfer/components &&
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer/omni
-          $DOCKER_NAME_C:{{ container_workspace }}/omniinfer/components/omni-npu &&
-          docker cp {{ ansible_env.CODE_PATH }}/omniinfer/tools
-          $DOCKER_NAME_C:{{ container_workspace }}/omniinfer/
+          docker exec "$DOCKER_NAME_D" mkdir -p
+          '{{ container_workspace }}/omniinfer/components' &&
+          docker exec "$DOCKER_NAME_D" find
+          '{{ container_workspace }}/omniinfer'
+          -mindepth 1 -maxdepth 1 ! -name components
+          -exec rm -rf -- '{}' + &&
+          docker cp '{{ ansible_env.CODE_PATH }}/omniinfer/.'
+          "${DOCKER_NAME_D}:{{ container_workspace }}/omniinfer/"
+
+    pip_install_profile:
+      prefill: >-
+        docker exec "$DOCKER_NAME_P" bash -lc
+        'source ~/.bashrc &&
+        cd {{ container_workspace }}/omniinfer &&
+        python -m pip uninstall -y omni-npu &&
+        TORCH_DEVICE_BACKEND_AUTOLOAD=0
+        python -m pip install --force-reinstall
+        --no-deps --no-build-isolation --editable .'
+      decode: >-
+        docker exec "$DOCKER_NAME_D" bash -lc
+        'source ~/.bashrc &&
+        cd {{ container_workspace }}/omniinfer &&
+        python -m pip uninstall -y omni-npu &&
+        TORCH_DEVICE_BACKEND_AUTOLOAD=0
+        python -m pip install --force-reinstall
+        --no-deps --no-build-isolation --editable .'
 
     run_server_prefill_profile:
       prepare_commands: |-
