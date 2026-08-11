@@ -147,9 +147,39 @@ class MomeSpec(MambaSpec):
             return self.page_size_padded
         return page_size
 
+    def max_admission_blocks_per_request(
+        self, max_num_batched_tokens: int, max_model_len: int
+    ) -> int:
+        """Per-request admission cap for recycling-aware Mome KV.
+
+        Mirrors ``SlidingWindowSpec.max_admission_blocks_per_request`` and
+        ``MomeManager.get_num_skipped_tokens``: during chunked prefill we retain
+        at most ``kernel_size - 1 + num_extra_reserved_blocks * block_size``
+        tokens plus the newly scheduled chunk.
+        """
+        num_retained = (
+            self.kernel_size
+            - 1
+            + self.num_extra_reserved_blocks * self.block_size
+        )
+        num_tokens = min(
+            num_retained + max_num_batched_tokens,
+            max_model_len,
+        )
+        return (
+            cdiv(num_tokens, self.block_size)
+            + 1
+            + self.num_speculative_blocks
+        )
+
     def max_memory_usage_bytes(self, vllm_config) -> int:
         max_model_len = vllm_config.model_config.max_model_len
-        return cdiv(max_model_len, self.block_size) * self.page_size_bytes
+        max_num_batched_tokens = vllm_config.scheduler_config.max_num_batched_tokens
+        max_blocks = self.max_admission_blocks_per_request(
+            max_num_batched_tokens=max_num_batched_tokens,
+            max_model_len=max_model_len,
+        )
+        return max_blocks * self.page_size_bytes
 
     def is_uniform_with_collection(
         self, kv_cache_specs: dict[str, KVCacheSpec]

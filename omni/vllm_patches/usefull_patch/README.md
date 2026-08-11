@@ -9,6 +9,7 @@ Pangu V2 MoE 505B int8 + EP 离线精度测试所需的最小 patch 集合。
 | `patch_mamba_utils.py` | pangu_v2_moe | 注入 `mome_state_shape` / `mome_state_dtype` |
 | `patch_kv_cache_dtype.py` | pangu_v2_moe | 支持 int8/hif8 等 KV cache dtype |
 | `patch_kv_cache_interface.py` | pangu_v2_hybrid | 注入 `MomeSpec` / `DSAAttentionSpec` 等 KV cache spec |
+| `patch_single_type_kv_cache_manager.py` | pangu_v2_hybrid | 注册 `MomeManager` / `ShareKVSlidingWindowManager` 并为 Mome 注入 admission cap
 | `patch_kv_cache_utils.py` | pangu_v2_hybrid | `HYBRID_ATTN_GROUP_SIZE` 环境变量 override hybrid KV group 分组 |
 | `patch_model_arch_config_convertor.py` | pangu_v2_moe | Pangu MLA 架构识别 |
 | `patch_process_weights_after_loading.py` | pangu_v2_moe | NPU 权重后处理 |
