@@ -1,8 +1,7 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-
 import os
 import json
 import re
+import shutil
 from copy import deepcopy
 from glob import glob
 from tqdm import tqdm
@@ -14,10 +13,8 @@ except:
     pass
 
 from safetensors.torch import load_file, save_file
-from huggingface_hub import snapshot_download
 
 class QType:
-    desc: str
     exp_bits: int = -1
     man_bits: int = -1
     k_bits: int = -1
@@ -27,15 +24,31 @@ class QType:
     numbits: int = 4
     is_act_integer: bool = False
 
-    def __init__(self, desc: str):
-        self.desc = desc
-        if desc.lower()[:3] == 'ssz':
-            res = re.match(r'sszs([0-9]+)g([0-9]+)a([0-9]+)b([0-9]+)sym([0-9]+)$', desc)
-            self.num_step = int(res.group(1))
-            self.blk_size = int(res.group(2))
-            self.is_act_integer = True if int(res.group(3)) > 0 else False
-            self.numbits = int(res.group(4))
-            self.ssz_sym = True if int(res.group(5)) > 0 else False
+    def __init__(self, num_step=50, group_size=0, act_integer=False, num_bits=4, symmetric=False):
+        self.num_step = num_step
+        self.blk_size = group_size
+        self.is_act_integer = act_integer
+        self.numbits = num_bits
+        self.ssz_sym = symmetric
+        self.q_dim = -1
+
+    @classmethod
+    def from_args(cls, args):
+        if hasattr(args, "num_step"):
+            return cls(args.num_step, args.group_size, args.act_integer, args.num_bits, args.symmetric)
+
+        match = re.fullmatch(r"sszs(\d+)g(\d+)a(\d+)b(\d+)sym(\d+)", args.qtype)
+        if match is None:
+            raise ValueError(f"invalid qtype: {args.qtype}")
+        num_step, group_size, act_integer, num_bits, symmetric = map(int, match.groups())
+        return cls(num_step, group_size, bool(act_integer), num_bits, bool(symmetric))
+
+    @property
+    def desc(self):
+        return (
+            f"sszs{self.num_step}g{self.blk_size}a{int(self.is_act_integer)}"
+            f"b{self.numbits}sym{int(self.ssz_sym)}"
+        )
 
     def dim_(self, dim: int):
         self.q_dim = dim
@@ -63,37 +76,47 @@ def get_scale_offset(x, qW_min, qW_max, is_sym, is_act_integer):
     scale = None
     offset = None
     if is_sym:
+        # Symmetric quantization: s = max(|x|) / q_max, with zero-point z = 0.
         xmax = torch.abs(x).max(dim=-1, keepdim=True)[0]
         if is_act_integer:
+            # Integer activation scale: s = max(round(s), 1).
             scale = torch.round(xmax / qW_max).clamp(min=1)
         else:
             scale = (xmax / qW_max).clamp(min=1e-5)
     else:
+        # Asymmetric quantization maps [x_min, x_max] to [q_min, q_max].
         xmax = x.max(dim=-1, keepdim=True)[0]
         xmin = x.min(dim=-1, keepdim=True)[0]
+        # Expand near-constant groups to a valid range containing zero.
         compare = ((xmax - xmin) < 1e-5).to(torch.int32)
         xmax = xmax * (1 - compare) + torch.max(torch.abs(xmax), torch.abs(xmin)) * compare
         xmin = xmin * (1 - compare)
+        # Scale: s = (x_max - x_min) / (q_max - q_min).
         scale = (xmax - xmin).clamp(min=1e-5) / (qW_max - qW_min)
         if is_act_integer:
             scale = torch.round(scale).clamp(min=1)
         else:
             scale = scale.clamp(min=1e-5)
+        # Zero-point: z = round(-x_min / s) + q_min.
         offset = torch.round(-xmin / scale) + qW_min
     return scale, offset
 
 
 def get_quant(x, qW_min, qW_max, scale, offset=None):
     if offset is not None:
+        # Asymmetric quantization: q = clip(round(x / s + z), q_min, q_max).
         return torch.round(x / scale + offset).clamp(min=qW_min, max=qW_max)
     else:
+        # Symmetric quantization: q = clip(round(x / s), q_min, q_max).
         return torch.round(x / scale).clamp(min=qW_min, max=qW_max)
 
 
 def get_dequant(x_quant, qW_min, qW_max, scale, offset=None):
     if offset is not None:
+        # Asymmetric dequantization: x_hat = (q - z) * s.
         return (x_quant - offset) * scale
     else:
+        # Symmetric dequantization: x_hat = q * s.
         return x_quant * scale
 
 
@@ -105,13 +128,24 @@ def get_mseloss(x, qW_min, qW_max, scale=None, offset=None, quant=None, dequant=
         quant = get_quant(x, qW_min, qW_max, scale, offset)
     if dequant is None:
         dequant = get_dequant(quant, qW_min, qW_max, scale, offset)
+    # Quantization loss: L = mean(|x - x_hat|^p), with p = 2 by default.
     return torch.mean(torch.pow(torch.abs(x - dequant), mode), dim=-1, keepdim=True)
 
 
 loss_function = get_mseloss
 
 
-def quant_ssz(x: torch.Tensor, Q: QType, qdim: int, init_scale=None, init_offset=None, init_quant=None, w8=False, w4=False):
+def quant_ssz(
+    x: torch.Tensor,
+    Q: QType,
+    qdim: int,
+    init_scale=None,
+    init_offset=None,
+    init_quant=None,
+    w8=False,
+    w4=False,
+    weight_post_process=False,
+):
     num_step = Q.num_step
     groupsize = Q.blk_size
     is_act_integer = Q.is_act_integer
@@ -119,19 +153,23 @@ def quant_ssz(x: torch.Tensor, Q: QType, qdim: int, init_scale=None, init_offset
     is_ssz_sym = Q.ssz_sym
     shape = x.shape
     if groupsize != 0:
+        # Group-wise quantization: x -> [N, group_size].
         shaped_x = x.view(-1, groupsize)
     else:
         shaped_x = x
         groupsize = shaped_x.shape[-1]
+    # The n-bit integer range uses q_max = 2^(n-1)-1; symmetry determines q_min.
     qW_min, qW_max = get_qbits_minmax(numbits, is_sym=is_ssz_sym)
 
     if init_offset is not None and init_scale is not None and init_quant is not None:
         scale, offset, quant = init_scale, init_offset, init_quant
     else:
+        # Initialize the scale and zero-point, then compute q = Q(x; s, z).
         scale, offset = get_scale_offset(shaped_x, qW_min, qW_max, is_sym=is_ssz_sym, is_act_integer=is_act_integer)
         scale = scale.clamp(min=1e-5)
         quant = get_quant(shaped_x, qW_min, qW_max, scale, offset=offset)
 
+    # Initial dequantized value: x_hat = D(q; s, z).
     dequant = get_dequant(quant, qW_min, qW_max, scale, offset=offset)
     bestScale = scale
     if is_ssz_sym:
@@ -140,27 +178,41 @@ def quant_ssz(x: torch.Tensor, Q: QType, qdim: int, init_scale=None, init_offset
     bestQuant = quant
     bestMse = loss_function(shaped_x, qW_min, qW_max, scale=scale, offset=offset, quant=quant, dequant=dequant)
     for i in range(num_step):
+        # Update s by least squares with q and z fixed: s = Σ[(q-z)x] / Σ[(q-z)^2].
         a = quant - offset
         if is_act_integer:
             scale = torch.round(torch.sum(a * shaped_x, dim=-1, keepdim=True) / torch.sum(a * a, dim=-1, keepdim=True)).clamp(min=1)
         else:
             scale = torch.sum(a * shaped_x, dim=-1, keepdim=True) / torch.sum(a * a, dim=-1, keepdim=True).clamp(min=1e-5)
+        # Update z with q and s fixed: z = round(mean(q*s-x) / s).
         offset = torch.round(torch.sum(quant * scale - shaped_x, dim=-1, keepdim=True) / groupsize / scale)
         if is_ssz_sym:
             offset= 0
+        # Requantize with the updated parameters and evaluate the current loss.
         quant = get_quant(shaped_x, qW_min, qW_max, scale, offset=offset)
         dequant = get_dequant(quant, qW_min, qW_max, scale, offset=offset)
         currentMse = loss_function(shaped_x, qW_min, qW_max, scale=scale, offset=offset, quant=quant, dequant=dequant)
+        # Stop early when both relative and absolute loss changes converge.
         mask1 = (bestMse - currentMse) / bestMse.clamp(min=1e-4) < 1e-10
         mask2 = torch.abs(bestMse - currentMse) < 1e-10
         if torch.sum(torch.logical_and(torch.logical_not(mask1), torch.logical_not(mask2))) == 0:
             break
-        mask = (currentMse < bestMse).to(torch.int32)
-        bestMse = currentMse * mask + bestMse * (1 - mask)
-        bestScale = scale * mask + bestScale * (1 - mask)
-        bestOffset = offset * mask + bestOffset * (1 - mask)
-        bestQuant = quant * mask + bestQuant * (1 - mask)
+        # Retain the lower-loss parameters per group: best = current if L_current < L_best.
+        if is_ssz_sym:
+            mask = (currentMse < bestMse).to(torch.int32)
+            bestMse = currentMse * mask + bestMse * (1 - mask)
+            bestScale = scale * mask + bestScale * (1 - mask)
+            bestOffset = offset * mask + bestOffset * (1 - mask)
+            bestQuant = quant * mask + bestQuant * (1 - mask)
+        else:
+            valid = torch.isfinite(scale) & torch.isfinite(offset) & torch.isfinite(currentMse)
+            mask = valid & (currentMse < bestMse)
+            bestMse = torch.where(mask, currentMse, bestMse)
+            bestScale = torch.where(mask, scale, bestScale)
+            bestOffset = torch.where(mask, offset, bestOffset)
+            bestQuant = torch.where(mask, quant, bestQuant)
 
+    # Reconstruct with the optimal parameters: x_hat = (q_best - z_best) * s_best.
     recovered = get_dequant(bestQuant, qW_min, qW_max, bestScale, bestOffset)
     recovered = recovered.view(shape)
     if w8:
@@ -168,12 +220,16 @@ def quant_ssz(x: torch.Tensor, Q: QType, qdim: int, init_scale=None, init_offset
 
     if w4:
         bestQuantInt4 = bestQuant.view(shape).to(torch.int8)
+        # Store the FP32 scale bit pattern in the lower 32 bits of an INT64 value.
         bestScale = bestScale.view(shape[0], -1).T.to(torch.float32).view(torch.int32)
         bestScaleInt64 = torch.zeros(bestScale.shape, dtype=torch.int64).view(torch.int32).reshape(-1, 2)
         bestScaleInt64[:, 0] = bestScale.reshape(-1)
         bestScaleInt64 = bestScaleInt64.view(torch.int64).reshape(bestScale.shape)
+
+        # Compensate for the unsigned INT4 offset: bias = 8 * Σx_hat.
         bias = (8 * recovered.to(torch.float32)).sum(dim=-1)
-        return bestQuantInt4, bestScaleInt64, bias
+        offset = None if is_ssz_sym else bestOffset.view(shape[0], -1).T.to(torch.float32)
+        return bestQuantInt4, bestScaleInt64, bias, offset
     return recovered
 
 
@@ -201,41 +257,35 @@ def pack_4bit(x):
     return y.T.contiguous()
 
 
-def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepSeek-R1"):
+def copy_model_files(bf16_path, output_path):
+    source = os.path.abspath(bf16_path)
+    destination = os.path.abspath(output_path)
+    if os.path.commonpath([source, destination]) == source:
+        raise ValueError("output_path must be outside bf16_path")
+
+    def copy_and_print(src, dst):
+        copied_file = shutil.copy2(src, dst)
+        print(f"copied: {os.path.relpath(src, source)}", flush=True)
+        return copied_file
+
+    print(f"copying non-safetensors files from {bf16_path} to {output_path}", flush=True)
+    shutil.copytree(
+        source,
+        destination,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("*.safetensors"),
+        copy_function=copy_and_print,
+    )
+
+
+def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepSeek-R1", disable_names=None, weight_post_process=False):
+    if disable_names is None:
+        disable_names = []
     quant_prefix = "quant_model_weight_w4a8_dynamic"
-    disable_names = []
-    for i in range(62):
-        disable_names.append(f"model.layers.{i}.self_attn.kv_b_proj.weight")
-        disable_names.append(f"model.layers.{i}.mlp.gate.weight")
-        disable_names.append(f"model.layers.{i}.mlp.gate.e_score_correction_bias")
-
-        disable_names.append(f"model.layers.{i}.input_layernorm.weight")
-        disable_names.append(f"model.layers.{i}.post_attention_layernorm.weight")
-        disable_names.append(f"model.layers.{i}.pre_mlp_layernorm.weight")
-        disable_names.append(f"model.layers.{i}.post_mlp_layernorm.weight")
-
-        disable_names.append(f"model.layers.{i}.self_attn.q_a_layernorm.weight")
-        disable_names.append(f"model.layers.{i}.self_attn.kv_a_layernorm.weight")
-
-    disable_names.append("lm_head")
-    disable_names.append("model.norm.weight")
-    disable_names.append("model.embed_tokens.weight")
-
-    w4_type = QType(args.qtype)
+    w4_type = QType.from_args(args)
     torch.set_default_dtype(torch.bfloat16)
-    os.makedirs(output_path, exist_ok=True)
+    copy_model_files(bf16_path, output_path)
     model_index_file = os.path.join(output_path, "model.safetensors.index.json")
-    config_file = os.path.join(output_path, "config.json")
-
-    if not os.path.exists(model_index_file) or not os.path.exists(config_file):
-        snapshot_download(
-            repo_id=model_name,
-            ignore_patterns=["*.safetensors"],
-            local_dir=output_path,
-            local_dir_use_symlinks=False
-        )
-        print(f"model index file and config file download to {output_path}")
-
     with open(model_index_file, "r") as f:
         model_index = json.load(f)
     weight_map = model_index["weight_map"]
@@ -278,7 +328,13 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
                 quant_count += 1
                 if weight_is_w4(weight_name):
                     # print(weight_name, "int4")
-                    int4_weight, int4_scale, bias = quant_ssz(weight, w4_type, -1, w4=True)
+                    int4_weight, int4_scale, bias, offset = quant_ssz(
+                        weight,
+                        w4_type,
+                        -1,
+                        w4=True,
+                        weight_post_process=weight_post_process,
+                    )
 
                     new_state_dict[weight_name] = pack_4bit(int4_weight)
                     new_scale_int4 = scale_inv_name.replace("_scale_inv", "_int4_scale")
@@ -290,6 +346,10 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
                     new_weight_map[weight_name] = file_name
                     new_weight_map[new_scale_int4] = file_name
                     new_weight_map[new_bias] = file_name
+                    if offset is not None:
+                        new_offset = scale_inv_name.replace("_scale_inv", "_offset")
+                        new_state_dict[new_offset] = offset
+                        new_weight_map[new_offset] = file_name
                 else:
                     # print(weight_name, "int8")
                     int8_weight, scale_inv = weight_quant(weight)
