@@ -17,7 +17,7 @@ import types
 
 import torch_npu
 
-from vllm.v1.attention.backend import AttentionBackend, AttentionImpl, AttentionLayer, AttentionType
+from vllm.v1.attention.backend import AttentionBackend, AttentionImpl, AttentionLayer, AttentionType, MultipleOf
 from vllm.v1.kv_cache_interface import AttentionSpec
 
 
@@ -93,8 +93,10 @@ def npu_attention_classes(monkeypatch):
     attn_backend_mod.AttentionLayer = AttentionLayer
     attn_backend_mod.AttentionType = AttentionType
 
+    attn_backend_mod.MultipleOf = MultipleOf
+
     # Create a real class for AttentionMetadata to avoid metaclass conflict
-    # When vllm.v1.attention.backends.mla.common.MLACommonMetadata inherits from it.
+    # When vllm.model_executor.layers.attention.mla_attention.MLACommonMetadata inherits from it.
     class AttentionMetadata:
         pass
 

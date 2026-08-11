@@ -70,6 +70,7 @@ def _make_vllm_wrapper_config():
         cache_config=SimpleNamespace(
             block_size=16, enable_prefix_caching=False,
             calculate_kv_scales=False,
+            user_specified_block_size=None,
         ),
         attention_config=SimpleNamespace(backend=None),
     )

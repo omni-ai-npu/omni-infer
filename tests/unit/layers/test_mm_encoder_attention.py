@@ -74,9 +74,8 @@ def npu_mm_encoder_attention_module(monkeypatch):
     module_name = "omni_npu.layers.attention.mm_encoder_attention"
     sys.modules.pop(module_name, None)
     module_path = (
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "omni_npu"
+        Path(__file__).resolve().parents[3]  # vllm 0.25.1: src/ removed
+        / "omni"  # vllm 0.25.1: package physically under omni/ (aliased to omni_npu)
         / "layers"
         / "attention"
         / "mm_encoder_attention.py"

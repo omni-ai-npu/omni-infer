@@ -241,7 +241,7 @@ def _load_patch_module(monkeypatch):
     _install_vllm_stubs(monkeypatch)
 
     repo_root = Path(__file__).resolve().parents[4]
-    monkeypatch.syspath_prepend(str(repo_root / "src"))
+    monkeypatch.syspath_prepend(str(repo_root))  # vllm 0.25.1: src/ removed; omni_npu is editable-installed
 
     module_name = (
         "omni_npu.vllm_patches.patches.common."
@@ -2866,7 +2866,7 @@ def _load_routed_experts_module(monkeypatch):
     _install_expert_id_apc_stubs(monkeypatch)
 
     repo_root = Path(__file__).resolve().parents[4]
-    monkeypatch.syspath_prepend(str(repo_root / "src"))
+    monkeypatch.syspath_prepend(str(repo_root))  # vllm 0.25.1: src/ removed; omni_npu is editable-installed
 
     module_name = (
         "omni_npu.vllm_patches.patches.common.patch_routed_experts"
@@ -2880,7 +2880,7 @@ def _load_apc_module(monkeypatch):
     _install_expert_id_apc_stubs(monkeypatch)
 
     repo_root = Path(__file__).resolve().parents[4]
-    monkeypatch.syspath_prepend(str(repo_root / "src"))
+    monkeypatch.syspath_prepend(str(repo_root))  # vllm 0.25.1: src/ removed; omni_npu is editable-installed
 
     # Ensure routed_experts loads first (APC imports from it)
     routed_name = (

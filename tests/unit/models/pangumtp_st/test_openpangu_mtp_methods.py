@@ -199,7 +199,7 @@ class TestLoadWeights:
         m.model.mtp_start_layer_idx = 2
         m.named_parameters = lambda: []
         with patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n), \
-             patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[]):
+             patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True):
             loaded = m.load_weights([("model.layers.2.rotary_emb.inv_freq", torch.ones(1))])
         assert len(loaded) == 0
 
@@ -207,7 +207,7 @@ class TestLoadWeights:
         m, mtp_mod = _make_minimal_mtp()
         m.model.mtp_start_layer_idx = 2
         m.named_parameters = lambda: []
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[]), \
+        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             # get_spec_layer returns None for non-MTP layers
             loaded = m.load_weights([("model.layers.1.self_attn.weight", torch.ones(1))])
@@ -220,7 +220,7 @@ class TestLoadWeights:
         param = nn.Parameter(torch.zeros(4, 4))
         m.named_parameters = lambda: [("model.layers.2.mtp_block.self_attn.q_proj.weight", param)]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[]), \
+        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n), \
              patch.object(mtp_mod, "default_weight_loader") as mock_loader:
             loaded = m.load_weights([("model.layers.2.self_attn.q_proj.weight", torch.ones(4, 4))])
@@ -235,7 +235,7 @@ class TestLoadWeights:
         param.weight_loader = lambda p, w, shard_id: p.data.copy_(w)
         m.named_parameters = lambda: [("model.layers.2.mtp_block.mlp.gate_up_proj.weight", param)]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[]), \
+        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([("model.layers.2.mlp.gate_proj.weight", torch.ones(4, 4))])
         assert "model.layers.2.mtp_block.mlp.gate_up_proj.weight" in loaded
@@ -248,7 +248,7 @@ class TestLoadWeights:
         param.weight_loader = lambda p, w: p.data.copy_(w)
         m.named_parameters = lambda: [("model.embed_tokens.weight", param)]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[]), \
+        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([
                 ("model.layers.2.embed_tokens.weight", torch.ones(8, 8)),
@@ -265,7 +265,7 @@ class TestLoadWeights:
         param = nn.Parameter(torch.zeros(4, 4))
         m.named_parameters = lambda: [("model.layers.2.mtp_block.mlp.down_proj.weight", param)]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[]), \
+        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([("model.layers.2.mlp.down_proj.weight", torch.ones(4, 4))])
         assert "model.layers.2.mtp_block.mlp.down_proj.weight" in loaded
@@ -281,7 +281,7 @@ class TestLoadWeights:
             ("model.layers.2.mtp_block.conv.compresskv_conv.weight", param),
         ]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[]), \
+        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n), \
              patch.object(mtp_mod.model_extra_config.operator_opt_config, "use_noncontiguous_kv", True), \
              patch.object(mtp_mod.model_extra_config.operator_opt_config, "merge_q_kv_conv", False):
@@ -298,7 +298,7 @@ class TestLoadWeights:
             ("model.layers.2.mtp_block.self_attn.qa_conv.merge_conv.weight", param),
         ]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[]), \
+        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n), \
              patch.object(mtp_mod.model_extra_config.operator_opt_config, "use_noncontiguous_kv", False), \
              patch.object(mtp_mod.model_extra_config.operator_opt_config, "merge_q_kv_conv", True):
@@ -312,7 +312,7 @@ class TestLoadWeights:
         param = nn.Parameter(torch.zeros(4, 4))
         m.named_parameters = lambda: [("model.layers.2.mtp_block.mlp.down_proj.weight", param)]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[]), \
+        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([("model.layers.2.mlp.down_proj.bias", torch.ones(4))])
         # bias not in params_dict → falls through to else → name.endswith('.bias') → skip
@@ -331,7 +331,7 @@ class TestLoadWeights:
         ]
 
         expert_map = [("gate_up_proj", "gate_proj", 0, 0)]
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=expert_map), \
+        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=expert_map, create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([("model.layers.2.mlp.experts.0.gate_proj.weight", torch.ones(4, 4))])
         assert "model.layers.2.mtp_block.mlp.experts.0.gate_up_proj.weight" in loaded
@@ -343,7 +343,7 @@ class TestLoadWeights:
         param = nn.Parameter(torch.zeros(4))
         m.named_parameters = lambda: [("model.layers.2.mtp_block.self_attn.q_proj.weight", param)]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[]), \
+        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([("model.layers.2.self_attn.q_proj.bias", torch.ones(4))])
         # .bias not in params → skip
@@ -360,7 +360,7 @@ class TestLoadWeights:
             ("model.layers.2.mtp_block.mlp.gate.e_score_correction_bias", param),
         ]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[]), \
+        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([("model.layers.2.mlp.e_score_correction_bias", torch.ones(2))])
         assert "model.layers.2.mtp_block.mlp.gate.e_score_correction_bias" in loaded
@@ -379,7 +379,7 @@ class TestLoadWeights:
             ("model.layers.2.mtp_block.compresskv_conv.merge_conv.weight", param),
         ]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[]), \
+        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n), \
              patch.object(mtp_mod.model_extra_config.operator_opt_config, "use_noncontiguous_kv", False), \
              patch.object(mtp_mod.model_extra_config.operator_opt_config, "merge_q_kv_conv", False):

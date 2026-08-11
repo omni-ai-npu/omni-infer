@@ -7,7 +7,7 @@ from typing import Generic, TypeVar
 import pytest
 import torch
 
-from vllm.v1.attention.backend import AttentionBackend, AttentionImpl, AttentionLayer, AttentionType
+from vllm.v1.attention.backend import AttentionBackend, AttentionImpl, AttentionLayer, AttentionType, MultipleOf
 from vllm.v1.kv_cache_interface import AttentionSpec
 
 
@@ -51,18 +51,51 @@ def mla_setup():
     attn_backend_mod.AttentionLayer = AttentionLayer
     attn_backend_mod.AttentionType = AttentionType
 
+    attn_backend_mod.MultipleOf = MultipleOf
+
     # Create a real class for AttentionMetadata to avoid metaclass conflict
-    # When vllm.v1.attention.backends.mla.common.MLACommonMetadata inherits from it.
+    # When vllm.model_executor.layers.attention.mla_attention.MLACommonMetadata inherits from it.
     class AttentionMetadata:
         pass
     attn_backend_mod.AttentionMetadata = AttentionMetadata
 
     # Create a real class for MLAAttentionImpl to avoid metaclass conflict
-    # When vllm.v1.attention.backends.mla.common.MLACommonBaseImpl inherits from it.
+    # When vllm.model_executor.layers.attention.mla_attention.MLACommonBaseImpl inherits from it.
     A = TypeVar("A")
     class MLAAttentionImpl(Generic[A]):
         pass
     attn_backend_mod.MLAAttentionImpl = MLAAttentionImpl
+    # vLLM 0.25.1: copy missing public attrs from real modules so transitive
+    # imports still resolve. Test overrides above remain in place.
+    import importlib as _importlib
+    try:
+        _real = _importlib.import_module("vllm.v1.attention.backends.utils")
+        for _a in dir(_real):
+            if _a.startswith("_"):
+                continue
+            if not hasattr(utils_mod, _a):
+                setattr(utils_mod, _a, getattr(_real, _a))
+    except Exception:
+        pass
+    try:
+        _real = _importlib.import_module("vllm.v1.attention.backend")
+        for _a in dir(_real):
+            if _a.startswith("_"):
+                continue
+            if not hasattr(attn_backend_mod, _a):
+                setattr(attn_backend_mod, _a, getattr(_real, _a))
+    except Exception:
+        pass
+    try:
+        _real = _importlib.import_module("vllm.forward_context")
+        for _a in dir(_real):
+            if _a.startswith("_"):
+                continue
+            if not hasattr(forward_ctx_mod, _a):
+                setattr(forward_ctx_mod, _a, getattr(_real, _a))
+    except Exception:
+        pass
+
 
     utils_mod_patcher = patch.dict(
         "sys.modules",
@@ -310,11 +343,11 @@ class TestNPUAttentionBackendMLAUtilsFunc(unittest.TestCase):
 
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -468,11 +501,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         )
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -610,11 +643,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         )
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -806,11 +839,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         )
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -905,11 +938,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         )
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -963,11 +996,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         )
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -1102,11 +1135,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         )
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -1382,7 +1415,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             fake_npu,
             create=True,
         ), patch(
-            "omni_npu.attention.backends.mla.get_forward_context",
+            "vllm.forward_context.get_forward_context",
             return_value=mock_ctx,
         ), patch(
             "torch.ops.custom._npu_fused_infer_attention_sink_metadata",
@@ -1485,7 +1518,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             "use_aicpu_fa_tiling",
             False,
         ), patch(
-            "omni_npu.attention.backends.mla.get_forward_context",
+            "vllm.forward_context.get_forward_context",
             return_value=mock_ctx,
         ), patch(
             "torch.ops.npu.npu_fused_infer_attention_score",
@@ -1529,11 +1562,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         )
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -1646,11 +1679,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         )
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -1719,7 +1752,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 "torch.ops.custom.npu_fused_infer_attention_sink",
                 return_value=(sink_out.transpose(0, 1).contiguous(),),
             ) as mock_sink_op, patch(
-                "omni_npu.attention.backends.mla.get_forward_context",
+                "vllm.forward_context.get_forward_context",
                 return_value=mock_ctx
             ), patch.object(
                 mla_mod.model_extra_config.operator_opt_config,
@@ -1766,11 +1799,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         )
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -1839,7 +1872,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 "torch.ops.custom.npu_fused_infer_attention_sink",
                 return_value=(sink_out.transpose(0, 1).contiguous(),),
             ) as mock_sink_op, patch(
-                "omni_npu.attention.backends.mla.get_forward_context",
+                "vllm.forward_context.get_forward_context",
                 return_value=mock_ctx
             ), patch.object(
                 mla_mod.model_extra_config.operator_opt_config,
@@ -1886,11 +1919,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         )
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -2022,11 +2055,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         )
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
         ):
@@ -2097,7 +2130,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
                 "torch.ops.custom.npu_fused_infer_attention_sink",
                 return_value=(sink_out.transpose(0, 1).contiguous(),),
             ) as mock_sink_op, patch(
-                "omni_npu.attention.backends.mla.get_forward_context",
+                "vllm.forward_context.get_forward_context",
                 return_value=mock_ctx
             ), patch.object(
                 mla_mod.model_extra_config.operator_opt_config,
@@ -2154,15 +2187,15 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         mock_ctx.capturing = False
         with (
             patch(
-                "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+                "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
                 return_value=64,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_current_vllm_config",
+                "vllm.config.get_current_vllm_config",
                 return_value=None,
             ),
             patch(
-                "omni_npu.attention.backends.mla.get_forward_context",
+                "vllm.forward_context.get_forward_context",
                 return_value=mock_ctx
             )
         ):

@@ -40,6 +40,10 @@ def _install_core_stubs(monkeypatch):
     math_utils = _stub_module(monkeypatch, "vllm.utils.math_utils")
     math_utils.cdiv = lambda a, b: -(-a // b)
     torch_utils = _stub_module(monkeypatch, "vllm.utils.torch_utils")
+    # vllm 0.25.1: extra vllm.utils stubs
+    utils.is_moe_layer = lambda _module: False
+    mem_utils = _stub_module(monkeypatch, "vllm.utils.mem_utils")
+    mem_utils.format_gib = lambda b: f"{b / (1024 ** 3):.1f}GiB"
     torch_utils.get_dtype_size = lambda dtype: {
         "bf16": 2,
         "fp32": 4,
@@ -112,8 +116,8 @@ def _load_module(monkeypatch, module_name: str):
         "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid")
     if module_name.startswith(package_name + ".") and package_name not in sys.modules:
         package = types.ModuleType(package_name)
-        package.__path__ = [str(Path(__file__).resolve().parents[5] / "src" /
-                                "omni_npu" / "vllm_patches" / "patches" /
+        package.__path__ = [str(Path(__file__).resolve().parents[5] / "omni" /  # vllm 0.25.1: src/omni_npu -> omni
+                                "vllm_patches" / "patches" /
                                 "models" / "pangu_v2_hybrid")]
         monkeypatch.setitem(sys.modules, package_name, package)
     sys.modules.pop(module_name, None)

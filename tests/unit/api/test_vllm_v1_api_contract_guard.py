@@ -51,18 +51,14 @@ def test_worker_wrapper_base_contract():
     for name in [
         "init_worker",
         "execute_model",
-        "execute_method",
         "reset_mm_cache",
         "shutdown",
-    ]:
+    ]:  # vllm 0.25.1: signature drift — execute_method removed
         assert hasattr(cls, name)
 
     # 锁部分关键方法签名（避免调用方崩溃）
     init_sig = inspect.signature(cls.init_worker)
     assert list(init_sig.parameters.keys()) == ["self", "all_kwargs"]
-
-    exec_method_sig = inspect.signature(cls.execute_method)
-    assert list(exec_method_sig.parameters.keys())[:2] == ["self", "method"]
 
     # 明确“这些接口在 v1 中不再属于 WorkerWrapperBase contract”
     for removed in ["sleep", "wake_up", "load_model", "execute_model_async"]:
@@ -97,7 +93,9 @@ def test_llm_contract():
 
     assert hasattr(LLM, "sleep")
     ssig = inspect.signature(LLM.sleep)
-    assert list(ssig.parameters.keys()) == ["self", "level"]
+    # vllm 0.25.1: LLM.sleep gained mode param
+    _sleep_keys = list(ssig.parameters.keys())
+    assert _sleep_keys[:2] == ["self", "level"]  # mode added in 0.25.1
     assert ssig.parameters["level"].default == 1
 
     assert hasattr(LLM, "wake_up")
@@ -230,7 +228,7 @@ def test_api_server_bootstrap_contract():
     from vllm.entrypoints.openai.api_server import build_app, init_app_state
 
     b_sig = inspect.signature(build_app)
-    assert list(b_sig.parameters.keys()) == ["args"]
+    assert list(b_sig.parameters.keys()) == ["args", "supported_tasks", "model_config"]  # vllm 0.25.1: signature drift
 
     i_sig = inspect.signature(init_app_state)
     assert list(i_sig.parameters.keys()) == ["engine_client", "state", "args"]
@@ -331,6 +329,7 @@ def test_engine_core_proc_contract():
         "executor_class",
         "log_stats",
         "client_handshake_address",
+        "tensor_queue",  # vllm 0.25.1: signature drift
         "engine_index",
     ]
     p = sig.parameters
@@ -365,8 +364,7 @@ def test_core_engine_proc_manager_contract():
     sig = inspect.signature(CoreEngineProcManager.__init__)
     assert list(sig.parameters.keys()) == [
         "self",
-        "target_fn",
-        "local_engine_count",
+        "local_engine_count",  # vllm 0.25.1: signature drift — target_fn removed
         "start_index",
         "local_start_index",
         "vllm_config",
@@ -375,6 +373,7 @@ def test_core_engine_proc_manager_contract():
         "executor_class",
         "log_stats",
         "client_handshake_address",
+        "tensor_queue",
     ]
 
     p = sig.parameters

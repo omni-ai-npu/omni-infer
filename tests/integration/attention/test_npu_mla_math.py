@@ -420,7 +420,7 @@ def _build_module(
     # - tensor parallel helpers (so TP group init is not required in unit tests)
     dummy_config = DummyVllmConfig()
     monkeypatch.setattr(
-        "vllm.attention.layer.get_current_vllm_config",
+        "vllm.config.get_current_vllm_config",
         lambda: dummy_config,
     )
     monkeypatch.setattr(
@@ -428,7 +428,7 @@ def _build_module(
         lambda: dummy_config,
     )
     monkeypatch.setattr(
-        "omni_npu.attention.backends.mla.get_current_vllm_config",
+        "vllm.config.get_current_vllm_config",
         lambda: dummy_config,
     )
     monkeypatch.setattr(
@@ -461,7 +461,7 @@ def _build_module(
         lambda: ctx,
     )
     monkeypatch.setattr(
-        "vllm.attention.layer.get_forward_context",
+        "vllm.forward_context.get_forward_context",
         lambda: ctx,
     )
 

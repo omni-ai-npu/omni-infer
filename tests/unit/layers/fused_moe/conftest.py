@@ -156,7 +156,14 @@ def _stub_fused_moe_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     fused_moe_layer_module = _ensure_module(monkeypatch, "vllm.model_executor.layers.fused_moe.layer")
 
     class FusedMoE(_Registerable):
-        pass
+        # vllm 0.25.1: factory-style FusedMoE stub
+        def __init__(self, *args, **kwargs):
+            # accept anything the factory passes; tests usually __new__
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+        @staticmethod
+        def select_experts(*args, **kwargs):
+            return None
 
     class UnquantizedFusedMoEMethod(_Registerable):
         pass
@@ -171,6 +178,15 @@ def _stub_fused_moe_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     fused_moe_layer_module.FusedMoE = FusedMoE
     fused_moe_layer_module.UnquantizedFusedMoEMethod = UnquantizedFusedMoEMethod
     fused_moe_layer_module.FusedMoeWeightScaleSupported = FusedMoeWeightScaleSupported
+
+    # vllm 0.25.1: mirror stubs onto the package for top-level import
+    fused_moe_pkg.FusedMoE = FusedMoE
+    fused_moe_pkg.UnquantizedFusedMoEMethod = UnquantizedFusedMoEMethod
+    fused_moe_pkg.FusedMoeWeightScaleSupported = FusedMoeWeightScaleSupported
+    fused_moe_pkg.FusedMoEConfig = FusedMoEConfig  # already set above; idempotent
+    def _fused_moe_make_expert_params_mapping(*a, **kw):
+        return []
+    fused_moe_pkg.fused_moe_make_expert_params_mapping = _fused_moe_make_expert_params_mapping
 
     fused_moe_config_module = _ensure_module(monkeypatch, "vllm.model_executor.layers.fused_moe.config")
 
@@ -196,6 +212,16 @@ def _stub_fused_moe_deps(monkeypatch: pytest.MonkeyPatch) -> None:
             return None
 
     routed_experts_capturer_module.RoutedExpertsCapturer = RoutedExpertsCapturer
+
+    # vllm 0.25.1: stub runner.moe_runner.MoERunner
+    runner_pkg = _ensure_module(monkeypatch, "vllm.model_executor.layers.fused_moe.runner")
+    runner_pkg.__path__ = []
+    moe_runner_module = _ensure_module(
+        monkeypatch, "vllm.model_executor.layers.fused_moe.runner.moe_runner"
+    )
+    class MoERunner(_Registerable):  # minimal stub matching _Registerable
+        pass
+    moe_runner_module.MoERunner = MoERunner
 
     shared_fused_moe_module = _ensure_module(monkeypatch, "vllm.model_executor.layers.fused_moe.shared_fused_moe")
 

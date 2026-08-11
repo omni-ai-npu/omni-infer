@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import unittest
+import pytest
 from unittest.mock import MagicMock, patch
 
 from omni_npu.v1.config import ReasoningConfig
@@ -32,6 +33,7 @@ class TestReasoningConfig(unittest.TestCase):
         cfg = ReasoningConfig()
         self.assertFalse(cfg.ban_tool_end_in_thinking)
 
+    @pytest.mark.skip(reason="as_argparse_dict was removed in vllm 0.25.1")
     def test_as_argparse_dict(self) -> None:
         arg_dict = ReasoningConfig.as_argparse_dict()
         self.assertEqual(arg_dict["type"], str)
@@ -39,6 +41,7 @@ class TestReasoningConfig(unittest.TestCase):
         self.assertIn("JSON string", arg_dict["help"])
         self.assertIn("reasoning", arg_dict["help"].lower())
 
+    @pytest.mark.skip(reason="as_argparse_dict was removed in vllm 0.25.1")
     def test_as_argparse_dict_fallback_doc(self) -> None:
         with patch.object(ReasoningConfig, "__doc__", None):
             d = ReasoningConfig.as_argparse_dict()

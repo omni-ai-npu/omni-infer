@@ -2,6 +2,7 @@
 from pathlib import Path
 
 from omni import vllm_patches
+from omni.vllm_patches import patches as _patches_mod  # explicit submodule load
 
 
 def test_get_patch_dir_names_for_openpangu_v2():
@@ -23,7 +24,7 @@ def test_get_patch_dir_names_for_minimax_m2():
 
 
 def test_find_patch_dir_exact_supports_multiple_manual_dirs():
-    models_root = Path(vllm_patches.patches.__file__).parent / "models"
+    models_root = Path(_patches_mod.__file__).parent / "models"
 
     patch_dirs = vllm_patches._find_patch_dir_exact("pangu_sink_swa_mla", models_root)
 
@@ -34,7 +35,7 @@ def test_find_patch_dir_exact_supports_multiple_manual_dirs():
 
 
 def test_find_patch_dir_fuzzy_supports_multiple_auto_dirs():
-    models_root = Path(vllm_patches.patches.__file__).parent / "models"
+    models_root = Path(_patches_mod.__file__).parent / "models"
 
     patch_dirs = vllm_patches._find_patch_dir_fuzzy("openpangu_ultra_omni", models_root)
 
@@ -46,7 +47,7 @@ def test_find_patch_dir_fuzzy_supports_multiple_auto_dirs():
 
 
 def test_find_patch_dir_exact_supports_bench_aligned_decode_manual_dir():
-    models_root = Path(vllm_patches.patches.__file__).parent / "models"
+    models_root = Path(_patches_mod.__file__).parent / "models"
 
     patch_dirs = vllm_patches._find_patch_dir_exact(
         "pd_bench_aligned_decode", models_root

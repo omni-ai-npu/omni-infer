@@ -236,6 +236,7 @@ _saved_vllm_engine_args = getattr(
 _saved_omni_envs = getattr(sys.modules.get("omni_npu"), "envs", _MISSING)
 
 PATCH = _load_patch()
+PATCH = None  # _load_patch() moved into _restore_sys_modules fixture to avoid collection-time pollution
 
 for _name, _module_value in _saved_modules.items():
     if _module_value is _MISSING:
@@ -499,6 +500,53 @@ def test_apply_actually_installs_the_attributes():
     )
     assert out["params"].repetition_detection == _RepetitionDetectionParams(10, 2, 3)
 
+try:
+    import pytest
+except ImportError:
+    pytest = None
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_sys_modules():
+    # snapshot sys.modules *before* _load_patch() pollutes them
+    keys = (
+        "vllm", "vllm.v1", "vllm.v1.engine", "vllm.config",
+        "vllm.sampling_params", "vllm.logger",
+        "vllm.v1.engine.input_processor",
+        "omni_npu", "omni_npu.vllm_patches", "omni_npu.vllm_patches.core",
+        "patch_rep_det",
+    )
+    saved_modules = {k: sys.modules.get(k) for k in keys}
+    vllm_now = sys.modules.get("vllm")
+    omni_now = sys.modules.get("omni_npu")
+    saved_vllm_EngineArgs = (hasattr(vllm_now, "EngineArgs"),
+                             getattr(vllm_now, "EngineArgs", None)) if vllm_now else (False, None)
+    saved_omni_envs = (hasattr(omni_now, "envs"),
+                       getattr(omni_now, "envs", None)) if omni_now else (False, None)
+    global PATCH
+    PATCH = _load_patch()
+    yield
+    # teardown: restore from snapshot taken before _load_patch()
+    for k, v in saved_modules.items():
+        if v is None:
+            sys.modules.pop(k, None)
+        else:
+            sys.modules[k] = v
+    vllm_now = sys.modules.get("vllm")
+    if vllm_now is not None:
+        had, val = saved_vllm_EngineArgs
+        if had:
+            vllm_now.EngineArgs = val
+        else:
+            try: delattr(vllm_now, "EngineArgs")
+            except AttributeError: pass
+    omni_now = sys.modules.get("omni_npu")
+    if omni_now is not None:
+        had, val = saved_omni_envs
+        if had:
+            omni_now.envs = val
+        else:
+            try: delattr(omni_now, "envs")
+            except AttributeError: pass
 
 if __name__ == "__main__":
     failed = 0

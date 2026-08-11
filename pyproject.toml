@@ -62,6 +62,7 @@ license-files = ["LICEN[CS]E*", "COPYING*", "NOTICE*", "AUTHORS*"]
 "omni_npu.script" = ["*.sh"]
 
 [tool.pytest.ini_options]
+pythonpath = ["tests"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

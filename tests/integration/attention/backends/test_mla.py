@@ -66,8 +66,8 @@ class TestNPUAttentionBackendMLAImplIntegration(unittest.TestCase):
                 uniform=True,
             )
 
-            with patch('vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size', return_value=64), \
-                patch('omni_npu.attention.backends.mla.get_current_vllm_config', return_value=None):
+            with patch('vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size', return_value=64), \
+                patch('vllm.config.get_current_vllm_config', return_value=None):
 
                 # Create kv_b_proj and convert to bfloat16
                 kv_b_proj = torch.nn.Linear(

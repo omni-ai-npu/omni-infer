@@ -116,7 +116,7 @@ class TestOpenPanguMoERouterGatingInFp32(unittest.TestCase):
             eplb_config=SimpleNamespace(num_redundant_experts=0),
         )
 
-    @patch.object(ultra_mod, "SharedFusedMoE", MagicMock())
+    @patch.object(ultra_mod, "NPUSharedFusedMoE", MagicMock())
     @patch.object(ultra_mod, "OpenPanguMLP", MagicMock())
     @patch.object(ultra_mod, "ReplicatedLinear", MagicMock(return_value=nn.Identity()))
     @patch.object(
@@ -146,7 +146,7 @@ class TestOpenPanguMoERouterGatingInFp32(unittest.TestCase):
             f"Expected params_dtype=torch.float32, got {gate_call_kwargs.get('params_dtype')}"
         )
 
-    @patch.object(ultra_mod, "SharedFusedMoE", MagicMock())
+    @patch.object(ultra_mod, "NPUSharedFusedMoE", MagicMock())
     @patch.object(ultra_mod, "OpenPanguMLP", MagicMock())
     @patch.object(ultra_mod, "ReplicatedLinear", MagicMock(return_value=nn.Identity()))
     @patch.object(

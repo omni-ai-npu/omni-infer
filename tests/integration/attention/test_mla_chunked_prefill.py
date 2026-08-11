@@ -294,11 +294,11 @@ def test_mla_chunked_prefill_matches_full_attention(
 
     # Patch vLLM config lookups and workspace-size to keep the unit test self-contained.
     monkeypatch.setattr(
-        "vllm.v1.attention.backends.mla.common.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
+        "vllm.model_executor.layers.attention.mla_attention.MLACommonMetadataBuilder.determine_chunked_prefill_workspace_size",
         lambda *_args, **_kwargs: 32 * batch_size,
     )
     monkeypatch.setattr(
-        "omni_npu.attention.backends.mla.get_current_vllm_config",
+        "vllm.config.get_current_vllm_config",
         lambda: None,
     )
     ctx = type("Ctx", (), {"batch_descriptor": None, "virtual_engine": 0})()
@@ -311,12 +311,12 @@ def test_mla_chunked_prefill_matches_full_attention(
         raising=False,
     )
     monkeypatch.setattr(
-        "vllm.attention.layer.get_forward_context",
+        "vllm.forward_context.get_forward_context",
         lambda: ctx,
         raising=False,
     )
     monkeypatch.setattr(
-        "vllm.v1.attention.backends.mla.common.get_forward_context",
+        "vllm.model_executor.layers.attention.mla_attention.get_forward_context",
         lambda: ctx,
         raising=False,
     )
