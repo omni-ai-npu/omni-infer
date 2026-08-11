@@ -59,9 +59,10 @@ def torchnpu_prof_wrapper(original_method, params):
 
     try:
         aic_metrics = getattr(torch_npu.profiler.AiCMetrics, aic_metrics)
-    except ImportError as e:
-        logger.warning(f"<<<Failed to import module '{aic_metrics}': {str(e)}, "
-                       f"use PipeUtilization instead."
+    except AttributeError as e:
+        logging.warning(
+            f"<<<Invalid AiCMetrics '{aic_metrics}': {str(e)}, "
+            "use PipeUtilization instead."
         )
         aic_metrics = torch_npu.profiler.AiCMetrics.PipeUtilization
 

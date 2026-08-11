@@ -1,51 +1,51 @@
 type: "marker"
 targets:
-  - module: "vllm.entrypoints.openai.serving_chat:OpenAIServingChat"
+  - module: "vllm.entrypoints.openai.chat_completion.serving:OpenAIServingChat"
     function_name: create_chat_completion
     entry_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory   
       raw_request_id = "chatcmpl-" + args[1].headers.get('X-Request-Id')
       args[0].raw_request_id = raw_request_id
-      if os.getenv('ROLE') == "encode":
-          safe_print(trace_output_directory, f"<<<Action: Encoder api server get request; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      elif os.getenv('ROLE') == "prefill":
-          safe_print(trace_output_directory, f"<<<Action: PD api server get request; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      elif os.getenv('ROLE') == "decode":
-          safe_print(trace_output_directory, f"<<<Action: Enter decode to generate; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+      if os.getenv('OMNI_ROLE') == "encode":
+          safe_print(trace_output_directory, f"<<<Action: Encoder api server get request; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      elif os.getenv('OMNI_ROLE') == "prefill":
+          safe_print(trace_output_directory, f"<<<Action: PD api server get request; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      elif os.getenv('OMNI_ROLE') == "decode":
+          safe_print(trace_output_directory, f"<<<Action: Enter decode to generate; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
-  - module: "vllm.entrypoints.openai.serving_completion:OpenAIServingCompletion"
+  - module: "vllm.entrypoints.openai.completion.serving:OpenAIServingCompletion"
     function_name: create_completion
     entry_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory   
       raw_request_id = "cmpl-" + args[1].headers.get('X-Request-Id')
       args[0].raw_request_id = raw_request_id
-      if os.getenv('ROLE') == "encode":
-          safe_print(trace_output_directory, f"<<<Action: Encoder api server get request; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      elif os.getenv('ROLE') == "prefill":
-          safe_print(trace_output_directory, f"<<<Action: PD api server get request; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      elif os.getenv('ROLE') == "decode":
-          safe_print(trace_output_directory, f"<<<Action: Enter decode to generate; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+      if os.getenv('OMNI_ROLE') == "encode":
+          safe_print(trace_output_directory, f"<<<Action: Encoder api server get request; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      elif os.getenv('OMNI_ROLE') == "prefill":
+          safe_print(trace_output_directory, f"<<<Action: PD api server get request; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      elif os.getenv('OMNI_ROLE') == "decode":
+          safe_print(trace_output_directory, f"<<<Action: Enter decode to generate; Timestamp:{time.time()}; RequestID:{raw_request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
-  - module: "vllm.entrypoints.openai.serving_engine:OpenAIServing"
-    function_name: _process_inputs
+  - module: "vllm.v1.engine.input_processor:InputProcessor"
+    function_name: process_inputs
     entry_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       request_id = args[0]
-      if os.getenv('ROLE') == "prefill":
-          safe_print(trace_output_directory, f"<<<Action: Get prefill request and start pickle; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+      if os.getenv('OMNI_ROLE') == "prefill":
+          safe_print(trace_output_directory, f"<<<Action: Get prefill request and start pickle; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       request_id = args[0]
-      if os.getenv('ROLE') == "encode":
-          safe_print(trace_output_directory, f"<<<Action: Finish process request for encode engine; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      elif os.getenv('ROLE') == "prefill":
-          safe_print(trace_output_directory, f"<<<Action: Finish process request for prefill engine; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      elif os.getenv('ROLE') == "decode":
-          safe_print(trace_output_directory, f"<<<Action: Finish process request for decode engine; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+      if os.getenv('OMNI_ROLE') == "encode":
+          safe_print(trace_output_directory, f"<<<Action: Finish process request for encode engine; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      elif os.getenv('OMNI_ROLE') == "prefill":
+          safe_print(trace_output_directory, f"<<<Action: Finish process request for prefill engine; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      elif os.getenv('OMNI_ROLE') == "decode":
+          safe_print(trace_output_directory, f"<<<Action: Finish process request for decode engine; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   - module: "vllm.v1.engine.core:EngineCoreProc"
     function_name: process_input_sockets
@@ -60,12 +60,12 @@ targets:
               if request_type == EngineCoreRequestType.ADD:
                   req, request_wave = request  
                   request_id = req.request_id  
-                  if os.getenv('ROLE') == "encode":
-                      safe_print(trace_output_directory, f"<<<Action: Start process request in encode engine; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-                  elif os.getenv('ROLE') == "prefill":
-                      safe_print(trace_output_directory, f"<<<Action: Start process request in prefill engine; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-                  elif os.getenv('ROLE') == "decode":
-                      safe_print(trace_output_directory, f"<<<Action: Start to dispatch decode request; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+                  if os.getenv('OMNI_ROLE') == "encode":
+                      safe_print(trace_output_directory, f"<<<Action: Start process request in encode engine; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+                  elif os.getenv('OMNI_ROLE') == "prefill":
+                      safe_print(trace_output_directory, f"<<<Action: Start process request in prefill engine; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+                  elif os.getenv('OMNI_ROLE') == "decode":
+                      safe_print(trace_output_directory, f"<<<Action: Start to dispatch decode request; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
               original_put_nowait(item)
           queue.put_nowait = patched_put_nowait
           return queue
@@ -76,10 +76,10 @@ targets:
     entry_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
-      if os.getenv('ROLE') == "encode":
-          safe_print(trace_output_directory, f"<<<Action: Encoder add waiting queue; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      elif os.getenv('ROLE') == "prefill":
-          safe_print(trace_output_directory, f"<<<Action: Prefill add waiting queue; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+      if os.getenv('OMNI_ROLE') == "encode":
+          safe_print(trace_output_directory, f"<<<Action: Encoder add waiting queue; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      elif os.getenv('OMNI_ROLE') == "prefill":
+          safe_print(trace_output_directory, f"<<<Action: Prefill add waiting queue; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   - module: "vllm.v1.core.kv_cache_manager:KVCacheManager"
     function_name: allocate_slots
@@ -89,12 +89,12 @@ targets:
       load_kv_async = False
       if "delay_cache_blocks" in kwargs:
           load_kv_async = kwargs['delay_cache_blocks']
-          if result and load_kv_async == False and os.getenv('ROLE') == "prefill": # block is not none
-              safe_print(trace_output_directory, f"<<<Action: Prefill get new_blocks; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+          if result and load_kv_async == False and os.getenv('OMNI_ROLE') == "prefill": # block is not none
+              safe_print(trace_output_directory, f"<<<Action: Prefill get new_blocks; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
           elif result and load_kv_async: #delay_cache_blocks is True
-              safe_print(trace_output_directory, f"<<<Action: Add need pulling sequence; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      if result is None and os.getenv('ROLE') == "prefill":
-          safe_print(trace_output_directory, f"<<<Action: Prefill fail to add result of kv insufficient; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Add need pulling sequence; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      if result is None and os.getenv('OMNI_ROLE') == "prefill":
+          safe_print(trace_output_directory, f"<<<Action: Prefill fail to add result of kv insufficient; Timestamp:{time.time()}; RequestID:{args[0].request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   # start pull kv
   - module: "omni_npu.connector.llmdatadist_connector_v1:DecodeWorker"
@@ -103,7 +103,7 @@ targets:
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       request_id = args[0]
-      safe_print(trace_output_directory, f"<<<Action: Start pull kv; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+      safe_print(trace_output_directory, f"<<<Action: Start pull kv; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   # finish pull kv
   - module: "omni_npu.connector.llmdatadist_connector_v1:DecodeWorker"
@@ -114,7 +114,7 @@ targets:
       recv_done = result[1] if result else None
       if recv_done:
           for request_id in recv_done:
-              safe_print(trace_output_directory, f"<<<Action: Finish pull kv; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Finish pull kv; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   # prefill free kv blocks
   - module: "vllm.v1.core.sched.scheduler:Scheduler"
@@ -124,7 +124,7 @@ targets:
       from omni_trace.utils import ip_str, safe_print, trace_output_directory    
       for req_id in (args[0].finished_sending or ()):
           if req_id in self.requests:
-              safe_print(trace_output_directory, f"<<<Action: Prefill free kv blocks; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Prefill free kv blocks; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   - module: "vllm.v1.core.sched.scheduler:Scheduler"
     function_name: schedule
@@ -138,20 +138,20 @@ targets:
       
       class CustomList(list):
           def append(self, item):
-              if os.getenv('ROLE') == "encode":
-                  safe_print(trace_output_directory, f"<<<Action: Start append running sequence for encode; Timestamp:{time.time()}; RequestID:{item.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")              
-              elif os.getenv('ROLE') == "prefill":
-                  safe_print(trace_output_directory, f"<<<Action: Start append running sequence for prefill; Timestamp:{time.time()}; RequestID:{item.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-              elif os.getenv('ROLE') == "decode":
-                  safe_print(trace_output_directory, f"<<<Action: Start append running sequence for decode; Timestamp:{time.time()}; RequestID:{item.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              if os.getenv('OMNI_ROLE') == "encode":
+                  safe_print(trace_output_directory, f"<<<Action: Start append running sequence for encode; Timestamp:{time.time()}; RequestID:{item.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")              
+              elif os.getenv('OMNI_ROLE') == "prefill":
+                  safe_print(trace_output_directory, f"<<<Action: Start append running sequence for prefill; Timestamp:{time.time()}; RequestID:{item.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+              elif os.getenv('OMNI_ROLE') == "decode":
+                  safe_print(trace_output_directory, f"<<<Action: Start append running sequence for decode; Timestamp:{time.time()}; RequestID:{item.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
               super().append(item)
       self.running = CustomList(self.running)
 
       for request in self.waiting:
-          if os.getenv('ROLE') == "encode":
-              safe_print(trace_output_directory, f"<<<Action: Encoder try to schedule in waiting queue; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-          elif os.getenv('ROLE') == "prefill":
-              safe_print(trace_output_directory, f"<<<Action: Prefill try to schedule in waiting queue; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+          if os.getenv('OMNI_ROLE') == "encode":
+              safe_print(trace_output_directory, f"<<<Action: Encoder try to schedule in waiting queue; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+          elif os.getenv('OMNI_ROLE') == "prefill":
+              safe_print(trace_output_directory, f"<<<Action: Prefill try to schedule in waiting queue; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
@@ -164,12 +164,12 @@ targets:
       scheduler_output_schedule.start_free_block_num = self._trace_start_free_block_num
       
       for req in scheduler_output_schedule.scheduled_new_reqs:
-          if os.getenv('ROLE') == "encode":
-              safe_print(trace_output_directory, f"<<<Action: Encoder start execute_model; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-          elif os.getenv('ROLE') == "prefill":
-              safe_print(trace_output_directory, f"<<<Action: Prefill start execute_model; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-          elif os.getenv('ROLE') == "decode":
-              safe_print(trace_output_directory, f"<<<Action: Start to send output; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+          if os.getenv('OMNI_ROLE') == "encode":
+              safe_print(trace_output_directory, f"<<<Action: Encoder start execute_model; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+          elif os.getenv('OMNI_ROLE') == "prefill":
+              safe_print(trace_output_directory, f"<<<Action: Prefill start execute_model; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+          elif os.getenv('OMNI_ROLE') == "decode":
+              safe_print(trace_output_directory, f"<<<Action: Start to send output; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   - module: "vllm.v1.worker.gpu_model_runner:GPUModelRunner"
     function_name: _update_states
@@ -178,15 +178,15 @@ targets:
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       scheduler_output = args[0]
       for req in scheduler_output.scheduled_new_reqs:
-          if os.getenv('ROLE') == "prefill":
-              safe_print(trace_output_directory, f"<<<Action: Prefill start execute main model; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+          if os.getenv('OMNI_ROLE') == "prefill":
+              safe_print(trace_output_directory, f"<<<Action: Prefill start execute main model; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
       # step
       scheduler_output.main_model_start_time = time.time()
     exit_operation: |
       ## Build mm_hash -> request_id map for start_load_caches trace
       import os
       from omni_trace.utils import trace_set_mm_hash_req_map
-      if os.getenv('ROLE') == "prefill":
+      if os.getenv('OMNI_ROLE') == "prefill":
           scheduler_output = args[0]
           meta = scheduler_output.ec_connector_metadata
           load_hashes = set(meta.mm_hashes) if meta and hasattr(meta, "mm_hashes") else set()
@@ -209,7 +209,7 @@ targets:
     function_name: execute_model
     entry_operation: |
       import os
-      if os.getenv('ROLE') == "prefill":
+      if os.getenv('OMNI_ROLE') == "prefill":
           scheduler_output = args[0]
           self._trace_forward_req_ids = list(scheduler_output.num_scheduled_tokens.keys())
 
@@ -218,15 +218,15 @@ targets:
     entry_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
-      if os.getenv('ROLE') == "prefill":
+      if os.getenv('OMNI_ROLE') == "prefill":
           for req_id in self._trace_forward_req_ids:
-              safe_print(trace_output_directory, f"<<<Action: Prefill start model forward; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Prefill start model forward; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
-      if os.getenv('ROLE') == "prefill":
+      if os.getenv('OMNI_ROLE') == "prefill":
           for req_id in self._trace_forward_req_ids:
-              safe_print(trace_output_directory, f"<<<Action: Prefill done model forward; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Prefill done model forward; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   - module: "vllm.v1.worker.gpu_model_runner:GPUModelRunner"
     function_name: execute_model
@@ -235,18 +235,18 @@ targets:
       from omni_trace.utils import ip_str, safe_print, trace_output_directory, trace_clear_mm_hash_req_map
       scheduler_output = args[0]
       for req in scheduler_output.scheduled_new_reqs:
-          if os.getenv('ROLE') == "prefill":
-              safe_print(trace_output_directory, f"<<<Action: Prefill done execute main model; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+          if os.getenv('OMNI_ROLE') == "prefill":
+              safe_print(trace_output_directory, f"<<<Action: Prefill done execute main model; Timestamp:{time.time()}; RequestID:{req.req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
       for req_id in scheduler_output.num_scheduled_tokens.keys():
-          if os.getenv('ROLE') == "encode":
-              safe_print(trace_output_directory, f"<<<Action: Encoder done execute_model; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+          if os.getenv('OMNI_ROLE') == "encode":
+              safe_print(trace_output_directory, f"<<<Action: Encoder done execute_model; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
       # step
-      if scheduler_output.total_num_scheduled_tokens != 0 and os.getenv('ROLE') != "prefill": 
+      if scheduler_output.total_num_scheduled_tokens != 0 and os.getenv('OMNI_ROLE') != "prefill": 
           main_model_end_time = time.time()
           execute_model_cost_time = (main_model_end_time - scheduler_output.main_model_start_time) * 1000
           engine_core_str = scheduler_output.engine_core_str
-          safe_print(trace_output_directory, f"profile_mainmodel: {os.getenv('ROLE')}_{ip_str}|{scheduler_output.main_model_start_time}|"
+          safe_print(trace_output_directory, f"profile_mainmodel: {os.getenv('OMNI_ROLE')}_{ip_str}|{scheduler_output.main_model_start_time}|"
               f"{main_model_end_time}|{execute_model_cost_time}|{engine_core_str}"
           )
 
@@ -261,23 +261,23 @@ targets:
       scheduler_output = args[0]
       if scheduler_output is not None:
           scheduler_output.mtp_model_start_time = time.time()
-          if os.getenv('ROLE') == "prefill":
+          if os.getenv('OMNI_ROLE') == "prefill":
               for req_id in scheduler_output.num_scheduled_tokens.keys():
-                  safe_print(trace_output_directory, f"<<<Action: Prefill start execute mtp model; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+                  safe_print(trace_output_directory, f"<<<Action: Prefill start execute mtp model; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       scheduler_output = args[0]
       if scheduler_output is not None:
-          if os.getenv('ROLE') == "prefill":
+          if os.getenv('OMNI_ROLE') == "prefill":
               for req_id in scheduler_output.num_scheduled_tokens.keys():
-                  safe_print(trace_output_directory, f"<<<Action: Prefill done execute mtp model; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+                  safe_print(trace_output_directory, f"<<<Action: Prefill done execute mtp model; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
           # step
-          if scheduler_output.total_num_scheduled_tokens != 0 and os.getenv('ROLE') == "decode":
+          if scheduler_output.total_num_scheduled_tokens != 0 and os.getenv('OMNI_ROLE') == "decode":
               mtp_model_end_time = time.time()
               execute_model_cost_time = (mtp_model_end_time - scheduler_output.mtp_model_start_time) * 1000
               engine_core_str = scheduler_output.engine_core_str
-              safe_print(trace_output_directory, f"profile_mtpmodel: {os.getenv('ROLE')}_{ip_str}|{scheduler_output.mtp_model_start_time}|"
+              safe_print(trace_output_directory, f"profile_mtpmodel: {os.getenv('OMNI_ROLE')}_{ip_str}|{scheduler_output.mtp_model_start_time}|"
                   f"{mtp_model_end_time}|{execute_model_cost_time}|{engine_core_str}"
               )
 
@@ -288,9 +288,9 @@ targets:
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       scheduler_output = args[0]
       self.execute_model_end_time = time.time()
-      if os.getenv('ROLE') == "prefill":
+      if os.getenv('OMNI_ROLE') == "prefill":
           for req_id in scheduler_output.num_scheduled_tokens.keys():
-              safe_print(trace_output_directory, f"<<<Action: Prefill done execute_model; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Prefill done execute_model; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       # step end
       import os, time
@@ -308,11 +308,11 @@ targets:
           total_tokens = scheduler_output.total_num_scheduled_tokens
           reqs_ids = []
           bs_tokens = []
-          if os.getenv("ROLE") == "prefill":
+          if os.getenv('OMNI_ROLE') == "prefill":
               for req_id, num_scheduled_token in scheduler_output.num_scheduled_tokens.items():
                   reqs_ids.append(req_id)
                   bs_tokens.append(num_scheduled_token)
-          elif os.getenv("ROLE") == "decode":
+          elif os.getenv('OMNI_ROLE') == "decode":
               for req in scheduler_output.scheduled_new_reqs:
                   total_tokens += req.num_computed_tokens
               for computed_tokens in scheduler_output.scheduled_cached_reqs.num_computed_tokens:
@@ -323,11 +323,18 @@ targets:
 
           engine_core_str = scheduler_output.engine_core_str
           engine_outputs_dict = result
-          engine_core_outputs = engine_outputs_dict[0]  
-          kv_cache_usage = engine_core_outputs.scheduler_stats.kv_cache_usage 
+          engine_core_outputs = next(
+              (output for output in engine_outputs_dict.values()
+               if output.scheduler_stats is not None),
+              None,
+          )
+          kv_cache_usage = (
+              engine_core_outputs.scheduler_stats.kv_cache_usage
+              if engine_core_outputs is not None else 0
+          )
           safe_print(
               trace_output_directory,
-              f"profile: {os.getenv('ROLE')}_{ip_str}|{engine_step_start_time}|"
+              f"profile: {os.getenv('OMNI_ROLE')}_{ip_str}|{engine_step_start_time}|"
               f"{engine_step_finish_time}|{engine_step_execute_cost}|"
               f"{running_reqs_num_after_step}|{total_tokens}|"
               f"{waiting_reqs_num_after_step}|{reqs_ids}|{bs_tokens}|"
@@ -351,8 +358,8 @@ targets:
                   return value
               client_index, engine_core_outputs = value
               for request in getattr(engine_core_outputs, 'outputs', []):
-                  if os.getenv('ROLE') == "prefill":
-                      safe_print(trace_output_directory, f"<<<Action: Start to send output in prefill stage; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+                  if os.getenv('OMNI_ROLE') == "prefill":
+                      safe_print(trace_output_directory, f"<<<Action: Start to send output in prefill stage; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
               return value     
           queue.get = patch_get
           return queue
@@ -364,9 +371,9 @@ targets:
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       from vllm.v1.engine import EngineCoreOutputs
-      if isinstance(result, EngineCoreOutputs) and os.getenv('ROLE') == "prefill":
+      if isinstance(result, EngineCoreOutputs) and os.getenv('OMNI_ROLE') == "prefill":
           for request in getattr(result, 'outputs', []):
-              safe_print(trace_output_directory, f"<<<Action: Client get prefill output; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Client get prefill output; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   - module: "vllm.v1.engine.core_client:AsyncMPClient"
     function_name: get_output_async
@@ -374,13 +381,13 @@ targets:
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       from vllm.v1.engine import EngineCoreOutputs
-      if isinstance(result, EngineCoreOutputs) and os.getenv('ROLE') == "encode":
+      if isinstance(result, EngineCoreOutputs) and os.getenv('OMNI_ROLE') == "encode":
           for request in getattr(result, 'outputs', []):
-              safe_print(trace_output_directory, f"<<<Action: Finish encode pickle and start response; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      if isinstance(result, EngineCoreOutputs) and os.getenv('ROLE') == "prefill":
+              safe_print(trace_output_directory, f"<<<Action: Finish encode pickle and start response; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      if isinstance(result, EngineCoreOutputs) and os.getenv('OMNI_ROLE') == "prefill":
           for request in getattr(result, 'outputs', []):
-              safe_print(trace_output_directory, f"<<<Action: Pop output queues; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-              safe_print(trace_output_directory, f"<<<Action: Finish prefill pickle and start response; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Pop output queues; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Finish prefill pickle and start response; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   ## ------------------ Encoder ------------------
   - module: "omni_npu.connector.ec_connector.shared_memory_connector:ECSharedMemoryConnector"
@@ -389,18 +396,18 @@ targets:
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       request = args[0]
-      if os.getenv('ROLE') == "encode":
-          safe_print(trace_output_directory, f"<<<Action: Encoder start has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      elif os.getenv('ROLE') == "prefill":
-          safe_print(trace_output_directory, f"<<<Action: Prefill start has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+      if os.getenv('OMNI_ROLE') == "encode":
+          safe_print(trace_output_directory, f"<<<Action: Encoder start has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      elif os.getenv('OMNI_ROLE') == "prefill":
+          safe_print(trace_output_directory, f"<<<Action: Prefill start has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       request = args[0]
-      if os.getenv('ROLE') == "encode":
-          safe_print(trace_output_directory, f"<<<Action: Encoder done has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      elif os.getenv('ROLE') == "prefill":
-          safe_print(trace_output_directory, f"<<<Action: Prefill done has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+      if os.getenv('OMNI_ROLE') == "encode":
+          safe_print(trace_output_directory, f"<<<Action: Encoder done has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      elif os.getenv('OMNI_ROLE') == "prefill":
+          safe_print(trace_output_directory, f"<<<Action: Prefill done has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   - module: "omni_npu.connector.ec_connector.network_connector:ECNetworkConnector"
     function_name: has_caches
@@ -408,18 +415,18 @@ targets:
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       request = args[0]
-      if os.getenv('ROLE') == "encode":
-          safe_print(trace_output_directory, f"<<<Action: Encoder start has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      elif os.getenv('ROLE') == "prefill":
-          safe_print(trace_output_directory, f"<<<Action: Prefill start has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+      if os.getenv('OMNI_ROLE') == "encode":
+          safe_print(trace_output_directory, f"<<<Action: Encoder start has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      elif os.getenv('OMNI_ROLE') == "prefill":
+          safe_print(trace_output_directory, f"<<<Action: Prefill start has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       request = args[0]
-      if os.getenv('ROLE') == "encode":
-          safe_print(trace_output_directory, f"<<<Action: Encoder done has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-      elif os.getenv('ROLE') == "prefill":
-          safe_print(trace_output_directory, f"<<<Action: Prefill done has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+      if os.getenv('OMNI_ROLE') == "encode":
+          safe_print(trace_output_directory, f"<<<Action: Encoder done has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+      elif os.getenv('OMNI_ROLE') == "prefill":
+          safe_print(trace_output_directory, f"<<<Action: Prefill done has_caches; Timestamp:{time.time()}; RequestID:{request.request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   - module: "vllm.v1.worker.gpu_model_runner:GPUModelRunner"
     function_name: _execute_mm_encoder
@@ -441,18 +448,18 @@ targets:
 
       self._trace_mm_execute_request_ids = list(scheduler_output.scheduled_encoder_inputs.keys())
       for req_id in self._trace_mm_execute_request_ids:
-          if os.getenv('ROLE') == "encode":
-              safe_print(trace_output_directory, f"<<<Action: Encoder start _execute_mm_encoder; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-          elif os.getenv('ROLE') == "prefill":
-              safe_print(trace_output_directory, f"<<<Action: Prefill start _execute_mm_encoder; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+          if os.getenv('OMNI_ROLE') == "encode":
+              safe_print(trace_output_directory, f"<<<Action: Encoder start _execute_mm_encoder; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+          elif os.getenv('OMNI_ROLE') == "prefill":
+              safe_print(trace_output_directory, f"<<<Action: Prefill start _execute_mm_encoder; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory, trace_clear_mm_hash_req_map
       for request_id in self._trace_mm_execute_request_ids:
-          if os.getenv('ROLE') == "encode":
-              safe_print(trace_output_directory, f"<<<Action: Encoder done _execute_mm_encoder; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
-          elif os.getenv('ROLE') == "prefill":
-              safe_print(trace_output_directory, f"<<<Action: Prefill done _execute_mm_encoder; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+          if os.getenv('OMNI_ROLE') == "encode":
+              safe_print(trace_output_directory, f"<<<Action: Encoder done _execute_mm_encoder; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
+          elif os.getenv('OMNI_ROLE') == "prefill":
+              safe_print(trace_output_directory, f"<<<Action: Prefill done _execute_mm_encoder; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
       ## Clear mm_hash -> request_id map for save_caches trace
       trace_clear_mm_hash_req_map()
@@ -466,7 +473,7 @@ targets:
       if has_ec_transfer():
           mm_hash = kwargs.get('mm_hash', args[0] if args else None)
           request_id = trace_lookup_req_id(mm_hash)
-          safe_print(trace_output_directory, f"<<<Action: Encoder start save_caches; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+          safe_print(trace_output_directory, f"<<<Action: Encoder start save_caches; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory, trace_lookup_req_id
@@ -474,7 +481,7 @@ targets:
       if has_ec_transfer():
           mm_hash = kwargs.get('mm_hash', args[0] if args else None)
           request_id = trace_lookup_req_id(mm_hash)
-          safe_print(trace_output_directory, f"<<<Action: Encoder done save_caches; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+          safe_print(trace_output_directory, f"<<<Action: Encoder done save_caches; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   - module: "omni_npu.connector.ec_connector.shared_memory_connector:ECSharedMemoryConnector"
     function_name: start_load_caches
@@ -483,15 +490,15 @@ targets:
       from omni_trace.utils import ip_str, safe_print, trace_output_directory, trace_lookup_req_ids_for_load
       metadata = self._get_connector_metadata()
       self._trace_start_load_request_ids = trace_lookup_req_ids_for_load(metadata.mm_hashes)
-      if os.getenv('ROLE') == "prefill":
+      if os.getenv('OMNI_ROLE') == "prefill":
           for request_id in self._trace_start_load_request_ids:
-              safe_print(trace_output_directory, f"<<<Action: Prefill start start_load_caches; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Prefill start start_load_caches; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       for request_id in self._trace_start_load_request_ids:
-          if os.getenv('ROLE') == "prefill":
-              safe_print(trace_output_directory, f"<<<Action: Prefill done start_load_caches; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+          if os.getenv('OMNI_ROLE') == "prefill":
+              safe_print(trace_output_directory, f"<<<Action: Prefill done start_load_caches; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   - module: "omni_npu.connector.ec_connector.network_connector:ECNetworkConnector"
     function_name: start_load_caches
@@ -500,15 +507,15 @@ targets:
       from omni_trace.utils import ip_str, safe_print, trace_output_directory, trace_lookup_req_ids_for_load
       metadata = self._get_connector_metadata()
       self._trace_start_load_request_ids = trace_lookup_req_ids_for_load(metadata.mm_hashes)
-      if os.getenv('ROLE') == "prefill":
+      if os.getenv('OMNI_ROLE') == "prefill":
           for request_id in self._trace_start_load_request_ids:
-              safe_print(trace_output_directory, f"<<<Action: Prefill start start_load_caches; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Prefill start start_load_caches; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
       for request_id in self._trace_start_load_request_ids:
-          if os.getenv('ROLE') == "prefill":
-              safe_print(trace_output_directory, f"<<<Action: Prefill done start_load_caches; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+          if os.getenv('OMNI_ROLE') == "prefill":
+              safe_print(trace_output_directory, f"<<<Action: Prefill done start_load_caches; Timestamp:{time.time()}; RequestID:{request_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   # _gather_mm_embeddings may hit original or openpangu_vl patch.
   - module: "vllm.v1.worker.gpu_model_runner:GPUModelRunner"
@@ -516,27 +523,27 @@ targets:
     entry_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
-      if os.getenv('ROLE') == "prefill":
+      if os.getenv('OMNI_ROLE') == "prefill":
           for req_id in self.input_batch.req_ids:
-              safe_print(trace_output_directory, f"<<<Action: Prefill start _gather_mm_embeddings; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Prefill start _gather_mm_embeddings; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
-      if os.getenv('ROLE') == "prefill":
+      if os.getenv('OMNI_ROLE') == "prefill":
           for req_id in self.input_batch.req_ids:
-              safe_print(trace_output_directory, f"<<<Action: Prefill done _gather_mm_embeddings; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Prefill done _gather_mm_embeddings; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
 
   - module: "omni_npu.vllm_patches.patches.models.openpangu_vl.patch_video_with_audio:GPUModelRunner"
     function_name: _gather_mm_embeddings
     entry_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
-      if os.getenv('ROLE') == "prefill":
+      if os.getenv('OMNI_ROLE') == "prefill":
           for req_id in self.input_batch.req_ids:
-              safe_print(trace_output_directory, f"<<<Action: Prefill start _gather_mm_embeddings; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Prefill start _gather_mm_embeddings; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")
     exit_operation: |
       import os, time
       from omni_trace.utils import ip_str, safe_print, trace_output_directory
-      if os.getenv('ROLE') == "prefill":
+      if os.getenv('OMNI_ROLE') == "prefill":
           for req_id in self.input_batch.req_ids:
-              safe_print(trace_output_directory, f"<<<Action: Prefill done _gather_mm_embeddings; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('ROLE')}_{ip_str}")
+              safe_print(trace_output_directory, f"<<<Action: Prefill done _gather_mm_embeddings; Timestamp:{time.time()}; RequestID:{req_id}; Role:{os.getenv('OMNI_ROLE')}_{ip_str}")

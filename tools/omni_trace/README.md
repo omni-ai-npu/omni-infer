@@ -4,24 +4,17 @@
 ```bash
 # ===================== trace 配置 =====================
 # 1. 定义omniinfer的根目录
-OMNIINFER_ROOT="/workspace/omniinfer"
+export OMNIINFER_ROOT="/workspace/omniinfer"
 
 # 2. 将omniinfer/tools目录加入PYTHONPATH，让Python能识别omni_trace模块
 export PYTHONPATH="${OMNIINFER_ROOT}/tools:${PYTHONPATH}"
 
-# 3. 指定trace配置文件路径
-unset PROFILING_NAMELIST
-export PROFILING_NAMELIST="${OMNIINFER_ROOT}/tools/omni_trace/omnilogger_namelist.yml"
+# 3. 开启trace并指定日志输出目录；不设置该变量时trace关闭
+export OMNI_TRACE_OUTPUT_DIRECTORY=/data/user/trace/
 
-# 4. 指定trace日志输出目录
-export TRACE_OUTPUT_DIRECTORY=/data/user/trace/
-
-# 5. 指定运行节点类型（encode/prefill/decode三选一）
-export ROLE="encode"
-export ROLE="prefill"
-export ROLE="decode"
-
-# 6. 需要配置patch环境变量
-unset OMNI_VLLM_PATCHES
-export OMNI_VLLM_PATCHES="ALL"
+# 4. 指定运行节点类型（encode/prefill/decode三选一）
+export OMNI_ROLE="encode"
+export OMNI_ROLE="prefill"
+export OMNI_ROLE="decode"
 # ==============================================================
+```

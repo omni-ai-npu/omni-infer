@@ -72,4 +72,4 @@ def get_ip():
         return f"Error getting local IP: {e}"
 
 ip_str = get_ip()
-trace_output_directory = os.getenv("TRACE_OUTPUT_DIRECTORY", "/tmp/trace_output_directory")
+trace_output_directory = os.getenv("OMNI_TRACE_OUTPUT_DIRECTORY")

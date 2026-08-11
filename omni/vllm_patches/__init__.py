@@ -191,3 +191,8 @@ def apply_patches():
     auto_import_patches()
 
     manager.apply_patches()
+
+    # Run dynamic trace wrapping after normal patches are applied, so namelist
+    # targets wrap the final patched methods instead of earlier implementations.
+    from omni_npu.vllm_patches.usefull_patch.patch_trace import ProfilerDynamicPatch
+    profiler_patch_instance = ProfilerDynamicPatch()
