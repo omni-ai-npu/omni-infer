@@ -311,8 +311,19 @@ class NPUParallelLMHead(NPUVocabParallelEmbedding):
             return self
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
-        super().weight_loader(param, loaded_weight)
+        # lmhead_fp32 and NZ are mutually exclusive.
         if model_extra_config.operator_opt_config.lmhead_fp32:
+            super().weight_loader(param, loaded_weight)
             param.data = param.data.float()
         else:
-            param.data = torch_npu.npu_format_cast(param.data, 29)
+            # Align with linear.py: NZ→ND before reload (RL / sleep-wakeup), then NZ again.
+            if getattr(param, "is_weight_nz", False):
+                param.data = torch_npu.npu_format_cast(
+                    param.data, torch_npu.Format.ND
+                )
+            super().weight_loader(param, loaded_weight)
+            param.data = torch_npu.npu_format_cast(
+                param.data, torch_npu.Format.FRACTAL_NZ
+            )
+            if not hasattr(param, "is_weight_nz"):
+                set_weight_attrs(param, {"is_weight_nz": True})
