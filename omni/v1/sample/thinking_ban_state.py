@@ -5,18 +5,21 @@
 
 Suppresses Pangu's tool-call boundary failure mode under spec-decode:
 
-* While a request is **inside** ``<think>``, bans ``<|tool_call_start|>``
-  (forces the model to close ``</think>`` before opening a tool call).
+* While a request is **committed inside** ``<think>``, bans
+  ``<|tool_call_start|>`` on every logits row of the step (including MTP
+  target/bonus rows). A draft ``</think>`` in the same step does **not**
+  unlock the tool marker — the close must be accepted first.
   Also bans ``<|tool_call_end|>`` in this state when
-  ``ban_tool_end_in_thinking`` is opted-in (prevents a premature
-  tool-call close inside reasoning).
-* Once ``</think>`` has been emitted, bans the further re-emission of
+  ``ban_tool_end_in_thinking`` is opted-in.
+* Once ``</think>`` has been committed, bans further re-emission of
   ``</think>`` (prevents fragmenting the output).
 
 Designed as a sibling of :class:`ThinkingBudgetStateHolder` so it can ride
 the same ``InputBatch`` lifecycle hooks (``sync_batch``,
 ``_make_sampling_metadata``) and the same ``Sampler`` /
-``RejectionSampler`` apply paths in ``patch_thinking_limit.py``.
+``RejectionSampler`` apply paths in ``patch_thinking_ban.py``.
+Draft-proposer masking uses :meth:`apply_draft_ban` via
+``ThinkingBanEagleDraftSamplePatch`` in ``patch_thinking_ban.py``.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from vllm.v1.sample.logits_processor.interface import (
     BatchUpdate,
     MoveDirectionality,
 )
+from vllm.v1.sample.metadata import SamplingMetadata
 
 if TYPE_CHECKING:
     from omni_npu.v1.config import ReasoningConfig
@@ -47,7 +51,7 @@ def maybe_create_thinking_ban_state_holder(
     max_num_seqs: int,
     num_spec_tokens: int,
     device: torch.device,
-    is_pin_memory: bool,
+    is_pin_memory: bool | None = None,
 ) -> "ThinkingBanStateHolder | None":
     """Factory: returns a holder iff at least one ban is opted-in and its
     token id resolved.
@@ -125,9 +129,10 @@ class ThinkingBanStateHolder:
         max_num_seqs: int,
         num_spec_tokens: int,
         device: torch.device,
-        is_pin_memory: bool,
+        is_pin_memory: bool | None = None,
     ):
-        _ = is_pin_memory  # API parity with ThinkingBudgetStateHolder
+        _ = is_pin_memory
+        # Kept only for compatibility with the 0.14 factory API.
         _ = max_num_seqs   # not needed for dict-based state but kept in signature
         self.device = device
         self.num_spec_tokens = num_spec_tokens
@@ -229,6 +234,11 @@ class ThinkingBanStateHolder:
         return {
             "last_start_pos": last_start,
             "last_end_pos": last_end,
+            # Prompt baselines so ``update_state`` can fully rescan committed
+            # output without depending on a possibly-corrupted prev length
+            # (MTP draft leakage into output_token_ids).
+            "prompt_last_start_pos": last_start,
+            "prompt_last_end_pos": last_end,
             "prompt_len": len(prompt),
             "prev_output_length": 0,
             "output_tok_ids": [],
@@ -328,49 +338,41 @@ class ThinkingBanStateHolder:
             if spec_len > 0 and len(output) >= spec_len:
                 output = output[: -spec_len]
 
-            # Incrementally extend last_*_pos using ONLY the newly committed
-            # tokens. For single-token sentinels (Pangu) this is a simple
-            # equality test. For multi-token sentinels we fall back to a
-            # bounded suffix rescan against the prompt+output tail (rare).
-            prev_len = state["prev_output_length"]
-            new_tokens = output[prev_len:]
-            for i, tid in enumerate(new_tokens):
-                abs_pos = state["prompt_len"] + prev_len + i
-                if (
-                    len(self.think_start_token_ids) == 1
-                    and tid == self.think_start_token_ids[0]
-                ):
-                    state["last_start_pos"] = abs_pos
-                if (
-                    len(self.think_end_token_ids) == 1
-                    and tid == self.think_end_token_ids[0]
-                ):
-                    state["last_end_pos"] = abs_pos
-            if len(self.think_start_token_ids) > 1 or len(self.think_end_token_ids) > 1:
-                # Multi-token: rescan the suffix that could span the boundary
-                # between previously-known last_*_pos and the new tokens.
-                full = output  # output only; prompt scan already done at init
-                tail_start = max(
-                    0,
-                    prev_len
-                    - max(
-                        len(self.think_start_token_ids),
-                        len(self.think_end_token_ids),
-                    )
-                    + 1,
+            # Full rescan from prompt baselines + committed output. Avoids
+            # sticky POST_THINK when a prior MTP step accidentally advanced
+            # ``prev_output_length`` past the true committed length (e.g.
+            # drafts present in output while ``spec_token_ids`` was empty).
+            last_start = state.get(
+                "prompt_last_start_pos", state["last_start_pos"]
+            )
+            last_end = state.get("prompt_last_end_pos", state["last_end_pos"])
+            prompt_len = state["prompt_len"]
+            if (
+                len(self.think_start_token_ids) == 1
+                and len(self.think_end_token_ids) == 1
+            ):
+                start_tid = self.think_start_token_ids[0]
+                end_tid = self.think_end_token_ids[0]
+                for i, tid in enumerate(output):
+                    abs_pos = prompt_len + i
+                    if tid == start_tid:
+                        last_start = abs_pos
+                    if tid == end_tid:
+                        last_end = abs_pos
+            else:
+                rel_s = self._find_last_sequence_index(
+                    output, self.think_start_token_ids
                 )
-                tail = full[tail_start:]
-                rel_s = self._find_last_sequence_index(tail, self.think_start_token_ids)
-                rel_e = self._find_last_sequence_index(tail, self.think_end_token_ids)
+                rel_e = self._find_last_sequence_index(
+                    output, self.think_end_token_ids
+                )
                 if rel_s >= 0:
-                    state["last_start_pos"] = max(
-                        state["last_start_pos"], state["prompt_len"] + tail_start + rel_s
-                    )
+                    last_start = max(last_start, prompt_len + rel_s)
                 if rel_e >= 0:
-                    state["last_end_pos"] = max(
-                        state["last_end_pos"], state["prompt_len"] + tail_start + rel_e
-                    )
+                    last_end = max(last_end, prompt_len + rel_e)
 
+            state["last_start_pos"] = last_start
+            state["last_end_pos"] = last_end
             state["prev_output_length"] = len(output)
 
     def apply_to_logits(
@@ -388,7 +390,12 @@ class ThinkingBanStateHolder:
         * spec mode, ``predict_bonus_token=False`` → ``num_draft_tokens`` rows
           per request (the K target rows, ordered position 0..K-1)
         * spec mode, ``predict_bonus_token=True`` → 1 row per request (the
-          bonus row, fed the state after consuming all K drafts)
+          bonus row)
+
+        Tool-call markers (``tool_call_start`` / ``tool_call_end``) are gated
+        on the **committed** FSM only. A draft ``</think>`` in the same MTP
+        step must not unlock ``tool_call_start``; the close has to be accepted
+        first. ``</think>`` re-emission bans still follow the speculative walk.
         """
         if not self.is_enabled or not self._state:
             return logits
@@ -446,13 +453,12 @@ class ThinkingBanStateHolder:
             start_row = self.cu_num_tokens[seq_idx]
 
             if predict_bonus_token:
-                # Bonus row sees ALL K drafts speculatively.
-                final = base_state
+                walked = base_state
                 for d in spec_tokens:
-                    final = _advance(final, d)
-                rows: list[tuple[int, int]] = [(start_row, final)]
+                    walked = _advance(walked, d)
+                rows: list[tuple[int, int]] = [(start_row, walked)]
             elif self.in_spec_mode:
-                # K target rows: row r samples after history + drafts[0..r-1].
+                # K target rows: walked state is history + drafts[0..r-1].
                 cur = base_state
                 rows = []
                 for r in range(len(spec_tokens)):
@@ -461,15 +467,81 @@ class ThinkingBanStateHolder:
             else:
                 rows = [(start_row, base_state)]
 
-            for row, st in rows:
+            for row, walked in rows:
                 if row >= logits.shape[0]:
                     break
-                if st == IN_THINK:
+                # Committed IN_THINK → hard-ban tool markers on every row of
+                # this step (target + bonus), even if a draft ``</think>``
+                # would walk the speculative state to POST.
+                if base_state == IN_THINK:
                     if self.tool_call_start_tid is not None:
                         logits[row, self.tool_call_start_tid] = float("-inf")
                     if self.tool_call_end_tid is not None:
                         logits[row, self.tool_call_end_tid] = float("-inf")
-                elif st == POST_THINK and think_end_last is not None:
+                if walked == POST_THINK and think_end_last is not None:
                     logits[row, think_end_last] = float("-inf")
 
+        return logits
+
+    def apply_draft_ban(
+        self,
+        logits: torch.Tensor,
+        sampling_metadata: SamplingMetadata,
+    ) -> torch.Tensor:
+        """Ban tool markers on MTP **draft-proposer** logits.
+
+        Draft sampling is typically 1 row per request (sequential MTP), or
+        ``K`` request-major rows for parallel drafting. Unlike verify-time
+        ``apply_to_logits``, this only enforces the committed ``IN_THINK``
+        tool-marker ban so the proposer does not emit tokens that target
+        rejection would discard.
+        """
+        if not self.is_enabled or not self._state:
+            return logits
+        if (
+            self.tool_call_start_tid is None
+            and self.tool_call_end_tid is None
+        ):
+            return logits
+
+        output_token_ids = getattr(sampling_metadata, "output_token_ids", None)
+        if output_token_ids is not None:
+            # Refresh committed FSM from the running history (no draft suffix).
+            self.update_state(output_token_ids, None, repeat_indices=None)
+
+        num_reqs = (
+            len(output_token_ids)
+            if output_token_ids is not None
+            else max(self._state.keys()) + 1
+        )
+        if num_reqs <= 0:
+            return logits
+
+        n_rows = logits.shape[0]
+        if n_rows % num_reqs == 0:
+            rows_per_req = n_rows // num_reqs
+        else:
+            # Unexpected layout; fall back to one row per leading request.
+            rows_per_req = 1
+            num_reqs = min(num_reqs, n_rows)
+
+        for seq_idx, entry in self._state.items():
+            if seq_idx >= num_reqs:
+                continue
+            if (
+                self._derive_state(
+                    entry["last_start_pos"], entry["last_end_pos"]
+                )
+                != IN_THINK
+            ):
+                continue
+            base = seq_idx * rows_per_req
+            for r in range(rows_per_req):
+                row = base + r
+                if row >= n_rows:
+                    break
+                if self.tool_call_start_tid is not None:
+                    logits[row, self.tool_call_start_tid] = float("-inf")
+                if self.tool_call_end_tid is not None:
+                    logits[row, self.tool_call_end_tid] = float("-inf")
         return logits
