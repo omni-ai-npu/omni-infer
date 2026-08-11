@@ -1,0 +1,78 @@
+diff --git a/vllm/v1/outputs.py b/vllm/v1/outputs.py
+--- a/vllm/v1/outputs.py
++++ b/vllm/v1/outputs.py
+@@ -101,9 +101,12 @@ class ModelRunnerOutput:
+     prompt_logprobs_dict: dict[str, Optional[LogprobsTensors]]
+ 
+     # [req_ids]
+     finished_sending: Optional[set[str]] = None
+     finished_recving: Optional[set[str]] = None
+     loading_kv_failure: Optional[set[str]] = None
++
++    # OmniCache GS reuse rate per layer. Serialized to the scheduler process.
++    reuse_rate: Optional[list[float]] = None
+ 
+ 
+ EMPTY_MODEL_RUNNER_OUTPUT = ModelRunnerOutput(req_ids=[],
+diff --git a/vllm/v1/metrics/stats.py b/vllm/v1/metrics/stats.py
+--- a/vllm/v1/metrics/stats.py
++++ b/vllm/v1/metrics/stats.py
+@@ -37,7 +37,10 @@ class SchedulerStats:
+     prefix_cache_stats: PrefixCacheStats = field(
+         default_factory=PrefixCacheStats)
+ 
+     spec_decoding_stats: Optional[SpecDecodingStats] = None
++
++    # OmniCache GS reuse rate per layer.
++    reuse_rate: Optional[list[float]] = None
+ 
+ 
+ @dataclass
+diff --git a/vllm/v1/metrics/loggers.py b/vllm/v1/metrics/loggers.py
+--- a/vllm/v1/metrics/loggers.py
++++ b/vllm/v1/metrics/loggers.py
+@@ -198,12 +198,18 @@ class PrometheusStatLogger(StatLoggerBase):
+         # GPU cache
+         #
+         gauge_gpu_cache_usage = self._gauge_cls(
+             name="vllm:gpu_cache_usage_perc",
+             documentation="GPU KV-cache usage. 1 means 100 percent usage.",
+             labelnames=labelnames)
+         self.gauge_gpu_cache_usage = make_per_engine(gauge_gpu_cache_usage,
+                                                      engine_indexes,
+                                                      model_name)
++
++        self.gauge_omni_cache_reuse_rate = self._gauge_cls(
++            name="vllm:omni_cache_reuse_rate",
++            documentation="OmniCache GS reuse rate per layer.",
++            labelnames=labelnames + ["layer"])
++        self._reuse_rate_model_name = model_name
+ 
+         counter_gpu_prefix_cache_queries = self._counter_cls(
+             name="vllm:gpu_prefix_cache_queries",
+@@ -471,17 +477,25 @@ class PrometheusStatLogger(StatLoggerBase):
+         if scheduler_stats is not None:
+             self.gauge_scheduler_running[engine_idx].set(scheduler_stats.num_running_reqs)
+             self.gauge_scheduler_waiting[engine_idx].set(scheduler_stats.num_waiting_reqs)
+ 
+             self.gauge_gpu_cache_usage[engine_idx].set(scheduler_stats.gpu_cache_usage)
+ 
+             self.counter_gpu_prefix_cache_queries[engine_idx].inc(
+                 scheduler_stats.prefix_cache_stats.queries)
+             self.counter_gpu_prefix_cache_hits[engine_idx].inc(
+                 scheduler_stats.prefix_cache_stats.hits)
+ 
+             if scheduler_stats.spec_decoding_stats is not None:
+                 self.spec_decoding_prom.observe(
+                     scheduler_stats.spec_decoding_stats)
++
++            if scheduler_stats.reuse_rate is not None:
++                for layer_idx, rate in enumerate(scheduler_stats.reuse_rate):
++                    self.gauge_omni_cache_reuse_rate.labels(
++                        model_name=self._reuse_rate_model_name,
++                        engine=str(engine_idx),
++                        layer=str(layer_idx),
++                    ).set(float(rate))
+ 
+         if iteration_stats is None:
+             return

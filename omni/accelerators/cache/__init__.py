@@ -23,6 +23,28 @@ from .utils import compute_omni_attn_metadata, to_bool_or_raise
 from .hd_kv_manager import HostDeviceKVCacheManager
 
 
+def _patch_base_scheduler_reuse_rate() -> None:
+    update_from_output = scheduler.Scheduler.update_from_output
+    if getattr(update_from_output, "_omni_reuse_rate_patched", False):
+        return
+
+    def patched_update_from_output(
+        self,
+        scheduler_output,
+        model_runner_output,
+        num_steps=1,
+    ):
+        engine_core_outputs = update_from_output(
+            self, scheduler_output, model_runner_output, num_steps)
+        if engine_core_outputs.scheduler_stats is not None:
+            engine_core_outputs.scheduler_stats.reuse_rate = getattr(
+                model_runner_output, "reuse_rate", None)
+        return engine_core_outputs
+
+    patched_update_from_output._omni_reuse_rate_patched = True
+    scheduler.Scheduler.update_from_output = patched_update_from_output
+
+
 def check_omni_attn_cmd_arg(additional_config: dict) -> bool:
     if additional_config is None or "enable_omni_attn" not in additional_config:
         return False
@@ -32,6 +54,9 @@ def check_omni_attn_cmd_arg(additional_config: dict) -> bool:
 def apply_omni_attn_patch(enable_attn=False, enable_cache=False, is_kv_consumer=True, config=None):
     if not (enable_attn or enable_cache):
         return
+
+    if enable_cache and is_kv_consumer:
+        _patch_base_scheduler_reuse_rate()
 
     if config is not None:
         # update hyperparameters from command line args

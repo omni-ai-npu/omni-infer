@@ -1080,6 +1080,13 @@ class DecodeOmniCache(BaseOmniCache):
                             device=self.device,
                         ).contiguous()
 
+            self.reuse_rate = torch.zeros(
+                self.num_layers,
+                dtype=torch.float32,
+                device=self.device,
+            )
+            self.record_smooth_alpha = 0.7
+
         for i, kv_cache_group in enumerate(kv_cache_config.kv_cache_groups):
             kv_cache_spec = kv_cache_group.kv_cache_spec
             for layer_name in kv_cache_group.layer_names:

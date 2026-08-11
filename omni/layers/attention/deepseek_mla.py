@@ -1409,6 +1409,24 @@ class DeepseekMLA(nn.Module):
                 }
                 
                 reusedNum = torch_npu.npu_gather_selection_kv_cache(**selection_kwargs)
+                oc = attn_metadata.omni_cache
+                topk_num = selection_topk_indices_npu.shape[-1]
+                q_seq_diff = torch.cat([
+                    full_q_actual_seq_npu[0:1],
+                    full_q_actual_seq_npu[1:] - full_q_actual_seq_npu[:-1],
+                ])
+                total_blocks = (
+                    torch.clamp(full_kv_actual_seq_npu, max=topk_num)
+                    * q_seq_diff
+                )
+                reuse_rate = (
+                    reusedNum.to(torch.float32).sum()
+                    / total_blocks.to(torch.float32).sum().clamp_min(1.0)
+                )
+                oc.reuse_rate[self.layer_idx] = (
+                    oc.reuse_rate[self.layer_idx] * oc.record_smooth_alpha
+                    + reuse_rate * (1 - oc.record_smooth_alpha)
+                )
                 # if self.layer_idx ==10:
                 #     tng.ops.npu_print("hello, reusedNum:", reusedNum)
                 # # #     tng.ops.npu_print("hello, topk_indices:", topk_indices)

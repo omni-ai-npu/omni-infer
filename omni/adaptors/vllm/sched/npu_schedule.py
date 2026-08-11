@@ -641,6 +641,8 @@ class NpuHybridScheduler(Scheduler):
             outputs=outputs,
             scheduler_stats=self.make_stats(spec_decoding_stats),
         )
+        if engine_core_outputs.scheduler_stats is not None:
+            engine_core_outputs.scheduler_stats.reuse_rate = model_runner_output.reuse_rate
         if self.include_finished_set:
             # TODO currently sending duplicates here, improve this
             engine_core_outputs.finished_requests = (

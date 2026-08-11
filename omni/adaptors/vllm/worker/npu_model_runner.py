@@ -1353,6 +1353,11 @@ class NPUModelRunner(GPUModelRunner):
                     selected_token_ranks=positions[:hidden_states.shape[0]].cpu()
                 )
 
+        reuse_rate = None
+        omni_cache = getattr(self, "omni_cache", None)
+        if omni_cache is not None and hasattr(omni_cache, "reuse_rate"):
+            reuse_rate = omni_cache.reuse_rate.tolist()
+
         output = ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,
@@ -1363,6 +1368,7 @@ class NPUModelRunner(GPUModelRunner):
             finished_sending=finished_sending,
             finished_recving=finished_recving,
             loading_kv_failure=loading_kv_failure,
+            reuse_rate=reuse_rate,
         )
         if profiling_is_set:
             finished_sending_raw = set()
