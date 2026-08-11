@@ -282,7 +282,8 @@ KV_TRANSFER_CONFIG=$(cat <<EOF
     "kv_role": "$KV_ROLE",
     "kv_rank": $KV_RANK,
     "kv_parallel_size": $KV_PARALLEL_SIZE,
-    "kv_port": $VLLM_LLMDATADIST_ZMQ_PORT
+    "kv_port": $VLLM_LLMDATADIST_ZMQ_PORT,
+    "kv_load_failure_policy": "fail"
 }
 EOF
 )
