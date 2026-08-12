@@ -19,14 +19,23 @@ class NPUMMEncoderAttention(MMEncoderAttention):
         value: torch.Tensor,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: torch.Tensor | None = None,
+        sequence_lengths: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        return super().forward_native(query, key, value, cu_seqlens, max_seqlen)
+        return super().forward_native(
+            query,
+            key,
+            value,
+            cu_seqlens,
+            max_seqlen,
+            sequence_lengths,
+        )
 
     def _forward_fia(
         self,
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
+        sequence_lengths: torch.Tensor | None = None,
     ) -> torch.Tensor:
         import torch_npu
 
@@ -41,8 +50,16 @@ class NPUMMEncoderAttention(MMEncoderAttention):
             query, key, value, batch_size, q_len, kv_len
         )
         num_kv_heads = key.shape[-2]
-        actual_seq_lengths = [q_len] * batch_size
-        actual_seq_lengths_kv = [kv_len] * batch_size
+        if sequence_lengths is None:
+            actual_seq_lengths = [q_len] * batch_size
+            actual_seq_lengths_kv = [kv_len] * batch_size
+        else:
+            # MMEncoderAttention is used here as cache-free encoder
+            # self-attention: Q, K, and V are projected from the same input
+            # tokens. Therefore, sequence_lengths contains the shared actual Q
+            # and KV length for each sample (excluding padding).
+            actual_seq_lengths = sequence_lengths.tolist()
+            actual_seq_lengths_kv = actual_seq_lengths
 
         output = torch_npu.npu_fused_infer_attention_score_v2(
             query=query,
@@ -69,7 +86,15 @@ class NPUMMEncoderAttention(MMEncoderAttention):
         value: torch.Tensor,
         cu_seqlens: torch.Tensor | None = None,
         max_seqlen: torch.Tensor | None = None,
+        sequence_lengths: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if cu_seqlens is not None or max_seqlen is not None:
-            return self.forward_native(query, key, value, cu_seqlens, max_seqlen)
-        return self._forward_fia(query, key, value)
+            return self.forward_native(
+                query,
+                key,
+                value,
+                cu_seqlens,
+                max_seqlen,
+                sequence_lengths,
+            )
+        return self._forward_fia(query, key, value, sequence_lengths)

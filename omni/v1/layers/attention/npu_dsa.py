@@ -530,6 +530,7 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
                 kv_b_proj=self.kv_b_proj,
                 use_sparse=True,
                 indexer=self.indexer,
+                topk_indices_buffer=self.topk_indices_buffer,
             )
         else:
             self.attn = StaticSinkMLAAttention(
@@ -546,6 +547,7 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
                 kv_b_proj=self.kv_b_proj,
                 use_sparse=True,
                 indexer=self.indexer,
+                topk_indices_buffer=self.topk_indices_buffer,
                 sink_len=self.param_sink_number,
             )
             self._register_sink_params(config)

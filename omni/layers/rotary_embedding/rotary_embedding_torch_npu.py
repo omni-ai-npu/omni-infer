@@ -42,12 +42,17 @@ class NPURotaryEmbedding(CachedCosSinMixin, RotaryEmbedding):
         base: float,
         is_neox_style: bool,
         dtype: torch.dtype,
+        init_cache: bool = True,
     ):
         super().__init__(head_size, rotary_dim, max_position_embeddings, base,
-                        is_neox_style, dtype)
+                        is_neox_style, dtype, init_cache=init_cache)
         self.max_len = self.max_position_embeddings
 
-        self._set_cos_sin_cache(device=current_platform.device_type, dtype=dtype)
+        if init_cache:
+            self._set_cos_sin_cache(
+                device=current_platform.device_type,
+                dtype=dtype,
+            )
 
     def _set_cos_sin_cache(self, device, dtype) -> None:
         """Compute the cos and sin cache separately.
@@ -196,4 +201,3 @@ class NPURotaryEmbedding(CachedCosSinMixin, RotaryEmbedding):
             key = torch.cat((key_rot, key_pass), dim=-1).reshape(key_shape)
 
         return query, key, cos_cache, sin_cache
-

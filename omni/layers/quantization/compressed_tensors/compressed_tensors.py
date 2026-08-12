@@ -73,6 +73,14 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
                     )
                 except Exception:
                     target_scheme_map[target]["input_activations"] = None
+                try:
+                    target_scheme_map[target]["output_activations"] = (
+                        QuantizationArgs.parse_obj(
+                            quant_config.get("output_activations")
+                        )
+                    )
+                except Exception:
+                    target_scheme_map[target]["output_activations"] = None
         return target_scheme_map
 
     def get_scheme(
@@ -94,7 +102,9 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
         scheme = self._get_scheme_from_parts(
             layer_name=layer_name,
             weight_quant=scheme_dict["weights"],
-            input_quant=scheme_dict["input_activations"])
+            input_quant=scheme_dict["input_activations"],
+            output_quant=scheme_dict.get("output_activations"),
+        )
         return scheme
 
     @classmethod
@@ -160,9 +170,15 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
         self,
         weight_quant: QuantizationArgs,
         input_quant: QuantizationArgs,
+        output_quant: QuantizationArgs | None = None,
         format: Optional[str] = None,
         layer_name: Optional[str] = None,
     ) -> "CompressedTensorsScheme":
+        if output_quant is not None:
+            raise NotImplementedError(
+                "NPU compressed-tensors does not support output activation "
+                "quantization."
+            )
         # use the per-layer format if defined, otherwise, use global format
         format = format if format is not None else self.quant_format
 

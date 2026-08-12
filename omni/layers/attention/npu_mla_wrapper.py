@@ -29,10 +29,23 @@ class NPUMultiHeadLatentAttentionWrapper(MultiHeadLatentAttentionWrapper):
         cache_config: CacheConfig | None = None,
         quant_config: QuantizationConfig | None = None,
         prefix: str = "",
+        skip_topk: bool = False,
     ) -> None:
-        super().__init__(hidden_size, num_heads, scale, qk_nope_head_dim,
-                         qk_rope_head_dim, v_head_dim, q_lora_rank, kv_lora_rank,
-                         mla_modules, cache_config, quant_config, prefix)
+        super().__init__(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            scale=scale,
+            qk_nope_head_dim=qk_nope_head_dim,
+            qk_rope_head_dim=qk_rope_head_dim,
+            v_head_dim=v_head_dim,
+            q_lora_rank=q_lora_rank,
+            kv_lora_rank=kv_lora_rank,
+            mla_modules=mla_modules,
+            cache_config=cache_config,
+            quant_config=quant_config,
+            prefix=prefix,
+            skip_topk=skip_topk,
+        )
         self.mla_sub_stream = named_stream("mla_sub_stream")
 
     def forward_oot(
@@ -89,7 +102,7 @@ class NPUMultiHeadLatentAttentionWrapper(MultiHeadLatentAttentionWrapper):
                 positions, q[..., self.qk_nope_head_dim :], k_pe
             )
 
-        if self.indexer and self.is_sparse:
+        if self.indexer and self.is_sparse and not self.skip_topk:
             forward_context = get_forward_context()
             attn_metadata = forward_context.attn_metadata
             if isinstance(attn_metadata, dict):
