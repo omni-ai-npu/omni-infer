@@ -68,7 +68,10 @@ def _make_kv_transfer_params(
 def _make_vllm_config(is_prefill, pp=1, dp=1, pcp=1, tp=1, dcp=1) -> VllmConfig:
     kv_role = "kv_producer" if is_prefill else "kv_consumer"
     return VllmConfig(
-        kv_transfer_config=KVTransferConfig(kv_role=kv_role),
+        kv_transfer_config=KVTransferConfig(
+            kv_role=kv_role,
+            kv_connector="LLMDataDistConnector",
+        ),
         parallel_config=ParallelConfig(
             pipeline_parallel_size=pp,
             data_parallel_size=dp,
