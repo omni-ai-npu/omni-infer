@@ -117,6 +117,9 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
     reorder_batch_threshold: int = 1
     supports_update_block_table: bool = False
 
+    # Bound each step by NPUModelRunner; None during dummy runs and capture.
+    runner_num_prompt_tokens: torch.Tensor | None = None
+
     def __init__(
         self,
         kv_cache_spec: AttentionSpec,
@@ -379,11 +382,20 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         num_decode_draft_tokens_cpu: torch.Tensor | None = None,
         fast_build: bool = False,
         num_prompt_tokens: torch.Tensor | None = None,
+        allow_runner_num_prompt_tokens: bool = True,
     ) -> NPUMomeAttentionMetadata:
         """
         Build Mome attention metadata from common attention metadata.
         """
         num_reqs = common_attn_metadata.num_reqs
+
+        # num_reqs is the padded count, matching compute_num_computed_tokens().
+        if (
+            num_prompt_tokens is None
+            and allow_runner_num_prompt_tokens
+            and self.runner_num_prompt_tokens is not None
+        ):
+            num_prompt_tokens = self.runner_num_prompt_tokens[:num_reqs]
 
         # Split decodes and prefills
         num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = split_decodes_and_prefills(
@@ -581,7 +593,13 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         num_accepted_tokens = torch.diff(
             m.query_start_loc
         )  # always use not-None num_accepted_tokens for graph capturing
-        return self.build(0, m, num_accepted_tokens=num_accepted_tokens)
+        # m carries fabricated seq_lens; build() must not use the bound buffer.
+        return self.build(
+            0,
+            m,
+            num_accepted_tokens=num_accepted_tokens,
+            allow_runner_num_prompt_tokens=False,
+        )
 
     def update_block_table(
         self,
@@ -678,3 +696,15 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                 ]
 
         return new_metadata
+
+
+def bind_num_prompt_tokens(attn_groups, num_prompt_tokens: torch.Tensor | None) -> None:
+    """Bind the prompt-length buffer on every MoME builder; None to unbind.
+
+    attn_groups nests three levels: kv-cache group, attention group, ubatch.
+    """
+    for groups in attn_groups:
+        for group in groups:
+            for builder in group.metadata_builders:
+                if isinstance(builder, NPUMomeAttentionMetadataBuilder):
+                    builder.runner_num_prompt_tokens = num_prompt_tokens

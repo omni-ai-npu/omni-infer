@@ -62,6 +62,7 @@ from vllm.v1.worker.cp_utils import (
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
 
+from omni_npu.attention.backends.mome import bind_num_prompt_tokens
 from omni_npu.compilation.acl_graph import (
     ACLGraphWrapper,
     consume_aclgraph_recapture,
@@ -885,6 +886,9 @@ class NPUModelRunner(GPUModelRunner):
                 of max_query_len. Used to profile attention workspace that
                 scales with context length.
         """
+        # Dummy runs skip _prepare_inputs, so the buffer would be stale here.
+        bind_num_prompt_tokens(self.attn_groups, None)
+
         mm_config = self.vllm_config.model_config.multimodal_config
         if mm_config and mm_config.mm_encoder_only:
             # The current dummy run only covers LM execution, so we can skip it.
@@ -1234,7 +1238,21 @@ class NPUModelRunner(GPUModelRunner):
     ]:
         (logits_indices, spec_decode_metadata) = super()._prepare_inputs(scheduler_output, num_scheduled_tokens)
 
+        self._refresh_mome_num_prompt_tokens()
+
         return (logits_indices, spec_decode_metadata)
+
+    def _refresh_mome_num_prompt_tokens(self) -> None:
+        """Publish this step's prompt lengths to the MoME builders.
+
+        Not gated on use_spec_decode: a prefill step has no drafts, but the
+        step after it must still recognise that the previous one was a prefill.
+        """
+        num_reqs = self.input_batch.num_reqs
+        self.num_prompt_tokens.np[:num_reqs] = self.input_batch.num_prompt_tokens[:num_reqs]
+        self.num_prompt_tokens.np[num_reqs:].fill(0)
+        self.num_prompt_tokens.copy_to_gpu()
+        bind_num_prompt_tokens(self.attn_groups, self.num_prompt_tokens.gpu)
 
     @init_config_decorator
     def initialize_kv_cache(
