@@ -27,6 +27,13 @@ OMNI_NPU_PACKAGES = [
     "omni_npu",
     *(f"omni_npu.{package}" for package in OMNI_NPU_SUBPACKAGES),
 ]
+OMNI_NPU_PACKAGE_DIR = {
+    "omni_npu": OMNI_NPU_ROOT,
+    **{
+        f"omni_npu.{package}": os.path.join(OMNI_NPU_ROOT, *package.split("."))
+        for package in OMNI_NPU_SUBPACKAGES
+    },
+}
 
 
 class PathManagerBase:
@@ -36,14 +43,17 @@ class PathManagerBase:
         self.torch_csrc_inc = os.path.join(torch_root, "include/torch/csrc/api/include")
         self.torch_lib = os.path.join(torch_root, "lib")
 
-        ascend_root = os.getenv("ASCEND_TOOLKIT_HOME")
+        ascend_root = os.getenv("ASCEND_TOOLKIT_HOME") or os.getenv("ASCEND_HOME_PATH")
         if ascend_root is None:
             raise EnvironmentError(
-                "Environment variable 'ASCEND_TOOLKIT_HOME' is not set. "
-                "Please configure the Ascend toolkit before building omni_infer."
+                "Environment variable 'ASCEND_TOOLKIT_HOME' or 'ASCEND_HOME_PATH' "
+                "is not set. Please configure the Ascend toolkit before building "
+                "omni_infer."
             )
         self.ascend_inc = os.path.join(ascend_root, "include")
         self.ascend_lib = os.path.join(ascend_root, "lib64")
+        self.torch_npu_inc_dirs = self._get_torch_npu_include_dirs()
+        self.torch_npu_lib_dirs = self._get_torch_npu_library_dirs()
 
     def check(self):
         if not os.path.isdir(self.torch_inc):
@@ -59,10 +69,11 @@ class PathManagerBase:
         include_dirs = [self.header, self.ascend_inc, self.torch_inc]
         if os.path.exists(self.torch_csrc_inc):
             include_dirs.append(self.torch_csrc_inc)
+        include_dirs.extend(self.torch_npu_inc_dirs)
         return include_dirs
 
     def get_library_dirs(self):
-        return [self.torch_lib, self.ascend_lib]
+        return [self.torch_lib, self.ascend_lib] + self.torch_npu_lib_dirs
 
     def get_extra_link_args(self):
         lib_dirs = self.get_library_dirs()
@@ -70,13 +81,43 @@ class PathManagerBase:
         link_args.extend([f"-Wl,-rpath={x}" for x in lib_dirs])
         return link_args
 
+    def _get_torch_npu_include_dirs(self):
+        try:
+            import torch_npu
+        except ImportError:
+            return []
+
+        torch_npu_root = os.path.dirname(torch_npu.__file__)
+        candidates = [
+            torch_npu_root,
+            os.path.join(torch_npu_root, "include"),
+            os.path.dirname(torch_npu_root),
+        ]
+        return [path for path in candidates if os.path.exists(path)]
+
+    def _get_torch_npu_library_dirs(self):
+        try:
+            import torch_npu
+        except ImportError:
+            return []
+
+        torch_npu_root = os.path.dirname(torch_npu.__file__)
+        candidates = [
+            os.path.join(torch_npu_root, "lib"),
+            torch_npu_root,
+        ]
+        return [path for path in candidates if os.path.exists(path)]
+
 
 class AllocatorPathManager(PathManagerBase):
     def __init__(self):
         super().__init__()
         self.header = os.path.join(OMNI_NPU_ROOT, "allocator")
         self.sources = [
-            os.path.join(self.header, "npu_mem_allocator.cpp")
+            os.path.join(self.header, "npu_mem_allocator.cpp"),
+        ]
+        self.uva_sources = [
+            os.path.join(self.header, "npu_view.cpp"),
         ]
         self.check()
 
@@ -88,7 +129,7 @@ class AllocatorPathManager(PathManagerBase):
                 "Move the contents of omni/src/omni_npu directly into omni "
                 "before building."
             )
-        for source in self.sources:
+        for source in self.sources + self.uva_sources:
             if not os.path.isfile(source):
                 raise FileNotFoundError(f"Extension source not found: {source}")
 
@@ -111,6 +152,21 @@ ext_modules = [
         ] + allocator_paths.get_extra_link_args(),
         library_dirs=allocator_paths.get_library_dirs(),
         libraries=["torch", "torch_python", "ascendcl"],
+    ),
+    Extension(
+        "omni_npu.allocator.npu_uva",
+        sources=allocator_paths.uva_sources,
+        include_dirs=allocator_paths.get_include_dirs(),
+        language="c++",
+        extra_compile_args=[
+            "-std=c++17",
+            "-pthread",
+        ],
+        extra_link_args=[
+            "-pthread",
+        ] + allocator_paths.get_extra_link_args(),
+        library_dirs=allocator_paths.get_library_dirs(),
+        libraries=["torch", "torch_python", "ascendcl", "torch_npu"],
     ),
 ]
 
@@ -141,7 +197,6 @@ except (ImportError, FileNotFoundError) as error:
 # ``import omni_npu`` stable while the physical source directory is ``omni``.
 setup(
     packages=OMNI_NPU_PACKAGES,
-    package_dir={"omni_npu": OMNI_NPU_ROOT},
+    package_dir=OMNI_NPU_PACKAGE_DIR,
     ext_modules=ext_modules,
 )
-

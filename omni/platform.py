@@ -113,6 +113,22 @@ class NPUPlatform(Platform):
     def check_if_supports_dtype(cls, dtype: torch.dtype):
         return
 
+    @classmethod
+    def is_uva_available(cls) -> bool:
+        alloc_conf = os.environ.get("PYTORCH_NPU_ALLOC_CONF", "")
+        if "pinned_mem_register:True" not in alloc_conf:
+            return False
+        if "pin_memory_expandable_segments:True" in alloc_conf:
+            return False
+
+        try:
+            if not torch.npu.is_available():
+                return False
+            from omni_npu.allocator import npu_uva  # noqa: F401
+        except Exception:
+            return False
+        return True
+
     def is_cuda_alike(self) -> bool:
         """Stateless version of [torch.cuda.is_available][]."""
         scope = traceback.format_stack()[-2]
