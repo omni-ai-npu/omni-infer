@@ -209,7 +209,7 @@ class RequestStatusPatch(VLLMPatch):
 
 
 if namelist_path:
-    from omni_npu.vllm_patches.patches.common.patch_serving_apc import OpenAIServingChatStreamAPCPatch
+    from omni_npu.vllm_patches.usefull_patch.patch_serving_apc import OpenAIServingChatStreamAPCPatch
     _ORIGINAL_CHAT_COMPLETION_STREAM_GENERATOR = OpenAIServingChatStreamAPCPatch.chat_completion_stream_generator
 
     @register_patch("ExpertIdServingChatStream", OpenAIServingChat)
@@ -241,7 +241,7 @@ if namelist_path:
 
 
 if namelist_path:
-    from omni_npu.vllm_patches.patches.common.patch_serving_apc import OpenAIServingCompletionStreamAPCPatch
+    from omni_npu.vllm_patches.usefull_patch.patch_serving_apc import OpenAIServingCompletionStreamAPCPatch
     _ORIGINAL_COMPLETION_STREAM_GENERATOR = OpenAIServingCompletionStreamAPCPatch.completion_stream_generator
 
     @register_patch("ExpertIdServingCompletionStream", OpenAIServingCompletion)
