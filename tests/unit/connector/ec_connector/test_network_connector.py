@@ -1758,68 +1758,73 @@ class TestWaitForPendingLoads:
             mock_broadcast.assert_called_once()
 
 
-# =================== Tests: has_caches =================== #
+# =================== Tests: has_cache_item =================== #
 
-class TestHasCaches:
-    def test_has_caches_producer_returns_false(self, producer_scheduler_connector, mock_request_3_hashes):
+class TestHasCacheItem:
+    def test_producer_returns_false(self, producer_scheduler_connector, mock_request_3_hashes):
         connector = producer_scheduler_connector
-        result = connector.has_caches(mock_request_3_hashes)
-        assert len(result) == 3
-        assert not any(result)
+        for feature in mock_request_3_hashes.mm_features:
+            assert connector.has_cache_item(feature.identifier) is False
 
-    def test_has_caches_updates_need_loads(self, producer_scheduler_connector, mock_request_3_hashes):
+    def test_updates_need_loads(self, producer_scheduler_connector, mock_request_3_hashes):
         connector = producer_scheduler_connector
-        connector.has_caches(mock_request_3_hashes)
         hashes = [f.identifier for f in mock_request_3_hashes.mm_features]
+        for h in hashes:
+            connector.has_cache_item(h)
         for h in hashes:
             assert h in connector._mm_hashes_need_loads
 
-    def test_has_caches_empty_request(self, producer_scheduler_connector, mock_request_empty):
-        connector = producer_scheduler_connector
-        result = connector.has_caches(mock_request_empty)
-        assert result == []
-
-    def test_has_caches_consumer_uses_ec_transfer_params(self, consumer_worker_connector):
+    def test_consumer_uses_endpoints_recorded_by_ensure_cache_available(
+            self, consumer_worker_connector):
         connector = consumer_worker_connector
         mm_hash = "consumer_check_hash"
         endpoint = "tcp://10.0.0.5:5000"
-        ec_transfer_params = {"mm_hash_endpoints": {mm_hash: endpoint}}
-        request = MockRequest("req-c", [mm_hash], ec_transfer_params=ec_transfer_params)
+        request = MockRequest("req-c", [mm_hash],
+                              ec_transfer_params={"mm_hash_endpoints": {mm_hash: endpoint}})
 
-        result = connector.has_caches(request)
+        connector.ensure_cache_available(request, 0)
 
-        assert result == [True]
+        assert connector.has_cache_item(mm_hash) is True
         assert connector._mm_hash_endpoints.get(mm_hash) == endpoint
 
-    def test_has_caches_consumer_none_transfer_params(self, consumer_worker_connector):
+    def test_consumer_none_transfer_params(self, consumer_worker_connector):
         connector = consumer_worker_connector
         mm_hash = "no_params_hash"
         request = MockRequest("req-no", [mm_hash], ec_transfer_params=None)
 
-        result = connector.has_caches(request)
-        assert result == [False]
+        connector.ensure_cache_available(request, 0)
 
-    def test_has_caches_consumer_ec_transfer_params_no_mm_hash_endpoints(
+        assert connector.has_cache_item(mm_hash) is False
+
+    def test_consumer_ec_transfer_params_no_mm_hash_endpoints(
             self, consumer_worker_connector):
         connector = consumer_worker_connector
         mm_hash = "hash_no_endpoints"
         request = MockRequest("req-d", [mm_hash], ec_transfer_params={})
 
-        result = connector.has_caches(request)
+        connector.ensure_cache_available(request, 0)
 
-        assert result == [False]
+        assert connector.has_cache_item(mm_hash) is False
         assert mm_hash not in connector._mm_hash_endpoints
 
-    def test_has_caches_consumer_ec_transfer_params_with_mm_hash_endpoints(
+    def test_consumer_ec_transfer_params_with_mm_hash_endpoints(
             self, consumer_worker_connector):
         connector = consumer_worker_connector
         mm_hash = "hash_with_ep"
         request = MockRequest("req-e", [mm_hash],
                               ec_transfer_params={"mm_hash_endpoints": {mm_hash: "tcp://1.2.3.4:5000"}})
 
-        result = connector.has_caches(request)
-        assert result == [True]
+        connector.ensure_cache_available(request, 0)
+
+        assert connector.has_cache_item(mm_hash) is True
         assert connector._mm_hash_endpoints[mm_hash] == "tcp://1.2.3.4:5000"
+
+    def test_unknown_identifier_is_registered_for_load(self, consumer_worker_connector):
+        # Registration happens even without a cache, as it did when the
+        # scheduler asked per request rather than per item.
+        connector = consumer_worker_connector
+        assert connector.has_cache_item("never_seen") is False
+        assert "never_seen" in connector._mm_hashes_need_loads
 
 
 # =================== Tests: build_connector_meta =================== #

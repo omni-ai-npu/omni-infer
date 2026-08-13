@@ -760,23 +760,34 @@ class ECNetworkConnector(ECConnectorBase):
             self._cache_store_bytes / MB,
         )
 
-    def has_caches(self, request: "Request") -> list[bool]:
-        result: list[bool] = []
+    def ensure_cache_available(
+        self, request: "Request", num_computed_tokens: int
+    ) -> bool:
+        # has_cache_item only receives an identifier, so the endpoints the
+        # encoder passed on the request are recorded here instead. The
+        # scheduler calls this first, before it asks about individual items.
+        if self.is_producer:
+            return True
+        ec_transfer_params = request.ec_transfer_params
+        if ec_transfer_params is None or ec_transfer_params.get("mm_hash_endpoints") is None:
+            logger.error("Cannot obtain ec_transfer_params from encoder.")
+            return True
+        mm_hash_endpoints = ec_transfer_params.get("mm_hash_endpoints")
         for feature in request.mm_features:
             mm_hash = feature.identifier
-            self._mm_hashes_need_loads.add(mm_hash)
-            if not self.is_producer:
-                ec_transfer_params: ECNetworkConnectorMetadata = request.ec_transfer_params
-                if ec_transfer_params is None or ec_transfer_params.get("mm_hash_endpoints") is None:
-                    logger.error("Cannot obtain ec_transfer_params from encoder.")
-                    result.append(False)
-                else:
-                    mm_hash_endpoints = ec_transfer_params.get("mm_hash_endpoints")
-                    self._mm_hash_endpoints[mm_hash] = mm_hash_endpoints.get(mm_hash)
-                    result.append(True)
-            else:
-                result.append(False)
-        return result
+            if mm_hash in mm_hash_endpoints:
+                self._mm_hash_endpoints[mm_hash] = mm_hash_endpoints.get(mm_hash)
+        return True
+
+    def has_cache_item(self, identifier: str) -> bool:
+        # The scheduler asks per media item since v0.25.1; before that it
+        # passed the whole request and got one bool per feature. Registering
+        # the hash for loading stays on this path, as it did then, even when
+        # no endpoint turns out to be known.
+        self._mm_hashes_need_loads.add(identifier)
+        if self.is_producer:
+            return False
+        return identifier in self._mm_hash_endpoints
 
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput,

@@ -543,18 +543,18 @@ class ECSharedMemoryConnector(ECConnectorBase):
 
         logger.debug("Stored EC shared memory raw tensor cache for hash %s", mm_hash)
 
-    def has_caches(self, request: "Request") -> list[bool]:
-        result = []
-        for feature in request.mm_features:
-            try:
-                mm_hash = feature.identifier
-                self._mm_hashes_need_loads.add(mm_hash)
-                logger.debug(f"ecconnector has caches:{mm_hash}")
-                shared_memory.SharedMemory(name=_mm_hash_to_sha256(mm_hash)).close()
-                result.append(True)
-            except FileNotFoundError:
-                result.append(False)
-        return result
+    def has_cache_item(self, identifier: str) -> bool:
+        # The scheduler asks per media item since v0.25.1; before that it
+        # passed the whole request and got one bool per feature. Registering
+        # the hash for loading stays on this path, as it did then, even when
+        # no cache turns out to exist.
+        self._mm_hashes_need_loads.add(identifier)
+        logger.debug(f"ecconnector has caches:{identifier}")
+        try:
+            shared_memory.SharedMemory(name=_mm_hash_to_sha256(identifier)).close()
+            return True
+        except FileNotFoundError:
+            return False
 
     def update_state_after_alloc(self, request: "Request", index: int) -> None:
         mm_hash = request.mm_features[index].identifier

@@ -1179,8 +1179,8 @@ class TestECSharedMemoryConnectorDelayedClose:
 class TestECSharedMemoryConnectorHasCaches:
     """Test cache existence checking."""
 
-    def test_has_caches_all_exist(self, mock_vllm_config, mock_request_with_3_mm):
-        """Test has_caches returns True when all caches exist."""
+    def test_has_cache_item_exists(self, mock_vllm_config, mock_request_with_3_mm):
+        """has_cache_item returns True when the shared memory block is there."""
         connector = ECSharedMemoryConnector(
             vllm_config=mock_vllm_config,
             role=ECConnectorRole.WORKER
@@ -1188,14 +1188,11 @@ class TestECSharedMemoryConnectorHasCaches:
 
         with patch('multiprocessing.shared_memory.SharedMemory') as mock_shm:
             mock_shm.return_value.close = MagicMock()
-            result = connector.has_caches(mock_request_with_3_mm)
+            for feature in mock_request_with_3_mm.mm_features:
+                assert connector.has_cache_item(feature.identifier) is True
 
-            # All should exist (mock returns successfully)
-            assert len(result) == 3
-            assert all(result)
-
-    def test_has_caches_none_exist(self, mock_vllm_config, mock_request_with_3_mm):
-        """Test has_caches returns False when caches don't exist."""
+    def test_has_cache_item_missing(self, mock_vllm_config, mock_request_with_3_mm):
+        """has_cache_item returns False when the block does not exist."""
         connector = ECSharedMemoryConnector(
             vllm_config=mock_vllm_config,
             role=ECConnectorRole.WORKER
@@ -1203,26 +1200,24 @@ class TestECSharedMemoryConnectorHasCaches:
 
         with patch('multiprocessing.shared_memory.SharedMemory') as mock_shm:
             mock_shm.side_effect = FileNotFoundError("Not found")
-            result = connector.has_caches(mock_request_with_3_mm)
+            for feature in mock_request_with_3_mm.mm_features:
+                assert connector.has_cache_item(feature.identifier) is False
 
-            # All should not exist
-            assert len(result) == 3
-            assert not any(result)
-
-    def test_has_caches_updates_need_loads(self, mock_vllm_config, mock_request_with_3_mm):
-        """Test has_caches updates _mm_hashes_need_loads."""
+    def test_has_cache_item_updates_need_loads(self, mock_vllm_config, mock_request_with_3_mm):
+        """The hash is registered for loading whether or not a cache exists."""
         connector = ECSharedMemoryConnector(
             vllm_config=mock_vllm_config,
             role=ECConnectorRole.WORKER
         )
+        hashes = [f.identifier for f in mock_request_with_3_mm.mm_features]
 
-        with patch('multiprocessing.shared_memory.SharedMemory'):
-            connector.has_caches(mock_request_with_3_mm)
-
-            # Should add all hashes to need_loads
-            hashes = [f.identifier for f in mock_request_with_3_mm.mm_features]
+        with patch('multiprocessing.shared_memory.SharedMemory') as mock_shm:
+            mock_shm.side_effect = FileNotFoundError("Not found")
             for h in hashes:
-                assert h in connector._mm_hashes_need_loads
+                connector.has_cache_item(h)
+
+        for h in hashes:
+            assert h in connector._mm_hashes_need_loads
 
 
 class TestECSharedMemoryConnectorStateManagement:
@@ -1512,19 +1507,16 @@ class TestECSharedMemoryConnectorEdgeCases:
             assert mm_hash in connector._lru
             assert connector._mm_hash_refcounts[mm_hash] == 1
 
-    def test_has_caches_empty_request(self, mock_vllm_config):
-        """Test has_caches with request that has no MM data."""
+    def test_has_cache_item_unknown_identifier(self, mock_vllm_config):
+        """An identifier with no shared memory block reports False."""
         connector = ECSharedMemoryConnector(
             vllm_config=mock_vllm_config,
             role=ECConnectorRole.WORKER
         )
 
-        mock_request = MockRequest("empty_req", [])
-
-        result = connector.has_caches(mock_request)
-
-        assert len(result) == 0
-        assert result == []
+        with patch('multiprocessing.shared_memory.SharedMemory') as mock_shm:
+            mock_shm.side_effect = FileNotFoundError("Not found")
+            assert connector.has_cache_item("never_seen") is False
 
     @patch('omni_npu.connector.ec_connector.shared_memory_connector.get_tensor_model_parallel_rank',
            return_value=0)
