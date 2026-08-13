@@ -1,22 +1,27 @@
 {
     "model_parallel_config": {
+        "ena_seq_parallel": true,
+        "ena_context_parallel": true,
         "layer_parallel_config": {
             "self_attn.o_proj": {
                 "tp_size_or_ranks": 4,
                 "x_transform": {
                     "type": "DP2TPAll2All",
+                    "tp_size_or_ranks": 4,
                     "dim": -1
                 },
                 "y_transform": {
                     "type": "ReduceScatter",
-                    "tp_size_or_ranks": 4
+                    "tp_size_or_ranks": 4,
+                    "dim": 0
                 }
             },
             "mlp.gate_up_proj": {
                 "tp_size_or_ranks": 4,
                 "x_transform": {
                     "type": "AllGather",
-                    "tp_size_or_ranks": 4
+                    "tp_size_or_ranks": 4,
+                    "dim": 0
                 }
             },
             "mlp.down_proj": {
@@ -26,7 +31,8 @@
                 },
                 "y_transform": {
                     "type": "ReduceScatter",
-                    "tp_size_or_ranks": 4
+                    "tp_size_or_ranks": 4,
+                    "dim": 0
                 }
             }
         }
@@ -34,7 +40,7 @@
     "operator_optimization_config": {
         "use_noncontiguous_kv": true,
         "enable_kv_rmsnorm_rope_cache": false,
-        "decode_moe_dispatch_combine": true,
+        "decode_moe_dispatch_combine": false,
         "kv_nz": false,
         "merge_q_kv_conv": false,
         "shared_expert_multi_stream": false,
@@ -45,6 +51,7 @@
         "use_aicpu_fa_tiling": true,
         "enable_mtp_invariant": false,
         "lmhead_fp32": false,
+        "enable_prefill_mla_absorb_pa": true,
         "enable_precision_strong_consistency": true
     }
 }

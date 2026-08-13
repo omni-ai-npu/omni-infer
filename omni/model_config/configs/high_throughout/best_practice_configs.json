@@ -264,6 +264,19 @@
     },
     {
         "model": "openpangu_v2_92B",
+        "hardware": "A5",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"openpangu_v2/openpangu_v2_bf16_a5_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a5_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a5_1p1d_d.json"
+            }
+        }
+    },    {
+        "model": "openpangu_v2_92B",
         "hardware": "A3",
         "precision": "fp16",
         "configs":{
@@ -377,8 +390,8 @@
                 "config_file":"openpangu_v2/openpangu_v2_bf16_a3_hybrid.json"
             },
             "1P1D": {
-                "prefill_config_file": "openpangu_v2/openpangu_v2_505b_bf16_a3_1p1d_p.json",
-                "decode_config_file": "openpangu_v2/openpangu_v2_505b_bf16_a3_1p1d_d.json"
+                "prefill_config_file": "openpangu_v2_vl/openpangu_v2_vl_505b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2_vl/openpangu_v2_vl_505b_bf16_a3_1p1d_d.json"
             },
             "2P2D": {
                 "prefill_config_file": "openpangu_v2/openpangu_v2_505b_bf16_a3_1p1d_p.json",
@@ -388,6 +401,94 @@
     },
     {
         "model": "openpangu_v2_omni_moe",
+        "hardware": "A3",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"openpangu_v2/openpangu_v2_bf16_a3_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "openpangu_v2_vl/openpangu_v2_omni_92b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2_vl/openpangu_v2_omni_92b_bf16_a3_1p1d_d.json"
+            },
+            "2P2D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_d.json"
+            },
+            "pd_elastic_scaling": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_xpyd_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_xpyd_d.json"
+            }
+        }
+    },
+    {
+        "model": "openpangu_v2_vl_moe",
+        "hardware": "A3",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"openpangu_v2/openpangu_v2_bf16_a3_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "openpangu_v2_vl/openpangu_v2_vl_92b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2_vl/openpangu_v2_vl_92b_bf16_a3_1p1d_d.json"
+            },
+            "2P2D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_d.json"
+            },
+            "pd_elastic_scaling": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_xpyd_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_xpyd_d.json"
+            }
+        }
+    },
+    {
+        "model": "openpangu_v2_omni_dsa_92B",
+        "hardware": "A3",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"openpangu_v2/openpangu_v2_bf16_a3_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "openpangu_v2_vl/openpangu_v2_omni_dsa_92b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2_vl/openpangu_v2_omni_dsa_92b_bf16_a3_1p1d_d.json"
+            },
+            "2P2D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_d.json"
+            },
+            "pd_elastic_scaling": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_xpyd_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_xpyd_d.json"
+            }
+        }
+    },
+    {
+        "model": "openpangu_v2_vl_dsa_92B",
+        "hardware": "A3",
+        "precision": "bf16",
+        "configs":{
+            "hybrid":{
+                "config_file":"openpangu_v2/openpangu_v2_bf16_a3_hybrid.json"
+            },
+            "1P1D": {
+                "prefill_config_file": "openpangu_v2_vl/openpangu_v2_vl_dsa_92b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2_vl/openpangu_v2_vl_dsa_92b_bf16_a3_1p1d_d.json"
+            },
+            "2P2D": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_1p1d_d.json"
+            },
+            "pd_elastic_scaling": {
+                "prefill_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_xpyd_p.json",
+                "decode_config_file": "openpangu_v2/openpangu_v2_92b_bf16_a3_xpyd_d.json"
+            }
+        }
+    },
+    {
+        "model": "openpangu_v2_omni_92B",
         "hardware": "A3",
         "precision": "bf16",
         "configs":{

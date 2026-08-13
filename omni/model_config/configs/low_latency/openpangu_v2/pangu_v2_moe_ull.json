@@ -13,7 +13,7 @@
         "use_noncontiguous_kv": true,
         "use_mome_inplace_update": true,
         "use_rope_fusion_op": true,
-        "use_mhc_fusion_op": true,
+        "use_mhc_fusion_op": false,
         "enable_multi_stream": true,
         "split_q_up_in_multistream": true,
         "disable_npu_top_k_top_p_sample": true,

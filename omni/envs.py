@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     OMNI_REASONING_CONFIG: Optional[str]
     OMNI_STRUCTURED_OUTPUT_CONFIG: Optional[str]
     OMNI_PANGU_TOOL_CALL_ENDS_THINKING: bool
+    OMNI_ENABLE_MAX_TOKENS_EXCLUDE_REASONING: bool
     # MoE / sampling
     OMNI_MAX_DISPATCH_COMBINE_THRESHOLD: int
     OMNI_BEST_EP: bool
@@ -339,6 +340,20 @@ env_variables: Dict[str, Callable[[], Any]] = {
         ["PANGU_TOOL_CALL_ENDS_THINKING"],
         False,
         _as_bool,
+    ),
+
+    # When enabled, ``max_tokens`` limits only the content portion of the
+    # output (not the reasoning/thinking portion). Exact ``"1"`` enables the
+    # behavior to preserve the pre-OMNI contract of
+    # ENABLE_MAX_TOKENS_EXCLUDE_REASONING; other values leave the default
+    # (total-output) max_tokens accounting unchanged.
+    # Consumers: usefull_patch/patch_scheduler.py.
+    "OMNI_ENABLE_MAX_TOKENS_EXCLUDE_REASONING":
+    lambda: get_env_with_fallback(
+        "OMNI_ENABLE_MAX_TOKENS_EXCLUDE_REASONING",
+        ["ENABLE_MAX_TOKENS_EXCLUDE_REASONING"],
+        False,
+        _as_exact_one,
     ),
 
     # =========================================================================

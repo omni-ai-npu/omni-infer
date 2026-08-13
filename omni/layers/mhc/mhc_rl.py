@@ -66,6 +66,19 @@ class NPUmHCRL(torch.nn.Module):
             torch.empty(self.hidden_size * self.num_stream, dtype=torch.float32)
         )
 
+    def post_weight_load(self) -> None:
+        # Match the training path by rounding loaded weights to the model dtype once,
+        # while keeping FP32 parameter storage for the MHC computation. For a BF16
+        # checkpoint and FP16 model dtype: BF16 load -> FP32 -> FP16 round -> FP32.
+        parameters = [self.phi.weight, self.norm_gamma]
+        if self.pre_only:
+            parameters.extend([self.branch_alpha_pre, self.branch_beta_pre])
+        else:
+            parameters.extend([self.branch_alpha, self.branch_beta])
+        with torch.no_grad():
+            for parameter in parameters:
+                parameter.copy_(parameter.to(model_extra_config.dtype))
+
     def _mhc_pre_naive(self, hidden_states: torch.Tensor):
         shape, dtype = hidden_states.size(), hidden_states.dtype
         hidden_states = hidden_states.flatten(-2).float()
@@ -133,13 +146,22 @@ class NPUmHCRL(torch.nn.Module):
             dtype = hidden_states.dtype
             hidden_states = hidden_states.view(-1, self.hidden_size * self.num_stream)
             hidden_states = hidden_states.float()
-            rsqrt = torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.hc_eps)
-    
-            hpre_weight = self.phi(
-                hidden_states *
-                rsqrt *
-                self.norm_gamma.view(1, self.hidden_size * self.num_stream),
-            )[0]
+            if model_extra_config.operator_opt_config.enable_precision_strong_consistency:
+                normalized_hidden_states, _ = torch_npu.npu_rms_norm(
+                    hidden_states,
+                    self.norm_gamma.view(self.hidden_size * self.num_stream),
+                    self.hc_eps,
+                )
+                hpre_weight = self.phi(normalized_hidden_states)[0]
+            else:
+                rsqrt = torch.rsqrt(
+                    hidden_states.square().mean(-1, keepdim=True) + self.hc_eps
+                )
+                hpre_weight = self.phi(
+                    hidden_states
+                    * rsqrt
+                    * self.norm_gamma.view(1, self.hidden_size * self.num_stream),
+                )[0]
 
             hpre_weight = torch.nn.functional.sigmoid(
                 hpre_weight * self.branch_alpha_pre
@@ -159,17 +181,24 @@ class NPUmHCRL(torch.nn.Module):
             hidden_states = hidden_states.view(-1, self.num_stream, self.hidden_size)
 
             if not self.on_ascend950:
-                phi_weight = self.phi.weight * self.norm_gamma
+                if model_extra_config.operator_opt_config.use_batch_invariant_op:
+                    phi_weight = self.phi.weight
+                    gamma = self.norm_gamma.view(self.num_stream, self.hidden_size)
+                    out_flag = 1
+                else:
+                    phi_weight = self.phi.weight * self.norm_gamma
+                    gamma = None
+                    out_flag = 0
                 hidden_states, h_post, h_res, _, _, _ = \
                     torch.ops.custom.npu_manifold_constrained_hyper_connection_pre(
                         hidden_states,
                         phi_weight,
                         self.branch_alpha,
                         self.branch_beta,
-                        gamma=None,
+                        gamma=gamma,
                         norm_eps=self.hc_eps,
                         hc_eps=self.hc_eps,
-                        out_flag=1 if model_extra_config.operator_opt_config.use_batch_invariant_op else 0,
+                        out_flag=out_flag,
                 )
             else:
                 hidden_states, h_post, h_res, _, _, _ = torch_npu.npu_mhc_pre(

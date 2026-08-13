@@ -11,6 +11,8 @@ import torch.nn as nn
 from functools import wraps
 from unittest.mock import patch
 
+import vllm.envs as envs
+
 from vllm.compilation.cuda_graph import CUDAGraphStat
 from vllm.config import (
     CompilationMode,
@@ -46,6 +48,7 @@ from vllm.v1.kv_cache_interface import (
 )
 from vllm.v1.outputs import (
     AsyncModelRunnerOutput,
+    DraftTokenIds,
     ModelRunnerOutput,
 )
 from vllm.v1.spec_decode.eagle import EagleProposer
@@ -180,6 +183,9 @@ class NPUModelRunner(GPUModelRunner):
 
         self._is_mm_encoder_only = False
 
+        self.is_debugging_mode = envs.VLLM_LOGGING_LEVEL == "DEBUG"
+        self.exec_count = 0
+
         # TODO: penalty cache feature need to adapt vllm 0.25.1
         # self._init_npu_input_batch()
 
@@ -292,6 +298,9 @@ class NPUModelRunner(GPUModelRunner):
         forward_context = get_forward_context()
         forward_context.capturing = False
         self._capture_dp_pad_target(forward_context)
+        if self.is_debugging_mode:
+            self.exec_count += 1
+            logger.debug(f"Executing model forward {self.exec_count=}")
         return self.model(
             input_ids=input_ids,
             positions=positions,
@@ -1152,6 +1161,9 @@ class NPUModelRunner(GPUModelRunner):
                 # Idle DP ranks must use the same LMHead all-gather pad target
                 # as the active rank before entering dummy compute_logits.
                 self._capture_dp_pad_target(forward_context)
+                if self.is_debugging_mode:
+                    self.exec_count += 1
+                    logger.debug(f"Executing dummy forward {self.exec_count=}")
                 outputs = self.model(
                     input_ids=input_ids,
                     positions=positions,
@@ -1332,3 +1344,34 @@ class NPUModelRunner(GPUModelRunner):
             if has_kv_transfer_group():
                 logger.info(f"reregister_kv_caches")
                 get_kv_transfer_group().register_kv_caches(self.kv_caches_dict)
+
+    def take_draft_token_ids(self) -> DraftTokenIds | None:
+        if not self.num_spec_tokens or not self._draft_token_req_ids:
+            return None
+
+        draft_token_ids, req_ids = self._get_draft_token_ids_cpu()
+        filtered_req_ids = []
+        filtered_draft_token_ids = []
+        for req_id, tokens in zip(req_ids, draft_token_ids):
+            if any(token_id < 0 for token_id in tokens):
+                # Can fire every decode step; keep alert once-per-process and
+                # leave per-request detail at debug (warning_once is lru_cached
+                # on message args).
+                logger.warning_once(
+                    "Dropping draft tokens containing negative ids; the "
+                    "affected requests fall back to normal decode for that "
+                    "step. Enable debug logging for per-request details. "
+                    "This warning is logged only once."
+                )
+                logger.debug(
+                    "Dropping invalid draft token id(s) for request %s: %s",
+                    req_id,
+                    tokens,
+                )
+                continue
+            filtered_req_ids.append(req_id)
+            filtered_draft_token_ids.append(tokens)
+
+        if not filtered_req_ids:
+            return None
+        return DraftTokenIds(filtered_req_ids, filtered_draft_token_ids)

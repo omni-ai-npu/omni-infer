@@ -184,7 +184,7 @@ class ModelOperatorOptConfig:
 
     gmm_fr_token_threshold: int = 0 # 开启gmm_fr的token数阈值，小于等于阈值时开启，默认不开启
     if envs.OMNI_ENABLE_OMNI_CACHE:
-        moe_seq_split_length: int = 128 * 10 # omni-cache 开启时使用该配置
+        moe_seq_split_length: int = 128 * 12 # omni-cache 开启时使用该配置
     else:
         moe_seq_split_length: int = 10**9 # 开启chunk moe的token数阈值，大于阈值会触发chunk moe, 默认不开启
     use_rope_fusion_op: bool = False # 是否使用npu_apply_rotary_pos_emb融合算子，默认不开启，CANN>=9.0.0可开启

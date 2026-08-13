@@ -7,7 +7,7 @@
         }
     },
     "operator_optimization_config": {
-        "moe_comm_strategy": "all2allv",
+        "moe_comm_strategy": "allgather_reducescatter",
         "enable_mome_sp": true,
         "use_aicpu_fa_tiling": true,
         "use_noncontiguous_kv": true,
