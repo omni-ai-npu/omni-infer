@@ -13,8 +13,8 @@ export PYTHONPATH="${OMNIINFER_ROOT}/tools:${PYTHONPATH}"
 export OMNI_TRACE_OUTPUT_DIRECTORY=/data/user/trace/
 
 # 4. 指定运行节点类型（encode/prefill/decode三选一）
-export OMNI_ROLE="encode"
-export OMNI_ROLE="prefill"
-export OMNI_ROLE="decode"
+export OMNI_PD_ROLE="encode"
+export OMNI_PD_ROLE="prefill"
+export OMNI_PD_ROLE="decode"
 # ==============================================================
 ```

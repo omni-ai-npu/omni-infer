@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     # Mock-compatible device topology
     OMNI_NO_NPU_MOCK: bool
     # Profiler
-    OMNI_PROFILE_NAMELIST: Optional[str]
+    OMNI_TRACE_OUTPUT_DIRECTORY: Optional[str]
     OMNI_PROFILE_TOKEN_THRESHOLD: Optional[int]
     OMNI_PROFILE_STOP_STEP: int
     OMNI_ENABLE_PREFILL_PROFILER: bool
@@ -222,18 +222,21 @@ env_variables: Dict[str, Callable[[], Any]] = {
     #   A) worker-side NPU profiler:
     #      - manual: unset PROFILER_TOKEN_THRESHOLD, use /start_profile API
     #      - auto: set PROFILER_TOKEN_THRESHOLD + other OMNI env vars below
-    #   B) omni-trace dynamic wrapper (the *NAMELIST* var), independent of (A).
+    #   B) omni-trace dynamic wrapper, enabled by
+    #      OMNI_TRACE_OUTPUT_DIRECTORY and independent of (A).
     # =========================================================================
 
-    # Mechanism B (omni-trace): path to a YAML file listing functions to wrap.
-    # YAML schema: {type: torchnpu|timer|viztracer|marker, base_params: {...},
-    #               targets: [{module, class_name?, function_name, ...}]}.
-    # Required but not sufficient: the ProfilerDynamicPatch must also be
-    # enabled via OMNI_VLLM_PATCHES (either "ALL" or explicitly listed).
-    # Missing file -> RuntimeError at patch init.
-    # Consumers: patch_trace.py:28,34-63,180-276.
-    "OMNI_PROFILE_NAMELIST":
-    lambda: get_env_with_fallback("OMNI_PROFILE_NAMELIST", ["PROFILING_NAMELIST"], None),
+    # Enables the usefull_patch omni-trace path and selects the directory for
+    # per-process trace logs. Unset/None preserves its disabled-by-default
+    # behavior; patch_trace also treats an empty or whitespace-only value as
+    # disabled. Consumers capture the value when patch_trace.py and
+    # omni_trace.utils are imported, so later process-environment changes are
+    # not observed by those consumers.
+    # Consumers: vllm_patches/usefull_patch/patch_trace.py;
+    # tools/omni_trace/utils.py.
+    "OMNI_TRACE_OUTPUT_DIRECTORY":
+    lambda: get_env_with_fallback(
+        "OMNI_TRACE_OUTPUT_DIRECTORY", None, None),
 
     # Mechanism A (auto mode only): token-count trigger threshold. Non-None
     # enables auto profiling AND disables vLLM's manual profile() API.
@@ -457,9 +460,9 @@ env_variables: Dict[str, Callable[[], Any]] = {
 
     # Comma-separated allowlist of patch names to apply, or "ALL" (or empty)
     # to apply every registered patch. Unknown names are logged and skipped.
-    # Note: ProfilerDynamicPatch has a secondary gate — even when this var
-    # enables it, it only loads its YAML when OMNI_PROFILE_NAMELIST is set.
-    # Consumers: vllm_patches/patch_manager.py:50-75; patch_trace.py:44-54.
+    # The dynamic omni-trace wrapper is gated independently by
+    # OMNI_TRACE_OUTPUT_DIRECTORY.
+    # Consumer: vllm_patches/patch_manager.py:50-75.
     "OMNI_VLLM_PATCHES":
     lambda: get_env_with_fallback(
         "OMNI_VLLM_PATCHES", ["OMNI_NPU_VLLM_PATCHES"], ""),

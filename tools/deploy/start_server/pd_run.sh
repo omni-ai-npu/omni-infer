@@ -285,9 +285,8 @@ export VLLM_WORKER_MULTIPROC_METHOD
 export SERVER_OFFSET
 export PYTHONPATH=/usr/local/Ascend/CANN-7.7/toolkit/python/site-packages:$PYTHONPATH
 export USING_LCCL_COM=0
-# Turn on these two variables to enable proc_bind
+# Set this variable to enable proc_bind.
 # export CPU_AFFINITY_CONF=2
-# export OMNI_PROFILE_NAMELIST=/workspace/omniinfer/omni/tools/profiler/proc_bind/proc_marker_namelist.yml
 
 if [ -n "$HCCL_OP_EXPANSION_MODE" ]; then
     export HCCL_OP_EXPANSION_MODE

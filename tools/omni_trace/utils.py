@@ -12,6 +12,8 @@ from pathlib import Path
 import socket
 import requests
 
+from omni_npu import envs
+
 
 _trace_mm_hash_to_req_id: contextvars.ContextVar[dict[str, str] | None] = (
     contextvars.ContextVar("_trace_mm_hash_to_req_id", default=None)
@@ -72,4 +74,4 @@ def get_ip():
         return f"Error getting local IP: {e}"
 
 ip_str = get_ip()
-trace_output_directory = os.getenv("OMNI_TRACE_OUTPUT_DIRECTORY")
+trace_output_directory = envs.OMNI_TRACE_OUTPUT_DIRECTORY

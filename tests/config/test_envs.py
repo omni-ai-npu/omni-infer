@@ -17,7 +17,7 @@ def _clean_env(monkeypatch):
     for k in list(os.environ):
         if (k.startswith("OMNI_") or k in {
                 "ROLE", "PREFILL_POD_NUM", "DECODE_POD_NUM",
-                "ENABLE_OMNI_CACHE", "NO_NPU_MOCK", "PROFILING_NAMELIST",
+                "ENABLE_OMNI_CACHE", "NO_NPU_MOCK",
                 "PROFILER_TOKEN_THRESHOLD", "REPETITION_DETECTION_CONFIG",
                 "REASONING_CONFIG", "STRUCTURED_OUTPUT_CONFIG",
                 "PANGU_TOOL_CALL_ENDS_THINKING",
@@ -200,7 +200,8 @@ def test_dir_lists_all_registered():
     for must in {"OMNI_PD_ROLE", "OMNI_PD_PREFILL_POD_NUM", "OMNI_ENABLE_OMNI_CACHE",
                  "OMNI_VLLM_PATCHES", "OMNI_CONFIG_SUMMARY",
                  "OMNI_DUMP_ENABLE", "OMNI_HEALTH_HANG_SEC",
-                 "OMNI_METRICS_WORKER_MEM_EVERY"}:
+                 "OMNI_METRICS_WORKER_MEM_EVERY",
+                 "OMNI_TRACE_OUTPUT_DIRECTORY"}:
         assert must in names
 
 
@@ -234,8 +235,32 @@ def test_default_none_for_unset_path_vars():
     # Path and profiler defaults preserve their original unset semantics.
     assert envs.OMNI_KV_DUMP_PATH == ""
     assert envs.OMNI_CUSTOM_MODEL_CONFIG_PATH is None
-    assert envs.OMNI_PROFILE_NAMELIST is None
+    assert envs.OMNI_TRACE_OUTPUT_DIRECTORY is None
     assert envs.OMNI_PROFILE_TOKEN_THRESHOLD is None
+
+
+def test_removed_profile_namelist_is_not_registered():
+    import omni_npu.envs as envs
+
+    assert "OMNI_PROFILE_NAMELIST" not in dir(envs)
+    with pytest.raises(AttributeError):
+        _ = envs.OMNI_PROFILE_NAMELIST
+
+
+def test_trace_output_directory_is_lazy(monkeypatch):
+    import omni_npu.envs as envs
+
+    monkeypatch.setenv("OMNI_TRACE_OUTPUT_DIRECTORY", "/tmp/omni-trace")
+    assert envs.OMNI_TRACE_OUTPUT_DIRECTORY == "/tmp/omni-trace"
+
+    monkeypatch.setenv("OMNI_TRACE_OUTPUT_DIRECTORY", "/tmp/omni-trace-next")
+    assert envs.OMNI_TRACE_OUTPUT_DIRECTORY == "/tmp/omni-trace-next"
+
+    monkeypatch.setenv("OMNI_TRACE_OUTPUT_DIRECTORY", "")
+    assert envs.OMNI_TRACE_OUTPUT_DIRECTORY == ""
+
+    monkeypatch.setenv("OMNI_TRACE_OUTPUT_DIRECTORY", "   ")
+    assert envs.OMNI_TRACE_OUTPUT_DIRECTORY == "   "
 
 
 def test_custom_model_config_path_legacy_fallback(monkeypatch, caplog):
