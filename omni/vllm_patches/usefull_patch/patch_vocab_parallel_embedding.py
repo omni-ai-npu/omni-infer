@@ -4,6 +4,7 @@
 import torch
 import torch_npu
 
+from vllm.config import get_current_vllm_config_or_none
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     UnquantizedEmbeddingMethod,
@@ -19,13 +20,24 @@ _orig_process_weights_after_loading = (
 )
 
 
+def _has_tied_word_embeddings() -> bool:
+    vllm_config = get_current_vllm_config_or_none()
+    if vllm_config is None:
+        return False
+    hf_config = vllm_config.model_config.hf_config
+    return bool(getattr(hf_config, "tie_word_embeddings", False))
+
+
 def _patched_process_weights_after_loading(
     self, layer: torch.nn.Module
 ) -> None:
     _orig_process_weights_after_loading(self, layer)
-    # Dummy may skip weight_loader; NZ when not fp32; skip if already marked.
+    # Dummy may skip weight_loader; NZ when not fp32; skip if already marked or tied embeded.
     is_lm_head = isinstance(layer, (ParallelLMHead, NPUParallelLMHead))
-    can_apply_nz = not model_extra_config.operator_opt_config.lmhead_fp32
+    can_apply_nz = (
+        not model_extra_config.operator_opt_config.lmhead_fp32
+        and not _has_tied_word_embeddings()
+    )
     nz_not_applied = not getattr(layer.weight, "is_weight_nz", False)
     if is_lm_head and can_apply_nz and nz_not_applied:
         layer.weight.data = torch_npu.npu_format_cast(
