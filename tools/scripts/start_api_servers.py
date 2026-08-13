@@ -32,6 +32,55 @@ import shutil
 terminal_width = shutil.get_terminal_size().columns
 
 
+def prepare_ub_endpoint_configs():
+    """Regenerate the UB endpoint configs the hixl backend links through.
+
+    Every launch path reaches this script, so generating here covers them all; doing it on
+    every start also keeps the configs from going stale after a device reallocation. Gated
+    on the same switch the consumer reads, so platforms without UB (A2/A3) skip it.
+
+    The resolved directory is written back to os.environ so the api server processes, which
+    read the same variable, agree with the generator. That only reaches this process tree:
+    workers brought up by a separate runtime (Ray actors, other nodes) do not inherit it and
+    fall back to /etc/hixlep, so keep that path writable when running under such a runtime.
+    """
+    if os.getenv("HIXL_LOCAL_COMM_RES_ENABLE", "false").lower() in ("0", "false", "no"):
+        print("HIXL_LOCAL_COMM_RES_ENABLE off, skipping UB endpoint config generation")
+        return
+
+    endpoint_dir = os.getenv("HIXLP_ENDPOINT_PATH", "/etc/hixlep")
+    try:
+        os.makedirs(endpoint_dir, exist_ok=True)
+        writable = os.access(endpoint_dir, os.W_OK)
+    except OSError:
+        writable = False
+    if not writable:
+        # Containers running as a non-root user cannot write /etc
+        endpoint_dir = os.path.join(os.path.expanduser("~"), ".hixlep")
+        print(f"default endpoint dir not writable, using {endpoint_dir}")
+        os.makedirs(endpoint_dir, exist_ok=True)
+    os.environ["HIXLP_ENDPOINT_PATH"] = endpoint_dir
+    # Print after resolution: the value the workers will actually read. Printing the
+    # requested value before the fallback would name a directory nothing ends up using.
+    print(f"HIXLP_ENDPOINT_PATH: {endpoint_dir}")
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    generator = os.path.join(script_dir, "generate_ep_server_pod.py")
+    # Serialise the roles that share a container
+    lock_path = os.path.join(endpoint_dir, ".generate.lock")
+    with open(lock_path, "w") as lock:
+        try:
+            import fcntl
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        ret = subprocess.run([sys.executable, generator, "--pod"]).returncode
+    if ret != 0:
+        raise RuntimeError(
+            f"failed to generate endpoint configs in {endpoint_dir}, "
+            f"the hixl link would fail at runtime")
+
+
 def is_port_available(port, host="0.0.0.0"):
     """Check if a port is available on the specified host."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -325,6 +374,8 @@ if __name__ == "__main__":
         raise ValueError(
             "Number of DP should be larger or eaqual to number of API servers."
         )
+
+    prepare_ub_endpoint_configs()
 
     processes, process_manager, _ = start_single_node_api_servers(
         num_servers=args.num_servers,
