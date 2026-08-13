@@ -101,7 +101,12 @@ class Hifloat8Config(QuantizationConfig):
         if custom_model_enabled:
             return self.get_quant_method_custom(layer, prefix)
 
-        raise NotImplementedError("Hifloat8 quantization method is only implemented for custom models. Please set VLLM_PLUGINS environment variable to include \"omni_custom_models\" to enable it, or implement the method for non-custom models.")
+        raise NotImplementedError(
+            "Hifloat8 quantization method is only implemented for custom models. "
+            'Please set VLLM_PLUGINS environment variable to include '
+            '"omni_custom_models" to enable it, '
+            "or implement the method for non-custom models."
+        )
 
 
 class Hifloat8LinearMethod(LinearMethodBase):
@@ -110,7 +115,10 @@ class Hifloat8LinearMethod(LinearMethodBase):
     def __init__(self, quant_config: Hifloat8Config):
         self.quant_config = quant_config
 
-    def create_weights(self, layer, input_size_per_partition, output_partition_sizes, input_size, output_size, params_dtype, **extra_weight_attrs):
+    def create_weights(
+        self, layer, input_size_per_partition, output_partition_sizes,
+        input_size, output_size, params_dtype, **extra_weight_attrs
+    ):
         output_size_per_partition = sum(output_partition_sizes)
         weight_loader = extra_weight_attrs.get("weight_loader")
         layer.input_size_per_partition = input_size_per_partition
@@ -131,7 +139,12 @@ class Hifloat8LinearMethod(LinearMethodBase):
 
     def process_weights_after_loading(self, layer):
         layer.weight = torch.nn.Parameter(layer.weight.data.t().contiguous(), requires_grad=False)
-        layer.weight_scale = torch.nn.Parameter(torch_npu.npu_trans_quant_param(layer.weight_scale.data.squeeze(-1).float()), requires_grad=False)
+        layer.weight_scale = torch.nn.Parameter(
+            torch_npu.npu_trans_quant_param(
+                layer.weight_scale.data.squeeze(-1).float()
+            ),
+            requires_grad=False
+        )
 
     def apply(self, layer, x, bias=None):
         layer_key = getattr(layer, "prefix", "") or ""
@@ -159,7 +172,10 @@ class Hifloat8FCLinearMethod(FlashCommLinearMethodBase):
     def __init__(self, quant_config: Hifloat8Config):
         self.quant_config = quant_config
 
-    def create_weights(self, layer, input_size_per_partition, output_partition_sizes, input_size, output_size, params_dtype, **extra_weight_attrs):
+    def create_weights(
+        self, layer, input_size_per_partition, output_partition_sizes,
+        input_size, output_size, params_dtype, **extra_weight_attrs
+    ):
         output_size_per_partition = sum(output_partition_sizes)
         weight_loader = extra_weight_attrs.get("weight_loader")
         layer.input_size_per_partition = input_size_per_partition
@@ -187,10 +203,17 @@ class Hifloat8FCLinearMethod(FlashCommLinearMethodBase):
 
     def process_weights_after_loading(self, layer):
         layer.weight = torch.nn.Parameter(layer.weight.data.t().contiguous(), requires_grad=False)
-        layer.weight_scale = torch.nn.Parameter(torch_npu.npu_trans_quant_param(layer.weight_scale.data.squeeze(-1).float()), requires_grad=False)
+        layer.weight_scale = torch.nn.Parameter(
+            torch_npu.npu_trans_quant_param(
+                layer.weight_scale.data.squeeze(-1).float()
+            ),
+            requires_grad=False
+        )
 
     def apply(self, layer, x, bias=None, x_transform=None, x_dim=0, throw_dequant=False):
-        from omni_npu.v1.distributed.communication_op_ext import layer_parallel_all_gather, layer_parallel_all2all_single
+        from omni_npu.v1.distributed.communication_op_ext import (
+            layer_parallel_all_gather, layer_parallel_all2all_single
+        )
 
         layer_key = getattr(layer, "prefix", "") or ""
         if bias is not None:
@@ -226,7 +249,10 @@ class Hifloat8MlpMethod:
         self.quant_config = quant_config
 
     def process_weights_after_loading(self, layer):
-        layer.gate_up_proj.weight_scale = torch.nn.Parameter(layer.gate_up_proj.weight_scale.data.float(), requires_grad=False)
+        layer.gate_up_proj.weight_scale = torch.nn.Parameter(
+            layer.gate_up_proj.weight_scale.data.float(),
+            requires_grad=False
+        )
 
     def apply_quant(self, x, x_transform=None, stream_label=None):
         from omni_npu.v1.layers.utils import get_npu_execution_type
@@ -369,8 +395,18 @@ class Hifloat8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         layer.w13_weight = torch.nn.Parameter(layer.w13_weight.transpose(1, 2).contiguous(), requires_grad=False)
         layer.w2_weight = torch.nn.Parameter(layer.w2_weight.transpose(1, 2).contiguous(), requires_grad=False)
-        layer.w13_weight_scale = torch.nn.Parameter(torch_npu.npu_trans_quant_param(layer.w13_weight_scale.data.squeeze(-1).float()), requires_grad=False)
-        layer.w2_weight_scale = torch.nn.Parameter(torch_npu.npu_trans_quant_param(layer.w2_weight_scale.data.squeeze(-1).float()), requires_grad=False)
+        layer.w13_weight_scale = torch.nn.Parameter(
+            torch_npu.npu_trans_quant_param(
+                layer.w13_weight_scale.data.squeeze(-1).float()
+            ),
+            requires_grad=False
+        )
+        layer.w2_weight_scale = torch.nn.Parameter(
+            torch_npu.npu_trans_quant_param(
+                layer.w2_weight_scale.data.squeeze(-1).float()
+            ),
+            requires_grad=False
+        )
         layer.ensure_moe_quant_config_init()
 
     def apply(

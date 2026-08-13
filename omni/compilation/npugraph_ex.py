@@ -67,7 +67,7 @@ class NpuGraphExAdaptor(CompilerInterface):
             config.static_kernel_compile = True
             # Control whether to enable super kernel optimize
             if npugraph_ex_config.get("super_kernel_optimize", False):
-                config.super_kernel_optimize= True
+                config.super_kernel_optimize = True
                 config.super_kernel_optimize_options = {
                     "dcci_before_kernel_start": [
                         ".*GroupedMatmul.*",

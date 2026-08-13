@@ -18,7 +18,7 @@ from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.linear import ReplicatedLinear
 from vllm.model_executor.layers.attention.mla_attention import MLACommonMetadata
-from omni_npu.attention.backends.mome import NPUMomeAttentionMetadata, FlashComm2Metadata
+from omni_npu.attention.backends.mome import NPUMomeAttentionMetadata
 from vllm.logger import init_logger
 
 from omni_npu.v1.utils import current_stream, on_ascend950
@@ -29,7 +29,7 @@ from omni_npu.v1.layers.linear import (
     ShardedLinear,
 )
 from omni_npu.model_config.config_loader.loader import model_extra_config
-from omni_npu.attention.backends.utils import SPManager, DummySPManager
+from omni_npu.attention.backends.utils import SPManager, DummySPManager, conv_sp
 from omni_npu.layers.mome.npu_mome import ColumnParallelMOME
 from omni_npu.layers.attention.npu_sparse_attentions import (
     MLASWAAttention,
@@ -250,7 +250,7 @@ class NPUPanguIndexer(torch.nn.Module):
         weights: torch.Tensor,
         attn_metadata: MLACommonMetadata,
         kv_cache: tuple[torch.Tensor, torch.Tensor],
-    ) -> Union[torch.Tensor, bool]:
+    ) -> torch.Tensor:
         if attn_metadata.prefill is not None:
             metadata = attn_metadata.prefill
         else:
@@ -307,6 +307,11 @@ class NPUPanguIndexer(torch.nn.Module):
                 sparse_count=self.index_topk,
                 sparse_mode=3,
             )
+        else:
+            raise RuntimeError(
+                f"Unsupported cache_dtype '{self.cache_config.cache_dtype}' "
+                f"for quant lightning indexer."
+            )
 
     def _apply_lightning_indexer_cp_unquant(
         self,
@@ -359,6 +364,11 @@ class NPUPanguIndexer(torch.nn.Module):
                 sparse_count=self.index_topk,
                 sparse_mode=3,
             )
+        else:
+            raise RuntimeError(
+                f"Unsupported cache_dtype '{self.cache_config.cache_dtype}' "
+                f"for CP quant lightning indexer."
+            )
 
     def _update_indexer_cache_unquant(
         self,
@@ -385,10 +395,6 @@ class NPUPanguIndexer(torch.nn.Module):
     ) -> bool:
 
         if self.on_ascend950 and self.cache_config.cache_dtype in ["hif8_ds_mla"]:
-            # k_scale = torch.ones(
-            #     (k.shape[0], 1), dtype=torch.float32, device=k.device,
-            # )
-            # k_hif8 = torch_npu.npu_dtype_cast(k, torch_npu.hifloat8)
             k_hif8, k_scale = torch_npu.npu_dynamic_quant(
                 k, dst_type=torch_npu.hifloat8,
                 dst_type_max=15.0
@@ -692,8 +698,8 @@ class NPUPanguSparseAttention(torch.nn.Module):
         self.num_heads = num_heads
         self.tp_size = get_tp_group().world_size
         assert num_heads % self.tp_size == 0
-        self.is_cp_layer = self.is_dsa_layer and \
-            model_extra_config.parall_config.ena_context_parallel
+        self.ena_dsa_cp = model_extra_config.parall_config.ena_context_parallel
+        self.is_cp_layer = self.is_dsa_layer and self.ena_dsa_cp
         self.num_local_heads = (
             num_heads if self.is_cp_layer else num_heads // self.tp_size
         )
@@ -717,10 +723,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             vllm_config.kv_transfer_config.kv_role == "kv_producer")
         # o_conv cache is transferred as-is in PD disaggregation; TP-sharded
         # cache/layout would mismatch between prefill and decode nodes.
-        self.disable_o_conv_tp = (
-            model_extra_config.parall_config.ena_context_parallel
-            or self.is_pd_disagg
-        )
+        self.disable_o_conv_tp = self.ena_dsa_cp or self.is_pd_disagg
         assert model_extra_config.operator_opt_config.use_noncontiguous_kv
         self.use_aicpu_fa_tiling = model_extra_config.operator_opt_config.use_aicpu_fa_tiling
         self.enable_flashcomm2 = model_extra_config.parall_config.enable_flashcomm2
@@ -736,12 +739,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             vllm_config.cache_config.enable_prefix_caching) and
             not model_extra_config.operator_opt_config.optimize_first_chunk
         )
-        self.maybe_enable_sp_for_mome = (
-            self.use_mome and
-            self.enable_flashcomm2 and
-            not vllm_config.cache_config.enable_prefix_caching and
-            model_extra_config.operator_opt_config.optimize_first_chunk
-        )
+        self.enable_mome_sp = model_extra_config.operator_opt_config.enable_mome_sp
 
         if self.is_cp_layer:
             max_num_reqs = vllm_config.scheduler_config.max_num_seqs
@@ -799,7 +797,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
         self.pre_epilog_callback = None
 
         if self.on_ascend950:
-            # self.side_stream = torch.npu.Stream()
             self.side_stream = named_stream("sub_stream")
         else:
             # Side stream for MLA prolog Q/KV overlap (set externally via set_side_stream)
@@ -978,7 +975,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 dtype=torch.bfloat16,
             )
         )
-        # assert self.cache_config.block_size == self.param_sink_number
         self.block_size = self.cache_config.block_size
         self.sink_slot_mapping = torch.arange(
             self.param_sink_number, device='npu', dtype=torch.int32,
@@ -1108,16 +1104,11 @@ class NPUPanguSparseAttention(torch.nn.Module):
             disable_tp=self.disable_o_conv_tp,
         )
 
-        if self.maybe_enable_sp_for_mome:
-            max_num_seqs = self.vllm_config.scheduler_config.max_num_seqs
-            state_len = self.mome_kernel_width - 1 + fake_num_spec_tokens
-            self.mome_cache_for_sp = [
-                torch.zeros((max_num_seqs, state_len, self.q_lora_rank), dtype=torch.bfloat16, device='npu'), 
-                torch.zeros((max_num_seqs, state_len, self.kv_lora_rank), dtype=torch.bfloat16, device='npu'), 
-                torch.zeros((max_num_seqs, state_len, self.o_conv.dim), dtype=torch.bfloat16, device='npu'), 
-            ]
-        else:
-            self.mome_cache_for_sp = None
+        self.conv_index = {
+            self.qa_conv: 0,
+            self.compresskv_conv: 1,
+            self.o_conv: 2,
+        }
 
     def _init_cross_layer_shared_ops(self):
         global npu_fused_infer_attention_sink_metadata, npu_ai_infra_attention_pioneer_metadata
@@ -1439,104 +1430,30 @@ class NPUPanguSparseAttention(torch.nn.Module):
         self,
         x: torch.Tensor, 
         layer: ColumnParallelMOME, 
-        kv_index: int = 0, 
         attn_metadata: Optional[MLACommonMetadata] = None,
         mome_metadata: Optional[NPUMomeAttentionMetadata] = None,
         inplace: bool = False, 
-        layer_norm: torch.nn.Module | None = None, 
-        enable_sequence_parallel: bool = False, 
-        gather_tokens: bool = False, 
+        ena_sp: bool = False,
     ):
         if attn_metadata is None or mome_metadata is None:
             # warm up run
             return x
 
         kv_cache = self.mome_attn.kv_cache
-        _, state_len, dim = kv_cache[kv_index].shape
-        full_dim = x.size(1) # for kv, full_dim = nope_dim (on which MoME applies) + rope_dim
-
-        if enable_sequence_parallel:
-
-            tp_group = get_tp_group()
-            tp_rank = tp_group.rank_in_group
-            fc2_metadata: FlashComm2Metadata = mome_metadata.fc2_metadata
-            max_local_reqs = fc2_metadata.max_local_reqs
-            padded_local_size = fc2_metadata.padded_local_size
-            assert padded_local_size == x.size(0)
-            local_size = fc2_metadata.local_size[tp_rank]
-
-            assert x.size(0) >= state_len
-            cache_for_sp = self.mome_cache_for_sp[kv_index] # (max_num_seqs, state_len, dim)
-            cache_for_sp[0] = x[-state_len:, :dim] # (state_len, dim)
-
-            # use all-gather to mimic a cyclic communication
-            # i.e.  rank 0 -> rank 1, rank 1 -> rank 2, ... , rank (n-1) -> rank 0,
-            # to get the last few tokens from the previous rank
-            gathered_states = tp_group.all_gather(cache_for_sp[0], dim=0) # (tp_size * state_len, dim)
-            gathered_states = gathered_states.view(self.tp_size, state_len, dim)
-            cache_for_sp[0].copy_(gathered_states[(tp_rank-1) % self.tp_size])
-
-            if local_size > 0:
-                num_local_reqs = fc2_metadata.req_idx_end[tp_rank] - fc2_metadata.req_idx_start[tp_rank]
-                y = torch.ops.vllm.npu_pangu_mome_conv(
-                    x[:local_size, :dim],
-                    layer.weight,
-                    cache_for_sp[:num_local_reqs],
-                    fc2_metadata.qsl_local,
-                    cache_indices=None,
-                    num_accepted_tokens=None,
-                    num_computed_tokens=fc2_metadata.num_computed_tokens_local,
-                    block_idx_first_scheduled_token=None,
-                    block_idx_last_scheduled_token=None,
-                    initial_state_idx=None,
-                    pad_slot_id=-1,
-                    max_query_len=-1,
-                    block_size=-1,
-                    mode=0,
-                    inplace=inplace,
-                ) # (local_size, dim)
-
-                if not inplace:                
-                    if full_dim > dim:
-                        x = torch.cat([y, x[:local_size, dim:]], dim=1) # (local_size, full_dim)
-                    else:
-                        x = y # (local_size, full_dim)
-
-                if layer_norm is not None:
-                    x = layer_norm(x) # (local_size, full_dim)
-
-                if padded_local_size > x.size(0):
-                    x = F.pad(x, (0, 0, 0, padded_local_size - y.size(0))) # (padded_local_size, full_dim)
-
-            # all-gather the combined results
-            if gather_tokens:
-                gathered_results = tp_group.all_gather(x, dim=0).view(self.tp_size * padded_local_size, full_dim)
-            else:
-                gathered_results = x
-
-            # gather and assemble the cache
-            gathered_cache = tp_group.all_gather(
-                cache_for_sp[:max_local_reqs], dim=0
-            ).view(self.tp_size, max_local_reqs, state_len, dim)
-            cache_list = []
-            for t in range(self.tp_size):
-                cache_list.append(
-                    gathered_cache[t, : fc2_metadata.num_valid_cache[t]]
-                )  # (num_valid_cache, state_len, dim)
-
-            # scatter the cache
-            rearrange_ratio = fc2_metadata.rearrange_ratio
-            all_caches = torch.cat(cache_list, dim=0) # (num_reqs, state_len, dim)
-            assert all_caches.size(0) == mome_metadata.num_reqs and dim % rearrange_ratio == 0
-            return torch.ops.vllm.npu_pangu_mome_fc2_scatter_and_return(
-                gathered_results,
-                kv_cache[kv_index],
-                fc2_metadata.cache_indices_rearranged,
-                all_caches,
-                rearrange_ratio,
-            )
-
+        kv_index = self.conv_index[layer]
         if not self.on_ascend950:
+            if ena_sp:
+                init_idx, save_idx, meta = mome_metadata.conv_sp_meta
+                return conv_sp(
+                    x,
+                    layer.weight,
+                    kv_cache[kv_index],
+                    init_idx,
+                    save_idx,
+                    meta,
+                    inplace,
+                )
+
             x = torch.ops.vllm.npu_pangu_mome_conv(
                 x, layer.weight, kv_cache[kv_index],
                 mome_metadata.query_start_loc,
@@ -1556,9 +1473,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
             # A5: the new fused mome kernel resolves prefill / decode / mixed
             # from the metadata in a single forward() call.
             x = layer.forward(x, kv_cache[kv_index], mome_metadata, inplace=inplace)
-
-        if layer_norm is not None:
-            x = layer_norm(x)
 
         return x
 
@@ -1656,8 +1570,8 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 else:
                     attn_output[:, :num_actual_tokens] = torch_npu._npu_attention_pioneer(**kwargs)[0]
         elif self.use_aicpu_fa_tiling:
-            current_stream = torch.npu.current_stream()
-            stream_limit = torch.npu.get_stream_limit(current_stream)
+            cur_stream = torch.npu.current_stream()
+            stream_limit = torch.npu.get_stream_limit(cur_stream)
             query_cumlens = attn_metadata.decode.query_cumlens.to(torch.int64)
             seq_lens = attn_metadata.decode.seq_lens.to(torch.int64)
             meta_data_args = {
@@ -1862,21 +1776,21 @@ class NPUPanguSparseAttention(torch.nn.Module):
         q_lora = self.q_a_proj(sp_x)
 
         if self.use_mome:
-            if hasattr(sp_manager, "cp_mome_query_start_loc"):
-                q_lora = sp_manager.sp_to_cp(q_lora)
-                q_lora = self._apply_MOME_prefill_cp(
+            if self.enable_mome_sp:
+                self._apply_MOME(
                     q_lora,
                     self.qa_conv,
-                    0,
+                    attn_metadata=attn_metadata,
                     mome_metadata=mome_metadata,
-                    sp_manager=sp_manager,
+                    inplace=True,
+                    ena_sp=True,
                 )
+                q_lora = sp_manager.sp_to_cp(q_lora)
             else:
                 q_lora = sp_manager.ag_tokens(q_lora)
                 q_lora = self._apply_MOME(
                     q_lora,
                     self.qa_conv,
-                    0,
                     attn_metadata=attn_metadata,
                     mome_metadata=mome_metadata,
                 )
@@ -1927,22 +1841,39 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         ### KV stream begins ###
         kv = self.kv_a_proj_with_mqa(sp_x)
-        kv = sp_manager.ag_tokens(kv)
-        k_nope, k_pe = torch.split(
-            kv,
-            [self.kv_lora_rank, self.qk_rope_head_dim],
-            dim=-1,
-        )
-        if self.use_mome:
-            k_nope = self._apply_MOME(
-                k_nope,
+        if not self.enable_mome_sp:
+            kv = sp_manager.ag_tokens(kv)
+            if self.use_mome_inplace_update:
+                self._apply_MOME(
+                    kv[:, :self.kv_lora_rank],
+                    self.compresskv_conv,
+                    attn_metadata=attn_metadata,
+                    mome_metadata=mome_metadata,
+                    inplace=True,
+                )
+            else:
+                k_nope, k_pe = torch.split(
+                    kv,
+                    [self.kv_lora_rank, self.qk_rope_head_dim],
+                    dim=-1,
+                )
+                k_nope = self._apply_MOME(
+                    k_nope,
+                    self.compresskv_conv,
+                    attn_metadata=attn_metadata,
+                    mome_metadata=mome_metadata,
+                )
+                kv = torch.cat([k_nope, k_pe], dim=-1)
+        else:
+            self._apply_MOME(
+                kv[:, :self.kv_lora_rank],
                 self.compresskv_conv,
-                1,
                 attn_metadata=attn_metadata,
                 mome_metadata=mome_metadata,
+                inplace=True,
+                ena_sp=True,
             )
-
-        kv = torch.cat([k_nope, k_pe], dim=-1)
+            kv = sp_manager.ag_tokens(kv)
 
         kwargs = {
             "kv": kv.view(-1, 1, 1, self.kv_lora_rank + self.qk_rope_head_dim),
@@ -1984,21 +1915,23 @@ class NPUPanguSparseAttention(torch.nn.Module):
         )
 
         if self.use_mome:
-            if hasattr(sp_manager, "cp_mome_query_start_loc"):
-                attn_output = self._apply_MOME_prefill_cp(
+            if self.enable_mome_sp:
+                attn_output = sp_manager.cp_to_sp(attn_output)
+                self._apply_MOME(
                     attn_output,
                     self.o_conv,
-                    2,
+                    attn_metadata=attn_metadata,
                     mome_metadata=mome_metadata,
-                    sp_manager=sp_manager,
+                    inplace=True,
+                    ena_sp=True,
                 )
+                return self._apply_o_proj(attn_output)
             else:
                 attn_output = sp_manager.cp_to_sp(attn_output)
                 attn_output = sp_manager.ag_tokens(attn_output)
                 attn_output = self._apply_MOME(
                     attn_output,
                     self.o_conv,
-                    2,
                     attn_metadata=attn_metadata,
                     mome_metadata=mome_metadata,
                 )
@@ -2109,18 +2042,12 @@ class NPUPanguSparseAttention(torch.nn.Module):
         # get KV cache for this layer
         kv_cache = self.attn.kv_cache
 
-        # disable SP for MoME if the sequences are too short to exchange tokens
-        enable_sp_for_mome = (
-            self.maybe_enable_sp_for_mome and
-            not enable_pa and
-            num_actual_tokens > self.tp_size * 8
-        )
         need_all_gather = self.tp_size > 1 and self.moe_comm_strategy != "allreduce"
 
         ### Q stream begins ###
         # Project, apply MoME and layer norm on local tokens, then gather all tokens
         q_lora = self.q_a_proj(hidden_states)
-        if not enable_sp_for_mome:
+        if not self.enable_mome_sp:
             if need_all_gather:
                 q_lora = get_tp_group().all_gather(q_lora, dim=0)
             q_lora = q_lora[:num_prefill_tokens] # Trim TP padding to keep only actual prefill tokens
@@ -2128,22 +2055,22 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 q_lora = self._apply_MOME(
                     q_lora,
                     self.qa_conv,
-                    0,
                     attn_metadata=attn_metadata,
                     mome_metadata=mome_metadata,
                 )
             q_lora = self.q_a_layernorm(q_lora)
         else:
-            q_lora = self._apply_MOME(
+            self._apply_MOME(
                 q_lora,
                 self.qa_conv,
-                0,
                 attn_metadata=attn_metadata,
                 mome_metadata=mome_metadata,
-                layer_norm=self.q_a_layernorm, 
-                enable_sequence_parallel=need_all_gather, 
-                gather_tokens=True, 
+                inplace=True,
+                ena_sp=True,
             )
+            q_lora = self.q_a_layernorm(q_lora)
+            if need_all_gather:
+                q_lora = get_tp_group().all_gather(q_lora, dim=0)
             q_lora = q_lora[:num_prefill_tokens] # Trim padding tokens after all-gather
 
         q = self.q_b_proj(q_lora)
@@ -2172,7 +2099,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         ### KV stream begins ###
         # Project, apply MoME and layer norm on local tokens, then gather the smaller kv tensor
         kv = self.kv_a_proj_with_mqa(hidden_states)
-        if not enable_sp_for_mome:
+        if not self.enable_mome_sp:
             if need_all_gather:
                 kv = get_tp_group().all_gather(kv, dim=0)
             kv = kv[:num_prefill_tokens] # Trim TP padding to keep only actual prefill tokens
@@ -2181,7 +2108,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
                     self._apply_MOME(
                         kv[:, :self.kv_lora_rank],
                         self.compresskv_conv,
-                        1, 
                         attn_metadata=attn_metadata,
                         mome_metadata=mome_metadata,
                         inplace=True, 
@@ -2195,25 +2121,21 @@ class NPUPanguSparseAttention(torch.nn.Module):
                     k_nope = self._apply_MOME(
                         k_nope, 
                         self.compresskv_conv, 
-                        1, 
                         attn_metadata=attn_metadata, 
                         mome_metadata=mome_metadata, 
                         inplace=False, 
                     )
                     kv = torch.cat([k_nope, k_pe], dim=-1)
         else:
-            kv = self._apply_MOME(
-                kv, 
+            self._apply_MOME(
+                kv[:, :self.kv_lora_rank],
                 self.compresskv_conv,
-                1,
                 attn_metadata=attn_metadata,
                 mome_metadata=mome_metadata,
-                layer_norm=None, 
-                enable_sequence_parallel=need_all_gather, 
-                gather_tokens=True, 
-                inplace=self.use_mome_inplace_update, 
+                inplace=True,
+                ena_sp=True,
             )
-            kv = kv[:num_prefill_tokens]
+            kv = get_tp_group().all_gather(kv, dim=0)[:num_prefill_tokens]
 
         kv_rmsnorm_result = self._npu_kvrmsnorm_rope_cache(
             kv,
@@ -2255,7 +2177,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         # We convert from TP to SP in the following block and,
         # we have different ways to do this depending on whether MoME+SP is turned on.
         # Note that the MoME has all the heads in its weight.
-        if not enable_sp_for_mome:
+        if not self.enable_mome_sp:
             # Path 1: all-gather the heads -> MoME -> slice out the local tokens
             tp_group = get_tp_group()
             if attn_output.size(1) < self.o_conv.input_size_per_partition:
@@ -2264,7 +2186,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 attn_output = self._apply_MOME(
                     attn_output,
                     self.o_conv,
-                    2,
                     attn_metadata=attn_metadata,
                     mome_metadata=mome_metadata,
                 )
@@ -2281,22 +2202,21 @@ class NPUPanguSparseAttention(torch.nn.Module):
             attn_output = attn_output.view(self.tp_size, -1, attn_output.shape[-1])
             output = torch.zeros_like(attn_output)
             # all_to_all: [tp_size, N_local, local_dim] -> [N_local, num_heads * v_dim]
-            torch.distributed.all_to_all_single(output.flatten(), attn_output.flatten(), group=get_tp_group().device_group)
+            torch.distributed.all_to_all_single(
+                output.flatten(), attn_output.flatten(),
+                group=get_tp_group().device_group
+            )
             attn_output = output.transpose(0, 1).reshape(local_tokens, self.num_heads * self.v_head_dim)
 
             # --- FC2 MLA Epilog ---
-            attn_output = self._apply_MOME(
+            self._apply_MOME(
                 attn_output,
                 self.o_conv,
-                2,
                 attn_metadata=attn_metadata,
                 mome_metadata=mome_metadata,
-                layer_norm=None, 
-                enable_sequence_parallel=True, 
-                gather_tokens=False,
+                inplace=True,
+                ena_sp=True,
             )
-
-        # attn_output: (local_tokens, num_heads * v_head_dim)
 
         return self._apply_o_proj(attn_output)
 
@@ -2321,7 +2241,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             "query_rope": q_pe[:num_actual_tokens],
             "key_rope": kv_cache[1],
             "num_key_value_heads": 1,
-            "input_layout": "TND",
+            "input_layout": "TND_NTD",
             "atten_mask": self.attn.impl.SHARE_MASK_TRIL_SPARSE,
             "sparse_mode": 4,
             "pre_tokens": self.sliding_window - 1,
@@ -2384,7 +2304,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         attn_output = (
             torch_npu.npu_transpose_batchmatmul(
-                attn_output, self.W_UV, perm_x1=(1, 0, 2), perm_y=(1, 0, 2),
+                attn_output, self.W_UV, perm_y=(1, 0, 2)
             ).reshape(-1, self.num_local_heads * self.v_head_dim)
         )
 
@@ -2681,7 +2601,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 q_lora = self._apply_MOME(
                     q_lora,
                     self.qa_conv,
-                    0,
                     attn_metadata=attn_metadata,
                     mome_metadata=mome_metadata,
                 )
@@ -2697,7 +2616,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
             k_nope = self._apply_MOME(
                 k_nope,
                 self.compresskv_conv,
-                1,
                 attn_metadata=attn_metadata,
                 mome_metadata=mome_metadata,
             )
@@ -2941,7 +2859,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 k_nope = self._apply_MOME(
                     k_nope, 
                     self.compresskv_conv, 
-                    1, 
                     attn_metadata=attn_metadata, 
                     mome_metadata=mome_metadata, 
                     inplace=False, 
@@ -2963,7 +2880,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
             q_lora = self._apply_MOME(
                 q_lora,
                 self.qa_conv,
-                0,
                 attn_metadata=attn_metadata,
                 mome_metadata=mome_metadata,
             )
@@ -3052,7 +2968,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             q_lora = self.q_a_proj(hidden_states)
             if self.use_mome:
                 q_lora = self._apply_MOME(
-                    q_lora, self.qa_conv, 0, attn_metadata=attn_metadata, mome_metadata=mome_metadata,
+                    q_lora, self.qa_conv, attn_metadata=attn_metadata, mome_metadata=mome_metadata,
                 )
             q_lora = self.q_a_layernorm(q_lora)
 
@@ -3136,7 +3052,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             q_lora = self.q_a_proj(hidden_states)
             if self.use_mome:
                 q_lora = self._apply_MOME(
-                    q_lora, self.qa_conv, 0, attn_metadata=attn_metadata, mome_metadata=mome_metadata,
+                    q_lora, self.qa_conv, attn_metadata=attn_metadata, mome_metadata=mome_metadata,
                 )
             q_lora = self.q_a_layernorm(q_lora)
 
@@ -3376,6 +3292,11 @@ class NPUPanguSparseAttention(torch.nn.Module):
             }
             k_pe, k_nope = torch.ops.custom.npu_ai_infra_kv_rmsnorm_rope_cache_v2(**kwargs)
             return kv_cache, topk_indices
+        else:
+            raise RuntimeError(
+                f"Unsupported cache_dtype '{self.cache_config.cache_dtype}' "
+                f"for kv rmsnorm rope cache quant."
+            )
 
     def _naive_kvrmsnorm_rope_cache(
         self,
@@ -3538,7 +3459,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
             attn_output = self._apply_MOME(
                 attn_output,
                 self.o_conv,
-                2,
                 attn_metadata=attn_metadata,
                 mome_metadata=mome_metadata,
             )

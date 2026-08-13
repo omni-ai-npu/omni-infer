@@ -2,6 +2,7 @@
 import torch
 from vllm.v1.worker.gpu_input_batch import InputBatch
 
+
 class NPUInputBatch(InputBatch):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

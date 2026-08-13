@@ -125,7 +125,7 @@ def limit_core_num(enable_limit, target_stream, cube_num, vector_num):
 
 def record_stream(
     enable_record: bool,
-    input: torch.Tensor,
+    tensor: torch.Tensor,
     target_stream: Optional[str | torch.npu.Stream],
 ):
     if enable_record:
@@ -135,7 +135,7 @@ def record_stream(
             stream = target_stream
         else:
             return
-        input.record_stream(stream)
+        tensor.record_stream(stream)
 
 
 def wait_event(

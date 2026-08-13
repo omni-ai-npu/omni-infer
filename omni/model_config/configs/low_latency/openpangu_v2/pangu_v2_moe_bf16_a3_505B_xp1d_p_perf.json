@@ -8,6 +8,7 @@
     },
     "operator_optimization_config": {
         "moe_comm_strategy": "all2allv",
+        "enable_mome_sp": true,
         "use_aicpu_fa_tiling": true,
         "use_noncontiguous_kv": true,
         "use_rope_fusion_op": true,

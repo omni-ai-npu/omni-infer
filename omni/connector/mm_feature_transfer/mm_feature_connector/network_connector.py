@@ -248,6 +248,7 @@ class NetworkMMFeatureConnector(BaseMMFeatureConnector):
             self.transport.connect()
             logger.info("NetworkMMFeatureConnector(sender) connected to %s.", self.transport.endpoints)
         if isinstance(self.transport, NetworkReceiver):
+            self.local_conn.is_consumer = True
             logger.info("NetworkMMFeatureConnector(receiver) attempting to bind...")
             if self.transport.bind():
                 logger.info(
@@ -414,4 +415,3 @@ def unpack_complex_payload(raw_bytes: bytes) -> Tuple[Dict, Dict[str, torch.Tens
     state = outer["state_bytes"]
 
     return metadata, tensors, state
-

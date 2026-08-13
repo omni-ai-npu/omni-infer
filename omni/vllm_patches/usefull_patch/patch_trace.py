@@ -35,20 +35,34 @@ class ProfilerDynamicPatch(VLLMPatch):
     def __init__(self):
         super().__init__()
         if not trace_enabled:
-            logger.info("<<< ProfilerDynamicPatch: Trace disabled, OMNI_TRACE_OUTPUT_DIRECTORY is not set.")
+            logger.info(
+                "<<< ProfilerDynamicPatch: Trace disabled, "
+                "OMNI_TRACE_OUTPUT_DIRECTORY is not set."
+            )
             return
 
         namelist_file = Path(namelist_path)
         if not namelist_file.exists():
-            error_msg = f"<<< ProfilerDynamicPatch: Enable failed! Trace configuration does not exist: {namelist_path}"
+            error_msg = (
+                "<<< ProfilerDynamicPatch: Enable failed! "
+                f"Trace configuration does not exist: {namelist_path}"
+            )
             logger.error(error_msg)
             raise RuntimeError(error_msg)
 
-        logger.info(f"<<< ProfilerDynamicPatch: Enabled successfully. Loading configuration file: {namelist_path}")
+        logger.info(
+            "<<< ProfilerDynamicPatch: Enabled successfully. "
+            f"Loading configuration file: {namelist_path}"
+        )
         self.apply_patches(namelist_path)
 
     def apply_patches(self, namelist_path: str):
-        from omni_trace.prof_wrapper import (torchnpu_prof_wrapper, timer_prof_wrapper, viztracer_prof_wrapper, marker_prof_wrapper)
+        from omni_trace.prof_wrapper import (
+            marker_prof_wrapper,
+            timer_prof_wrapper,
+            torchnpu_prof_wrapper,
+            viztracer_prof_wrapper,
+        )
         wrapper_dict = {
             "torchnpu": torchnpu_prof_wrapper,
             "timer": timer_prof_wrapper,
@@ -67,7 +81,12 @@ class ProfilerDynamicPatch(VLLMPatch):
                 logger.error(f"<<<type of namelist invalid, should be one of torchnpu/timer/viztracer/marker")
                 raise RuntimeError("<<<type of namelist invalid, should be one of torchnpu/timer/viztracer/marker")
             logger.info(f"<<<Applying {profiler_type} profiler patches from {namelist_path}")
-            wrapper_method = wrapper_dict[profiler_type]
+            wrapper_method = wrapper_dict.get(profiler_type)
+            if wrapper_method is None:
+                raise KeyError(
+                    f"Unknown profiler_type: {profiler_type}. "
+                    f"Available types: {list(wrapper_dict.keys())}"
+                )
 
             base_params = config.get("base_params", {})
 
@@ -213,15 +232,35 @@ if trace_enabled:
                     pass
                 elif yield_count == 2:
                     # Second chat_completion_stream_generator yield.
-                    safe_print(trace_output_directory, f"<<<Action: First decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}")
+                    safe_print(
+                        trace_output_directory,
+                        "<<<Action: First decode output token; "
+                        f"Timestamp:{time.time()}; RequestID:{request_id}; "
+                        f"Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}",
+                    )
                 elif yield_count == 3:
                     # Third chat_completion_stream_generator yield.
-                    safe_print(trace_output_directory, f"<<<Action: Second decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}")
+                    safe_print(
+                        trace_output_directory,
+                        "<<<Action: Second decode output token; "
+                        f"Timestamp:{time.time()}; RequestID:{request_id}; "
+                        f"Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}",
+                    )
                 elif yield_count == 4:
                     # Fourth chat_completion_stream_generator yield.
-                    safe_print(trace_output_directory, f"<<<Action: Third decode output token; Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}")
+                    safe_print(
+                        trace_output_directory,
+                        "<<<Action: Third decode output token; "
+                        f"Timestamp:{time.time()}; RequestID:{request_id}; "
+                        f"Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}",
+                    )
                 if item == "data: [DONE]\n\n":
-                    safe_print(trace_output_directory, f"<<<Action: Finish decode pickle and start response; Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}")
+                    safe_print(
+                        trace_output_directory,
+                        "<<<Action: Finish decode pickle and start response; "
+                        f"Timestamp:{time.time()}; RequestID:{request_id}; "
+                        f"Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}",
+                    )
                 yield item
 
 

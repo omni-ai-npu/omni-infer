@@ -401,8 +401,12 @@ class ColumnParallelFlashCommLinear(FlashCommLinearBase):
         # Matrix multiply.
         assert self.quant_method is not None
 
-        output_parallel = self.quant_method.apply(self, input_, bias, self.x_transform, self.x_dim, throw_dequant=throw_dequant)
-        output = layer_parallel_communication_op(output_parallel, self.y_transform, self.layer_name_inside_block, "y", self.y_dim)
+        output_parallel = self.quant_method.apply(
+            self, input_, bias, self.x_transform, self.x_dim, throw_dequant=throw_dequant
+        )
+        output = layer_parallel_communication_op(
+            output_parallel, self.y_transform, self.layer_name_inside_block, "y", self.y_dim
+        )
         output_bias = self.bias if self.skip_bias_add else None
 
         if not self.return_bias:
@@ -492,7 +496,6 @@ class QKVParallelFlashCommLinear(ColumnParallelFlashCommLinear):
 
         if loaded_shard_id is None:
             shard_offsets = [
-                # (shard_id, shard_offset, shard_size)
                 ("q", 0, self.total_num_heads * self.head_size),
                 ("k", self.total_num_heads * self.head_size,
                  self.total_num_kv_heads * self.head_size),
@@ -826,7 +829,7 @@ class RowParallelFlashCommLinear(FlashCommLinearBase):
         output_parallel = self.quant_method.apply(self, input_parallel, bias_, self.x_transform, self.x_dim)
         if next_layer:
             # Config is expressed in MiB, while npu_prefetch expects bytes.
-            prefetch_size_bytes =  model_extra_config.operator_opt_config.attn_prefetch * MB_TO_BYTES
+            prefetch_size_bytes = model_extra_config.operator_opt_config.attn_prefetch * MB_TO_BYTES
             if prefetch_size_bytes > 0:
                 for layer in next_layer:
                     torch_npu.npu_prefetch(layer.weight, output_parallel, prefetch_size_bytes)
@@ -909,7 +912,7 @@ class ShardedLinearMethodBase(QuantizeMethodBase):
         buf = w.untyped_storage()
         assert buf.size() % size == 0
         num = buf.size() // size
-        buf = buf[rank * num : (rank + 1) * num]
+        buf = buf[rank * num:(rank + 1) * num]
         frag = torch.empty(num, dtype=torch.uint8, device=w.device)
         frag.untyped_storage().copy_(buf)
 
@@ -955,7 +958,6 @@ class UnquantizedShardedLinearMethod(ShardedLinearMethodBase):
 
     def _mat_loader(self, weight: Parameter, loaded: torch.Tensor):
         base = ShardedLinearMethodBase
-        # assert loaded.dtype == weight.data.dtype, f"{loaded.dtype} {weight.data.dtype}"
         loaded = loaded.to(device=weight.data.device)
         loaded = loaded.transpose(0, 1).contiguous()
         assert loaded.shape == self.shape
@@ -1071,7 +1073,7 @@ class ShardedFlashCommLinear(ShardedLinear):
             torch.npu.current_stream().wait_stream(self.prefetch_stream)
 
         if self.x_transform != "NoOp":
-            assert type(x) is torch.Tensor
+            assert isinstance(x, torch.Tensor)
             x = layer_parallel_communication_op(x, self.x_transform, self.layer_name_inside_block, "x", self.x_dim)
 
         y = self.quant_method.apply(self, x, self.return_bias)

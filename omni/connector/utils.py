@@ -170,7 +170,7 @@ class SimpleServer:  # single-thread
                 req_id, req = recv["req_id"], recv["req"]
                 if not isinstance(req, dict):
                     raise TypeError("req must be dict")
-            except (TypeError, KeyError, json.JSONDecodeError, ValueError):  # bad req
+            except (TypeError, KeyError, ValueError):  # bad req
                 reply(client_id, "bad_req")
                 continue
             try:  # proc req
@@ -231,7 +231,7 @@ class SimpleClient:
                 req_id, rep = recv["req_id"], recv["rep"]
                 if not isinstance(req_id, int) or not isinstance(rep, dict):
                     raise TypeError("reply req_id must be int, rep must be dict")
-            except (TypeError, KeyError, json.JSONDecodeError, ValueError):  # bad reply
+            except (TypeError, KeyError, ValueError):  # bad reply
                 continue
             with self.lock:
                 cb, _ = self.cb.pop(req_id, (None, None))

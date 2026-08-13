@@ -149,7 +149,9 @@ class NPUMLADecodeMetadata(MLACommonDecodeMetadata):
 class NPUMLAMetadata(MLACommonMetadata[NPUMLADecodeMetadata]):
     decode_threshold: int = 1
     slot_mapping_2d: torch.Tensor = None
-    get_slot_mapping_2d = lambda: None
+
+    def get_slot_mapping_2d(self):
+        return None
 
 
 class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
@@ -486,9 +488,10 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
         if metadata.decode is not None:
             if self.vllm_config.kv_transfer_config is not None:
                 # for pd-mixed, TP is used, no need to use mc2_mask
-                metadata.decode.mc2_mask = self.generate_activate_mask(
-                    metadata.decode.num_actual_tokens,
-                )
+                if self.vllm_config.kv_transfer_config.kv_role == "kv_consumer":
+                    metadata.decode.mc2_mask = self.generate_activate_mask(
+                        metadata.decode.num_actual_tokens,
+                    )
 
             if hasattr(self, "sink_len") and self.sink_len > 0:
                 # for static sink attention, we need to add the sink length to the seq_lens
@@ -505,7 +508,7 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
         if metadata.prefill is not None:
             query_cumlens = metadata.prefill.query_start_loc[1:]
             seq_lens = common_attn_metadata.seq_lens[
-                metadata.num_decodes : metadata.num_decodes + metadata.num_prefills
+                metadata.num_decodes:metadata.num_decodes + metadata.num_prefills
             ]
             if not model_extra_config.operator_opt_config.use_aicpu_fa_tiling:
                 query_cumlens = query_cumlens.cpu().tolist()

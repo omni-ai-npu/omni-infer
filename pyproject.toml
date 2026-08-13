@@ -23,7 +23,8 @@ dependencies = [
     "torch",
     "pybind11>=2.10",
     "pyyaml>=6.0",
-    "chardet"
+    "chardet",
+    "lz4"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

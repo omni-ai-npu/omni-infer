@@ -171,7 +171,7 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
         weight_quant: QuantizationArgs,
         input_quant: QuantizationArgs,
         output_quant: QuantizationArgs | None = None,
-        format: Optional[str] = None,
+        quant_format: Optional[str] = None,
         layer_name: Optional[str] = None,
     ) -> "CompressedTensorsScheme":
         if output_quant is not None:
@@ -180,9 +180,9 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
                 "quantization."
             )
         # use the per-layer format if defined, otherwise, use global format
-        format = format if format is not None else self.quant_format
+        quant_format = quant_format if quant_format is not None else self.quant_format
 
-        act_quant_format = is_activation_quantization_format(format)
+        act_quant_format = is_activation_quantization_format(quant_format)
         if act_quant_format:
             weight_num_bits = self._get_weight_num_bits(layer_name, weight_quant)
             if weight_num_bits == 16:
@@ -284,9 +284,9 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
         scheme_dict = self.target_scheme_map[matched_target]
         weight_quant = scheme_dict["weights"]
         input_quant = scheme_dict["input_activations"]
-        format = self.quant_format
+        quant_format = self.quant_format
 
-        act_quant_format = is_activation_quantization_format(format)
+        act_quant_format = is_activation_quantization_format(quant_format)
         if act_quant_format:
             weight_num_bits = self._get_weight_num_bits(layer_name, weight_quant)
             if weight_num_bits == 16:

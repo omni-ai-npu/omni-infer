@@ -162,7 +162,8 @@ class NpuMemAllocator:
     def python_malloc_callback(self, allocation_handle: HandleType) -> None:
         """
         Internal method to store the allocation data
-        when memory is allocated in the memory pool."""
+        when memory is allocated in the memory pool.
+        """
         py_d_mem = allocation_handle[2]
         self.pointer_to_data[py_d_mem] = AllocationData(
             allocation_handle, self.current_tag)
@@ -171,7 +172,8 @@ class NpuMemAllocator:
     def python_free_callback(self, ptr: int) -> HandleType:
         """
         Internal method to look up the allocation data
-        when memory is freed in the memory pool."""
+        when memory is freed in the memory pool.
+        """
         data = self.pointer_to_data.pop(ptr)
         if data.cpu_backup_tensor is not None:
             data.cpu_backup_tensor = None

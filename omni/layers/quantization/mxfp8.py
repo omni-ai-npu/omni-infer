@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 import os
 import re
+from contextlib import nullcontext
 from typing import Optional
 
 import torch
@@ -328,6 +329,10 @@ class Mxfp8MlpMethod(FusedMLPMethodBase):
 
     def __init__(self, quant_config: Mxfp8Config):
         self.quant_config = quant_config
+        self.should_limit_core = (
+            model_extra_config.task_config.graph_mode == "acl_graph"
+            and on_ascend950()
+        )
 
     def process_weights_after_loading(self, layer):
         # gate_up_proj / down_proj are Mxfp8FCLinear submodules; their own
@@ -337,8 +342,15 @@ class Mxfp8MlpMethod(FusedMLPMethodBase):
     def apply_quant(self, x, x_transform=None, stream_label=None):
         from omni_npu.v1.layers.utils import get_npu_execution_type
 
+        core_limit_ctx = (
+            torch.npu.npugraph_ex.scope.limit_core_num(0, 8)
+            if self.should_limit_core
+            else nullcontext()
+        )
+
         with get_npu_execution_type(stream_label):
-            x_fp8, x_scale = torch_npu.npu_dynamic_mx_quant(x, dst_type=torch.float8_e4m3fn)
+            with core_limit_ctx:
+                x_fp8, x_scale = torch_npu.npu_dynamic_mx_quant(x, dst_type=torch.float8_e4m3fn)
         return x_fp8, x_scale
 
     def apply_part1_gate_up_on_stream(self, layer, x, stream_label=None):
@@ -351,13 +363,20 @@ class Mxfp8MlpMethod(FusedMLPMethodBase):
     def apply_part2_activation_on_stream(self, layer, gate_up, stream_label=None):
         from omni_npu.v1.layers.utils import get_npu_execution_type
 
+        core_limit_ctx = (
+            torch.npu.npugraph_ex.scope.limit_core_num(0, 8)
+            if self.should_limit_core
+            else nullcontext()
+        )
+
         with get_npu_execution_type(stream_label):
-            # silu+quant
-            x_fp8, x_scale = torch_npu.npu_swiglu_mx_quant(
-                gate_up,
-                activate_left=True,
-                dst_type=torch.float8_e4m3fn
-            )
+            with core_limit_ctx:
+                # silu+quant
+                x_fp8, x_scale = torch_npu.npu_swiglu_mx_quant(
+                    gate_up,
+                    activate_left=True,
+                    dst_type=torch.float8_e4m3fn
+                )
             x = {"x_mxfp8": x_fp8, "pertoken_scale": x_scale}
         return x
 

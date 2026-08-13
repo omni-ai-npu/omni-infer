@@ -55,6 +55,8 @@ def _wrap_call(original_call):
 
 def _patch_piecewise_backend():
     """Run a precompiled entry when the graph has no symbolic shape input."""
+    # Intentional: this module monkey-patches vLLM internals.
+    # pylint: disable=protected-access
     import vllm.compilation.piecewise_backend as _piecewise_module
 
     piecewise_backend = _piecewise_module.PiecewiseBackend
@@ -92,6 +94,8 @@ def _patch_piecewise_backend():
 
 def _patched_mark_dynamic():
     """Use maybe_mark_dynamic instead of mark_dynamic for backed dynamic shapes."""
+    # Intentional: this module monkey-patches torch internals.
+    # pylint: disable=protected-access
     import torch._dynamo as dynamo
 
     if getattr(dynamo, "_omni_npu_maybe_mark_dynamic", False):
@@ -111,6 +115,8 @@ def _patched_mark_dynamic():
 
 
 def patch_compile_decorators():
+    # Intentional: this module monkey-patches vLLM internals.
+    # pylint: disable=protected-access
     global _COMPILE_DECORATORS_PATCHED
     if _COMPILE_DECORATORS_PATCHED:
         return

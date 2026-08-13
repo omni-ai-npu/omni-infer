@@ -23,8 +23,10 @@ def _get_int_value(extra_args: dict[str, Any] | None, key: str) -> int | None:
         if arg_value is not None:
             try:
                 return int(arg_value)
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Failed to convert extra_args[%s]=%r to int, ignoring.", key, arg_value
+                )
     return None
 
 
@@ -66,7 +68,7 @@ class MinerULogitsProcessor(LogitsProcessor):
                 self.req_info[a_index] = b_info
 
     def apply(self, logits: torch.Tensor) -> torch.Tensor:
-        for index in range(len(logits)):
+        for index, _ in enumerate(logits):
             req_info = self.req_info.get(index)
             if req_info is None:
                 continue
@@ -85,7 +87,7 @@ class MinerULogitsProcessor(LogitsProcessor):
             cached_ngrams.setdefault(prev_ngram, []).append(last_token)
 
             # Get the next-token candidates to ban based on current prefix
-            current_prefix = tuple(output_tok_ids[-no_repeat_ngram_size + 1 :])
+            current_prefix = tuple(output_tok_ids[-no_repeat_ngram_size + 1:])
             banned_tokens = cached_ngrams.get(current_prefix, [])
 
             # Set the logits of banned tokens to negative infinity

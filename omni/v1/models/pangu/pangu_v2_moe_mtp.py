@@ -17,7 +17,7 @@ from transformers import PretrainedConfig
 
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import VllmConfig
-from vllm.distributed import get_dp_group
+from vllm.distributed import get_dp_group, get_tp_group
 from vllm.model_executor.layers.fused_moe import fused_moe_make_expert_params_mapping
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import ReplicatedLinear
@@ -32,6 +32,7 @@ from vllm.model_executor.models.interfaces import SupportsPP
 from vllm.model_executor.models.utils import maybe_prefix
 from vllm.sequence import IntermediateTensors
 
+from omni_npu.attention.backends.utils import SPManager
 from omni_npu.model_config.config_loader.loader import model_extra_config
 from omni_npu.v1.distributed.parallel_state_ext import get_local_world_group
 from omni_npu.v1.layers.logits_processor import NPULogitsProcessor
@@ -101,7 +102,7 @@ class PanguV2MultiTokenPredictorLayer(nn.Module):
             True,            # is_model_tail
         )
 
-        self.need_tp_padding = not model_extra_config.operator_opt_config.moe_comm_strategy == "allreduce"
+        self.need_tp_padding = model_extra_config.parall_config.ena_seq_parallel
 
     def set_side_stream(self, side_stream: torch.npu.Stream, fetch_stream: torch.npu.Stream = None) -> None:
         """Set the shared side/fetch streams for MTP block."""
@@ -125,7 +126,7 @@ class PanguV2MultiTokenPredictorLayer(nn.Module):
         
         ### Add padding for sequence parallel (TP > 1 with non-naive backend)
         if self.need_tp_padding:
-            hidden_states, original_num_tokens = _maybe_padding_and_slice(hidden_states)
+            original_num_tokens = hidden_states.shape[0]
 
         cos, sin = self.mtp_block.self_attn.rotary_emb.get_cos_sin(positions)
         
@@ -172,7 +173,8 @@ class PanguV2MultiTokenPredictor(nn.Module):
                 self.layers[str(idx)].set_side_stream(self.side_stream, self.fetch_stream)
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.embed_tokens(input_ids)
+        enable_scatter = model_extra_config.parall_config.ena_seq_parallel
+        return self.embed_tokens(input_ids, enable_scatter=enable_scatter)
 
     def forward(
         self,
@@ -182,8 +184,14 @@ class PanguV2MultiTokenPredictor(nn.Module):
         inputs_embeds: torch.Tensor | None = None,
         spec_step_idx: int = 0,
     ) -> torch.Tensor:
+        enable_scatter = model_extra_config.parall_config.ena_seq_parallel
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
+        if enable_scatter:
+            sp_manager = SPManager.init_sp(previous_hidden_states.size(0), get_tp_group())
+            if inputs_embeds.size(0) == previous_hidden_states.size(0):
+                inputs_embeds = sp_manager.slice_tokens(inputs_embeds)
+            previous_hidden_states = sp_manager.slice_tokens(previous_hidden_states)
         current_step_idx = spec_step_idx % self.num_mtp_layers
 
         if self.wrapped_layers is not None:
@@ -191,13 +199,18 @@ class PanguV2MultiTokenPredictor(nn.Module):
         else:
             layer = self.layers[str(self.mtp_start_layer_idx + current_step_idx)]
     
-        return layer(
+        hidden_states = layer(
             input_ids,
             positions,
             previous_hidden_states,
             inputs_embeds,
             current_step_idx,
         )
+
+        if enable_scatter:
+            hidden_states = get_tp_group().all_gather(hidden_states, dim=0)
+
+        return hidden_states
 
     def compute_logits(
         self,

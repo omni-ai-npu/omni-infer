@@ -70,11 +70,11 @@ from omni_npu.v1.layers.utils import (
 
 try:
     import omni_training_custom_ops
-except:
+except ImportError:
     logger.warning_once("Failed to import omni_training_custom_ops")
 try:
     import omni_custom_ops
-except:
+except ImportError:
     logger.warning_once("Failed to import omni_custom_ops")
 from omni_npu.v1.utils import on_ascend950
 
@@ -663,11 +663,11 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
 
         for i in range(num_inserts):
             # write insert segment to result
-            result[offset : offset + segment_len] = insert_segment
+            result[offset:offset + segment_len] = insert_segment
             offset += segment_len
             # write raw tensor to result
             seg_len = start_loc[i + 1] - start_loc[i]
-            result[offset : offset + seg_len] = raw_tensor[start_loc[i] : start_loc[i + 1]]
+            result[offset:offset + seg_len] = raw_tensor[start_loc[i]:start_loc[i + 1]]
             offset += seg_len
         return result
 

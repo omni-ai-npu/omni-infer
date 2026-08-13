@@ -155,7 +155,7 @@ def random_sample(
 
 
 class NPUTopKTopPSampler(V1TopKTopPSampler):
-    def __init__(self, logprobs_mode: LogprobsMode = "raw_logprobs", sampler = None) -> None:
+    def __init__(self, logprobs_mode: LogprobsMode = "raw_logprobs", sampler=None) -> None:
         super().__init__(logprobs_mode)
         if on_ascend950():
             self.forward = self.forward_native

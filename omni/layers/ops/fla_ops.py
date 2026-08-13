@@ -178,7 +178,7 @@ def fused_recurrent_gated_delta_rule_fwd(
     v = v.reshape(A, bs, T, C, E)
     g = g.reshape(A, bs, T, C)
     beta = beta.reshape(A, bs, T, C)
-    o = []
+    outputs = []
     for t in range(T):
         q_t = q[0, :, t].to(torch.float32)
         k_t = k[0, :, t].to(torch.float32)
@@ -200,10 +200,10 @@ def fused_recurrent_gated_delta_rule_fwd(
             indices.unsqueeze(1),
             S.to(torch.bfloat16).transpose(-1, -2),
         )
-        o.append(o_t.to(torch.bfloat16))
-    o = torch.cat(o, dim=1)
-    o = o.contiguous().reshape(A, tbs, C, E)
-    return o, initial_state.contiguous()
+        outputs.append(o_t.to(torch.bfloat16))
+    output = torch.cat(outputs, dim=1)
+    output = output.contiguous().reshape(A, tbs, C, E)
+    return output, initial_state.contiguous()
 
 
 def _fused_recurrent_gated_delta_rule_npu(
@@ -277,7 +277,7 @@ def fused_recurrent_gated_delta_rule(
         assert scale > 0, "scale must be positive"
     if beta is None:
         beta = torch.ones_like(q[..., 0])
-    o, final_state = _fused_recurrent_gated_delta_rule_npu(
+    output, final_state = _fused_recurrent_gated_delta_rule_npu(
             q=q.contiguous(),
             k=k.contiguous(),
             v=v.contiguous(),
@@ -292,7 +292,7 @@ def fused_recurrent_gated_delta_rule(
             num_accepted_tokens=num_accepted_tokens,
             use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
     )
-    return o, final_state
+    return output, final_state
 
 
 def chunk_gated_delta_rule_npu(

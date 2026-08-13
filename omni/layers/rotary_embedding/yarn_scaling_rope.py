@@ -92,7 +92,7 @@ class NPUYaRNScalingRotaryEmbedding(
         query_shape = query.shape
         query = query.view(num_tokens, -1, self.head_size)
         query_rot = query[..., : self.rotary_dim]
-        query_pass = query[..., self.rotary_dim :]
+        query_pass = query[..., self.rotary_dim:]
         if key is None:
             query_rot = apply_rotary_emb_full_dim(
                 query_rot, cos, sin, self.is_neox_style
@@ -103,7 +103,7 @@ class NPUYaRNScalingRotaryEmbedding(
         key_shape = key.shape
         key = key.view(num_tokens, -1, self.head_size)
         key_rot = key[..., : self.rotary_dim]
-        key_pass = key[..., self.rotary_dim :]
+        key_pass = key[..., self.rotary_dim:]
         if self.rotary_dim == 128 and self.is_neox_style:
             cos = cos.unsqueeze(1)
             sin = sin.unsqueeze(1)

@@ -347,7 +347,39 @@ echo "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: $RAY_EXPERIMENTAL_NOSET_
 echo "RAY_CGRAPH_get_timeout: $RAY_CGRAPH_get_timeout"
 echo "TASK_QUEUE_ENABLE: $TASK_QUEUE_ENABLE"
 echo "USE_INVENTORY_DEVICES: $USE_INVENTORY_DEVICES"
+echo "HIXL_LOCAL_COMM_RES_ENABLE: ${HIXL_LOCAL_COMM_RES_ENABLE:-false}"
+echo "HIXLP_ENDPOINT_PATH: ${HIXLP_ENDPOINT_PATH:-/etc/hixlep}"
 echo "=================="
+
+# Generate the UB endpoint configs consumed by the hixl backend. Platforms
+# without UB skip this path unless HIXL_LOCAL_COMM_RES_ENABLE is explicitly set.
+case "$(echo "${HIXL_LOCAL_COMM_RES_ENABLE:-false}" | tr '[:upper:]' '[:lower:]')" in
+  0|false|no)
+    echo "HIXL_LOCAL_COMM_RES_ENABLE off, skipping UB endpoint config generation"
+    ;;
+  *)
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    export HIXLP_ENDPOINT_PATH="${HIXLP_ENDPOINT_PATH:-/etc/hixlep}"
+    if ! mkdir -p "$HIXLP_ENDPOINT_PATH" 2>/dev/null || [ ! -w "$HIXLP_ENDPOINT_PATH" ]; then
+        export HIXLP_ENDPOINT_PATH="${HOME:-/tmp}/.hixlep"
+        echo "default endpoint dir not writable, using $HIXLP_ENDPOINT_PATH"
+    fi
+    if ! mkdir -p "$HIXLP_ENDPOINT_PATH"; then
+        echo "ERROR: cannot create $HIXLP_ENDPOINT_PATH; set HIXLP_ENDPOINT_PATH to a writable directory" >&2
+        exit 1
+    fi
+    gen_ep_script="$SCRIPT_DIR/../model_arts/generate_ep_server_pod.py"
+    gen_ep_cmd=(python "$gen_ep_script")
+    # P and D may share one container and generate the same files concurrently.
+    if command -v flock >/dev/null 2>&1; then
+        gen_ep_cmd=(flock "$HIXLP_ENDPOINT_PATH/.generate.lock" "${gen_ep_cmd[@]}")
+    fi
+    if ! "${gen_ep_cmd[@]}"; then
+        echo "ERROR: failed to generate endpoint configs in $HIXLP_ENDPOINT_PATH" >&2
+        exit 1
+    fi
+    ;;
+esac
 
 EXTRA_ARGS="$EXTRA_ARGS"
 # Execute Python script

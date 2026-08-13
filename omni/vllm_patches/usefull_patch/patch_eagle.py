@@ -44,9 +44,11 @@ EagleProposer_original_init = EagleProposer.__init__
 
 @dataclass
 class DraftAttnGroup:
-    """A group of draft layers sharing the same KV cache group and attention
+    """
+    A group of draft layers sharing the same KV cache group and attention
     backend. All layers in a DraftAttnGroup share one block table and one metadata
-    builder."""
+    builder.
+    """
     kv_cache_group_id: int
     layer_names: list[str] = field(default_factory=list)
     builder: AttentionMetadataBuilder | None = None
@@ -768,11 +770,16 @@ class EagleProposerPatch(VLLMPatch):
 
         # Multi-layer MTP always embeds; upstream first-pass may leave input_ids.
         if use_multi_mtp and model_kwargs["inputs_embeds"] is None:
-            self.inputs_embeds[:num_tokens] = self.model.embed_input_ids(
+            embeds = self.model.embed_input_ids(
                 input_ids=self.input_ids[:num_tokens],
             )
+            if embeds.size(0) < num_tokens:
+                # ReduceScatter: pass scattered directly, MTP handles it
+                model_kwargs["inputs_embeds"] = embeds
+            else:
+                self.inputs_embeds[:num_tokens] = embeds
+                model_kwargs["inputs_embeds"] = self.inputs_embeds[:num_input_tokens]
             model_kwargs["input_ids"] = None
-            model_kwargs["inputs_embeds"] = self.inputs_embeds[:num_input_tokens]
 
         with set_forward_context(
                 attn_metadata=per_layer_attn_metadata,
@@ -891,13 +898,18 @@ class EagleProposerPatch(VLLMPatch):
                     mm_embed_inputs=mm_embed_inputs,
                 )
                 if model_kwargs["inputs_embeds"] is None:
-                    self.inputs_embeds[:num_tokens] = self.model.embed_input_ids(
+                    embeds = self.model.embed_input_ids(
                         input_ids=self.input_ids[:num_tokens]
                     )
+                    if embeds.size(0) < num_tokens:
+                        # ReduceScatter: pass scattered directly, MTP handles it
+                        model_kwargs["inputs_embeds"] = embeds
+                    else:
+                        self.inputs_embeds[:num_tokens] = embeds
+                        model_kwargs["inputs_embeds"] = (
+                            self.inputs_embeds[:input_batch_size]
+                        )
                     model_kwargs["input_ids"] = None
-                    model_kwargs["inputs_embeds"] = (
-                        self.inputs_embeds[:input_batch_size]
-                    )
                 model_kwargs["spec_step_idx"] = spec_step_idx
                 sample_indices = token_indices_to_sample
             else:

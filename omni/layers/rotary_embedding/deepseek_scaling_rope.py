@@ -107,8 +107,8 @@ class NPUDeepseekScalingRotaryEmbedding(
         query_rot = query[..., : self.rotary_dim]
         key_rot = key[..., : self.rotary_dim]
         if self.rotary_dim < self.head_size:
-            query_pass = query[..., self.rotary_dim :]
-            key_pass = key[..., self.rotary_dim :]
+            query_pass = query[..., self.rotary_dim:]
+            key_pass = key[..., self.rotary_dim:]
 
         cos_sin = self.cos_sin_cache[
             torch.add(positions, offsets) if offsets is not None else positions

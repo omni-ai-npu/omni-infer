@@ -28,7 +28,13 @@ if any(
     d.strip() in ["pangu_sink_swa_mla"]
     for d in patches_dir.split(",")
 ):
-    from omni_npu.layers.mhc.mhc import NPUmHCModule
-    from omni_npu.layers.mome.mome import NPUAggregateConv
+    try:
+        from omni_npu.layers.mhc.mhc import NPUmHCModule
+    except ImportError:
+        NPUmHCModule = None
+    try:
+        from omni_npu.layers.mome.mome import NPUAggregateConv
+    except ImportError:
+        NPUAggregateConv = None
 else:
     pass

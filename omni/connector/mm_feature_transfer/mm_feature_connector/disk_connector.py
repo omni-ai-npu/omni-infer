@@ -294,6 +294,10 @@ class DiskMMFeatureConnector(BaseMMFeatureConnector):
     def has_item(self, mm_hash: str) -> bool:
         """Check if feature exists on disk."""
         try:
+            if not self.is_consumer:
+                logger.debug("Disable MMFeatureConnector loading in non consumer.")
+                return False
+
             if self.is_profile_run():
                 logger.debug("Disable MMFeatureConnector during profile run.")
                 return False
@@ -473,5 +477,4 @@ class DiskMMFeatureConnector(BaseMMFeatureConnector):
                         os.remove(entry_path)
                     except OSError:
                         pass
-
 

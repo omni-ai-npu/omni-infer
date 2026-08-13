@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
+from collections import defaultdict, deque
 from contextlib import contextmanager
 from functools import wraps
 from importlib.metadata import entry_points
@@ -14,6 +15,7 @@ from vllm.platforms import current_platform
 from vllm.utils.math_utils import cdiv
 
 from omni_npu import envs
+from omni_npu.layers.utils import named_stream
 
 logger = init_logger(__name__)
 NPU_ATTENTION_BACKEND = {}
@@ -506,10 +508,10 @@ class SPManager:
                 self.len = 0
 
             def slice_src(self, x: torch.Tensor):
-                return x[self.src : self.src + self.raw]
+                return x[self.src:self.src + self.raw]
 
             def slice_dst(self, x: torch.Tensor):
-                return x[self.dst : self.dst + self.raw]
+                return x[self.dst:self.dst + self.raw]
 
         def _recv(cp: int, sends: list):
             prev = slicer(0, 0, cp, 0)
@@ -636,7 +638,7 @@ class SPManager:
         assert x.size(0) >= tok
         y = x.new_zeros(cp_len, *x.shape[1:])
         for dst, src, n in sects:
-            y[dst : dst + n] = x[src : src + n]
+            y[dst:dst + n] = x[src:src + n]
         return y
 
     # ===================== cp_attn =====================
@@ -867,7 +869,7 @@ class SPManager:
             phase0_end = phase0_start + req_len
             phase0_chunk = merged_chunk[phase0_start:phase0_end]
             phase1_start = phase1_base + req_len
-            phase1_chunk = merged_chunk[phase1_start : phase1_start + req_len]
+            phase1_chunk = merged_chunk[phase1_start:phase1_start + req_len]
             restored_chunks.extend([phase0_chunk, phase1_chunk])
         return torch.cat(restored_chunks, dim=0)
 
@@ -927,7 +929,7 @@ class KVSPMaganer:
         sp_group = sp_group or get_tp_group()
 
         def as_np(x):
-            if type(x) is torch.Tensor:
+            if isinstance(x, torch.Tensor):
                 x = np.array(x.tolist(), dtype=np.int32)
             return x
 
@@ -998,22 +1000,21 @@ class KVSPMaganer:
             idx, pre = max(0, loc - loc0), max(0, loc0 - loc)
 
             def slice_fn(template: torch.Tensor):
-                return template[idx : idx + cnt] + (base + pre - idx)
+                return template[idx:idx + cnt] + (base + pre - idx)
 
             return slice_fn, cdiv(int(idx + cnt), pg)  # required n_cycle
 
+        sects = []
         sends, bases, locs = rank_dat[sp_rank]
-        sects = [
-            local_section(rank, cnt, base, loc)
-            for rank, cnts in enumerate(sends)  # for each rank
-            for cnt, base, loc in zip(cnts, bases, locs)  # for each req
-            if cnt > 0
-        ]
+        for rank, cnts in enumerate(sends):  # for each rank
+            for cnt, base, loc in zip(cnts, bases, locs):  # for each req
+                if cnt > 0:
+                    sects.append(local_section(rank, cnt, base, loc))
 
-        locals = num_local(sp_rank, q_lens, computed)  # [B]
+        local_token_counts = num_local(sp_rank, q_lens, computed)  # [B]
         slice_sects = [
             local_section(sp_rank, *args)  # for each req
-            for args in zip(locals, q_cumlens[:-1], computed)
+            for args in zip(local_token_counts, q_cumlens[:-1], computed)
         ]
 
         n_cycle = max([n for _, n in (sects + slice_sects)] or [0])
@@ -1025,11 +1026,14 @@ class KVSPMaganer:
         select = torch.cat([sect(temp) for sect, _ in sects] or self.blank)
         self.reorg_metadata = (select, send_split, recv_split)
 
-        serial = torch.arange(locals.max(), **self.cfg)
-        paged_idx = lambda tab, idx: tab[idx // pg] * pg + idx % pg
+        serial = torch.arange(local_token_counts.max(), **self.cfg)
+
+        def paged_idx(tab, idx):
+            return tab[idx // pg] * pg + idx % pg
+
         slot_sects = [
             paged_idx(tab, serial[:cnt] + loc // sp_size) # for each req
-            for tab, cnt, loc in zip(self.blk_table, locals, computed)
+            for tab, cnt, loc in zip(self.blk_table, local_token_counts, computed)
         ]
         local_slots = torch.cat(slot_sects or self.blank).to(torch.int64)
         local_slots_2d = torch.stack([local_slots // pg, local_slots % pg], dim=-1)
@@ -1109,7 +1113,10 @@ class KVSPMaganer:
 class DummyKVSPMaganer:
     def sp_to_local(self, sp_x: torch.Tensor, seperate=False):
         y = sp_x.new_zeros(0, *sp_x.shape[1:])
-        comm = lambda: y
+
+        def comm():
+            return y
+
         return comm if seperate else comm()
 
     def select_local(self, x: torch.Tensor, **kw):
@@ -1119,7 +1126,9 @@ class DummyKVSPMaganer:
         return None, None
 
     def ag_pages(self, cache: torch.Tensor, seperate=False):
-        comm = lambda: None
+        def comm():
+            return None
+
         return (comm if seperate else comm()), None, None
 
 
@@ -1189,8 +1198,12 @@ def sp_disabled(
     if self.ena_sp:
         self.ena_sp = False
         if hasattr(self.o_proj, "y_transform"):
+            x_transform = getattr(self.o_proj, "x_transform", None)
             y_transform = self.o_proj.y_transform
-            if y_transform == "ReduceScatter":
+            if (
+                y_transform == "ReduceScatter"
+                and x_transform != "DP2TPAll2All"
+            ):
                 self.o_proj.y_transform = "AllReduce"
 
         sp_group = sp_group or get_tp_group()
@@ -1213,7 +1226,7 @@ def paged_scatter(
     computed: np.ndarray = None,  # [B]
     pg: int = 128,
 ):
-    if type(cumlens) is torch.Tensor:
+    if isinstance(cumlens, torch.Tensor):
         cumlens = np.array(cumlens.tolist(), dtype=np.int32)
     assert cumlens.ndim == 1 and cumlens.size > 1
     assert slot_mapping.dim() == 1
@@ -1283,3 +1296,245 @@ def paged_cache(
         cache.view(-1, pg * D)[page_idx] = full_x.view(-1, pg * D)
 
     return cache_fn
+
+
+def simple_conv(
+    x: torch.Tensor,
+    w: torch.Tensor,
+    states: torch.Tensor,
+    prefix: torch.Tensor,
+    cumlens: torch.Tensor,
+    inplace: bool = False,
+) -> torch.Tensor:
+    args = [x, w, states, prefix, cumlens]
+    assert [it.dim() for it in args] == [2, 2, 3, 1, 1]
+    assert states.size(1) == w.size(0)
+    assert len({it.size(-1) for it in args[:3]}) == 1
+    assert {it.dtype for it in args[3:]} == {torch.int32}
+
+    return torch.ops.custom.npu_ai_infra_fused_causal_conv1d(
+        x,
+        w,
+        states,
+        query_start_loc=cumlens,
+        num_computed_tokens=prefix,
+        residual_connection=1,
+        block_size=256,
+        inplace=inplace,
+    )
+
+
+def save_states(
+    cache: torch.Tensor,
+    index: torch.Tensor,
+    states: torch.Tensor,
+):
+    batch_size, state_len, dim = states.shape
+    desc = f"_cache-{states.dtype}-{state_len}"
+    if not hasattr(save_states, desc):
+        d0 = index.new_zeros(65536)
+        d1 = torch._dim_arange(d0[:1024], dim=0).int() * state_len
+        setattr(save_states, desc, (d0, d1))
+    d0, d1 = getattr(save_states, desc)
+
+    torch.ops.custom.npu_ai_infra_fused_causal_conv1d(
+        states.view(-1, dim),
+        states.flatten()[: 3 * dim].view(3, dim),
+        cache,
+        query_start_loc=d1[: batch_size + 1],
+        num_computed_tokens=d0[:batch_size],
+        cache_indices=index,
+        residual_connection=0,
+        block_size=state_len,
+        inplace=True,
+    )
+
+
+def select_dim0(
+    x: torch.Tensor,
+    index: torch.Tensor,
+) -> torch.Tensor:
+    assert x.dim() > 1 and index.dim() == 1
+    assert x[0].is_contiguous()
+    buf = x.new_empty(0)
+    buf.set_(x.untyped_storage())
+    y = buf.view(x.size(0), -1)[index]
+    y = y.as_strided(
+        [index.size(0), *x.shape[1:]],
+        [*x.stride()],
+        x.storage_offset(),
+    )
+    return y.contiguous()
+
+
+def scheme_conv_sp(
+    sp_group: GroupCoordinator,
+    cumlens: np.ndarray,
+    computed: np.ndarray = None,
+    like: torch.Tensor = None,
+    block_size: int = 128,
+    state_len: int = 3,
+    kernel_size: int = 3,
+    save_all: bool = True,
+) -> tuple[tuple]:
+    assert state_len >= kernel_size
+    self_rank = sp_group.rank_in_group
+    sp_size = sp_group.world_size
+    sp_len = int(cdiv(cumlens[-1], sp_size))
+    lens = np.diff(cumlens, axis=0)
+    batch_size = len(lens)
+    pad_cumlens = cumlens
+    if sp_len * sp_size > cumlens[-1]:
+        pad_cumlens = np.append(cumlens, sp_len * sp_size)
+    pad_lens = np.diff(pad_cumlens, axis=0)
+    if computed is None:
+        computed = lens * 0
+    assert all(lens > 0)
+    assert computed.size == lens.size
+
+    def token(pos: int, base: int, req: int):
+        if pos >= base:
+            return pos
+        assert pos + state_len >= base
+        return (req, pos - base)
+
+    def refer(req: int, pos: int, count: int):
+        base = int(cumlens[req])
+        start = pos - count
+        return [token(start + i, base, req) for i in range(count)]
+
+    def partition(seqs: list, offset: list, unit: int):
+        for i, seq in enumerate(seqs):
+            pos = int(offset[i])
+            end = int(pos + seq)
+            while pos < end:
+                idx = pos // unit
+                nxt = min(end, (idx + 1) * unit)
+                is_tail = bool(nxt == end)
+                yield i, pos, nxt, idx, is_tail
+                pos = nxt
+
+    class Recorder:
+        def __init__(self):
+            self.convs = []
+            self.loads = []
+            self.saves = []
+            self.refs = defaultdict(lambda: [None])
+
+        def conv(self, toks: tuple, size: int, prefix: int):
+            self.loads.extend([self.refs[tok] for tok in toks])
+            self.convs.append((size, prefix))
+
+        def save(self, toks: tuple):
+            self.saves.extend([self.refs[tok] for tok in toks])
+
+    ranks = [Recorder() for _ in range(sp_size)]
+    blocks = [set() for _ in lens]
+    saves = deque()
+
+    for req, start, end, rank, _ in partition(pad_lens, pad_cumlens, sp_len):
+        if req < batch_size:
+            prefix = start + int(computed[req] - cumlens[req])
+            ranks[rank].conv(refer(req, start, kernel_size), end - start, prefix)
+        else:
+            ranks[rank].conv(refer(0, 0, kernel_size), end - start, 0)
+
+    for req, _, end, block, is_tail in partition(lens, computed, block_size):
+        if not (is_tail or save_all):
+            continue
+        tail = int(cumlens[req] - computed[req]) + end
+        saves.append(refer(req, tail, state_len))
+        blocks[req].add(block)
+
+    a2a_map = []
+    sp_blocks = cdiv(len(saves), sp_size)
+    for rank, recorder in enumerate(ranks):
+        buf = [0] * (batch_size * state_len)
+        maps = [{} for _ in ranks]
+
+        for _ in range(sp_blocks):
+            recorder.save(saves.popleft() if saves else refer(0, 0, state_len))
+
+        for tok, ref in recorder.refs.items():
+            if isinstance(tok, tuple):
+                req, offset = tok
+                buf[(req + 1) * state_len + offset] = ref
+            else:
+                maps[tok // sp_len][tok % sp_len] = ref
+
+        recvs = [sorted(it.keys()) for it in maps]
+        a2a_map.append(recvs)
+
+        if rank == self_rank:
+            for mapping, recv in zip(maps, recvs):
+                buf.extend([mapping[key] for key in recv])
+            for i, ref in enumerate(buf):
+                if isinstance(ref, list):
+                    ref[0] = i
+            reorg_idx = [ref[0] for ref in recorder.loads + recorder.saves]
+            convs = recorder.convs
+
+    send_idx = []
+    for dst in a2a_map:
+        send_idx.extend(dst[self_rank])
+    send_split = [len(dst[self_rank]) for dst in a2a_map]
+    recv_split = [len(src) for src in a2a_map[self_rank]]
+    save_range = [slice(min(it), max(it) + 1) for it in blocks]
+
+    send_idx = like.new_tensor(send_idx)
+    reorg_idx = like.new_tensor(reorg_idx)
+    conv_prefix = like.new_tensor([prefix for _, prefix in convs])
+    conv_cumlens = like.new_tensor([0] + [size for size, _ in convs]).cumsum(0).int()
+
+    a2a_meta = (send_idx, send_split, recv_split)
+    conv_meta = (conv_prefix, conv_cumlens, reorg_idx)
+    batch_meta = (batch_size, state_len, kernel_size, sp_len, sp_group)
+    return a2a_meta, conv_meta, batch_meta, save_range
+
+
+def conv_sp(
+    x: torch.Tensor,
+    w: torch.Tensor,
+    cache: torch.Tensor,
+    init_idx: torch.Tensor,
+    save_idx: torch.Tensor,
+    metadata: tuple[tuple],
+    inplace: bool = False,
+):
+    current_stream = torch.npu.current_stream()
+    sub_stream = named_stream("mome_sp_ag")
+    a2a_meta, conv_meta, batch_meta, _ = metadata
+    send_idx, send_split, recv_split = a2a_meta
+    prefix, cumlens, reorg_idx = conv_meta
+    batch_size, state_len, kernel_size, sp_len, sp_group = batch_meta
+    dim = x.size(1)
+
+    assert list(x.shape) == [sp_len, dim], f"{x.shape} {[sp_len, dim]}"
+    assert list(w.shape) == [kernel_size, dim], f"{w.shape} {[kernel_size, dim]}"
+    assert list(cache.shape[1:]) == [state_len, dim], f"{cache.shape[1:]} {[state_len, dim]}"
+    assert list(init_idx.shape) == [batch_size], f"{init_idx.shape} {[batch_size]}"
+
+    workspace = x.new_empty(batch_size * state_len + sum(recv_split), dim)
+    workspace[: batch_size * state_len] = select_dim0(cache, init_idx).view(-1, dim)
+    torch.distributed.all_to_all_single(
+        workspace[batch_size * state_len :],
+        x[send_idx],
+        recv_split,
+        send_split,
+        group=sp_group.device_group,
+    )
+
+    workspace = workspace[reorg_idx]
+    load_part = prefix.size(0) * kernel_size
+    loads = workspace[:load_part].view(-1, kernel_size, dim)
+    saves = workspace[load_part:].view(-1, state_len, dim)
+    sub_stream.wait_stream(current_stream)
+
+    y = simple_conv(x, w, loads, prefix, cumlens, inplace)
+
+    with torch.npu.stream(sub_stream):
+        gathered_saves = sp_group.all_gather(saves, dim=0)
+        current_stream.wait_stream(sub_stream)
+    save_states(cache, save_idx, gathered_saves[: save_idx.size(0)])
+
+    return y

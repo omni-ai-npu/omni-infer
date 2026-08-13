@@ -58,7 +58,7 @@ def custom_depthwise_conv1d(x_t: torch.Tensor, weight: torch.Tensor, bias: torch
     # 2. Unroll the sliding window (Vector Core MACs)
     out_t = x_t[:, 0:out_len, :] * w[0]
     for i in range(1, width):
-        out_t += x_t[:, i : i + out_len, :] * w[i]
+        out_t += x_t[:, i:i + out_len, :] * w[i]
 
     # 3. Add bias if present
     if bias is not None:

@@ -20,8 +20,8 @@ def get_model_type_from_args():
         if not model_type:
             raise ValueError("Command-line argument sys.argv[2] cannot be empty")
         return model_type
-    except IndexError:
-        raise ValueError("Model type not provided. Please ensure sys.argv[2] is passed")
+    except IndexError as e:
+        raise ValueError("Model type not provided. Please ensure sys.argv[2] is passed") from e
 
 
 def import_patches_from_dir(root: Path, base_pkg: str):

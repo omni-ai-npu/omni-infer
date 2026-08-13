@@ -310,7 +310,7 @@ class W8A8Int8ShardedLinearMethod(ShardedLinearMethodBase):
         return_bias: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         assert self.full_weight is not None, f"error: apply before prefetch"
-        if type(x) is dict:
+        if isinstance(x, dict):
             x, x_scale = x["x_int8"], x["pertoken_scale"]
         else:
             x, x_scale = torch_npu.npu_dynamic_quant(x)

@@ -21,7 +21,11 @@ from vllm.v1.kv_cache_interface import AttentionSpec
 
 from omni_npu import envs
 from omni_npu.attention.backends.attention import NPUAttentionBackendImpl
-from omni_npu.attention.backends.utils import _maybe_padded_raw_tensor_to_strided_caches, register_attention_backend
+from omni_npu.attention.backends.utils import (
+    _maybe_padded_raw_tensor_to_strided_caches,
+    register_attention_backend,
+    scheme_conv_sp,
+)
 from omni_npu.model_config.config_loader.loader import model_extra_config
 
 logger = init_logger(__name__)
@@ -110,6 +114,8 @@ class NPUMomeAttentionMetadata:
     block_idx_last_computed_token: torch.Tensor | None = None  # shape: [batch,]
     block_idx_first_scheduled_token: torch.Tensor | None = None  # shape: [batch,]
     block_idx_last_scheduled_token: torch.Tensor | None = None  # shape: [batch,]
+
+    conv_sp_meta = None
 
 
 class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
@@ -307,7 +313,7 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                 j += 1
         # NOTE: there may be trailing ranks that hold no tokens at all
         req_idx_start[cur_t:] = [bsz] * (tp_size - cur_t)
-        req_idx_end[cur_t - 1 :] = [bsz] * (tp_size - cur_t + 1)
+        req_idx_end[cur_t - 1:] = [bsz] * (tp_size - cur_t + 1)
 
         temp = [j if ran[1] == qsl[j] else j - 1 for j, ran in zip(req_idx_end, token_range)]
         num_valid_cache = [max(k - j, 0) for j, k in zip(req_idx_start, temp)]
@@ -317,14 +323,14 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         # prepare qsl_local and num_computed_tokens_local,
         # if there are actual tokens on this rank
         if local_size[tp_rank] > 0:
-            qsl_local = qsl[req_idx_start[tp_rank] : req_idx_end[tp_rank] + 1]
+            qsl_local = qsl[req_idx_start[tp_rank]:req_idx_end[tp_rank] + 1]
             qsl_local = [x - token_range[tp_rank][0] for x in qsl_local]
             qsl_local[0] = 0
             qsl_local[-1] = local_size[tp_rank]
             qsl_local = torch.tensor(qsl_local, dtype=torch.int32, device=device)
 
             num_computed_tokens_local = common_attn_metadata.num_computed_tokens_cpu[
-                req_idx_start[tp_rank] : req_idx_end[tp_rank]
+                req_idx_start[tp_rank]:req_idx_end[tp_rank]
             ].clone()
             num_computed_tokens_local[0] += token_range[tp_rank][0] - qsl[req_idx_start[tp_rank]]
             num_computed_tokens_local = num_computed_tokens_local.to(dtype=torch.int32, device=device)
@@ -370,6 +376,34 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         cache_indices_rearranged = cache_indices_rearranged.view(-1, 2)  # (bsz * state_len * rearrange_ratio, 2)
         fc2_metadata.rearrange_ratio = rearrange_ratio
         fc2_metadata.cache_indices_rearranged = cache_indices_rearranged
+
+    def _build_for_sp(
+        self,
+        seq_cumlens: torch.Tensor,
+        num_computed: torch.Tensor,
+        init_block_idx: torch.Tensor | None,
+        block_table: torch.Tensor,
+        block_size: int = 128,
+    ) -> tuple:
+        save_all = bool(block_table.dim() == 2)
+        meta = scheme_conv_sp(
+            get_tp_group(),
+            seq_cumlens.cpu().numpy(),
+            num_computed.cpu().numpy(),
+            like=seq_cumlens,
+            block_size=block_size,
+            state_len=self.state_len,
+            save_all=save_all,
+        )
+        _, _, _, save_range = meta
+        if save_all:
+            save_idx = [tab[idxs] for tab, idxs in zip(block_table, save_range)]
+            save_idx = torch.cat(save_idx, dim=0)
+            init_idx = [tab[i : i + 1] for tab, i in zip(block_table, init_block_idx)]
+            init_idx = torch.cat(init_idx, dim=0)
+        else:
+            init_idx = save_idx = block_table
+        return init_idx, save_idx, meta
 
     # vLLM uses isinstance(builder, GDNAttentionMetadataBuilder) to decide
     # whether to pass speculative-decoding metadata. MoME participates in that
@@ -558,6 +592,19 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                 block_idx_last_scheduled_token=block_idx_last_scheduled_token[:num_decodes] if apc_enabled else None,
             )
 
+        if (
+            num_prefills > 0
+            and num_decodes == 0
+            and model_extra_config.operator_opt_config.enable_mome_sp
+        ):
+            attn_metadata.conv_sp_meta = self._build_for_sp(
+                seq_cumlens=common_attn_metadata.query_start_loc,
+                num_computed=num_computed_tokens,
+                init_block_idx=block_idx_last_computed_token,
+                block_table=cache_indices,
+                block_size=self.mome_block_size,
+            )
+
         return attn_metadata
 
     def build_for_drafting(
@@ -662,20 +709,20 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
 
         if new_metadata.prefill is not None:
             new_metadata.prefill = copy.copy(metadata.prefill)
-            new_metadata.prefill.cache_indices = cache_indices[metadata.num_decodes :]
+            new_metadata.prefill.cache_indices = cache_indices[metadata.num_decodes:]
             if num_computed_tokens is not None:
-                new_metadata.prefill.num_computed_tokens = num_computed_tokens[metadata.num_decodes :]
+                new_metadata.prefill.num_computed_tokens = num_computed_tokens[metadata.num_decodes:]
             if num_accepted_tokens is not None:
-                new_metadata.prefill.num_accepted_tokens = num_accepted_tokens[metadata.num_decodes :]
+                new_metadata.prefill.num_accepted_tokens = num_accepted_tokens[metadata.num_decodes:]
             if prefix_caching:
                 new_metadata.prefill.block_idx_last_computed_token = block_idx_last_computed_token[
-                    metadata.num_decodes :
+                    metadata.num_decodes:
                 ]
                 new_metadata.prefill.block_idx_first_scheduled_token = block_idx_first_scheduled_token[
-                    metadata.num_decodes :
+                    metadata.num_decodes:
                 ]
                 new_metadata.prefill.block_idx_last_scheduled_token = block_idx_last_scheduled_token[
-                    metadata.num_decodes :
+                    metadata.num_decodes:
                 ]
         if new_metadata.decode is not None:
             new_metadata.decode = copy.copy(metadata.decode)

@@ -56,6 +56,7 @@ class SharedHead(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         return self.norm(hidden_states)
 
+
 @support_torch_compile
 class OpenPanguMultiTokenPredictorLayer(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str) -> None:
@@ -114,16 +115,17 @@ class OpenPanguMultiTokenPredictor(nn.Module):
         self.mtp_start_layer_idx = config.num_hidden_layers
         self.num_mtp_layers = config.num_nextn_predict_layers
         # to map the exact layer index from weights
+        mtp_layer_indices = range(
+            self.mtp_start_layer_idx,
+            self.mtp_start_layer_idx + self.num_mtp_layers,
+        )
         self.layers = torch.nn.ModuleDict(
             {
                 str(idx): OpenPanguMultiTokenPredictorLayer(
                     vllm_config=vllm_config,
                     prefix=f"{prefix}.layers.{idx}",
                 )
-                for idx in range(
-                    self.mtp_start_layer_idx,
-                    self.mtp_start_layer_idx + self.num_mtp_layers,
-                )
+                for idx in mtp_layer_indices
             }
         )
         self.wrapped_layers = None
@@ -352,7 +354,7 @@ class OpenPanguMTP(nn.Module, SupportsPP):
         return loaded_params
 
     def post_weight_load(self) -> None:
-        for name, module in self.named_modules():
+        for _, module in self.named_modules():
             if module is self:
                 continue
             if hasattr(module, "post_weight_load"):

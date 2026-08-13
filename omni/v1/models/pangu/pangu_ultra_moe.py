@@ -802,7 +802,7 @@ class OpenPanguMoEModel(OpenPanguModelBase, MixtureOfExperts):
         return loaded_params
 
     def post_weight_load(self) -> None:
-        for name, module in self.named_modules():
+        for _, module in self.named_modules():
             if module is self:
                 continue
             if hasattr(module, "post_weight_load"):

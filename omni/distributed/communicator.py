@@ -70,7 +70,7 @@ class NPUCommunicator(CudaCommunicator):
         output_tensor = output_tensor.reshape((self.world_size,) + input_size)
         output_tensor = output_tensor.movedim(0, dim)
         output_tensor = output_tensor.reshape(
-            input_size[:dim] + (self.world_size * input_size[dim],) + input_size[dim + 1 :]
+            input_size[:dim] + (self.world_size * input_size[dim],) + input_size[dim + 1:]
         )
         return output_tensor
 

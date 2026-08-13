@@ -111,8 +111,8 @@ def attention_update_torch(
     outs: torch.Tensor, # [N, T, D] or list
     lses: torch.Tensor, # [N, T] or list
 ):
-    if type(outs) is list:
-        assert type(lses) is list and len(outs) == len(lses)
+    if isinstance(outs, list):
+        assert isinstance(lses, list) and len(outs) == len(lses)
         outs = torch.stack(outs, dim=0) # [N, T, D]
         lses = torch.stack(lses, dim=0) # [N, T]
 

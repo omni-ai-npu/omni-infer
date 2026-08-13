@@ -58,7 +58,10 @@ class NPUAggregateConv(AggregateConv):
 
         decode_token_num = self.spec_token_num + 1
 
-        if (attn_metadata.num_prefills > 0 or not batch_descriptor.uniform or short_prefill) and not force_decode:
+        requires_per_request_conv = (
+            attn_metadata.num_prefills > 0 or not batch_descriptor.uniform or short_prefill
+        )
+        if requires_per_request_conv and not force_decode:
             batch_size = len(query_start_loc) - 1
             conv_output_list = []
             for i in range(batch_size):

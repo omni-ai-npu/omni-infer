@@ -71,7 +71,10 @@ class NPUmHC(torch.nn.Module):
         self.phi_weight_post_res = (self.phi.weight[self.num_stream:] * self.norm_gamma).contiguous()
         self.branch_alpha_pre = self.branch_alpha[0] if hasattr(self, "branch_alpha") else self.branch_alpha_pre
         self.branch_alpha_post_res = self.branch_alpha[1:] if hasattr(self, "branch_alpha") else None
-        self.branch_beta_pre = self.branch_beta[:self.num_stream] if hasattr(self, "branch_beta") else self.branch_beta_pre
+        self.branch_beta_pre = (
+            self.branch_beta[:self.num_stream] if hasattr(self, "branch_beta")
+            else self.branch_beta_pre
+        )
         self.branch_beta_post_res = self.branch_beta[self.num_stream:] if hasattr(self, "branch_beta") else None
 
     def _mhc_pre_naive(self, hidden_states: torch.Tensor):

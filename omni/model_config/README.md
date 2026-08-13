@@ -74,7 +74,7 @@ model_extra_config.operator_opt_config.xxxx
     ADDITIONAL_CONFIG='{"enable_low_latency":true}'
     ```
 - 用户自定义配置文件是为了实现模型配置项的灵活使用设置的，可用于开发调测、性能无关问题的规避等场景，这些文件需要环境变量`CUSTOM_MODEL_CONFIG_PATH`控制，若打开，则优先使用自定义模型配置。
-注意，`CUSTOM_MODEL_CONFIG_PATH`给定的是相对路径，必须在v1\models\config路径下面。
+注意，`CUSTOM_MODEL_CONFIG_PATH`支持绝对路径和相对路径：给定绝对路径时，可指向任意可访问目录下的配置文件，并直接加载该文件；给定相对路径时，按内置配置目录(v1\models\config)下的相对路径解析；
 
 3. 检查对应文件下的`best_practice_configs.json`是否有和新增配置**相同的运行平台和量化类型**，若有，在对应的json对象中的configs内新增对应部署形态的配置文件路径，若无，参考其他json对象，新增对应`model_type`、`hardware_platform`、`quant_type`字段的json对象。
 `best_practice_configs.json`格式如下：
@@ -98,6 +98,5 @@ model_extra_config.operator_opt_config.xxxx
     **注意**，为了减少配置文件冗余的情况，在UT测试中加入了配置文件的校验，**要求每个配置文件加载的配置类对象是唯一的**，假如两个配置文件加载后的配置类对象是一致的，会在UT中拦截。
 
 4. 将新增的对应配置文件加入到**指定模型路径**下。
-
 
 

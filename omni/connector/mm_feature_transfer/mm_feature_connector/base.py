@@ -11,7 +11,10 @@ from typing import TYPE_CHECKING, Optional, Callable, Dict, Any, List, Protocol
 from collections.abc import Sequence
 
 if TYPE_CHECKING:
-    from vllm.multimodal.inputs import MultiModalKwargsItem
+    from vllm.multimodal.inputs import (
+        BaseMultiModalField,
+        MultiModalKwargsItem,
+    )
 from vllm.multimodal.processing.processor import (
     PromptUpdateDetails,
     ResolvedPromptUpdate,
@@ -89,6 +92,37 @@ def deserialize_prompt_update(data: dict) -> ResolvedPromptUpdate:
     )
 
 
+def serialize_field_type(field: "BaseMultiModalField") -> dict:
+    """Serialize the field behavior needed when batching transferred data."""
+    kind = type(field).__name__
+    if kind == "MultiModalFlatField":
+        return {"kind": kind, "dim": getattr(field, "dim", 0)}
+    if kind == "MultiModalSharedField":
+        return {"kind": kind, "batch_size": getattr(field, "batch_size", 1)}
+    return {"kind": "MultiModalBatchedField"}
+
+
+def deserialize_field_type(data: dict | None) -> "BaseMultiModalField":
+    """Rebuild a transferred field, defaulting old entries to batched."""
+    from vllm.multimodal.inputs import (
+        MultiModalBatchedField,
+        MultiModalFlatField,
+        MultiModalSharedField,
+    )
+
+    if not data:
+        return MultiModalBatchedField()
+
+    kind = data.get("kind", "MultiModalBatchedField")
+    if kind == "MultiModalFlatField":
+        return MultiModalFlatField(slices=(), dim=int(data.get("dim", 0)))
+    if kind == "MultiModalSharedField":
+        return MultiModalSharedField(
+            batch_size=int(data.get("batch_size", 1)),
+        )
+    return MultiModalBatchedField()
+
+
 class BaseMMFeatureConnector(ABC):
     """
     Abstract base class for MM feature connector.
@@ -104,6 +138,7 @@ class BaseMMFeatureConnector(ABC):
 
     def __init__(self, config: ConnectorConfig) -> None:
         self._config = config
+        self.is_consumer = not config.is_producer
 
     @property
     def is_producer(self) -> bool:
@@ -126,17 +161,21 @@ class BaseMMFeatureConnector(ABC):
         prompt_updates: Sequence[ResolvedPromptUpdate]
     ):
         tensors = {}
+        field_types = {}
         for key, field_elem in mm_item.items():
             if key in self._config.exclude_fields:
                 continue
             tensors[key] = field_elem.data
+            field_types[key] = serialize_field_type(field_elem.field)
 
-        first_field = next(iter(mm_item.values()))
-        modality = first_field.modality
+        # MultiModalFieldElem no longer stores modality in vLLM 0.25.1.
+        # The resolved prompt update carries the same item modality.
+        modality = prompt_updates[0].modality if prompt_updates else "unknown"
 
         metadata = {
             "modality": modality,
             "tensor_keys": list(tensors.keys()),
+            "field_types": field_types,
         }
 
         serialized_updates = [serialize_prompt_update(pu) for pu in prompt_updates]
@@ -150,13 +189,14 @@ class BaseMMFeatureConnector(ABC):
         serialized_updates: List[Dict[str, Any]], 
     ):
         from vllm.multimodal.inputs import (
-            MultiModalBatchedField, MultiModalFieldElem, MultiModalKwargsItem
+            MultiModalFieldElem, MultiModalKwargsItem
         )
+        field_types = metadata.get("field_types", {})
         field_elems = {}
         for key, tensor in tensors.items():
             field_elems[key] = MultiModalFieldElem(
                 data=tensor,
-                field=MultiModalBatchedField(),
+                field=deserialize_field_type(field_types.get(key)),
             )
         mm_item = MultiModalKwargsItem(field_elems)
 

@@ -2,6 +2,7 @@
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Union
 
@@ -678,6 +679,7 @@ class DispatchCombinePrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFina
         self.moe_all_to_all_group_name = self.moe_all_to_all_group._get_backend(
             torch.device(current_platform.device_type)
         ).get_hccl_comm_name(dispatch_group.rank_in_group)
+        self.should_limit_core = on_ascend950()
 
     def _get_mc2_mask(self, num_tokens: int) -> torch.Tensor | None:
         attn_metadata = get_forward_context().attn_metadata
@@ -745,22 +747,28 @@ class DispatchCombinePrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFina
         finalize_params=None,
         finalize_metadata=None,
     ) -> torch.Tensor:
-        return torch_npu.npu_moe_distribute_combine_v2(
-            expand_x=hidden_states,
-            expert_ids=topk_ids,
-            assist_info_for_combine=dispatch_combine_prepare_permute_result.expand_idx,
-            expert_scales=topk_weights.to(torch.float32),
-            expert_shard_type=0,
-            shared_expert_rank_num=0,
-            moe_expert_num=self.num_experts,
-            global_bs=0,
-            ep_send_counts=dispatch_combine_prepare_permute_result.ep_recv_counts,
-            group_ep=self.moe_all_to_all_group_name,
-            ep_world_size=self.ep_size,
-            ep_rank_id=self.ep_rank,
-            tp_send_counts=dispatch_combine_prepare_permute_result.tp_recv_counts,
-            x_active_mask=self._get_mc2_mask(topk_ids.shape[0]),
+        core_limit_ctx = (
+            torch.npu.npugraph_ex.scope.limit_core_num(0, 56)
+            if self.should_limit_core
+            else nullcontext()
         )
+        with core_limit_ctx:
+            return torch_npu.npu_moe_distribute_combine_v2(
+                expand_x=hidden_states,
+                expert_ids=topk_ids,
+                assist_info_for_combine=dispatch_combine_prepare_permute_result.expand_idx,
+                expert_scales=topk_weights.to(torch.float32),
+                expert_shard_type=0,
+                shared_expert_rank_num=0,
+                moe_expert_num=self.num_experts,
+                global_bs=0,
+                ep_send_counts=dispatch_combine_prepare_permute_result.ep_recv_counts,
+                group_ep=self.moe_all_to_all_group_name,
+                ep_world_size=self.ep_size,
+                ep_rank_id=self.ep_rank,
+                tp_send_counts=dispatch_combine_prepare_permute_result.tp_recv_counts,
+                x_active_mask=self._get_mc2_mask(topk_ids.shape[0]),
+            )
 
 
 class CommunicationStrategySelector:

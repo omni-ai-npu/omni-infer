@@ -3,6 +3,7 @@
 
 import time
 import queue
+import threading
 import itertools
 from dataclasses import dataclass
 from collections import defaultdict
@@ -114,6 +115,11 @@ class LLMDataDistConnector(KVConnectorBase_V1, SupportsHMA):
         if not isinstance(self._connector_metadata, Metadata):
             raise TypeError("_connector_metadata must be Metadata")
         return self.worker.get_finished(self._connector_metadata)
+
+    def get_block_ids_with_load_errors(self) -> set[int]:
+        if self.worker is None:
+            return set()
+        return self.worker.get_block_ids_with_load_errors()
 
     def start_load_kv(self, forward_context, **kwargs):
         if not isinstance(self._connector_metadata, Metadata):
@@ -304,7 +310,8 @@ class PrefillWorker:
         if addr is None:
             raise ValueError("scheduler_addr is None")
         if self.scheduler_addr == addr:
-            return calm_down(self.start_load_kv)  # yield
+            calm_down(self.start_load_kv)  # yield
+            return
 
         def cb(rep: dict | None):
             if rep is not None:
@@ -338,6 +345,10 @@ class PrefillWorker:
         if not send_done:
             calm_down(self.get_finished)  # yield
         return send_done, None  # only send
+
+    def get_block_ids_with_load_errors(self) -> set[int]:
+        # Prefill workers never pull KV blocks.
+        return set()
 
 
 class DecodeScheduler:
@@ -402,6 +413,8 @@ class DecodeWorker:
         self.executor = ThreadPoolExecutor(self.NUM_PARALLEL_PULL)
         self.pull_done = queue.Queue()
         self.send_pull_done = queue.Queue()
+        self._invalid_block_ids: set[int] = set()
+        self._invalid_lock = threading.Lock()
         self.looping = True
         kv_transfer.maybe_selftest()  # OMNI_METRICS_KV_TRANSFER_SELFTEST=1 时注入合成失败，端到端自测
         start_daemon(self._task_send_pull_done)
@@ -450,15 +463,31 @@ class DecodeWorker:
         targets = pull.targets()
 
         def task_pull_kv():
+            failed_blocks: set[int] = set()
             for addr, target in targets.items():
-                ok = self.manager.pull_blocks(
-                    addr,
-                    target.p_blocks,
-                    target.d_blocks,
-                    target.layer_ids,
-                )
+                try:
+                    ok = self.manager.pull_blocks(
+                        addr,
+                        target.p_blocks,
+                        target.d_blocks,
+                        target.layer_ids,
+                    )
+                except Exception as error:  # noqa: BLE001
+                    logger.error(f"err pull_blocks: {addr} {target}: {error}")
+                    ok = False
                 if not ok:
-                    raise RuntimeError(f"err pull_blocks: {addr} {target}")
+                    failed_blocks.update(
+                        block_id
+                        for block_id in target.d_blocks
+                        if block_id not in SchemePull.SKIP_BLOCK_ID
+                    )
+            if failed_blocks:
+                kv_transfer.record_failure("pull")
+                with self._invalid_lock:
+                    self._invalid_block_ids |= failed_blocks
+            # A failed pull must also leave WAITING_FOR_REMOTE_KVS. The invalid
+            # block IDs let the scheduler recompute or fail the request based
+            # on kv_load_failure_policy.
             self.pull_done.put(req_id)            # local
             self.send_pull_done.put(pull.done())  # remote
 
@@ -480,6 +509,12 @@ class DecodeWorker:
         while not self.pull_done.empty():
             recv_done.add(self.pull_done.get())
         return None, recv_done  # only recv
+
+    def get_block_ids_with_load_errors(self) -> set[int]:
+        with self._invalid_lock:
+            invalid_block_ids = self._invalid_block_ids
+            self._invalid_block_ids = set()
+        return invalid_block_ids
 
 
 class SchemePull:

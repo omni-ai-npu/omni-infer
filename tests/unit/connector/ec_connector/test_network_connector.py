@@ -22,7 +22,6 @@ from omni_npu.connector.ec_connector.network_connector import (
     ZMQ_EMPTY_FRAME,
     SERVER_REQUEST_MIN_FRAMES,
     CLIENT_REPLY_MIN_FRAMES,
-    EC_CACHE_KEY,
     MB,
     GB,
     ECNetworkRequest,
@@ -158,9 +157,6 @@ class TestConstants:
 
     def test_client_reply_min_frames(self):
         assert CLIENT_REPLY_MIN_FRAMES == 2
-
-    def test_ec_cache_key(self):
-        assert EC_CACHE_KEY == "ec_cache"
 
     def test_mb_gb(self):
         assert MB == 1024 * 1024

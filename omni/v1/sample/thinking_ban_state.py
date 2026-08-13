@@ -461,9 +461,9 @@ class ThinkingBanStateHolder:
                 # K target rows: walked state is history + drafts[0..r-1].
                 cur = base_state
                 rows = []
-                for r in range(len(spec_tokens)):
+                for r, token in enumerate(spec_tokens):
                     rows.append((start_row + r, cur))
-                    cur = _advance(cur, spec_tokens[r])
+                    cur = _advance(cur, token)
             else:
                 rows = [(start_row, base_state)]
 

@@ -180,7 +180,7 @@ class ACLGraphWrapper:
                  graph_pool: Any = None,
                  cudagraph_options: Optional[CUDAGraphOptions] = None,
                  update_stream: torch.npu.Stream = None,
-                 attn_layer_names: list[str] = [],
+                 attn_layer_names: Optional[list[str]] = None,
     ):
         self.runnable = runnable
         self.vllm_config = vllm_config
@@ -188,7 +188,9 @@ class ACLGraphWrapper:
         self.runtime_mode = runtime_mode
         self.compilation_config = vllm_config.compilation_config
         self.update_stream = update_stream
-        self.attn_layer_names = attn_layer_names
+        self.attn_layer_names = (
+            attn_layer_names if attn_layer_names is not None else []
+        )
 
         self.is_debugging_mode = envs.VLLM_LOGGING_LEVEL == "DEBUG"
         omni_add = OmniAdditionalConfig.from_vllm_config(self.vllm_config)

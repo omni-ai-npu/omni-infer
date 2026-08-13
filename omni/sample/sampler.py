@@ -20,6 +20,7 @@ from omni_npu.layers.utils import named_stream
 FP32_EPS = 2 ** -24
 ENABLE_NPU_PENALTY_CACHE = envs.OMNI_NPU_PENALTY_CACHE
 
+
 def _apply_penalties_v1(logits: torch.Tensor, prompt_mask: torch.Tensor,
                     output_mask: torch.Tensor,
                     output_bin_counts: torch.Tensor,

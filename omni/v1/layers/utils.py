@@ -11,10 +11,11 @@ import torchair
 def get_npu_execution_type(stream_label):
     if stream_label is None:
         return nullcontext()
-    # Using strings to determine whether to include an item in the image, and later we will use logical differentiation based on parameters.
+    # Using strings to determine whether to include an item in the image,
+    # and later we will use logical differentiation based on parameters.
     elif isinstance(stream_label, str):
         return torchair.scope.npu_stream_switch(stream_label)  # Graph GE/ACL
-    elif isinstance(stream_label,torch.npu.Stream):
+    elif isinstance(stream_label, torch.npu.Stream):
         return torch.npu.stream(stream_label)  # eager
     return nullcontext()
 

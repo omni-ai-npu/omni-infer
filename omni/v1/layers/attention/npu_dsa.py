@@ -1268,7 +1268,7 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
                     cp_out = sp_manager.slice_tokens(cp_out)
                 return cp_out
 
-        if self.o_proj.tp_size > 1:
+        if self.o_proj.requires_input_partition():
             cp_out = sp_manager.sp_to_tp(cp_out)
         cp_out = self.o_proj(cp_out)[0]
         return sp_manager.cp_to_sp(cp_out)

@@ -98,8 +98,8 @@ class NPUMultiHeadLatentAttentionWrapper(MultiHeadLatentAttentionWrapper):
         k_pe = k_pe.unsqueeze(1)
 
         if self.rotary_emb is not None:
-            q[..., self.qk_nope_head_dim :], k_pe = self.rotary_emb(
-                positions, q[..., self.qk_nope_head_dim :], k_pe
+            q[..., self.qk_nope_head_dim:], k_pe = self.rotary_emb(
+                positions, q[..., self.qk_nope_head_dim:], k_pe
             )
 
         if self.indexer and self.is_sparse and not self.skip_topk:

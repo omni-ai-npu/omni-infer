@@ -6,15 +6,23 @@
             "self_attn.o_proj": {
                 "tp_size_or_ranks": 4,
                 "x_transform": {
-                    "type": "None"
+                    "type": "DP2TPAll2All",
+                    "tp_size_or_ranks": 4,
+                    "dim": -1
                 },
                 "y_transform": {
-                    "type": "AllReduce",
-                    "tp_size_or_ranks": 4
+                    "type": "ReduceScatter",
+                    "tp_size_or_ranks": 4,
+                    "dim": 0
                 }
             },
             "mlp.gate_up_proj": {
-                "tp_size_or_ranks": 4
+                "tp_size_or_ranks": 4,
+                "x_transform": {
+                    "type": "AllGather",
+                    "tp_size_or_ranks": 4,
+                    "dim": 0
+                }
             },
             "mlp.down_proj": {
                 "tp_size_or_ranks": 4,
@@ -22,8 +30,9 @@
                     "type": "None"
                 },
                 "y_transform": {
-                    "type": "AllReduce",
-                    "tp_size_or_ranks": 4
+                    "type": "ReduceScatter",
+                    "tp_size_or_ranks": 4,
+                    "dim": 0
                 }
             }
         }

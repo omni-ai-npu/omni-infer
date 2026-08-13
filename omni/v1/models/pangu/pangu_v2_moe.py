@@ -3,6 +3,7 @@
 
 import os
 from collections.abc import Callable, Iterable
+from contextlib import nullcontext
 from typing import Optional, cast
 
 import torch
@@ -12,7 +13,7 @@ from torch import nn
 from transformers import PretrainedConfig
 
 from vllm.compilation.decorators import support_torch_compile
-from vllm.config import ParallelConfig, VllmConfig
+from vllm.config import CUDAGraphMode, ParallelConfig, VllmConfig
 from vllm.distributed import (
     get_dp_group,
     get_ep_group,
@@ -319,6 +320,10 @@ class PanguV2MOE(nn.Module):
         self.side_stream = None
         self.fetch_stream = None
 
+    @property
+    def _is_graph_mode(self) -> bool:
+        return get_forward_context().cudagraph_runtime_mode != CUDAGraphMode.NONE
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -446,7 +451,11 @@ class PanguV2MOE(nn.Module):
         use_side_stream = self.side_stream is not None
 
         # torch.npu.super_kernel_scope_begin(f"moe_{self.layer_idx}")
-        with torch.npu.npugraph_ex.scope.limit_core_num(16,16):
+        with (
+            torch.npu.npugraph_ex.scope.limit_core_num(16, 16)
+            if self._is_graph_mode
+            else nullcontext()
+        ):
             ENABLE_GMM_FR = hidden_states.shape[0] <= self.gmm_fr_token_threshold
 
             # Step 1: gating_topk - Select top-k experts
@@ -597,7 +606,11 @@ class PanguV2MOE(nn.Module):
             else:
                 # Original BF16 path
                 # Step 2: init_routing - Initialize routing and get sorted tokens
-                with torch.npu.npugraph_ex.scope.limit_core_num(1,1):
+                with (
+                    torch.npu.npugraph_ex.scope.limit_core_num(1, 1)
+                    if self._is_graph_mode
+                    else nullcontext()
+                ):
                     sorted_tokens, expanded_x_idx, expert_tokens, _ = torch_npu.npu_moe_init_routing_v2(
                         hidden_states,
                         topk_ids,
@@ -670,7 +683,11 @@ class PanguV2MOE(nn.Module):
         # Step 8: Compute shared experts (triggered after init_routing, executed here)
         # This code structure keeps shared expert computation separate from the main stream
         # (gating_topk -> allgather -> init_routing -> GMM -> finalize) for super kernel fusion
-        with torch.npu.npugraph_ex.scope.limit_core_num(8,8):
+        with (
+            torch.npu.npugraph_ex.scope.limit_core_num(8, 8)
+            if self._is_graph_mode
+            else nullcontext()
+        ):
             if use_side_stream:
                 with torch.npu.stream(self.side_stream):
                     shared_input.record_stream(self.side_stream)
@@ -2070,7 +2087,7 @@ class PanguV2Model(nn.Module):
         self.cos_cached = self.layers[self.start_layer].self_attn.rotary_emb.cos_cached
         self.sin_cached = self.layers[self.start_layer].self_attn.rotary_emb.sin_cached
         self.attn_layer_name = self.layers[self.start_layer].self_attn.attn.layer_name
-        self.need_tp_padding = not model_extra_config.operator_opt_config.moe_comm_strategy == "allreduce"
+        self.need_tp_padding = model_extra_config.parall_config.ena_seq_parallel
         self.param_sink_number = config.param_sink_number
 
         last_layer_idx = config.num_hidden_layers - 1
@@ -2111,17 +2128,19 @@ class PanguV2Model(nn.Module):
         if get_pp_group().is_first_rank:
             if inputs_embeds is not None:
                 hidden_states = inputs_embeds
+                if self.need_tp_padding:
+                    hidden_states, original_num_tokens = _maybe_padding_and_slice(hidden_states)
             else:
-                hidden_states = self.embed_input_ids(input_ids)
+                hidden_states = self.embed_tokens(
+                    input_ids,
+                    enable_scatter=model_extra_config.parall_config.ena_seq_parallel,
+                )
+                original_num_tokens = input_ids.shape[0]
             residual = None
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
-
-        ### Add padding for sequence parallel (TP > 1 with non-naive backend)
-        if self.need_tp_padding:
-            hidden_states, original_num_tokens = _maybe_padding_and_slice(hidden_states)
 
         # Reshape for MHC if enabled
         if self.use_mhc:

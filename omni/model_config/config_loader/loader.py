@@ -142,7 +142,10 @@ class ModelOperatorOptConfig:
     shared_expert_multi_stream: bool = True
     shared_expert_parallel_schedule: str = "with_finalize"
     enable_mhc_multistream: bool = False  # overlap mhc_sinkhorn with o_proj / w2_gmm on a side stream
-    split_q_up_in_multistream: bool = False  # in MLA multi-stream prologs, replace q_b_proj with q_b_nope_proj / q_b_pe_proj children so q_b_pe runs on side_stream parallel to W_UK_T absorb on main
+    # in MLA multi-stream prologs,
+    # replace q_b_proj with q_b_nope_proj / q_b_pe_proj children
+    # so q_b_pe runs on side_stream parallel to W_UK_T absorb on main
+    split_q_up_in_multistream: bool = False
     enable_prefill_shared_exp_multi_stream: bool = False
     enable_agrs_finalize_metadata_overlap: bool = False
     unquant_bmm_nz: bool = True
@@ -192,6 +195,7 @@ class ModelOperatorOptConfig:
     use_topk_topp_stream: bool = False # 是否开启采样topk_topp多流
     li_prolog_multi_stream: bool = False # 是否在 li_prolog 中使用 ki_stream 和 wi_stream 多流并行，会影响确定性
     num_extra_reserved_blocks: int = 0 # 保留额外block数用于APC
+    enable_mome_sp: bool = False # prefill only, support prefix cache
     optimize_first_chunk: bool = False # Whether turn off PA (non-absorb mode) and use MoME SP for the first chunk
 
     def __post_init__(self):
@@ -253,79 +257,85 @@ def update_task_config(**kwargs):
     _init_model_extra_config(task_config)
 
 
-def parse_hf_config(hf_config):
-
-    vars_hf_config = vars(hf_config)
-
+def _match_model_name(hf_config, vars_hf_config):
+    """Match hf_config attributes against match_hf_configs.json and resolve a single name."""
     matches = []
-    match_hf_configs_path = os.path.join(default_config_path,'match_hf_configs.json')
-
+    match_hf_configs_path = os.path.join(default_config_path, 'match_hf_configs.json')
     match_hf_configs_data = _loader_configs_data(match_hf_configs_path)
 
     for model_name, model_params in match_hf_configs_data.items():
-        # Check if all extracted_params match model parameters
-        is_match = True
-        for key, value in model_params.items():
-            # If model doesn't have this parameter or parameter values don't match
-            if key not in vars_hf_config or vars_hf_config[key] != value:
-                is_match = False
-                break
-
-        if is_match:
+        # A candidate matches only if every required (key, value) pair is present and equal.
+        if all(
+            key in vars_hf_config and vars_hf_config[key] == value
+            for key, value in model_params.items()
+        ):
             matches.append(model_name)
 
-    # Check matching results
     if len(matches) == 0:
-        model_name = hf_config.model_type
-    elif len(matches) > 1:
-        if hf_config.model_type == "deepseek_v3":
-            model_name = "deepseek_v3" 
-        elif hf_config.model_type == "deepseek_v32": 
-            model_name = "deepseek_v32"
-        else:
-            raise RuntimeError(
-                f"[ERROR] Multiple matching model names found: {matches}. Unable to determine the correct model name."
-            )
-    else:
-        model_name = matches[0]
+        return hf_config.model_type
+    if len(matches) == 1:
+        return matches[0]
+    # Multiple matches: disambiguate via model_type for known deepseek variants.
+    if hf_config.model_type == "deepseek_v3":
+        return "deepseek_v3"
+    if hf_config.model_type == "deepseek_v32":
+        return "deepseek_v32"
+    raise RuntimeError(
+        f"[ERROR] Multiple matching model names found: {matches}. "
+        "Unable to determine the correct model name."
+    )
 
+
+def _extract_quantization_config(hf_config):
+    """Return the quantization_config mapping from hf_config (checking text_config if needed)."""
     if hasattr(hf_config, "quantization_config"):
-        quantization_config = hf_config.quantization_config
-    elif hasattr(hf_config, "text_config"):
-        quantization_config = getattr(hf_config.text_config, "quantization_config", None)
-    else:
-        quantization_config = None
+        return hf_config.quantization_config
+    if hasattr(hf_config, "text_config"):
+        return getattr(hf_config.text_config, "quantization_config", None)
+    return None
 
-    if quantization_config is not None and quantization_config.get('format', '').strip() == 'int-quantized':
-        weights_type = quantization_config["config_groups"]["group_0"]["weights"]["num_bits"]
-        if isinstance(weights_type, dict):
-            num_bits_values = weights_type.values()
-            weights_type = f"{min(num_bits_values)}"
 
-        input_activations_type = quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"]
-        if isinstance(input_activations_type, dict):
-            num_bits_values = input_activations_type.values()
-            input_activations_type = f"{min(num_bits_values)}"
+def _resolve_int_quant_type(quantization_config):
+    """Build the w{w}a{a} c{c} quant_type string for an int-quantized config."""
+    weights_type = quantization_config["config_groups"]["group_0"]["weights"]["num_bits"]
+    if isinstance(weights_type, dict):
+        weights_type = f"{min(weights_type.values())}"
 
-        kv_cache_scheme_type = quantization_config["kv_cache_scheme"]
-        quant_type = f"w{weights_type}a{input_activations_type}"
-        if kv_cache_scheme_type == "Opti-C8":
-            quant_type = quant_type+"_fa_c8"
-        elif isinstance(kv_cache_scheme_type, dict):
-            num_bits_values = kv_cache_scheme_type["num_bits"]
-            quant_type = f"{quant_type}c{num_bits_values}"
-        else:
-            quant_type = f"{quant_type}c16"
-    elif quantization_config is not None and quantization_config.get('quant_method', '').strip() == 'hifloat8':
-        quant_type = "hif8"
-    elif quantization_config is not None and quantization_config.get('quant_method', '').strip() == 'mxfp8':
-        quant_type = "mxfp8"
-    else:
-        if hasattr(hf_config, "dtype") and hf_config.dtype in ["float16", "fp16", torch.float16]:
-            quant_type = "fp16"
-        else:
-            quant_type = "bf16"
+    input_activations_type = quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"]
+    if isinstance(input_activations_type, dict):
+        input_activations_type = f"{min(input_activations_type.values())}"
 
+    kv_cache_scheme_type = quantization_config["kv_cache_scheme"]
+    quant_type = f"w{weights_type}a{input_activations_type}"
+    if kv_cache_scheme_type == "Opti-C8":
+        return quant_type + "_fa_c8"
+    if isinstance(kv_cache_scheme_type, dict):
+        num_bits_values = kv_cache_scheme_type["num_bits"]
+        return f"{quant_type}c{num_bits_values}"
+    return f"{quant_type}c16"
+
+
+def _resolve_quant_type(hf_config):
+    """Determine the quant_type string from hf_config's quantization metadata."""
+    quantization_config = _extract_quantization_config(hf_config)
+    if quantization_config is not None:
+        fmt = quantization_config.get('format', '').strip()
+        if fmt == 'int-quantized':
+            return _resolve_int_quant_type(quantization_config)
+        quant_method = quantization_config.get('quant_method', '').strip()
+        if quant_method == 'hifloat8':
+            return "hif8"
+        if quant_method == 'mxfp8':
+            return "mxfp8"
+    if hasattr(hf_config, "dtype") and hf_config.dtype in ["float16", "fp16", torch.float16]:
+        return "fp16"
+    return "bf16"
+
+
+def parse_hf_config(hf_config):
+    vars_hf_config = vars(hf_config)
+    model_name = _match_model_name(hf_config, vars_hf_config)
+    quant_type = _resolve_quant_type(hf_config)
     return model_name, quant_type
 
 
@@ -336,9 +346,12 @@ def _init_model_extra_config(task_config):
         logger.info(
             f"Get custom_model_config_path from environ: {custom_model_config_path}"
         )
-        # load best_pratice_model_config_path from os.environ
-        best_practice_model_config_path = os.path.join(default_config_path, custom_model_config_path)
-        config_data = _loader_configs_data(best_practice_model_config_path)
+        # os.path.join drops default_config_path for an absolute custom path.
+        model_config_file_path = os.path.join(
+            default_config_path,
+            custom_model_config_path,
+        )
+        config_data = _loader_configs_data(model_config_file_path)
     else:
         config_data = _get_best_practice_config(task_config)
 
@@ -371,20 +384,49 @@ def _loader_configs_data(file_path):
         with open(file_path, 'r') as f:
             configs_data = json.load(f)
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"[ERROR] Invalid JSON format in config file: {e}")
+        raise RuntimeError(f"[ERROR] Invalid JSON format in config file: {e}") from e
     except KeyError as e:
-        raise RuntimeError(f"[ERROR] Missing required key in config data: {e}")
+        raise RuntimeError(f"[ERROR] Missing required key in config data: {e}") from e
     except TypeError as e:
-        raise RuntimeError(f"[ERROR] Config structure mismatch or incorrect field types: {e}")
+        raise RuntimeError(f"[ERROR] Config structure mismatch or incorrect field types: {e}") from e
     except Exception as e:
-        raise RuntimeError(f"[ERROR] Unexpected error while loading model extra config: {e}")
+        raise RuntimeError(f"[ERROR] Unexpected error while loading model extra config: {e}") from e
 
     return configs_data
+
+
+def _resolve_pd_scheme(task_config):
+    """Determine the PD scheme key (e.g. '1P1D', 'pd_elastic_scaling', or 'hybrid')."""
+    if task_config.is_pd_disaggregation and not task_config.enable_pd_elastic_scaling:
+        return f'{task_config.prefill_node_num}P{task_config.decode_node_num}D'
+    if task_config.is_pd_disaggregation and task_config.enable_pd_elastic_scaling:
+        return "pd_elastic_scaling"
+    return 'hybrid'
+
+
+def _find_matching_configs_list(configs_data, task_config):
+    """Return the configs mapping for the first entry matching the task's model/hardware/precision."""
+    for data in configs_data:
+        if (data["model"] == task_config.model_name
+                and data["hardware"] == task_config.hardware_platform
+                and data["precision"] == task_config.quant_type):
+            return data["configs"]
+    return None
+
+
+def _select_config_file(files_data, task_config):
+    """Pick the per-role config file name from files_data based on PD disaggregation role."""
+    if task_config.is_pd_disaggregation:
+        if task_config.is_prefill_node:
+            return files_data.get("prefill_config_file")
+        return files_data.get("decode_config_file")
+    return files_data.get("config_file")
 
 
 def _get_best_practice_config(task_config):
 
     performance_mode = "low_latency" if task_config.enable_low_latency else "high_throughout"
+    pd_scheme = _resolve_pd_scheme(task_config)
 
     configs_data = _loader_configs_data(
         os.path.join(
@@ -392,20 +434,7 @@ def _get_best_practice_config(task_config):
         )
     )
 
-    configs_list = None
-    for data in configs_data:
-        if data["model"] == task_config.model_name and \
-            data["hardware"] == task_config.hardware_platform and \
-                data["precision"] == task_config.quant_type:
-            configs_list = data["configs"]
-            break
-
-    if task_config.is_pd_disaggregation and not task_config.enable_pd_elastic_scaling:
-        pd_scheme = f'{task_config.prefill_node_num}P{task_config.decode_node_num}D'
-    elif task_config.is_pd_disaggregation and task_config.enable_pd_elastic_scaling:
-        pd_scheme = "pd_elastic_scaling"
-    else:
-        pd_scheme = 'hybrid'
+    configs_list = _find_matching_configs_list(configs_data, task_config)
 
     task_info = f'{task_config.model_name}_{task_config.quant_type}_{task_config.hardware_platform}_{pd_scheme}'
 
@@ -416,37 +445,29 @@ def _get_best_practice_config(task_config):
             f"was not found in best_practice_configs.json. Loading default configuration."
         )
         return None
-    else:
-        files_data = configs_list.get(pd_scheme, None)
-        if not files_data:
-            logger.warning(
-                f"The configuration for {task_info} with performance mode '{performance_mode}' "
-                f"was not found in best_practice_configs.json. Loading default configuration."
-            )
-            return None
 
-        if task_config.is_pd_disaggregation and task_config.is_prefill_node:
-            model_config_file_path = files_data.get("prefill_config_file")
-        elif task_config.is_pd_disaggregation and not task_config.is_prefill_node:
-            model_config_file_path = files_data.get("decode_config_file")
-        else:
-            model_config_file_path = files_data.get("config_file")
+    files_data = configs_list.get(pd_scheme, None)
+    if not files_data:
+        logger.warning(
+            f"The configuration for {task_info} with performance mode '{performance_mode}' "
+            f"was not found in best_practice_configs.json. Loading default configuration."
+        )
+        return None
 
-        best_practice_model_config_path = os.path.join(
-            default_config_path, f"{performance_mode}/{model_config_file_path}"
+    model_config_file_path = _select_config_file(files_data, task_config)
+    best_practice_model_config_path = os.path.join(
+        default_config_path, f"{performance_mode}/{model_config_file_path}"
+    )
+
+    if not os.path.exists(best_practice_model_config_path):
+        raise RuntimeError(
+            f"[ERROR] Task {task_info} requires configuration file {best_practice_model_config_path}, "
+            f"but not found."
         )
 
-        if not os.path.exists(best_practice_model_config_path):
-            raise RuntimeError(
-                f"[ERROR] Task {task_info} requires configuration file {best_practice_model_config_path}, "
-                f"but not found."
-            )
-        else:
-            logger.info(
-                f"The task about {task_info} load configuration file from {best_practice_model_config_path}")
-            config_data = _loader_configs_data(best_practice_model_config_path)
-
-        return config_data
+    logger.info(
+        f"The task about {task_info} load configuration file from {best_practice_model_config_path}")
+    return _loader_configs_data(best_practice_model_config_path)
 
 
 def _validate_config(additional_config):

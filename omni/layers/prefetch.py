@@ -66,7 +66,9 @@ class PrefetchManager:
         trigger: Optional[torch.Tensor],
         prefetch_size: Optional[int],
     ) -> None:
-        if weight is None or trigger is None or prefetch_size is None or prefetch_size <= 0:
+        missing_required_input = weight is None or trigger is None or prefetch_size is None
+        invalid_prefetch_size = prefetch_size is not None and prefetch_size <= 0
+        if missing_required_input or invalid_prefetch_size:
             return
         torch_npu.npu_prefetch(weight, trigger, prefetch_size * PREFETCH_UNIT_SIZE)
 

@@ -9,6 +9,7 @@ import and use it. We can iterate later with true MLA specialization.
 """
 
 import math
+import weakref
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, ClassVar, Optional, Tuple, TypeVar, TYPE_CHECKING
@@ -176,9 +177,11 @@ class NPUDSADecodeMetadata(MLACommonDecodeMetadata):
 
 @dataclass
 class NPUDSAMetadata(MLACommonMetadata[NPUDSADecodeMetadata]):
-    get_slot_mapping_2d = lambda: None
     slot_mapping_cache = None
     first_layer_idx = -1
+
+    def get_slot_mapping_2d(self):
+        return None
 
 
 M = TypeVar("M", bound=NPUDSAMetadata)
@@ -265,7 +268,8 @@ class NPUDSAMetadataBuilder(MLACommonMetadataBuilder[NPUDSAMetadata]):
         metadata = super().build(common_prefix_len, common_attn_metadata, fast_build)
         if metadata.decode is not None and self.vllm_config.kv_transfer_config is not None:
             # for pd-mixed, TP is used, no need to use mc2_mask
-            metadata.decode.mc2_mask = self._generate_activate_mask(metadata.decode.num_actual_tokens)
+            if self.vllm_config.kv_transfer_config.kv_role == "kv_consumer":
+                metadata.decode.mc2_mask = self._generate_activate_mask(metadata.decode.num_actual_tokens)
             metadata.decode.seq_lens = common_attn_metadata.seq_lens[:metadata.num_decodes]
 
             # DSA-KVSP is designed for prefill only on pd-disagg
@@ -281,7 +285,7 @@ class NPUDSAMetadataBuilder(MLACommonMetadataBuilder[NPUDSAMetadata]):
         if metadata.prefill is not None:
             metadata.prefill.query_cumlens = metadata.prefill.query_start_loc[1:]
             metadata.prefill.seq_lens = common_attn_metadata.seq_lens[
-                metadata.num_decodes : metadata.num_decodes + metadata.num_prefills
+                metadata.num_decodes:metadata.num_decodes + metadata.num_prefills
             ]
 
             if model_extra_config.parall_config.ena_seq_parallel:
@@ -323,10 +327,29 @@ class NPUDSAMetadataBuilder(MLACommonMetadataBuilder[NPUDSAMetadata]):
     def _lazy_slot_mapping_2d(self, metadata):
         slots = metadata.slot_mapping
         pg = self.kv_cache_spec.block_size
+        first_layer_idx = metadata.first_layer_idx
+        slot_mapping_cache = metadata.slot_mapping_cache
+        metadata_ref = weakref.ref(metadata)
+
         def inner_get_slot_mapping_2d(layer_idx=-1):
-            if layer_idx == -1 or layer_idx == metadata.first_layer_idx:
-                metadata.slot_mapping_cache = torch.stack([slots // pg, slots % pg], dim=-1)
-            return metadata.slot_mapping_cache
+            nonlocal slot_mapping_cache
+            current_metadata = metadata_ref()
+            if current_metadata is not None:
+                slot_mapping_cache = current_metadata.slot_mapping_cache
+                current_first_layer_idx = current_metadata.first_layer_idx
+            else:
+                current_first_layer_idx = first_layer_idx
+
+            if (
+                slot_mapping_cache is None
+                or layer_idx == -1
+                or layer_idx == current_first_layer_idx
+            ):
+                slot_mapping_cache = torch.stack([slots // pg, slots % pg], dim=-1)
+                if current_metadata is not None:
+                    current_metadata.slot_mapping_cache = slot_mapping_cache
+            return slot_mapping_cache
+
         return inner_get_slot_mapping_2d
 
     def _generate_activate_mask(self, num_actual_tokens):
