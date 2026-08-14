@@ -5,6 +5,10 @@
 
 set -e
 
+# NPU tests use HCCL for distributed communication. Prevent vLLM's CUDA
+# communicator fallback from initializing PyNccl/NCCL in spawned workers.
+export VLLM_DISABLE_PYNCCL="${VLLM_DISABLE_PYNCCL:-1}"
+
 # Parse command line arguments
 TEST_TYPE="all"
 pytest_args=()
