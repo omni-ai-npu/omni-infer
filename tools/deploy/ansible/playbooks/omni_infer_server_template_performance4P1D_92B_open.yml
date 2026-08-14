@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 ---
-- name: Run PanguV2 505B BF16 2P1D Prefill, Decode, and Omni Proxy services.
+- name: Run PanguV2 92B 4P1D Prefill, Decode, and Omni Proxy services.
   hosts: all
   any_errors_fatal: true
   max_fail_percentage: 0
@@ -17,9 +17,8 @@
     SCRIPTS_PATH: /tmp/scripts_path
 
   vars:
-    model: pangu-v2-505b
-    model_path: "/data/weights/pangu_v2/505B/iter_0008900"
-    enable_prefix_caching: true
+    model: pangu-v2-92b
+    model_path: "/data/weights/pangu_v2/92B/iter_0011840-W8A8-0509-skip_shared_experts"
 
     run_docker_profile:
       envs:
@@ -65,27 +64,26 @@
         export OMNI_SKIP_DECODE_TOKENIZE=1
         export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
         export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
-        export OMNI_HYBRID_ATTN_GROUP_SIZE=18
+        export OMNI_HYBRID_ATTN_GROUP_SIZE=17
         export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
         export OMNI_VLLM_PATCHES="ALL"
-        EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --max-num-batched-tokens 4096"
-        EXTRA_ARGS="${EXTRA_ARGS} --enable-expert-parallel --max-num-seqs 4"
-        EXTRA_ARGS="${EXTRA_ARGS} --enable-prompt-tokens-details --enable-chunked-prefill"
-        EXTRA_ARGS="${EXTRA_ARGS} --dtype bfloat16 --enforce-eager"
-        EXTRA_ARGS="${EXTRA_ARGS} --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu"
-        EXTRA_ARGS="${EXTRA_ARGS} --enable-lopt --lopt-pool-size 16 --lopt-chunk-size 4096"
-        REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
-        EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
-        {% if enable_prefix_caching | bool %}
-        EXTRA_ARGS="${EXTRA_ARGS} --enable-prefix-caching"
-        export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_505B_xp1d_p_claw.json"
-        {% else %}
-        EXTRA_ARGS="${EXTRA_ARGS} --no-enable-prefix-caching"
-        export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_505B_xp1d_p_claw_noapc.json"
-        {% endif %}
+        export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_92B_xp1d_p_open.json"
+        export OMNI_PANGU_TOOL_CALL_ENDS_THINKING=1
         export TORCH_COMPILE_DISABLE=1
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-        GPU_UTIL=0.9093
+        EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager"
+        EXTRA_ARGS="${EXTRA_ARGS} --max-num-batched-tokens 32768"
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-expert-parallel --max-num-seqs 12"
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-prefix-caching --enable-chunked-prefill"
+        EXTRA_ARGS="${EXTRA_ARGS} --dtype bfloat16 --enforce-eager"
+        EXTRA_ARGS="${EXTRA_ARGS} --reasoning-parser pangu"
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-auto-tool-choice --tool-call-parser pangu"
+        EXTRA_ARGS="${EXTRA_ARGS} --kv-cache-dtype li_int8_ds_mla"
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-lopt --lopt-pool-size 16"
+        EXTRA_ARGS="${EXTRA_ARGS} --lopt-chunk-size 4096"
+        REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
+        EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
+        GPU_UTIL=0.9
       args:
         - --max-model-len 524288
         - '--additional-config ''{"enable_low_latency": true}'''
@@ -102,42 +100,44 @@
         export VLLM_DISABLE_PYNCCL=1
         export HCCL_BUFFSIZE=1200
         export HCCL_CONNECT_TIMEOUT=1800
-        export HCCL_EXEC_TIMEOUT=1800
         export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
-        export HCCL_OP_EXPANSION_MODE="AI_CPU"
+        export HCCL_EXEC_TIMEOUT=1800
         export ASCEND_GLOBAL_LOG_LEVEL=3
+        export HCCL_OP_EXPANSION_MODE="AI_CPU"
         export OMNI_REUSE_PREFILLED_TOKENS=1
         export OMNI_SKIP_DECODE_TOKENIZE=1
         export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
         export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
-        export OMNI_HYBRID_ATTN_GROUP_SIZE=18
+        export OMNI_HYBRID_ATTN_GROUP_SIZE=17
         export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
         export OMNI_VLLM_PATCHES="ALL"
         export ENABLE_DP_LB=false
+        export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_92B_xp1d_d_open.json"
+        export OMNI_PANGU_TOOL_CALL_ENDS_THINKING=1
+        export TORCH_COMPILE_DISABLE=1
         export VLLM_CACHE_ROOT='./graph_cache'
         export TASK_QUEUE_ENABLE=1
         export LOCAL_WORLD_SIZE=16
+        export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+        rm -rf {{ container_workspace }}/omniinfer/tools/deploy/start_server/static_kernel_compile_outputs
+        rm -rf /usr/local/Ascend/cann/opp/static_kernel
+        rm -rf /usr/local/Ascend/cann-9.1.0-beta.1/opp/static_kernel
+        rm -rf graph_cache/
         EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --enable-expert-parallel"
-        EXTRA_ARGS="${EXTRA_ARGS} --max-num-seqs 3"
-        EXTRA_ARGS="${EXTRA_ARGS} --enable-prompt-tokens-details --enable-chunked-prefill"
-        EXTRA_ARGS="${EXTRA_ARGS} --distributed-executor-backend mp --dtype bfloat16"
-        COMPILATION_CONFIG='{"mode": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[12], "backend":"", "compile_sizes":[12]}'
+        EXTRA_ARGS="${EXTRA_ARGS} --max-num-seqs 4"
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-prefix-caching --enable-chunked-prefill"
+        EXTRA_ARGS="${EXTRA_ARGS} --distributed-executor-backend mp"
+        EXTRA_ARGS="${EXTRA_ARGS} --dtype bfloat16"
+        COMPILATION_CONFIG='{"mode": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[16], "backend":"", "compile_sizes":[16]}'
         EXTRA_ARGS="${EXTRA_ARGS} --compilation-config ${COMPILATION_CONFIG}"
-        EXTRA_ARGS="${EXTRA_ARGS} --enable-logging-iteration-details"
-        EXTRA_ARGS="${EXTRA_ARGS} --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu"
-        EXTRA_ARGS="${EXTRA_ARGS} --enable-lopt --lopt-pool-size 16 --lopt-chunk-size 4096"
+        EXTRA_ARGS="${EXTRA_ARGS} --reasoning-parser pangu"
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-auto-tool-choice --tool-call-parser pangu"
+        EXTRA_ARGS="${EXTRA_ARGS} --kv-cache-dtype li_int8_ds_mla"
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-lopt --lopt-pool-size 16"
+        EXTRA_ARGS="${EXTRA_ARGS} --lopt-chunk-size 4096"
         REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
-        {% if enable_prefix_caching | bool %}
-        EXTRA_ARGS="${EXTRA_ARGS} --enable-prefix-caching"
-        export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_505B_xp1d_d_claw.json"
-        {% else %}
-        EXTRA_ARGS="${EXTRA_ARGS} --no-enable-prefix-caching"
-        export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_505B_xp1d_d_claw_noapc.json"
-        {% endif %}
-        export TORCH_COMPILE_DISABLE=1
-        export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-        GPU_UTIL=0.8998
+        GPU_UTIL=0.82
       args:
         - --max-model-len 524288
         - --tp 1
@@ -169,8 +169,11 @@
         - --subrequest-output-buffer-size 10M
         - --omni-proxy-pd-policy sequential
         - --omni-proxy-max-batch-num-token 100000
-        - --omni-proxy-prefill-max-num-seqs 4
-        - --omni-proxy-decode-max-num-seqs 3
+        - --omni-proxy-prefill-max-num-seqs 12
+        - --omni-proxy-decode-max-num-seqs 4
+
+    proc_bind_profile:
+      enabled: "{{ proc_bind_enabled | default(false) | bool }}"
 
   tasks:
     - ansible.builtin.import_role:
