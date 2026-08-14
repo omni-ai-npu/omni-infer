@@ -144,6 +144,20 @@ class NPUWorker(Worker):
             self.device = torch.device(f"npu:{visible_device_index}")
             torch.npu.set_device(self.device)
 
+            # Load the NPU-aware Triton backend after selecting the current
+            # device and before the first TorchDynamo graph compilation.
+            from vllm.triton_utils import HAS_TRITON
+
+            if HAS_TRITON:
+                import torch_npu._inductor  # noqa: F401
+
+                # torch._dynamo.utils may have imported has_triton before the
+                # torch-npu patch was installed. Refresh the stale reference.
+                from torch._dynamo import utils as dynamo_utils
+                from torch.utils import _triton as torch_triton
+
+                dynamo_utils.has_triton = torch_triton.has_triton
+
             current_platform.check_if_supports_dtype(self.model_config.dtype)
 
             # Initialize the distributed environment BEFORE taking
