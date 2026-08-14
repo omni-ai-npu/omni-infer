@@ -23,8 +23,8 @@
     # Static global config
     LOG_PATH: "/data/log_path"
     MODEL_PATH: "/your/path/models/GLM-5.2-w8a8c16"
-    MODEL_LEN_MAX_PREFILL: 160000
-    MODEL_LEN_MAX_DECODE: 160000
+    MODEL_LEN_MAX_PREFILL: 128000
+    MODEL_LEN_MAX_DECODE: 128000
     MAX_NUM_SEQ_PREFILL: 32
     MAX_NUM_SEQ_DECODE: 4
 
@@ -180,7 +180,7 @@
           --port {{ api_port }} \
           --dtype auto \
           --max-model-len {{ MODEL_LEN_MAX_PREFILL }} \
-          --max-num-batched-tokens {{ MODEL_LEN_MAX_PREFILL }} \
+          --max-num-batched-tokens 32768 \
           --max-num-seqs {{ MAX_NUM_SEQ_PREFILL }} \
           --long-prefill-token-threshold 32768 \
           --enable-chunked-prefill \
@@ -189,9 +189,10 @@
           --gpu-memory-utilization 0.9 \
           --tensor-parallel-size $TP_SIZE \
           --enable-expert-parallel \
+          --reasoning-parser glm45 --chat-template {{ MODEL_PATH }}/chat_template.jinja --enable-auto-tool-choice --tool-call-parser glm47 \
           -pp $PP_SIZE \
       {% if enable_mtp %}
-          --speculative-config '{"num_speculative_tokens": {{ num_speculative_tokens }}, "method":"deepseek_mtp"}' \
+          --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
       {% endif %}
           --kv-transfer-config '{"kv_connector":"LLMDataDistConnector", "kv_role":"kv_producer"}' \
           --enforce-eager  > "$log_dir/server.log" 2>&1 &
@@ -294,6 +295,7 @@
               --enable-expert-parallel \
               --data-parallel-address $MASTER_IP \
               --data-parallel-rpc-port 13345 \
+              --reasoning-parser glm45 --chat-template {{ MODEL_PATH }}/chat_template.jinja --enable-auto-tool-choice --tool-call-parser glm47 \
               --kv-transfer-config '{"kv_connector":"LLMDataDistConnector", "kv_role":"kv_consumer","kv_rank":1, "kv_parallel_size":1}' \
       {% if enable_mtp %}
               --speculative-config '{"num_speculative_tokens": {{ num_speculative_tokens }}, "method":"deepseek_mtp"}' \
