@@ -4,9 +4,12 @@
 #
 # Slim usefull_patch counterpart of
 # ``patches/common/patch_vllm_structured_output.py``. Same section order:
-#   1. ``StructuredOutputReasoningAdvancePatch`` — reasoning-boundary advance
-#      (replaces the fat ``StructuredOutputManagerPatch``; upstream owns the
-#      rest of bitmask / trim behaviour on 0.25.1).
+#   1. ``StructuredOutputReasoningAdvancePatch`` — same-step JSON/regex
+#      grammar advance at the think-end boundary, with the end index pinned
+#      to the real ``</think>`` / ``[unused17]`` token. Upstream 0.25.1
+#      defers JSON advance and can land the trim index on a ``{`` / ``[``
+#      opener under MTP, which re-emits ``{"{`` / ``[[``. Scheduler trim /
+#      accept_tokens is unchanged.
 #   2. Server-side structured-output configuration:
 #      ``--structured-output-config`` / ``OMNI_STRUCTURED_OUTPUT_CONFIG``.
 #      Unlike the common patch, this never hangs a field on ``VllmConfig``
@@ -21,7 +24,9 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,54 +48,115 @@ logger = init_logger(__name__)
 # 1) Reasoning-boundary grammar advance
 # --------------------------------------------------------------------------
 
-_original_should_advance = StructuredOutputManager.should_advance
+_THINK_END_STRINGS = ("</think>", "[unused17]")
+
+
+def _reasoning_end_token_ids(reasoner: Any, tokenizer: Any) -> set[int]:
+    """Token ids that actually terminate thinking (not the JSON opener)."""
+    ids: set[int] = set()
+    if reasoner is None:
+        return ids
+    for attr in ("end_token_id", "_reasoning_end_token_id"):
+        tid = getattr(reasoner, attr, None)
+        if isinstance(tid, int):
+            ids.add(tid)
+    engine = getattr(reasoner, "_parser_engine", None)
+    if engine is not None:
+        tid = getattr(engine, "_reasoning_end_token_id", None)
+        if isinstance(tid, int):
+            ids.add(tid)
+    vocab = None
+    if tokenizer is not None:
+        try:
+            vocab = tokenizer.get_vocab()
+        except Exception:
+            vocab = None
+    end_str = getattr(reasoner, "reasoning_end_str", None)
+    if callable(end_str):
+        end_str = end_str()
+    if isinstance(end_str, str) and isinstance(vocab, dict):
+        tid = vocab.get(end_str)
+        if isinstance(tid, int):
+            ids.add(tid)
+    if isinstance(vocab, dict):
+        for s in _THINK_END_STRINGS:
+            tid = vocab.get(s)
+            if isinstance(tid, int):
+                ids.add(tid)
+    return ids
 
 
 @register_patch("StructuredOutputReasoningAdvancePatch", StructuredOutputManager)
 class StructuredOutputReasoningAdvancePatch(VLLMPatch):
-    """Advance grammar in the same step that detects reasoning end.
+    """Same-step FSM advance at think-end for every structured-output backend.
 
-    Upstream ``should_advance`` may return False for JSON/regex/choice/grammar
-    right when reasoning ends; without same-step advance the persistent grammar
-    can re-emit the first JSON token. Keep the upstream decision path and only
-    flip newly detected boundaries to True after recording
-    ``reasoning_end_token_index`` for ``trim_reasoning_for_advance``.
+    Upstream defers JSON/regex/choice/grammar until the next step. Under MTP
+    the opener ``{`` / ``[`` is already sampled in the same window; the next
+    bitmask is still at S0 and re-emits it. Returning True lets the scheduler
+    trim through the think-end marker and accept the opener now.
+
+    Streaming ``is_reasoning_end`` can stay True after ``</think>``, so the
+    first hit in the window may be the opener. Pin ``reasoning_end_token_index``
+    to the real think-end token so trim keeps ``{`` / ``[``.
     """
 
-    _attr_names_to_apply = ["should_advance"]
+    _attr_names_to_apply = [
+        "should_advance",
+        "_find_reasoning_end_index",
+    ]
 
     def should_advance(self, request) -> bool:
-        structured_req = request.structured_output_request
-        was_reasoning_ended = bool(
-            structured_req is not None and structured_req.reasoning_ended
-        )
-
-        should_advance = _original_should_advance(self, request)
-        if should_advance or structured_req is None or was_reasoning_ended:
-            return should_advance
-        if not structured_req.reasoning_ended:
+        if not request.use_structured_output:
             return False
 
-        # Upstream has just detected reasoning end but deliberately returned
-        # False for non-structural-tag constraints. Record the exact boundary
-        # so Scheduler.trim_reasoning_for_advance() can feed only the accepted
-        # post-marker suffix into the persistent grammar in this same step.
         reasoner = self._get_reasoner(request)
         if reasoner is None:
-            return False
+            return True
+
+        if self.enable_in_reasoning:
+            return True
+
+        structured_req = request.structured_output_request
+        if structured_req.reasoning_ended:
+            return True
+
+        delta_from = request.num_computed_tokens - request.num_output_placeholders
         all_token_ids = request.all_token_ids
-        delta_from = (
-            request.num_computed_tokens - request.num_output_placeholders
-        )
         start = (
-            delta_from
-            if delta_from >= 0
-            else max(len(all_token_ids) + delta_from, 0)
+            delta_from if delta_from >= 0 else max(len(all_token_ids) + delta_from, 0)
         )
-        structured_req.reasoning_end_token_index = self._find_reasoning_end_index(
-            reasoner, all_token_ids, start
-        )
-        return True
+        if reasoner.is_reasoning_end_streaming(
+            all_token_ids, itertools.islice(all_token_ids, start, None)
+        ):
+            structured_req.reasoning_ended = True
+            structured_req.reasoning_end_token_index = (
+                self._find_reasoning_end_index(reasoner, all_token_ids, start)
+            )
+            return True
+
+        return False
+
+    def _find_reasoning_end_index(
+        self,
+        reasoner: Any,
+        all_token_ids: Sequence[int],
+        start: int,
+    ) -> int:
+        prefix = list(itertools.islice(all_token_ids, start))
+        detected = len(all_token_ids) - 1
+        for idx in range(start, len(all_token_ids)):
+            token = all_token_ids[idx]
+            prefix.append(token)
+            if reasoner.is_reasoning_end_streaming(prefix, [token]):
+                detected = idx
+                break
+
+        end_ids = _reasoning_end_token_ids(reasoner, getattr(self, "tokenizer", None))
+        if end_ids:
+            for idx in range(detected, -1, -1):
+                if all_token_ids[idx] in end_ids:
+                    return idx
+        return detected
 
 
 # --------------------------------------------------------------------------

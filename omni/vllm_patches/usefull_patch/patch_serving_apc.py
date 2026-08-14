@@ -244,6 +244,43 @@ def _normalize_usage_chunk(
 
 
 # ---------------------------------------------------------------------------
+# 3b. Named tool_choice finish_reason rewrite
+# ---------------------------------------------------------------------------
+# Upstream OpenAI/vLLM report finish_reason="stop" for named tool_choice even
+# when tool_calls are present. Product expects "tool_calls" like auto/required.
+
+
+def _named_tool_choice(request: Any) -> bool:
+    function = getattr(getattr(request, "tool_choice", None), "function", None)
+    return bool(getattr(function, "name", None))
+
+
+def _set_named_finish_reason(request: Any, result: Any) -> None:
+    """Non-stream: named + tool_calls → finish_reason=tool_calls."""
+    if result is None or not _named_tool_choice(request):
+        return
+    for choice in getattr(result, "choices", None) or []:
+        if getattr(getattr(choice, "message", None), "tool_calls", None):
+            choice.finish_reason = "tool_calls"
+
+
+def _rewrite_named_stream_finish_chunk(chunk: str, request: Any) -> str:
+    """Stream: named terminal chunk → finish_reason=tool_calls."""
+    if not _named_tool_choice(request) or '"finish_reason"' not in chunk:
+        return chunk
+    try:
+        obj = json.loads(chunk.partition("data: ")[2])
+    except json.JSONDecodeError:
+        return chunk
+    changed = False
+    for choice in obj.get("choices") or []:
+        if isinstance(choice, dict) and choice.get("finish_reason") not in (None, "tool_calls"):
+            choice["finish_reason"] = "tool_calls"
+            changed = True
+    return f"data: {json.dumps(obj)}\n\n" if changed else chunk
+
+
+# ---------------------------------------------------------------------------
 # 4. chat_completion: streaming + non-streaming
 # ---------------------------------------------------------------------------
 #
@@ -316,6 +353,7 @@ class OpenAIServingChatStreamAPCPatch(VLLMPatch):
 
         async for chunk in _orig_chat_stream(
                 self, request, track_engine_cached(), *args, **kwargs):
+            chunk = _rewrite_named_stream_finish_chunk(chunk, request)
             yield _normalize_usage_chunk(
                 chunk,
                 _resolve_num_cached_tokens_for_usage(request, latest_engine_cached),
@@ -348,6 +386,7 @@ class OpenAIServingChatFullAPCPatch(VLLMPatch):
         if isinstance(result, ErrorResponse):
             return result
 
+        _set_named_finish_reason(request, result)
         _apply_apc_to_response(self, request, result, last_num_cached)
         return result
 

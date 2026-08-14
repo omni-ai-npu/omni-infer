@@ -3,38 +3,28 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 
-from omni_npu.v1.parsers.pangu_reasoning_parser import PanguReasoningParser
-from omni_npu.v1.parsers.pangu_tool_parser import PanguToolParser
-from vllm.tool_parsers.abstract_tool_parser import ToolParserManager
+from omni_npu.v1.parsers.pangu_adapters import (
+    PanguParserEngineReasoningAdapter,
+    PanguParserEngineToolAdapter,
+)
 from vllm.reasoning.abs_reasoning_parsers import ReasoningParserManager
+from vllm.tool_parsers.abstract_tool_parser import ToolParserManager
 
-"""
-tool and reasoning parser
-"""
-
-parser_name = "pangu"
-
-_TOOL_PARSERS_TO_REGISTER = {
-    parser_name: PanguToolParser
-}
-
-_REASONING_PARSERS_TO_REGISTER = {
-    parser_name: PanguReasoningParser
-}
+PARSER_NAME = "pangu"
 
 
-def register_lazy_parsers():
-    for name, parser_cls in _REASONING_PARSERS_TO_REGISTER.items():
-        module_path = parser_cls.__module__
-        class_name = parser_cls.__name__
-        ReasoningParserManager.register_lazy_module(name, module_path, class_name)
-    for name, parser_cls in _TOOL_PARSERS_TO_REGISTER.items():
-        module_path = parser_cls.__module__
-        class_name = parser_cls.__name__
-        ToolParserManager.register_lazy_module(name, module_path, class_name)
+def register_lazy_parsers() -> None:
+    ReasoningParserManager.register_lazy_module(
+        PARSER_NAME,
+        PanguParserEngineReasoningAdapter.__module__,
+        PanguParserEngineReasoningAdapter.__name__,
+    )
+    ToolParserManager.register_lazy_module(
+        PARSER_NAME,
+        PanguParserEngineToolAdapter.__module__,
+        PanguParserEngineToolAdapter.__name__,
+    )
 
 
-"""
-tool and reasoning parsers register
-"""
+
 register_lazy_parsers()
