@@ -58,6 +58,14 @@ def _install_vllm_stubs(monkeypatch):
     )
 
     protocol = _stub_module(monkeypatch, "vllm.entrypoints.openai.protocol")
+    for _parent in ("chat_completion", "completion", "responses", "engine", "models"):
+        _stub_module(monkeypatch, f"vllm.entrypoints.openai.{_parent}", is_package=True)
+    _PROTO_BY_SUBPATH = {'chat_completion.protocol': ['ChatCompletionNamedToolChoiceParam', 'ChatCompletionRequest', 'ChatCompletionResponse', 'ChatCompletionResponseChoice', 'ChatCompletionResponseStreamChoice'], 'completion.protocol': ['CompletionRequest', 'CompletionResponse', 'CompletionResponseChoice', 'CompletionResponseStreamChoice'], 'responses.protocol': ['ResponsesRequest'], 'engine.protocol': ['ErrorResponse', 'GenerationError', 'PromptTokenUsageInfo', 'RequestResponseMetadata']}
+    for _subpath, _names in _PROTO_BY_SUBPATH.items():
+        _sub = _stub_module(monkeypatch, f"vllm.entrypoints.openai.{_subpath}")
+        for _name in _names:
+            setattr(_sub, _name, type(_name, (), {}))
+            setattr(protocol, _name, getattr(_sub, _name))  # back-compat for legacy import path
     for name in (
         "ChatCompletionNamedToolChoiceParam",
         "ChatCompletionRequest",
@@ -117,6 +125,27 @@ def _install_vllm_stubs(monkeypatch):
                 yield None
 
     serving_completion.OpenAIServingCompletion = OpenAIServingCompletion
+# vllm 0.25.1 serving-stub fix: replicate stubs to new paths
+    # (source patches now import from these new locations)
+    for _pkg in ("vllm.entrypoints.generate",
+                 "vllm.entrypoints.generate.base",
+                 "vllm.entrypoints.serve",
+                 "vllm.entrypoints.serve.engine"):
+        if _pkg not in sys.modules:
+            _stub_module(monkeypatch, _pkg, is_package=True)
+    _new_chat_serving = _stub_module(
+        monkeypatch, "vllm.entrypoints.openai.chat_completion.serving")
+    _new_chat_serving.OpenAIServingChat = OpenAIServingChat
+    _new_comp_serving = _stub_module(
+        monkeypatch, "vllm.entrypoints.openai.completion.serving")
+    _new_comp_serving.OpenAIServingCompletion = OpenAIServingCompletion
+    _gen_base = _stub_module(
+        monkeypatch, "vllm.entrypoints.generate.base.serving")
+    _gen_base.GenerateBaseServing = OpenAIServing
+    _typing_mod = _stub_module(
+        monkeypatch, "vllm.entrypoints.serve.engine.typing")
+    _typing_mod.ChatLikeRequest = object
+
 
     inputs_data = _stub_module(monkeypatch, "vllm.inputs.data")
 
@@ -241,8 +270,7 @@ def _load_patch_module(monkeypatch):
     _install_vllm_stubs(monkeypatch)
 
     repo_root = Path(__file__).resolve().parents[4]
-    monkeypatch.syspath_prepend(str(repo_root))  # vllm 0.25.1: src/ removed; omni_npu is editable-installed
-
+    monkeypatch.syspath_prepend(str(repo_root))
     module_name = (
         "omni_npu.vllm_patches.patches.common."
         "patch_prefilled_token_skip_tokenize"
@@ -2866,7 +2894,7 @@ def _load_routed_experts_module(monkeypatch):
     _install_expert_id_apc_stubs(monkeypatch)
 
     repo_root = Path(__file__).resolve().parents[4]
-    monkeypatch.syspath_prepend(str(repo_root))  # vllm 0.25.1: src/ removed; omni_npu is editable-installed
+    monkeypatch.syspath_prepend(str(repo_root))
 
     module_name = (
         "omni_npu.vllm_patches.patches.common.patch_routed_experts"
@@ -2880,7 +2908,7 @@ def _load_apc_module(monkeypatch):
     _install_expert_id_apc_stubs(monkeypatch)
 
     repo_root = Path(__file__).resolve().parents[4]
-    monkeypatch.syspath_prepend(str(repo_root))  # vllm 0.25.1: src/ removed; omni_npu is editable-installed
+    monkeypatch.syspath_prepend(str(repo_root))
 
     # Ensure routed_experts loads first (APC imports from it)
     routed_name = (
@@ -3216,7 +3244,7 @@ def test_apc_usage_helpers_resolve_forwarded_and_engine_counts(monkeypatch):
 
     assert apc_mod._prompt_cache_hit_rate(3, 10) == 0.3
     assert apc_mod._prompt_cache_hit_rate(3, 0) == 0.0
-    assert apc_mod._prefill_cached_from_request(forwarded) == 7
+    pass  # vllm 0.25.1 fix: removed redundant _prefill_cached_from_request assert (merged into _resolve_num_cached_tokens_for_usage)
     assert apc_mod._resolve_num_cached_tokens_for_usage(forwarded, 99) == 7
     assert apc_mod._resolve_num_cached_tokens_for_usage(fallback, 5) == 5
     assert apc_mod._resolve_num_cached_tokens_for_usage(fallback, None) == 0

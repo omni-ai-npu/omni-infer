@@ -69,8 +69,6 @@ def mla_setup():
         pass
     attn_backend_mod.MLAAttentionImpl = MLAAttentionImpl
 
-    # vLLM 0.25.1: copy missing public attrs from real modules so transitive
-    # imports still resolve. Test overrides above remain in place.
     import importlib as _importlib
 
     try:

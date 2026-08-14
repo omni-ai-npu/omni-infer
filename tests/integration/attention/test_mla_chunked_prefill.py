@@ -412,6 +412,8 @@ def test_mla_chunked_prefill_matches_full_attention(
             return NUM_HEADS
 
     vllm_config = SimpleNamespace(
+        cache_config=SimpleNamespace(cache_dtype="auto"),
+        attention_config=SimpleNamespace(use_non_causal=False),
         scheduler_config=SimpleNamespace(max_num_seqs=batch_size),
         model_config=DummyModelConfig(),
         parallel_config=SimpleNamespace(

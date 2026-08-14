@@ -8,12 +8,14 @@ from collections.abc import AsyncIterator, Mapping
 from typing import Any, AsyncGenerator, Optional, Callable
 
 from vllm.entrypoints.chat_utils import ChatCompletionMessageParam, ChatTemplateContentFormatOption
-from vllm.entrypoints.openai.protocol import (
+from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionRequest,
     ChatCompletionResponse,
-    ErrorResponse, ResponsesRequest,
 )
-from vllm.entrypoints.openai.serving_engine import OpenAIServing, ChatLikeRequest
+from vllm.entrypoints.openai.engine.protocol import ErrorResponse
+from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
+from vllm.entrypoints.generate.base.serving import GenerateBaseServing as OpenAIServing
+from vllm.entrypoints.serve.engine.typing import ChatLikeRequest
 from vllm.inputs.data import PromptType, TokensPrompt
 from vllm.tool_parsers import ToolParser
 from vllm.tokenizers import TokenizerLike
@@ -22,8 +24,8 @@ from vllm.lora.request import LoRARequest
 from vllm.outputs import RequestOutput, CompletionOutput
 from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.request import Request
-from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
-from vllm.entrypoints.openai.serving_engine import OpenAIServing
+from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+from vllm.entrypoints.generate.base.serving import GenerateBaseServing as OpenAIServing
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.engine.async_llm import AsyncLLM
 

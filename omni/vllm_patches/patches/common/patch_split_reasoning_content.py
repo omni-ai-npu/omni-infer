@@ -37,7 +37,7 @@ import json
 import re
 from itertools import count
 
-from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
+from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
 from vllm.logger import logger
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch

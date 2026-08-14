@@ -116,7 +116,7 @@ def _load_module(monkeypatch, module_name: str):
         "omni_npu.vllm_patches.patches.models.pangu_v2_hybrid")
     if module_name.startswith(package_name + ".") and package_name not in sys.modules:
         package = types.ModuleType(package_name)
-        package.__path__ = [str(Path(__file__).resolve().parents[5] / "omni" /  # vllm 0.25.1: src/omni_npu -> omni
+        package.__path__ = [str(Path(__file__).resolve().parents[5] / "omni" /
                                 "vllm_patches" / "patches" /
                                 "models" / "pangu_v2_hybrid")]
         monkeypatch.setitem(sys.modules, package_name, package)

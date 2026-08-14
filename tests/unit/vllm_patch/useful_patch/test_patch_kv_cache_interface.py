@@ -99,7 +99,10 @@ def test_mome_page_size_memory_and_uniformity():
     spec = _mome()
     assert spec.num_total_tokens == 4
     assert spec.page_size_bytes == (2 + 3 + 4) * 2 * 4
-    config = SimpleNamespace(model_config=SimpleNamespace(max_model_len=17))
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(max_model_len=17),
+        scheduler_config=SimpleNamespace(max_num_batched_tokens=12),  # vllm 0.25.1 A-tier fix: N=12 (num_retained=2, num_tokens=14, cdiv(14,4)=4, max_blocks=4+1+0=5)
+    )
     assert spec.max_memory_usage_bytes(config) == 5 * spec.page_size_bytes
 
     same_total = _mome(kernel_size=4, num_spec_tokens=1)

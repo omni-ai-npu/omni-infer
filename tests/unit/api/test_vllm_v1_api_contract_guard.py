@@ -53,7 +53,7 @@ def test_worker_wrapper_base_contract():
         "execute_model",
         "reset_mm_cache",
         "shutdown",
-    ]:  # vllm 0.25.1: signature drift — execute_method removed
+    ]:
         assert hasattr(cls, name)
 
     # 锁部分关键方法签名（避免调用方崩溃）
@@ -228,7 +228,7 @@ def test_api_server_bootstrap_contract():
     from vllm.entrypoints.openai.api_server import build_app, init_app_state
 
     b_sig = inspect.signature(build_app)
-    assert list(b_sig.parameters.keys()) == ["args", "supported_tasks", "model_config"]  # vllm 0.25.1: signature drift
+    assert list(b_sig.parameters.keys()) == ["args", "supported_tasks", "model_config"]
 
     i_sig = inspect.signature(init_app_state)
     assert list(i_sig.parameters.keys()) == ["engine_client", "state", "args"]
@@ -329,7 +329,7 @@ def test_engine_core_proc_contract():
         "executor_class",
         "log_stats",
         "client_handshake_address",
-        "tensor_queue",  # vllm 0.25.1: signature drift
+        "tensor_queue",
         "engine_index",
     ]
     p = sig.parameters
@@ -364,7 +364,7 @@ def test_core_engine_proc_manager_contract():
     sig = inspect.signature(CoreEngineProcManager.__init__)
     assert list(sig.parameters.keys()) == [
         "self",
-        "local_engine_count",  # vllm 0.25.1: signature drift — target_fn removed
+        "local_engine_count",
         "start_index",
         "local_start_index",
         "vllm_config",

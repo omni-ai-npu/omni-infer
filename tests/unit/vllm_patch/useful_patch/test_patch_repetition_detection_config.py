@@ -156,7 +156,11 @@ class _VLLMPatch:
 def _register_patch(name, target):
     def decorator(cls):
         cls._target = target
-        REGISTERED.append((name, target, cls))
+        # vllm 0.25.1 A-tier fix: _register_patch dedup — _load_patch() is invoked twice
+        # (module-level line 238 + module fixture line 530); dedupe by patch name
+        # so REGISTERED doesn't double-fill and trip apply() 'already patched' guard.
+        if not any(existing_name == name for existing_name, _, _ in REGISTERED):
+            REGISTERED.append((name, target, cls))
         return cls
 
     return decorator
@@ -271,6 +275,14 @@ def _reset():
     PATCH._PROCESS_DEFAULT = None
     PATCH._env_default = PATCH._ENV_DEFAULT_UNRESOLVED
     ENVS.OMNI_REPETITION_DETECTION_CONFIG = None
+    # vllm 0.25.1 A-tier fix: clear stub VLLMPatch.apply()'s 'already patched' tracking so re-apply works across tests
+    for _, target, cls in REGISTERED:
+        if hasattr(target, "_omni_npu_applied_patches"):
+            target._omni_npu_applied_patches.clear()
+    # vllm 0.25.1 A-tier fix: clear stub VLLMPatch.apply()'s 'already patched' tracking so re-apply works across tests
+    for _, target, cls in REGISTERED:
+        if hasattr(target, "_omni_npu_applied_patches"):
+            target._omni_npu_applied_patches.clear()
 
 
 def _parser():

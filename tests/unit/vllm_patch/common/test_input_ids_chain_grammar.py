@@ -59,6 +59,14 @@ def _install_chat_stubs(monkeypatch):
         lambda messages, *_a, **_kw: (messages, _ready_value(None), None))
 
     protocol = _stub_module(monkeypatch, "vllm.entrypoints.openai.protocol")
+    for _parent in ("chat_completion", "completion", "responses", "engine", "models"):
+        _stub_module(monkeypatch, f"vllm.entrypoints.openai.{_parent}", is_package=True)
+    _PROTO_BY_SUBPATH = {'chat_completion.protocol': ['ChatCompletionNamedToolChoiceParam', 'ChatCompletionRequest', 'ChatCompletionResponse', 'ChatCompletionResponseChoice', 'ChatCompletionResponseStreamChoice'], 'completion.protocol': ['CompletionRequest', 'CompletionResponse', 'CompletionResponseChoice', 'CompletionResponseStreamChoice'], 'responses.protocol': ['ResponsesRequest'], 'engine.protocol': ['ErrorResponse', 'GenerationError', 'PromptTokenUsageInfo', 'RequestResponseMetadata']}
+    for _subpath, _names in _PROTO_BY_SUBPATH.items():
+        _sub = _stub_module(monkeypatch, f"vllm.entrypoints.openai.{_subpath}")
+        for _name in _names:
+            setattr(_sub, _name, type(_name, (), {}))
+            setattr(protocol, _name, getattr(_sub, _name))  # back-compat for legacy import path
 
     class ChatCompletionRequest:
         model_fields = {}
@@ -97,6 +105,27 @@ def _install_chat_stubs(monkeypatch):
             return ["orig"], [{"prompt_token_ids": [9, 9]}]
         
     serving_engine.OpenAIServing = OpenAIServing
+
+    for _pkg in ("vllm.entrypoints.generate",
+                 "vllm.entrypoints.generate.base",
+                 "vllm.entrypoints.serve",
+                 "vllm.entrypoints.serve.engine"):
+        if _pkg not in sys.modules:
+            _stub_module(monkeypatch, _pkg, is_package=True)
+    _new_chat_serving = _stub_module(
+        monkeypatch, "vllm.entrypoints.openai.chat_completion.serving")
+    _new_chat_serving.OpenAIServingChat = OpenAIServingChat
+    _new_comp_serving = _stub_module(
+        monkeypatch, "vllm.entrypoints.openai.completion.serving")
+    class _DummyCompletion(OpenAIServing):
+        pass
+    _new_comp_serving.OpenAIServingCompletion = _DummyCompletion
+    _gen_base = _stub_module(
+        monkeypatch, "vllm.entrypoints.generate.base.serving")
+    _gen_base.GenerateBaseServing = OpenAIServing
+    _typing_mod = _stub_module(
+        monkeypatch, "vllm.entrypoints.serve.engine.typing")
+    _typing_mod.ChatLikeRequest = object
 
     inputs_data = _stub_module(monkeypatch, "vllm.inputs.data")
 

@@ -46,9 +46,10 @@ except Exception:  # noqa: BLE001
     parse_chat_messages_futures = None
     resolve_chat_template_content_format = None
 
-from vllm.entrypoints.openai.protocol import ChatCompletionRequest, ResponsesRequest
-from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
-from vllm.entrypoints.openai.serving_engine import ChatLikeRequest
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
+from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+from vllm.entrypoints.serve.engine.typing import ChatLikeRequest
 from vllm.inputs.data import TokensPrompt
 from vllm.tokenizers import TokenizerLike
 from vllm.tool_parsers import ToolParser

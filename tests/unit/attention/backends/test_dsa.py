@@ -230,6 +230,7 @@ class TestNPUDSAMetadataBuilder(unittest.TestCase):
         metadata_ref = weakref.ref(metadata)
 
         del metadata
+        import gc; gc.collect()
 
         self.assertIsNone(metadata_ref())
 

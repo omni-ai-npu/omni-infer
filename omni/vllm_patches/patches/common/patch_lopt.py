@@ -5,7 +5,7 @@ import argparse
 
 from vllm import EngineArgs
 from vllm.config import ModelConfig
-from vllm.entrypoints.openai.serving_engine import OpenAIServing
+from vllm.entrypoints.generate.base.serving import GenerateBaseServing as OpenAIServing
 from vllm.logger import init_logger
 import vllm.tokenizers as _vllm_tokenizers_module
 

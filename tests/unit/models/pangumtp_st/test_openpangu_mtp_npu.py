@@ -139,7 +139,8 @@ def _make_npu_vllm_cfg(hf_config=None):
         cache_config=SimpleNamespace(block_size=16, gpu_memory_utilization=0.3,
                                       swap_space=0, cache_dtype="auto",
                                       enable_prefix_caching=False,
-                                      calculate_kv_scales=False),
+                                      calculate_kv_scales=False,
+                                      user_specified_block_size=None),
         parallel_config=SimpleNamespace(
             tensor_parallel_size=1, data_parallel_size=1, pipeline_parallel_size=1,
             enable_expert_parallel=False,

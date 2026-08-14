@@ -134,6 +134,7 @@ class DummyModelConfig:
 class DummyAttentionConfig:
     def __init__(self):
         self.backend = "dummy"
+        self.use_non_causal = False
 
 
 class DummyVllmConfig:

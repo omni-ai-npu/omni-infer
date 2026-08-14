@@ -21,9 +21,10 @@ from pydantic import Field
 import vllm.sampling_params as sampling_params_module
 from vllm import EngineArgs, SamplingParams
 from vllm.config import VllmConfig
-from vllm.entrypoints.openai.protocol import ChatCompletionRequest, CompletionRequest
-from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
-from vllm.entrypoints.openai.serving_completion import OpenAIServingCompletion
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+from vllm.entrypoints.openai.completion.protocol import CompletionRequest
+from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+from vllm.entrypoints.openai.completion.serving import OpenAIServingCompletion
 from vllm.logger import logger
 from vllm.v1.core.sched.utils import check_stop as _original_check_stop
 from vllm.v1.engine import FinishReason

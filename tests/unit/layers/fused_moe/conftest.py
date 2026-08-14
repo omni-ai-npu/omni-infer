@@ -156,7 +156,6 @@ def _stub_fused_moe_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     fused_moe_layer_module = _ensure_module(monkeypatch, "vllm.model_executor.layers.fused_moe.layer")
 
     class FusedMoE(_Registerable):
-        # vllm 0.25.1: factory-style FusedMoE stub
         def __init__(self, *args, **kwargs):
             # accept anything the factory passes; tests usually __new__
             for k, v in kwargs.items():
@@ -179,7 +178,6 @@ def _stub_fused_moe_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     fused_moe_layer_module.UnquantizedFusedMoEMethod = UnquantizedFusedMoEMethod
     fused_moe_layer_module.FusedMoeWeightScaleSupported = FusedMoeWeightScaleSupported
 
-    # vllm 0.25.1: mirror stubs onto the package for top-level import
     fused_moe_pkg.FusedMoE = FusedMoE
     fused_moe_pkg.UnquantizedFusedMoEMethod = UnquantizedFusedMoEMethod
     fused_moe_pkg.FusedMoeWeightScaleSupported = FusedMoeWeightScaleSupported
@@ -213,7 +211,6 @@ def _stub_fused_moe_deps(monkeypatch: pytest.MonkeyPatch) -> None:
 
     routed_experts_capturer_module.RoutedExpertsCapturer = RoutedExpertsCapturer
 
-    # vllm 0.25.1: stub runner.moe_runner.MoERunner
     runner_pkg = _ensure_module(monkeypatch, "vllm.model_executor.layers.fused_moe.runner")
     runner_pkg.__path__ = []
     moe_runner_module = _ensure_module(

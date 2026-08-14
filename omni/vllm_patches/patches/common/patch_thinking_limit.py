@@ -13,7 +13,7 @@ import vllm.config as vllm_config_module
 from pydantic import Field
 from vllm import EngineArgs, SamplingParams
 from vllm.config import VllmConfig
-from vllm.entrypoints.openai.protocol import ChatCompletionRequest
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.logger import logger
 from vllm.v1.engine.input_processor import InputProcessor
 from vllm.v1.sample.metadata import SamplingMetadata
