@@ -32,20 +32,33 @@ import shutil
 terminal_width = shutil.get_terminal_size().columns
 
 
+# Guards against regenerating once per process. start_single_node_api_servers is the real
+# entry point (the __main__ block below is only one of its callers -- Ray/RL brings the
+# servers up by importing the function), and it may be called several times in one process.
+_ub_endpoint_configs_ready = False
+
+
 def prepare_ub_endpoint_configs():
     """Regenerate the UB endpoint configs the hixl backend links through.
 
-    Every launch path reaches this script, so generating here covers them all; doing it on
-    every start also keeps the configs from going stale after a device reallocation. Gated
-    on the same switch the consumer reads, so platforms without UB (A2/A3) skip it.
+    Called from start_single_node_api_servers rather than from __main__, because importing
+    that function is itself a launch path (Ray / RL WorkerDict, OmniInferEngine) and those
+    callers never execute __main__. Doing it on every fresh process also keeps the configs
+    from going stale after a device reallocation. Gated on the same switch the consumer
+    reads, so platforms without UB (A2/A3) skip it.
 
     The resolved directory is written back to os.environ so the api server processes, which
     read the same variable, agree with the generator. That only reaches this process tree:
     workers brought up by a separate runtime (Ray actors, other nodes) do not inherit it and
     fall back to /etc/hixlep, so keep that path writable when running under such a runtime.
     """
+    global _ub_endpoint_configs_ready
+    if _ub_endpoint_configs_ready:
+        return
+
     if os.getenv("HIXL_LOCAL_COMM_RES_ENABLE", "false").lower() in ("0", "false", "no"):
         print("HIXL_LOCAL_COMM_RES_ENABLE off, skipping UB endpoint config generation")
+        _ub_endpoint_configs_ready = True
         return
 
     endpoint_dir = os.getenv("HIXLP_ENDPOINT_PATH", "/etc/hixlep")
@@ -79,6 +92,7 @@ def prepare_ub_endpoint_configs():
         raise RuntimeError(
             f"failed to generate endpoint configs in {endpoint_dir}, "
             f"the hixl link would fail at runtime")
+    _ub_endpoint_configs_ready = True
 
 
 def is_port_available(port, host="0.0.0.0"):
@@ -158,6 +172,11 @@ def start_single_node_api_servers(
     use_inventory_devices=False,
 ):
     """Start multiple VLLM API servers with specified configurations."""
+
+    # Before anything is spawned: the servers read HIXLP_ENDPOINT_PATH out of the environment
+    # this call resolves, and a missing config silently drops the transfer backend back to
+    # the default one instead of hixl.
+    prepare_ub_endpoint_configs()
 
     # Hard code dp=1, cuz current we want one api server one DP
     dp_per_server = 1
@@ -374,8 +393,6 @@ if __name__ == "__main__":
         raise ValueError(
             "Number of DP should be larger or eaqual to number of API servers."
         )
-
-    prepare_ub_endpoint_configs()
 
     processes, process_manager, _ = start_single_node_api_servers(
         num_servers=args.num_servers,
