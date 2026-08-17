@@ -413,14 +413,17 @@ def test_mla_chunked_prefill_matches_full_attention(
 
     vllm_config = SimpleNamespace(
         cache_config=SimpleNamespace(cache_dtype="auto"),
-        attention_config=SimpleNamespace(use_non_causal=False),
+        attention_config=SimpleNamespace(use_non_causal=False, use_prefill_query_quantization=False),
         scheduler_config=SimpleNamespace(max_num_seqs=batch_size),
         model_config=DummyModelConfig(),
         parallel_config=SimpleNamespace(
             cp_kv_cache_interleave_size=1,
             decode_context_parallel_size=1,
         ),
-        compilation_config=SimpleNamespace(max_cudagraph_capture_size=0),
+        compilation_config=SimpleNamespace(
+            max_cudagraph_capture_size=0,
+            static_forward_context={"layer0": SimpleNamespace(prefill_backend=SimpleNamespace(clone=lambda: None))},
+        ),
         kv_transfer_config=None,
         speculative_config=None,
     )

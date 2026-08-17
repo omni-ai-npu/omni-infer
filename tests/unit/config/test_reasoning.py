@@ -47,34 +47,46 @@ class TestReasoningConfig(unittest.TestCase):
             d = ReasoningConfig.as_argparse_dict()
         self.assertIn("Reasoning configuration.", d["help"])
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
-    def test_initialize_token_ids_short_circuit_already_set(self, mock_tok: MagicMock) -> None:
+    def test_initialize_token_ids_short_circuit_already_set(
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
+    ) -> None:
         cfg = ReasoningConfig()
         cfg._reasoning_start_token_ids = [1]
         cfg._reasoning_end_token_ids = [2]
         cfg.initialize_token_ids(self.model_config)
-        mock_tok.assert_not_called()
+        mock_omni_tok.assert_not_called()
+        mock_vllm_tok.assert_not_called()
         self.assertTrue(cfg.enabled)
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
-    def test_initialize_token_ids_missing_start_no_tokenizer(self, mock_tok: MagicMock) -> None:
+    def test_initialize_token_ids_missing_start_raises(
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
+    ) -> None:
         cfg = ReasoningConfig(reasoning_end_str="</t>")
-        cfg.initialize_token_ids(self.model_config)
-        mock_tok.assert_not_called()
-        self.assertFalse(cfg.enabled)
+        with self.assertRaises(KeyError):
+            cfg.initialize_token_ids(self.model_config)
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
-    def test_initialize_token_ids_missing_end_no_tokenizer(self, mock_tok: MagicMock) -> None:
+    def test_initialize_token_ids_missing_end_raises(
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
+    ) -> None:
         cfg = ReasoningConfig(reasoning_start_str="<t>")
-        cfg.initialize_token_ids(self.model_config)
-        mock_tok.assert_not_called()
-        self.assertFalse(cfg.enabled)
+        with self.assertRaises(KeyError):
+            cfg.initialize_token_ids(self.model_config)
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
-    def test_initialize_token_ids_uses_think_alias_strings(self, mock_tok: MagicMock) -> None:
+    def test_initialize_token_ids_uses_think_alias_strings(
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
+    ) -> None:
         mock_enc = MagicMock()
         mock_enc.encode.side_effect = lambda s, add_special_tokens=False: [10] if s == "<a>" else [20]
-        mock_tok.return_value = mock_enc
+        mock_omni_tok.return_value = mock_enc
+        mock_vllm_tok.return_value = mock_enc
 
         cfg = ReasoningConfig(think_start_str="<a>", think_end_str="<b>")
         cfg.initialize_token_ids(self.model_config)
@@ -82,15 +94,19 @@ class TestReasoningConfig(unittest.TestCase):
         self.assertEqual(cfg.reasoning_start_token_ids, [10])
         self.assertEqual(cfg.reasoning_end_token_ids, [20])
         self.assertTrue(cfg.enabled)
-        mock_tok.assert_called_once_with(model_config=self.model_config)
+        mock_vllm_tok.assert_called_once_with(model_config=self.model_config)
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
-    def test_initialize_token_ids_reasoning_str_over_alias(self, mock_tok: MagicMock) -> None:
+    def test_initialize_token_ids_reasoning_str_over_alias(
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
+    ) -> None:
         mock_enc = MagicMock()
         mock_enc.encode.side_effect = (
             lambda s, add_special_tokens=False: [1] if s == "RS" else [2] if s == "RE" else [99]
         )
-        mock_tok.return_value = mock_enc
+        mock_omni_tok.return_value = mock_enc
+        mock_vllm_tok.return_value = mock_enc
 
         cfg = ReasoningConfig(
             reasoning_start_str="RS",
@@ -104,39 +120,47 @@ class TestReasoningConfig(unittest.TestCase):
         self.assertEqual(cfg.reasoning_start_token_ids, [1])
         self.assertEqual(cfg.reasoning_end_token_ids, [2])
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
-    def test_initialize_token_ids_raises_when_encode_empty(self, mock_tok: MagicMock) -> None:
+    def test_initialize_token_ids_raises_when_encode_empty(
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
+    ) -> None:
         mock_enc = MagicMock()
         mock_enc.encode.return_value = []
-        mock_tok.return_value = mock_enc
+        mock_omni_tok.return_value = mock_enc
+        mock_vllm_tok.return_value = mock_enc
 
         cfg = ReasoningConfig(reasoning_start_str="<x>", reasoning_end_str="<y>")
         with self.assertRaises(ValueError) as ctx:
             cfg.initialize_token_ids(self.model_config)
         self.assertIn("failed to tokenize", str(ctx.exception))
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_start_token_id_not_resolved_when_ban_off(
-        self, mock_tok: MagicMock
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
     ) -> None:
         """Ban off → resolution skipped, field stays None even if vocab has the key."""
         mock_enc = MagicMock()
         mock_enc.encode.side_effect = lambda s, add_special_tokens=False: [1] if s == "<s>" else [2]
         mock_enc.get_vocab.return_value = {"<|tool_call_start|>": 999}
-        mock_tok.return_value = mock_enc
+        mock_omni_tok.return_value = mock_enc
+        mock_vllm_tok.return_value = mock_enc
 
         cfg = ReasoningConfig(reasoning_start_str="<s>", reasoning_end_str="<e>")
         cfg.initialize_token_ids(self.model_config)
         self.assertIsNone(cfg.tool_call_start_token_id)
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_start_token_id_resolved_when_ban_on(
-        self, mock_tok: MagicMock
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
     ) -> None:
         mock_enc = MagicMock()
         mock_enc.encode.side_effect = lambda s, add_special_tokens=False: [1] if s == "<s>" else [2]
         mock_enc.get_vocab.return_value = {"<|tool_call_start|>": 999}
-        mock_tok.return_value = mock_enc
+        mock_omni_tok.return_value = mock_enc
+        mock_vllm_tok.return_value = mock_enc
 
         cfg = ReasoningConfig(
             reasoning_start_str="<s>",
@@ -146,15 +170,17 @@ class TestReasoningConfig(unittest.TestCase):
         cfg.initialize_token_ids(self.model_config)
         self.assertEqual(cfg.tool_call_start_token_id, 999)
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_start_token_id_falls_back_to_unused11(
-        self, mock_tok: MagicMock
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
     ) -> None:
         mock_enc = MagicMock()
         mock_enc.encode.side_effect = lambda s, add_special_tokens=False: [1] if s == "<s>" else [2]
         # No <|tool_call_start|>, but [unused11] is present.
         mock_enc.get_vocab.return_value = {"[unused11]": 11}
-        mock_tok.return_value = mock_enc
+        mock_omni_tok.return_value = mock_enc
+        mock_vllm_tok.return_value = mock_enc
 
         cfg = ReasoningConfig(
             reasoning_start_str="<s>",
@@ -164,14 +190,16 @@ class TestReasoningConfig(unittest.TestCase):
         cfg.initialize_token_ids(self.model_config)
         self.assertEqual(cfg.tool_call_start_token_id, 11)
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_start_token_id_none_when_no_key(
-        self, mock_tok: MagicMock
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
     ) -> None:
         mock_enc = MagicMock()
         mock_enc.encode.side_effect = lambda s, add_special_tokens=False: [1] if s == "<s>" else [2]
         mock_enc.get_vocab.return_value = {"foo": 1, "bar": 2}
-        mock_tok.return_value = mock_enc
+        mock_omni_tok.return_value = mock_enc
+        mock_vllm_tok.return_value = mock_enc
 
         cfg = ReasoningConfig(
             reasoning_start_str="<s>",
@@ -183,28 +211,32 @@ class TestReasoningConfig(unittest.TestCase):
 
     # --- ban_tool_end_in_thinking resolution --------------------------
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_end_token_id_not_resolved_when_ban_off(
-        self, mock_tok: MagicMock
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
     ) -> None:
         """End-ban off → end id stays None even when vocab has the key."""
         mock_enc = MagicMock()
         mock_enc.encode.side_effect = lambda s, add_special_tokens=False: [1] if s == "<s>" else [2]
         mock_enc.get_vocab.return_value = {"<|tool_call_end|>": 888}
-        mock_tok.return_value = mock_enc
+        mock_omni_tok.return_value = mock_enc
+        mock_vllm_tok.return_value = mock_enc
 
         cfg = ReasoningConfig(reasoning_start_str="<s>", reasoning_end_str="<e>")
         cfg.initialize_token_ids(self.model_config)
         self.assertIsNone(cfg.tool_call_end_token_id)
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_end_token_id_resolved_when_ban_on(
-        self, mock_tok: MagicMock
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
     ) -> None:
         mock_enc = MagicMock()
         mock_enc.encode.side_effect = lambda s, add_special_tokens=False: [1] if s == "<s>" else [2]
         mock_enc.get_vocab.return_value = {"<|tool_call_end|>": 888}
-        mock_tok.return_value = mock_enc
+        mock_omni_tok.return_value = mock_enc
+        mock_vllm_tok.return_value = mock_enc
 
         cfg = ReasoningConfig(
             reasoning_start_str="<s>",
@@ -214,15 +246,17 @@ class TestReasoningConfig(unittest.TestCase):
         cfg.initialize_token_ids(self.model_config)
         self.assertEqual(cfg.tool_call_end_token_id, 888)
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_end_token_id_falls_back_to_unused12(
-        self, mock_tok: MagicMock
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
     ) -> None:
         mock_enc = MagicMock()
         mock_enc.encode.side_effect = lambda s, add_special_tokens=False: [1] if s == "<s>" else [2]
         # No <|tool_call_end|>, but [unused12] is present.
         mock_enc.get_vocab.return_value = {"[unused12]": 12}
-        mock_tok.return_value = mock_enc
+        mock_omni_tok.return_value = mock_enc
+        mock_vllm_tok.return_value = mock_enc
 
         cfg = ReasoningConfig(
             reasoning_start_str="<s>",
@@ -232,14 +266,16 @@ class TestReasoningConfig(unittest.TestCase):
         cfg.initialize_token_ids(self.model_config)
         self.assertEqual(cfg.tool_call_end_token_id, 12)
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_tool_call_end_token_id_none_when_no_key(
-        self, mock_tok: MagicMock
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
     ) -> None:
         mock_enc = MagicMock()
         mock_enc.encode.side_effect = lambda s, add_special_tokens=False: [1] if s == "<s>" else [2]
         mock_enc.get_vocab.return_value = {"foo": 1, "bar": 2}
-        mock_tok.return_value = mock_enc
+        mock_omni_tok.return_value = mock_enc
+        mock_vllm_tok.return_value = mock_enc
 
         cfg = ReasoningConfig(
             reasoning_start_str="<s>",
@@ -249,9 +285,10 @@ class TestReasoningConfig(unittest.TestCase):
         cfg.initialize_token_ids(self.model_config)
         self.assertIsNone(cfg.tool_call_end_token_id)
 
+    @patch("vllm.config.reasoning.cached_tokenizer_from_config")
     @patch("omni_npu.v1.config.reasoning.cached_tokenizer_from_config")
     def test_start_and_end_bans_resolve_independently(
-        self, mock_tok: MagicMock
+        self, mock_omni_tok: MagicMock, mock_vllm_tok: MagicMock
     ) -> None:
         """Only the start ban is on → only the start id resolves (end stays None)."""
         mock_enc = MagicMock()
@@ -260,7 +297,8 @@ class TestReasoningConfig(unittest.TestCase):
             "<|tool_call_start|>": 999,
             "<|tool_call_end|>": 888,
         }
-        mock_tok.return_value = mock_enc
+        mock_omni_tok.return_value = mock_enc
+        mock_vllm_tok.return_value = mock_enc
 
         cfg = ReasoningConfig(
             reasoning_start_str="<s>",

@@ -331,6 +331,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             query_start_loc_cpu=query_start_loc.cpu(),
             seq_lens=seq_lens,
             seq_lens_cpu=seq_lens.cpu(),
+            seq_lens_cpu_upper_bound=None,
             dcp_local_seq_lens=seq_lens,
         )
 

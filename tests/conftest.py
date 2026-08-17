@@ -6,6 +6,8 @@
 # in the test environment they can mutate omni-npu behavior or mock return
 # values in unexpected ways, so UT for omni-npu runs without them enabled.
 import importlib.metadata as _metadata
+import os
+os.environ.setdefault("VLLM_DISABLE_PYNCCL", "1")
 
 _orig_entry_points = _metadata.entry_points
 

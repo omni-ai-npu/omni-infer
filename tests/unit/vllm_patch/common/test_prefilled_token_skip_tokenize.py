@@ -3327,7 +3327,7 @@ def test_apc_chat_stream_tracks_engine_cached_and_normalizes_usage(
         monkeypatch):
     apc_mod = _load_apc_module(monkeypatch)
 
-    async def fake_orig_chat_stream(self, request, result_generator, *args):
+    async def fake_orig_chat_stream(self, request, result_generator, *args, **kwargs):
         async for _ in result_generator:
             pass
         yield 'data: {"usage": {"prompt_tokens": 10}}\n\n'
@@ -3367,7 +3367,7 @@ def test_apc_chat_full_adds_usage_details_and_merges_kv(monkeypatch):
         kv_transfer_params={},
     )
 
-    async def fake_orig_chat_full(self, request, result_generator, *args):
+    async def fake_orig_chat_full(self, request, result_generator, *args, **kwargs):
         async for _ in result_generator:
             pass
         return response
@@ -3410,7 +3410,7 @@ def test_apc_chat_full_updates_existing_usage_details_from_engine(
         kv_transfer_params={},
     )
 
-    async def fake_orig_chat_full(self, request, result_generator, *args):
+    async def fake_orig_chat_full(self, request, result_generator, *args, **kwargs):
         async for _ in result_generator:
             pass
         return response
