@@ -30,7 +30,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole)
 from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size,
-    get_tp_group)
+    get_tp_group, get_world_group)
 from vllm.envs import VLLM_RPC_TIMEOUT
 from vllm.logger import init_logger
 from vllm.utils import get_open_port
@@ -63,31 +63,23 @@ BASE_DIR = os.path.dirname(__file__)
 OX_PATH = os.environ.get("OX_PATH", os.path.join(BASE_DIR, "ox/ox"))
 OX_LOG_PATH = os.environ.get("OX_LOG_PATH", os.path.join("/data/ox_log"))
 
-# Cluster/P-node configuration
-P_NODE_LIST = os.environ.get("P_NODE_LIST", "7.150.13.67,7.150.14.143")
-
-CLUSTER_LIST = [part.strip() for part in P_NODE_LIST.split(';') if part.strip()]
-CLUSTER_SIZE = [len(part.split(',')) for part in CLUSTER_LIST][0]
-
-NODE_IP_SPECS = [ip.strip()
-              for segment in P_NODE_LIST.split(';')
-              for ip in segment.split(',')
-              if ip.strip()]
-
 BASE_PORT = int(os.environ.get("BASE_PORT", "15077"))
 ZMQ_BASE_PORT = int(os.environ.get("ZMQ_BASE_PORT", "17555"))
-
-P_NODE_PORT_LIST = ';'.join(
-    ','.join(f"{h.strip()}:{BASE_PORT}" for h in grp.split(',') if h.strip())
-    for grp in P_NODE_LIST.split(';') if grp.strip()
+# P_NODE_PORT_LIST is configured as a comma-separated P-node IP list.  OX
+# expects its dynamic shard list entries in ``ip:port`` form.
+P_NODE_PORT_LIST = ",".join(
+    f"{ip.strip()}:{BASE_PORT}"
+    for ip in os.environ.get("P_NODE_PORT_LIST", "").split(",")
+    if ip.strip()
 )
+CLUSTER_SIZE = int(os.environ.get("CLUSTER_SIZE", "1"))
 
 @dataclass
 class ReqMeta:
     local_block_ids: List[List[int]]
     remote_block_ids: List[int]
     remote_host: str
-    remote_cluster_id: str
+    remote_ox_shard_list: str
     spec_token_ids: Optional[List[int]]
     remote_dp_rank: Optional[int]
     remote_request_id: Optional[str]
@@ -114,7 +106,7 @@ class DatadistConnectorMetadata(KVConnectorMetadata):
             local_block_ids=local_block_ids,
             remote_block_ids=kv_transfer_params["remote_block_ids"],
             remote_host=kv_transfer_params["remote_host_ip"],
-            remote_cluster_id=kv_transfer_params["remote_cluster_id"],
+            remote_ox_shard_list=kv_transfer_params["remote_cluster_id"],
             spec_token_ids=kv_transfer_params["spec_token_ids"],
             remote_dp_rank=kv_transfer_params.get("remote_dp_rank", 0),
             remote_request_id=kv_transfer_params.get("remote_request_id"),
@@ -203,14 +195,14 @@ class RouterDealerClient:
         self.socket.connect(server_address)
         print(f"Connected to server at {server_address} with ID: {client_id.decode()}")
 
-    def send_request(self, request_id: str, cluster_id: int, src_id_list: List[int], dst_id_list: List[int], rank_id: int) -> bool:
+    def send_request(self, request_id: str, remote_ox_shard_list: str, src_id_list: List[int], dst_id_list: List[int], rank_id: int) -> bool:
         try:
             request_data = {
                 'request_id': request_id,
                 'table_id': rank_id,
                 'src_block_ids': src_id_list,
                 'dst_block_ids': dst_id_list,
-                'cluster_id': cluster_id
+                'remote_ox_shard_list': remote_ox_shard_list,
             }
             packed_data = msgpack.packb(request_data)
             self.socket.send(packed_data)
@@ -238,7 +230,7 @@ class RouterDealerClient:
 @dataclass
 class _SendItem:
     request_id: str
-    cluster_id: int
+    remote_ox_shard_list: str
     src_ids: List[int]
     dst_ids: List[int]
     rank_id: int
@@ -249,7 +241,7 @@ class PendingReq:
     request_id: str
     local_block_ids: List[List[int]]
     remote_block_ids: List[int]
-    dst_cluster_id: str
+    remote_ox_shard_list: str
     remote_request_id: Optional[str]
     remote_host_ip: str
     dp_rank: int
@@ -262,10 +254,10 @@ class _ZMQSendProxy:
     def __init__(self, send_q: "multiprocessing.Queue[_SendItem]"):
         self._q = send_q
 
-    def send_request(self, request_id: str, cluster_id: int, src_id_list: List[int], dst_id_list: List[int], rank_id: int) -> bool:
+    def send_request(self, request_id: str, remote_ox_shard_list: str, src_id_list: List[int], dst_id_list: List[int], rank_id: int) -> bool:
         self._q.put(_SendItem(
             request_id=request_id,
-            cluster_id=int(cluster_id),
+            remote_ox_shard_list=str(remote_ox_shard_list),
             src_ids=list(src_id_list),
             dst_ids=list(dst_id_list),
             rank_id=int(rank_id),
@@ -285,18 +277,20 @@ class LLMDataDistConnector(KVConnectorBase_V1):
         # self.datadist_config = LLMDataDistConfig(vllm_config, ignore_load_rank=True)
         self.is_prefill = vllm_config.kv_transfer_config.kv_role == "kv_producer"
         if self.is_prefill:
-            target_ip = self._get_local_ip()
-            if target_ip not in NODE_IP_SPECS:
-                raise ValueError(f"Local IP {target_ip} not found in P_NODE_LIST {P_NODE_LIST}")
-            node_idx = NODE_IP_SPECS.index(target_ip)
-            self.cluster_id_start = node_idx // CLUSTER_SIZE
-            self.host_ip = NODE_IP_SPECS[self.cluster_id_start * CLUSTER_SIZE]
-            # Resolve ZMQ port conflicts in multi-P deployments on the same machine.
+            self.cluster_id_start = 0
+            self.host_ip = self._get_local_ip()
             self.host_port = get_config_from_dict_or_env(
                 vllm_config.kv_transfer_config, "kv_port",
                 "VLLM_LLMDATADIST_ZMQ_PORT", "5568", int)
             dp_rank = vllm_config.parallel_config.data_parallel_rank
             self.host_port += dp_rank
+            # P_NODE_PORT_LIST is refreshed per P instance and already contains
+            # the complete, ordered OX endpoint list for that P instance.
+            self.ox_shard_list = P_NODE_PORT_LIST.strip() or f"{self.host_ip}:{BASE_PORT}"
+            logger.info(
+                "[DYNAMIC-TOPO] P-side uses instance-local ox_shard_list=%s",
+                self.ox_shard_list,
+            )
         else:
             # in decode instance, these twos are not used, just send some random thing to it
             self.host_ip = "127.0.0.1"
@@ -305,7 +299,8 @@ class LLMDataDistConnector(KVConnectorBase_V1):
         if role == KVConnectorRole.SCHEDULER:
             if self.is_prefill:
                 self.connector_scheduler = PrefillConnectorScheduler(
-                    vllm_config, self.cluster_id_start, self.host_ip, str(self.host_port))
+                    vllm_config, self.cluster_id_start, self.host_ip, str(self.host_port),
+                    self.ox_shard_list)
             else:
                 self.connector_scheduler = DecodeConnectorScheduler(vllm_config)
             self.connector_worker = None
@@ -419,12 +414,15 @@ class LLMDataDistConnector(KVConnectorBase_V1):
 class PrefillConnectorScheduler:
     """Implementation of Scheduler side methods (prefill)."""
 
-    def __init__(self, vllm_config, cluster_id_start: str, host_ip: str, host_port: str):
+    def __init__(self, vllm_config, cluster_id_start: str, host_ip: str, host_port: str,
+                 ox_shard_list: str = ""):
         self.vllm_config = vllm_config
         self.cluster_id_start = cluster_id_start
         self.host_ip = host_ip
         self.host_port = host_port
-        logger.info("Initializing LLMDataDist Scheduler %s %s %s", cluster_id_start, host_ip, host_port)
+        self.ox_shard_list = ox_shard_list
+        logger.info("Initializing LLMDataDist Scheduler %s %s %s ox_shard_list=%s",
+                    cluster_id_start, host_ip, host_port, ox_shard_list)
         # initialize the dict to save requests finish time
         self.requests_finish_time: Dict[str, float] = {}
 
@@ -470,7 +468,7 @@ class PrefillConnectorScheduler:
 
         return delay_free_blocks, dict(
             remote_block_ids=block_ids,
-            remote_cluster_id=self.cluster_id_start,
+            remote_cluster_id=self.ox_shard_list,
             remote_host_ip=f"tcp://{self.host_ip}:{self.host_port}",
             spec_token_ids=spec_token_ids,
             remote_dp_rank=self.vllm_config.parallel_config.data_parallel_rank,
@@ -487,6 +485,8 @@ class PrefillConnectorWorker:
         self.host_port = host_port
         self.vllm_config = vllm_config
         self.rank = get_tensor_model_parallel_rank()
+        self.tp_rank_local = get_world_group().local_rank
+        self.dp_rank = vllm_config.parallel_config.data_parallel_rank_local
         if self.rank == 0:
             self.ctx = zmq.Context()
             self.input_socket = self.ctx.socket(zmq.constants.PULL)
@@ -517,9 +517,8 @@ class PrefillConnectorWorker:
         self._start_p_server_kv_transfer(kv_pool_mmap_path, data_type, block_len_dtype, omni_cache)
 
     def _start_p_server_kv_transfer(self, kv_pool_mmap_path, data_type, block_len_dtype, omni_cache):
-        self.tp_rank_local = self.rank % (self.vllm_config.parallel_config.tensor_parallel_size // CLUSTER_SIZE)
         data_type_size = DTypeUtils.size(data_type)
-        if self.tp_rank_local == 0:
+        if self.tp_rank_local == 0 and self.dp_rank == 0:
             # TODO: 修改代码使得connector可以感知ox的异常
             cmd = [
                 str(OX_PATH),
@@ -820,7 +819,6 @@ class DecodeConnectorWorker:
             # TODO: 增加代码使得connector可以感知ox的异常
             cmd = [
                 str(OX_PATH),
-                "--shard-list", str(P_NODE_PORT_LIST),
                 "--zmq-port", end_port,
                 "--block-table-shm", str(kv_pool_mmap_path),
                 "--num-block-tables", str(omni_cache.dp_world_size_local),
@@ -906,7 +904,7 @@ class DecodeConnectorWorker:
                 self._read_blocks,
                 local_block_ids=meta.local_block_ids,
                 remote_block_ids=meta.remote_block_ids if isinstance(meta.remote_block_ids[0], int) else meta.remote_block_ids[0],
-                dst_cluster_id=meta.remote_cluster_id,
+                remote_ox_shard_list=meta.remote_ox_shard_list,
                 request_id=req_id,
                 remote_request_id=meta.remote_request_id,
                 remote_host_ip=meta.remote_host,
@@ -920,7 +918,7 @@ class DecodeConnectorWorker:
         self,
         local_block_ids: List[List[int]],
         remote_block_ids: List[int],
-        dst_cluster_id: str,
+        remote_ox_shard_list: str,
         request_id: str,
         remote_request_id: Optional[str],
         remote_host_ip: str
@@ -931,7 +929,7 @@ class DecodeConnectorWorker:
             request_id=request_id,
             local_block_ids=local_block_ids,
             remote_block_ids=remote_block_ids,
-            dst_cluster_id=dst_cluster_id,
+            remote_ox_shard_list=remote_ox_shard_list,
             remote_request_id=remote_request_id,
             remote_host_ip=remote_host_ip,
             dp_rank=self.omni_cache.dp_local_rank,
@@ -942,7 +940,7 @@ class DecodeConnectorWorker:
 
         self.zmq_client.send_request(
             request_id=request_id,
-            cluster_id=dst_cluster_id,
+            remote_ox_shard_list=remote_ox_shard_list,
             src_id_list=remote_block_ids,
             dst_id_list=local_block_ids[0],
             rank_id=self.omni_cache.dp_local_rank,
@@ -1006,7 +1004,7 @@ class DecodeConnectorWorker:
                 t0 = time.time()
                 ok = client.send_request(
                     request_id=item.request_id,
-                    cluster_id=item.cluster_id,
+                    remote_ox_shard_list=item.remote_ox_shard_list,
                     src_id_list=item.src_ids,
                     dst_id_list=item.dst_ids,
                     rank_id=item.rank_id,

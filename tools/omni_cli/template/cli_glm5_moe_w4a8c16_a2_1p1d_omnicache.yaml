@@ -589,6 +589,7 @@ all:
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OMNI_CACHE: 1
             P_NODE_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
+            P_NODE_PORT_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             TP_NNODES: 4
             DEVICE_CACHE_SCALE_RATIO: 2
             MAP_SIZE_BYTES: 536870912000
@@ -698,6 +699,7 @@ all:
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OMNI_CACHE: 1
             P_NODE_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
+            P_NODE_PORT_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             TP_NNODES: 4
             DEVICE_CACHE_SCALE_RATIO: 2
             MAP_SIZE_BYTES: 536870912000
@@ -807,6 +809,7 @@ all:
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OMNI_CACHE: 1
             P_NODE_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
+            P_NODE_PORT_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             TP_NNODES: 4
             DEVICE_CACHE_SCALE_RATIO: 2
             MAP_SIZE_BYTES: 536870912000
@@ -916,6 +919,7 @@ all:
             VLLM_WORKER_MULTIPROC_METHOD: fork
             ENABLE_OMNI_CACHE: 1
             P_NODE_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
+            P_NODE_PORT_LIST: 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
             TP_NNODES: 4
             DEVICE_CACHE_SCALE_RATIO: 2
             MAP_SIZE_BYTES: 536870912000

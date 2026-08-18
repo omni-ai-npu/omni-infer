@@ -61,13 +61,19 @@ static void ox_trace(Args &&...args)
     (std::cout << ... << args) << std::endl;
 }
 
+static bool ox_debug_logging_enabled()
+{
+    static const bool enabled = ox_env_enabled("OX_DEBUG_LOG");
+    return enabled;
+}
+
 struct RequestMessage {
     request_id_t request_id;
     table_id_t table_id;
     block_list_t src_block_ids;  // P/server side block ids
     block_list_t dst_block_ids;  // D/client side block ids
-    int cluster_id{0};           // chosen cluster index（0-based）
-    MSGPACK_DEFINE_MAP(request_id, table_id, src_block_ids, dst_block_ids, cluster_id)
+    std::string remote_ox_shard_list;  // dynamic shard endpoints (e.g. "ip1:port,ip2:port")
+    MSGPACK_DEFINE_MAP(request_id, table_id, src_block_ids, dst_block_ids, remote_ox_shard_list)
 };
 
 struct ResponseMessage {
@@ -85,15 +91,15 @@ using ConnectionChannel = concurrent_channel<asio::any_io_executor, void(boost::
 using ShardMessage = std::tuple<std::string, block_list_t>;
 using ShardChannel = concurrent_channel<asio::any_io_executor, void(boost::system::error_code, ShardMessage)>;
 
-using GroupMessage = std::tuple<client_id_t, int>;
+using GroupMessage = std::tuple<request_id_t, int, bool>;  // (request_id, rank, success)
 using GroupChannel = concurrent_channel<asio::any_io_executor, void(boost::system::error_code, GroupMessage)>;
 
 class CoroutineConnection {
 public:
     CoroutineConnection(asio::io_context &io_context, boost::asio::ip::tcp::endpoint addr, Config &config, int rank,
-        BlockTable &bt, ShardChannel &response)
-        : socket(io_context), config(config), rank(rank), addr(addr), bt(bt), request(config.get_io_context(), 128),
-          upstream(response)
+        BlockTable &bt, ShardChannel &response, size_t tp_override = 0)
+        : io_context(io_context), socket(io_context), config(config), rank(rank), addr(addr), bt(bt),
+          request(config.get_io_context(), 128), upstream(response), tp_override(tp_override)
     {}
 
     void start()
@@ -103,61 +109,113 @@ public:
 
     asio::awaitable<void> run()
     {
-        const char *phase = "connect";
-        size_t src_block_count = 0;
-        size_t dst_block_count = 0;
-        try {
-            phase = "connect";
-            co_await socket.async_connect(addr, asio::use_awaitable);
-            optimize_tcp_socket(socket);
+        const int max_connect_retries = config.max_connect_retries;
+        const int max_request_retries = config.max_request_retries;
+        std::optional<ConnectionMessage> pending_request;
+        int request_retries = 0;
 
-            while (true) {
-                phase = "receive_request";
-                auto [request_id, table_id, src_ids, dst_ids] = co_await request.async_receive(asio::use_awaitable);
-                src_block_count = src_ids.size();
-                dst_block_count = dst_ids.size();
-                if (src_ids.empty()) {
-                    // no task, return empty immediately
+        while (true) {
+            if (!pending_request) {
+                auto msg = co_await request.async_receive(asio::use_awaitable);
+                pending_request = std::move(msg);
+                request_retries = 0;
+            }
+
+            // --- Connect phase ---
+            bool connected = false;
+            for (int attempt = 0; attempt < max_connect_retries; ++attempt) {
+                try {
+                    co_await socket.async_connect(addr, asio::use_awaitable);
+                    optimize_tcp_socket(socket);
+                    connected = true;
+                    break;
+                } catch (const std::exception &e) {
+                    std::cerr << "Connect attempt " << (attempt + 1) << " to "
+                              << addr.address() << ":" << addr.port()
+                              << " failed: " << e.what() << std::endl;
+                    print_ox_backtrace(std::cerr);
+                    boost::system::error_code ec;
+                    socket.close(ec);
+                    socket = tcp::socket(io_context);
+                    if (attempt + 1 < max_connect_retries) {
+                        asio::steady_timer timer(co_await asio::this_coro::executor);
+                        timer.expires_after(std::chrono::seconds(3));
+                        co_await timer.async_wait(asio::use_awaitable);
+                    }
+                }
+            }
+
+            if (!connected) {
+                if (pending_request) {
+                    auto &[req_id, table_id, src_ids, dst_ids] = *pending_request;
+                    co_await upstream.async_send(
+                        boost::system::error_code{}, std::make_tuple(req_id, block_list_t{}), asio::use_awaitable);
+                    pending_request.reset();
+                }
+                continue;
+            }
+
+            // --- Request processing phase ---
+            try {
+                while (true) {
+                    if (!pending_request) {
+                        auto msg = co_await request.async_receive(asio::use_awaitable);
+                        pending_request = std::move(msg);
+                        request_retries = 0;
+                    }
+
+                    auto &[request_id, table_id, src_ids, dst_ids] = *pending_request;
+
+                    if (src_ids.empty()) {
+                        co_await upstream.async_send(
+                            boost::system::error_code{}, std::make_tuple(request_id, dst_ids), asio::use_awaitable);
+                        pending_request.reset();
+                        continue;
+                    }
+
+                    auto bufs = bt.get_buffers_layerwise(table_id, dst_ids, rank, tp_override);
+
+                    const uint32_t block_count_network = htonl(static_cast<uint32_t>(src_ids.size()));
+                    std::array<asio::const_buffer, 2> request_buffers = {
+                        asio::buffer(&block_count_network, sizeof(block_count_network)),
+                        asio::buffer(src_ids.data(), src_ids.size() * sizeof(block_id_t))};
+
+                    ox_trace("OX trace: request=", request_id, " event=p_transfer_start peer=", addr.address(),
+                        ":", addr.port(), " rank=", rank, " table=", table_id, " src_blocks=", src_ids.size(),
+                        " dst_blocks=", dst_ids.size());
+
+                    co_await (asio::async_write(socket, request_buffers, asio::use_awaitable) &&
+                              asio::async_read(socket, bufs, asio::use_awaitable));
+
+                    ox_trace("OX trace: request=", request_id, " event=p_transfer_done peer=", addr.address(),
+                        ":", addr.port(), " rank=", rank, " dst_blocks=", dst_ids.size());
+
+                    global_stats_update(dst_ids.size() * bt.block_tp_size());
+
                     co_await upstream.async_send(
                         boost::system::error_code{}, std::make_tuple(request_id, dst_ids), asio::use_awaitable);
-                    continue;
+                    pending_request.reset();
                 }
-                auto bufs = bt.get_buffers_layerwise(table_id, dst_ids, rank);
+            } catch (const std::exception &e) {
+                std::cerr << "OX request processing error: peer="
+                        << addr.address() << ":" << addr.port()
+                        << " retry=" << request_retries
+                        << " message=" << e.what() << std::endl;
+                print_ox_backtrace(std::cerr);
+                boost::system::error_code ec;
+                socket.close(ec);
+                socket = tcp::socket(io_context);
 
-                const uint32_t block_count_network = htonl(static_cast<uint32_t>(src_ids.size()));
-                std::array<asio::const_buffer, 2> request_buffers = {
-                    asio::buffer(&block_count_network, sizeof(block_count_network)),
-                    asio::buffer(src_ids.data(), src_ids.size() * sizeof(block_id_t))};
-                ox_trace("OX trace: request=", request_id, " event=p_transfer_start peer=", addr.address(),
-                    ":", addr.port(), " rank=", rank, " table=", table_id, " src_blocks=", src_ids.size(),
-                    " dst_blocks=", dst_ids.size());
-                phase = "write_request_read_kv";
-                co_await (asio::async_write(socket,
-                              request_buffers,
-                              asio::use_awaitable) &&
-                          asio::async_read(socket, bufs, asio::use_awaitable));
-                ox_trace("OX trace: request=", request_id, " event=p_transfer_done peer=", addr.address(),
-                    ":", addr.port(), " rank=", rank, " dst_blocks=", dst_ids.size());
-
-                global_stats_update(dst_ids.size() * bt.block_tp_size());
-
-                // return finished dst_ids
-                phase = "report_completion";
-                co_await upstream.async_send(
-                    boost::system::error_code{}, std::make_tuple(request_id, dst_ids), asio::use_awaitable);
+                if (pending_request) {
+                    ++request_retries;
+                    if (request_retries >= max_request_retries) {
+                        auto &[req_id, table_id, src_ids, dst_ids] = *pending_request;
+                        co_await upstream.async_send(
+                            boost::system::error_code{}, std::make_tuple(req_id, block_list_t{}), asio::use_awaitable);
+                        pending_request.reset();
+                    }
+                }
             }
-        } catch (const boost::system::system_error &e) {
-            std::cerr << "OX D transport error: peer=" << addr.address() << ":" << addr.port()
-                      << " phase=" << phase << " src_blocks=" << src_block_count
-                      << " dst_blocks=" << dst_block_count << " ec=" << e.code().value()
-                      << " category=" << e.code().category().name() << " message=" << e.code().message()
-                      << std::endl;
-            print_ox_backtrace(std::cerr);
-        } catch (const std::exception &e) {
-            std::cerr << "OX D request error: peer=" << addr.address() << ":" << addr.port()
-                      << " phase=" << phase << " src_blocks=" << src_block_count
-                      << " dst_blocks=" << dst_block_count << " message=" << e.what() << std::endl;
-            print_ox_backtrace(std::cerr);
         }
     }
 
@@ -170,6 +228,7 @@ public:
     }
 
 private:
+    asio::io_context &io_context;
     tcp::socket socket;
     const Config &config;
     int rank;
@@ -178,70 +237,24 @@ private:
     BlockTable &bt;
     ConnectionChannel request;
     ShardChannel &upstream;
+    size_t tp_override;
 };
-
-static bool try_connect_once_with_timeout(const boost::asio::ip::tcp::endpoint &ep, std::chrono::seconds timeout)
-{
-    using tcp = boost::asio::ip::tcp;
-
-    boost::asio::io_context ioc;
-    tcp::socket sock(ioc);
-    boost::asio::steady_timer timer(ioc);
-
-    std::atomic<bool> connected{false};
-
-    sock.async_connect(ep, [&](const boost::system::error_code &ec) {
-        if (!ec)
-            connected = true;
-        timer.cancel();
-    });
-
-    timer.expires_after(timeout);
-    timer.async_wait([&](const boost::system::error_code &ec) {
-        if (!ec) {
-            boost::system::error_code ignored;
-            sock.cancel(ignored);
-        }
-    });
-
-    ioc.run();
-
-    boost::system::error_code ignored;
-    sock.close(ignored);
-    return connected.load();
-}
 
 class TPShard {
 public:
-    TPShard(boost::asio::ip::tcp::endpoint addr, int rank, Config &config, BlockTable &bt, GroupChannel &channel)
+    TPShard(boost::asio::ip::tcp::endpoint addr, int rank, Config &config, BlockTable &bt, GroupChannel &channel,
+        size_t tp_override = 0)
         : ip(addr), rank(rank), downstream(config.get_io_context(), 128), upstream(channel)
     {
-        using namespace std::chrono;
-        const seconds overall_timeout{3600};
-        const seconds retry_interval{5};
-
         conn_per_req = config.connections_per_req;
 
         for (std::size_t i = 0; i < config.connections_per_shard; ++i) {
-            const auto deadline = steady_clock::now() + overall_timeout;
-
-            for (;;) {
-                std::cout << "Try: to build connection with P server " << addr << "..." << std::endl;
-                if (try_connect_once_with_timeout(ip, retry_interval)) {
-                    break;
-                }
-                if (steady_clock::now() >= deadline) {
-                    throw std::runtime_error(
-                        "connect timeout after 3600s to " + ip.address().to_string() + ":" + std::to_string(ip.port()));
-                }
-                std::this_thread::sleep_for(retry_interval);
-            }
-
-            std::cout << "Successfully build connection with P server " << addr << "." << std::endl;
             connections.emplace_back(
-                std::make_shared<CoroutineConnection>(config.get_io_context(), ip, config, rank, bt, downstream));
+                std::make_shared<CoroutineConnection>(config.get_io_context(), ip, config, rank, bt, downstream, tp_override));
             connections[i]->start();
         }
+        std::cout << "TPShard created for " << addr << " with " << connections.size()
+                  << " connections, tp_override=" << tp_override << std::endl;
     }
 
     asio::awaitable<void> gather(RequestMessage &req)
@@ -256,9 +269,9 @@ public:
         size_t num_conns = connections.size();
         num_conns = num_conns > conn_per_req ? conn_per_req : num_conns;
 
-        if (total_ids == 0 || num_conns == 0) {
+        if (total_ids == 0 || num_conns == 0 || req.src_block_ids.empty()) {
             co_await upstream.async_send(
-                boost::system::error_code{}, std::make_tuple(req.request_id, rank), asio::use_awaitable);
+                boost::system::error_code{}, std::make_tuple(req.request_id, rank, true), asio::use_awaitable);
             co_return;
         }
 
@@ -295,18 +308,34 @@ public:
         while (true) {
             auto [request_id, ids] = co_await downstream.async_receive(asio::use_awaitable);
 
-            requests_mutex.lock();
-            for (auto id : ids) {
-                task_status[request_id].erase(id);
+            // Empty block list signals a connection failure for this shard
+            if (ids.empty()) {
+                {
+                    std::unique_lock<std::shared_mutex> lock(requests_mutex);
+                    task_status.erase(request_id);
+                }
+                co_await upstream.async_send(
+                    boost::system::error_code{}, std::make_tuple(request_id, rank, false), asio::use_awaitable);
+                continue;
             }
 
-            if (task_status[request_id].empty()) {
+            requests_mutex.lock();
+            auto task_it = task_status.find(request_id);
+            if (task_it == task_status.end()) {
+                requests_mutex.unlock();
+                continue;
+            }
+            for (auto id : ids) {
+                task_it->second.erase(id);
+            }
+
+            if (task_it->second.empty()) {
                 ox_trace("OX trace: request=", request_id, " event=shard_complete rank=", rank,
                     " completed_blocks=", ids.size());
-                task_status.erase(request_id);
+                task_status.erase(task_it);
                 requests_mutex.unlock();
                 co_await upstream.async_send(
-                    boost::system::error_code{}, std::make_tuple(request_id, rank), asio::use_awaitable);
+                    boost::system::error_code{}, std::make_tuple(request_id, rank, true), asio::use_awaitable);
             } else {
                 requests_mutex.unlock();
             }
@@ -329,103 +358,41 @@ private:
 
 class TPGroup {
 public:
-    TPGroup(Config &config, BlockTable &bt, ZMQChannel &channel)
+    TPGroup(address_list_t &endpoints, Config &config, BlockTable &bt, ZMQChannel &channel)
         : block_size(config.block_size), downstream(config.get_io_context(), 128), bt(bt), upstream(channel),
-          merger(62, 128, 704, config.tp_size())
+          merger(62, 128, 704, endpoints.size())
     {
-        // If Config exposes shard_clusters (multi-cluster), build per cluster;
-        // otherwise fall back to single cluster from flat shard_list.
-        if (!config.shard_clusters.empty()) {
-            clusters.reserve(config.shard_clusters.size());
-            for (size_t c = 0; c < config.shard_clusters.size(); ++c) {
-                clusters.emplace_back();
-                auto &vec = clusters.back();
-                vec.reserve(config.shard_clusters[c].size());
-                for (size_t j = 0; j < config.shard_clusters[c].size(); ++j) {
-                    auto &ep = config.shard_clusters[c][j];
-                    auto shard = std::make_shared<TPShard>(ep, static_cast<int>(j), config, bt, downstream);
-                    vec.push_back(shard);
-                    co_spawn(config.get_io_context(), shard->run(), detached);
-                }
-            }
-        } else {
-            clusters.emplace_back();
-            auto &vec = clusters.back();
-            for (int rank = 0; rank < static_cast<int>(config.shard_list.size()); rank++) {
-                auto &ep = config.shard_list[rank];
-                auto shard = std::make_shared<TPShard>(ep, rank, config, bt, downstream);
-                vec.push_back(shard);
-                co_spawn(config.get_io_context(), shard->run(), detached);
-            }
+        size_t num_shards = endpoints.size();
+        clusters.emplace_back();
+        auto &vec = clusters.back();
+        for (int rank = 0; rank < static_cast<int>(num_shards); rank++) {
+            auto &ep = endpoints[rank];
+            auto shard = std::make_shared<TPShard>(ep, rank, config, bt, downstream, num_shards);
+            vec.push_back(shard);
+            co_spawn(config.get_io_context(), shard->run(), detached);
         }
-    }
-
-    asio::awaitable<void> merge_and_response(request_id_t request_id)
-    {
-        auto ex = co_await boost::asio::this_coro::executor;
-        std::vector<boost::asio::awaitable<void>> tasks;
-
-        requests_mutex.lock();
-        auto it = requests_status.find(request_id);
-        if (it == requests_status.end()) {
-            std::cout << "unexpected invalid request: " << request_id << std::endl;
-            requests_mutex.unlock();
-            co_return;
-        }
-        auto &[client_id, table_id, rank_finished, block_ids] = it->second;
-        requests_mutex.unlock();
-
-        bool failed = false;
-
-        for (auto block_id : block_ids) {
-            tasks.push_back(boost::asio::co_spawn(
-                ex,
-                [table_id, block_id, request_id, &failed, this]() -> boost::asio::awaitable<void> {
-                    void *ptr = bt.block_addr(table_id, block_id);
-
-                    void *buf = malloc(this->block_size);
-                    if (buf == nullptr) {
-                        failed = true;
-                        std::cout << "Failed allocate buffer: " << request_id << std::endl;
-                        co_return;
-                    }
-                    memcpy(buf, ptr, this->block_size);
-
-                    this->merger.merge_shards(static_cast<const short *>(buf), static_cast<short *>(ptr));
-                    free(buf);
-                    co_return;
-                },
-                boost::asio::use_awaitable));
-        }
-
-        for (auto &task : tasks) {
-            co_await std::move(task);
-        }
-
-        requests_mutex.lock();
-        client_id_t cid = client_id;
-        requests_status.erase(request_id);
-        requests_mutex.unlock();
-
-        co_await upstream.async_send(
-            boost::system::error_code{}, std::make_tuple(cid, request_id, !failed), asio::use_awaitable);
+        std::cout << "TPGroup created dynamically with " << num_shards
+                  << " shards, tp_override=" << num_shards
+                  << " (config.tp_size()=" << config.tp_size() << ")" << std::endl;
     }
 
     asio::awaitable<void> run()
     {
         try {
             while (true) {
-                auto [request_id, rank] = co_await downstream.async_receive(asio::use_awaitable);
+                auto [request_id, rank, shard_ok] = co_await downstream.async_receive(asio::use_awaitable);
 
-                // rank is the index within the cluster;
-                // the corresponding bit in the cluster's completion bitmap was already set when the request was logged.
                 requests_mutex.lock();
                 auto it = requests_status.find(request_id);
                 if (it == requests_status.end()) {
                     requests_mutex.unlock();
                     continue;
                 }
-                auto &[client_id, table_id, rank_finished, block_ids] = it->second;
+                auto &[client_id, table_id, rank_finished, block_ids, failed] = it->second;
+
+                if (!shard_ok) {
+                    failed = true;
+                }
 
                 if (rank >= 0 && static_cast<size_t>(rank) < rank_finished.size()) {
                     rank_finished[static_cast<size_t>(rank)] = true;
@@ -434,28 +401,27 @@ public:
                 if (std::all_of(rank_finished.begin(), rank_finished.end(), [](bool b) { return b; })) {
                     ox_trace("OX trace: request=", request_id, " event=request_complete rank=", rank,
                         " blocks=", block_ids.size());
+                    bool req_failed = failed;
+                    client_id_t cid = client_id;
                     requests_status.erase(request_id);
                     requests_mutex.unlock();
 
-                    client_id_t cid = client_id;
                     co_await upstream.async_send(
-                        boost::system::error_code{}, std::make_tuple(cid, request_id, true), asio::use_awaitable);
+                        boost::system::error_code{}, std::make_tuple(cid, request_id, !req_failed), asio::use_awaitable);
                 } else {
                     requests_mutex.unlock();
                 }
             }
         } catch (const std::exception &e) {
-            std::cout << "Response sender stopped: " << e.what() << std::endl;
+            std::cerr << "Response sender stopped: " << e.what() << std::endl;
+            print_ox_backtrace(std::cerr);
         }
         co_return;
     }
 
     asio::awaitable<void> gather(client_id_t client_id, RequestMessage &req)
     {
-        // Select cluster; fall back to 0 if out-of-bounds.
-        int cid = req.cluster_id;
-        if (cid < 0 || static_cast<size_t>(cid) >= clusters.size())
-            cid = 0;
+        int cid = 0;
 
         ox_trace("OX trace: request=", req.request_id, " event=request_dispatch cluster=", cid,
             " table=", req.table_id, " src_blocks=", req.src_block_ids.size(), " dst_blocks=",
@@ -463,13 +429,11 @@ public:
 
         {
             std::unique_lock<std::shared_mutex> lock(requests_mutex);
-            // Size the completion bitmap to the number of shards in the selected cluster.
             size_t shard_cnt = clusters[cid].size();
             requests_status[req.request_id] =
-                std::make_tuple(client_id, req.table_id, std::vector<bool>(shard_cnt, false), req.dst_block_ids);
+                std::make_tuple(client_id, req.table_id, std::vector<bool>(shard_cnt, false), req.dst_block_ids, false);
         }
 
-        // Send requests only to the shards of the selected cluster.
         for (auto &shard : clusters[cid]) {
             co_spawn(co_await asio::this_coro::executor, shard->gather(req), detached);
         }
@@ -477,11 +441,9 @@ public:
 
 public:
     mutable std::shared_mutex requests_mutex;
-    // request_id → (client_id, completion bitmap [within cluster])
-    std::unordered_map<request_id_t, std::tuple<client_id_t, table_id_t, std::vector<bool>, std::vector<block_id_t>>>
+    std::unordered_map<request_id_t, std::tuple<client_id_t, table_id_t, std::vector<bool>, std::vector<block_id_t>, bool>>
         requests_status;
 
-    // clusters[c] holds the TPShard instances within that cluster.
     std::vector<std::vector<std::shared_ptr<TPShard>>> clusters;
 
     const size_t block_size;
@@ -492,6 +454,55 @@ public:
 };
 
 std::unordered_map<request_id_t, std::tuple<int, std::chrono::high_resolution_clock::time_point>> time_record;
+
+// Dynamic connection pool: maps shard_list string -> TPGroup
+class TPGroupManager {
+public:
+    TPGroupManager(Config &config, BlockTable &bt, ZMQChannel &channel)
+        : config(config), bt(bt), channel(channel) {}
+
+    std::shared_ptr<TPGroup> get_or_create(const std::string &shard_list_str)
+    {
+        if (shard_list_str.empty()) {
+            throw std::invalid_argument("remote_ox_shard_list must not be empty");
+        }
+
+        {
+            std::shared_lock<std::shared_mutex> rlock(mutex);
+            auto it = groups.find(shard_list_str);
+            if (it != groups.end()) {
+                return it->second;
+            }
+        }
+
+        std::unique_lock<std::shared_mutex> wlock(mutex);
+        auto it = groups.find(shard_list_str);
+        if (it != groups.end()) {
+            return it->second;
+        }
+
+        address_list_t endpoints = parse_address_list(shard_list_str);
+        if (endpoints.empty()) {
+            throw std::invalid_argument(
+                "remote_ox_shard_list contains no valid endpoints");
+        }
+        auto group = std::make_shared<TPGroup>(endpoints, config, bt, channel);
+        co_spawn(config.get_io_context(), group->run(), detached);
+        groups[shard_list_str] = group;
+        if (ox_debug_logging_enabled()) {
+            std::cout << "[DYNAMIC-TOPO] TPGroupManager: created new group for "
+                      << shard_list_str << " (" << endpoints.size() << " shards)" << std::endl;
+        }
+        return group;
+    }
+
+private:
+    mutable std::shared_mutex mutex;
+    std::unordered_map<std::string, std::shared_ptr<TPGroup>> groups;
+    Config &config;
+    BlockTable &bt;
+    ZMQChannel &channel;
+};
 
 asio::awaitable<void> response_sender(ZmqCoroutineSocket &router_socket, ZMQChannel &response_channel)
 {
@@ -513,11 +524,12 @@ asio::awaitable<void> response_sender(ZmqCoroutineSocket &router_socket, ZMQChan
             ox_trace("OX trace: request=", request_id, " event=response_sent success=", success);
         }
     } catch (const std::exception &e) {
-        std::cout << "Response sender stopped: " << e.what() << std::endl;
+        std::cerr << "Response sender stopped: " << e.what() << std::endl;
+        print_ox_backtrace(std::cerr);
     }
 }
 
-asio::awaitable<void> router_receiver(ZmqCoroutineSocket &router_socket, TPGroup &group)
+asio::awaitable<void> router_receiver(ZmqCoroutineSocket &router_socket, TPGroupManager &manager)
 {
     while (true) {
         try {
@@ -537,24 +549,29 @@ asio::awaitable<void> router_receiver(ZmqCoroutineSocket &router_socket, TPGroup
                 auto start = std::chrono::high_resolution_clock::now();
                 time_record[request.request_id] = make_tuple(request.src_block_ids.size(), start);
 
-                ox_trace("OX trace: request=", request.request_id, " event=request_received cluster=",
-                    request.cluster_id, " table=", request.table_id, " src_blocks=", request.src_block_ids.size(),
+                ox_trace("OX trace: request=", request.request_id, " event=request_received",
+                    " remote_ox_shard_list=", request.remote_ox_shard_list,
+                    " table=", request.table_id, " src_blocks=", request.src_block_ids.size(),
                     " dst_blocks=", request.dst_block_ids.size());
 
                 global_stats_update_running(1);
 
-                co_spawn(co_await asio::this_coro::executor, group.gather(client_id, request), detached);
+                auto group = manager.get_or_create(request.remote_ox_shard_list);
+                co_spawn(co_await asio::this_coro::executor, group->gather(client_id, request), detached);
             } else {
-                std::cout << "Wrong msg: " << msg->size() << std::endl;
+                std::cerr << "[DBG] router_receiver: Wrong msg size=" << msg->size() << std::endl;
+                print_ox_backtrace(std::cerr);
             }
         } catch (const std::exception &e) {
-            std::cerr << "Receiver error: " << e.what() << std::endl;
+            std::cerr << "[DBG] router_receiver error: " << e.what() << std::endl;
+            print_ox_backtrace(std::cerr);
         }
     }
 }
 
 int main(int argc, char *argv[])
 {
+    std::cout << "Omni Xfer v0.7.5 (dynamic) starting..." << std::endl;
     try {
         Config config = parse_arguments(argc, argv);
         BlockTable bt(config);
@@ -575,26 +592,22 @@ int main(int argc, char *argv[])
             co_spawn(io_context, server->run(), detached);
         }
 
-        std::shared_ptr<TPGroup> tp_group;
         ZMQChannel response_channel(io_context, 128);
         ZmqCoroutineSocket zmq_router(ZMQ_ROUTER, io_context);
 
-        if (!config.shard_list.empty() || !config.shard_clusters.empty()) {
-            tp_group = std::make_shared<TPGroup>(config, bt, response_channel);
+        auto manager = std::make_shared<TPGroupManager>(config, bt, response_channel);
 
-            std::string address = "tcp://*:" + std::to_string(config.zmq_port);
-            zmq_router.bind(address);
+        std::string address = "tcp://*:" + std::to_string(config.zmq_port);
+        zmq_router.bind(address);
 
-            co_spawn(io_context, tp_group->run(), detached);
-            co_spawn(io_context, router_receiver(zmq_router, *tp_group), detached);
-            co_spawn(io_context, response_sender(zmq_router, response_channel), detached);
+        co_spawn(io_context, router_receiver(zmq_router, *manager), detached);
+        co_spawn(io_context, response_sender(zmq_router, response_channel), detached);
 
-            if (ox_statistics_log_enabled()) {
-                co_spawn(io_context, print_statistics(), detached);
-            }
-
-            std::cout << "Omni Xfer started. ZMQ: " << address << std::endl;
+        if (ox_statistics_log_enabled()) {
+            co_spawn(io_context, print_statistics(), detached);
         }
+
+        std::cout << "Omni Xfer D started. ZMQ: " << address << std::endl;
 
         std::vector<std::thread> threads;
         for (size_t i = 0; i < config.num_threads; ++i) {
@@ -606,7 +619,8 @@ int main(int argc, char *argv[])
         for (auto &thread : threads)
             thread.join();
     } catch (const std::exception &e) {
-        std::cerr << "Exception: " << e.what() << "\n";
+        std::cerr << "main() Exception: " << e.what() << "\n";
+        print_ox_backtrace(std::cerr);
         return 1;
     }
 

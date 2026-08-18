@@ -147,10 +147,10 @@ public:
     }
 
     std::vector<boost::asio::mutable_buffer> get_buffers_layerwise(
-        table_id_t table_id, block_list_t &block_ids, int rank)
+        table_id_t table_id, block_list_t &block_ids, int rank, size_t tp_size_override = 0)
     {
         char *ptr = table_addr(table_id);
-        size_t tp_size = config.tp_size();
+        size_t tp_size = (tp_size_override > 0) ? tp_size_override : config.tp_size();
 
         std::vector<boost::asio::mutable_buffer> buffers;
         for (auto block_id : block_ids) {
