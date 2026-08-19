@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
-import os
+import functools
 import gc
+import os
+import sys
 import time
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
@@ -144,19 +146,7 @@ class NPUWorker(Worker):
             self.device = torch.device(f"npu:{visible_device_index}")
             torch.npu.set_device(self.device)
 
-            # Load the NPU-aware Triton backend after selecting the current
-            # device and before the first TorchDynamo graph compilation.
-            from vllm.triton_utils import HAS_TRITON
-
-            if HAS_TRITON:
-                import torch_npu._inductor  # noqa: F401
-
-                # torch._dynamo.utils may have imported has_triton before the
-                # torch-npu patch was installed. Refresh the stale reference.
-                from torch._dynamo import utils as dynamo_utils
-                from torch.utils import _triton as torch_triton
-
-                dynamo_utils.has_triton = torch_triton.has_triton
+            _patch_npu_triton_capabilities()
 
             current_platform.check_if_supports_dtype(self.model_config.dtype)
 
@@ -639,6 +629,55 @@ class NPUWorker(Worker):
             # capture_model() normally consumes the flag on entry; clear any
             # residual if it failed before consume or was bypassed.
             consume_aclgraph_recapture()
+
+
+def _patch_npu_triton_capabilities() -> None:
+    """Replace PyTorch's CUDA-specific Triton capability probes for NPU."""
+    from torch.utils import _triton as torch_triton
+
+    @functools.lru_cache(None)
+    def npu_has_triton() -> bool:
+        if not torch_triton.has_triton_package():
+            return False
+
+        from torch._dynamo.device_interface import get_interface_for_device
+
+        def cpu_extra_check(_device_interface) -> bool:
+            import triton.backends
+
+            return "cpu" in triton.backends.backends
+
+        def return_true(_device_interface) -> bool:
+            return True
+
+        # Match torch-npu's device-aware Triton check. In particular, do not
+        # query CUDA ``major`` through the NPU compatibility interface.
+        triton_supported_devices = {
+            "cuda": return_true,
+            "xpu": return_true,
+            "cpu": cpu_extra_check,
+            "npu": return_true,
+        }
+        for device, extra_check in triton_supported_devices.items():
+            device_interface = get_interface_for_device(device)
+            if device_interface.is_available() and extra_check(device_interface):
+                return True
+        return False
+
+    @functools.lru_cache(None)
+    def npu_device_supports_tma() -> bool:
+        # Match torch-npu's implementation without querying CUDA capability.
+        return torch.npu.is_available() and not torch.version.hip
+
+    torch_triton.has_triton = npu_has_triton
+    torch_triton._device_supports_tma = npu_device_supports_tma
+
+    # Dynamo metrics binds ``has_triton`` with ``from ... import`` before the
+    # worker selects its NPU device. Refresh that loaded alias without
+    # importing any additional Torch modules.
+    dynamo_utils = sys.modules.get("torch._dynamo.utils")
+    if dynamo_utils is not None:
+        dynamo_utils.has_triton = npu_has_triton
 
 
 def _npu_format_name(fmt) -> str:

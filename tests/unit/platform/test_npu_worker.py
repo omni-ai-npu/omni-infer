@@ -1,16 +1,196 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from contextlib import nullcontext
 
-import torch
 import pytest
+import torch
 from omni_npu.v1.utils import switch_torch_device
 from omni_npu.profiler.wrapper import _to_bool
-from omni_npu.worker.npu_worker import NPUWorker, NPUMemorySnapshot
+from omni_npu.worker.npu_worker import (
+    NPUWorker,
+    NPUMemorySnapshot,
+    _patch_npu_triton_capabilities,
+)
 from vllm.sequence import IntermediateTensors
 from vllm.v1.outputs import ModelRunnerOutput
 from tests.unit.platform.utils import create_vllm_config, DeviceConfig
+
+
+@pytest.mark.parametrize(
+    ("has_triton_package", "available_device", "expected"),
+    [
+        (False, "npu", False),
+        (True, None, False),
+        (True, "cuda", True),
+        (True, "npu", True),
+    ],
+)
+def test_patch_npu_has_triton_updates_dynamo_alias(
+    monkeypatch, has_triton_package, available_device, expected
+):
+    from torch._dynamo import device_interface
+    from torch._dynamo import utils as dynamo_utils
+    from torch.utils import _triton as torch_triton
+
+    old_has_triton = MagicMock(
+        side_effect=TypeError("NoneType cannot be compared with int")
+    )
+    stale_dynamo_has_triton = MagicMock(
+        side_effect=TypeError("NoneType cannot be compared with int")
+    )
+    old_device_supports_tma = MagicMock(
+        side_effect=TypeError("NoneType cannot be compared with tuple")
+    )
+
+    monkeypatch.setattr(torch_triton, "has_triton", old_has_triton)
+    monkeypatch.setattr(dynamo_utils, "has_triton", stale_dynamo_has_triton)
+    monkeypatch.setattr(
+        torch_triton, "_device_supports_tma", old_device_supports_tma
+    )
+    monkeypatch.setattr(
+        torch_triton, "has_triton_package", lambda: has_triton_package
+    )
+
+    get_interface_for_device = MagicMock(
+        side_effect=lambda device: SimpleNamespace(
+            is_available=lambda: device == available_device
+        )
+    )
+    monkeypatch.setattr(
+        device_interface,
+        "get_interface_for_device",
+        get_interface_for_device,
+    )
+
+    _patch_npu_triton_capabilities()
+
+    assert torch_triton.has_triton() is expected
+    assert dynamo_utils.has_triton is torch_triton.has_triton
+    old_has_triton.assert_not_called()
+    stale_dynamo_has_triton.assert_not_called()
+    if not has_triton_package:
+        get_interface_for_device.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("npu_available", "hip", "expected"),
+    [
+        (True, None, True),
+        (False, None, False),
+        (True, "hip", False),
+    ],
+)
+def test_patch_npu_device_supports_tma(
+    monkeypatch, npu_available, hip, expected
+):
+    from torch._dynamo import utils as dynamo_utils
+    from torch.utils import _triton as torch_triton
+
+    monkeypatch.setattr(
+        torch_triton, "has_triton", MagicMock(return_value=True)
+    )
+    monkeypatch.setattr(
+        dynamo_utils, "has_triton", MagicMock(return_value=True)
+    )
+    old_device_supports_tma = MagicMock(
+        side_effect=TypeError("NoneType cannot be compared with tuple")
+    )
+    monkeypatch.setattr(
+        torch_triton, "_device_supports_tma", old_device_supports_tma
+    )
+    monkeypatch.setattr("torch.npu.is_available", lambda: npu_available)
+    monkeypatch.setattr(torch.version, "hip", hip)
+
+    _patch_npu_triton_capabilities()
+
+    assert torch_triton._device_supports_tma() is expected
+    old_device_supports_tma.assert_not_called()
+
+
+def test_patch_npu_tma_probe_avoids_cuda_device_capability(monkeypatch):
+    from torch._dynamo import utils as dynamo_utils
+    from torch.utils import _triton as torch_triton
+
+    host_tma_probes = (
+        torch_triton.has_triton_experimental_host_tma,
+        torch_triton.has_triton_tensor_descriptor_host_tma,
+    )
+    monkeypatch.setattr(
+        torch_triton, "has_triton", MagicMock(return_value=True)
+    )
+    monkeypatch.setattr(
+        dynamo_utils, "has_triton", MagicMock(return_value=True)
+    )
+    monkeypatch.setattr(
+        torch_triton,
+        "_device_supports_tma",
+        MagicMock(side_effect=TypeError("NoneType cannot be compared with tuple")),
+    )
+    monkeypatch.setattr(torch_triton, "has_triton_package", lambda: True)
+    monkeypatch.setattr("torch.npu.is_available", lambda: False)
+    monkeypatch.setattr(torch.version, "hip", None)
+
+    _patch_npu_triton_capabilities()
+
+    for host_tma_probe in host_tma_probes:
+        assert host_tma_probe.__wrapped__() is False
+
+
+def test_init_device_patches_triton_capabilities_after_setting_device(monkeypatch):
+    class DtypeCheckReached(Exception):
+        pass
+
+    events = []
+
+    def logical_to_visible(local_rank):
+        events.append(("resolve_device", local_rank))
+        return 5
+
+    def make_device(spec):
+        events.append(("make_device", spec))
+        return spec
+
+    def set_device(device):
+        events.append(("set_device", device))
+
+    def patch_triton_capabilities():
+        events.append(("patch_triton_capabilities", None))
+
+    def check_dtype(dtype):
+        events.append(("check_dtype", dtype))
+        raise DtypeCheckReached
+
+    worker = SimpleNamespace(
+        device_config=SimpleNamespace(device=SimpleNamespace(type="npu")),
+        parallel_config=SimpleNamespace(distributed_executor_backend="ray"),
+        local_rank=3,
+        model_config=SimpleNamespace(dtype="float16"),
+    )
+    platform = SimpleNamespace(
+        device_type="npu",
+        logical_device_id_to_visible_device_id=logical_to_visible,
+        check_if_supports_dtype=check_dtype,
+    )
+    monkeypatch.setattr("omni_npu.worker.npu_worker.current_platform", platform)
+    monkeypatch.setattr("omni_npu.worker.npu_worker.torch.device", make_device)
+    monkeypatch.setattr("omni_npu.worker.npu_worker.torch.npu.set_device", set_device)
+    monkeypatch.setattr(
+        "omni_npu.worker.npu_worker._patch_npu_triton_capabilities",
+        patch_triton_capabilities,
+    )
+
+    init_device = getattr(NPUWorker.init_device, "__wrapped__", NPUWorker.init_device)
+    with pytest.raises(DtypeCheckReached):
+        init_device(worker)
+
+    assert events == [
+        ("resolve_device", 3),
+        ("make_device", "npu:5"),
+        ("set_device", "npu:5"),
+        ("patch_triton_capabilities", None),
+        ("check_dtype", "float16"),
+    ]
 
 
 class TestNpuWorker:
