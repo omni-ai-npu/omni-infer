@@ -136,10 +136,9 @@ class VllmConfigRepetitionDetectionPatch(VLLMPatch):
 # ────────────────────────────────────────────────────────────
 # The flag registers in time because AsyncEngineArgs.add_cli_args calls
 # load_general_plugins() -- which applies this patch -- before delegating to
-# EngineArgs.add_cli_args.
-_ORIG_ADD_CLI_ARGS = EngineArgs.add_cli_args
-_ORIG_FROM_CLI_ARGS = EngineArgs.from_cli_args.__func__
-_ORIG_CREATE_ENGINE_CONFIG = EngineArgs.create_engine_config
+# EngineArgs.add_cli_args. Other Omni patches also wrap EngineArgs, so their
+# currently-active methods must be captured at apply-time, after every patch
+# module has been imported, rather than here at module import time.
 
 
 @register_patch("OmniRepetitionDetectionEngineArgsPatch", EngineArgs)
@@ -153,9 +152,27 @@ class EngineArgsRepetitionDetectionPatch(VLLMPatch):
 
     repetition_detection: RepetitionDetectionParams | None = None
 
+    @classmethod
+    def apply(cls):
+        """Capture the active EngineArgs wrapper chain before adding ours."""
+        target = cls._target
+        cls._upstream_add_cli_args = target.add_cli_args
+        cls._upstream_from_cli_args = target.from_cli_args.__func__
+        cls._upstream_create_engine_config = target.create_engine_config
+
+        for name in cls._attr_names_to_apply:
+            if name in cls.__dict__:
+                setattr(target, name, cls.__dict__[name])
+
+        logger.info(
+            "patch applied: %s => %s (bypass-conflict)",
+            cls.__name__,
+            target.__name__,
+        )
+
     @staticmethod
     def add_cli_args(parser):
-        parser = _ORIG_ADD_CLI_ARGS(parser)
+        parser = EngineArgsRepetitionDetectionPatch._upstream_add_cli_args(parser)
         group = parser.add_argument_group(
             title="OmniNPU",
             description="omni-npu out-of-tree engine options.",
@@ -178,7 +195,9 @@ class EngineArgsRepetitionDetectionPatch(VLLMPatch):
         # Upstream rebuilds the instance from dataclasses.fields(cls), and
         # repetition_detection is a plain class attribute rather than a field,
         # so it has to be copied across by hand.
-        instance = _ORIG_FROM_CLI_ARGS(cls, args)
+        instance = EngineArgsRepetitionDetectionPatch._upstream_from_cli_args(
+            cls, args
+        )
         try:
             instance.repetition_detection = _coerce(getattr(args, _KEY, None))
         except Exception as exc:  # noqa: BLE001
@@ -187,7 +206,11 @@ class EngineArgsRepetitionDetectionPatch(VLLMPatch):
         return instance
 
     def create_engine_config(self, usage_context=None, headless: bool = False):
-        vllm_config = _ORIG_CREATE_ENGINE_CONFIG(self, usage_context, headless)
+        vllm_config = (
+            EngineArgsRepetitionDetectionPatch._upstream_create_engine_config(
+                self, usage_context, headless
+            )
+        )
 
         global _PROCESS_DEFAULT
         cfg = _coerce(getattr(self, _KEY, None))

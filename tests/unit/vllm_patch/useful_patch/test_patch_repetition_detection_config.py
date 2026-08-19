@@ -215,6 +215,12 @@ def _load_patch():
     mod = importlib.util.module_from_spec(spec)
     sys.modules["patch_rep_det"] = mod
     spec.loader.exec_module(mod)
+    # Most tests exercise the patch methods directly instead of calling apply().
+    # Seed the same upstream methods that apply() would capture in production.
+    patch_cls = mod.EngineArgsRepetitionDetectionPatch
+    patch_cls._upstream_add_cli_args = _EngineArgs.add_cli_args
+    patch_cls._upstream_from_cli_args = _EngineArgs.from_cli_args.__func__
+    patch_cls._upstream_create_engine_config = _EngineArgs.create_engine_config
     return mod
 
 
@@ -491,20 +497,56 @@ def test_original_process_inputs_still_receives_everything():
 
 
 def test_apply_actually_installs_the_attributes():
-    """End-to-end through the real apply() semantics from core.py."""
+    """Applying after another EngineArgs patch preserves the whole chain."""
     _reset()
-    for _, _, cls in REGISTERED:
-        cls.apply()
+
+    # Model a previously-applied patch such as LoPT. The production regression
+    # captured EngineArgs methods at module import time, so applying repetition
+    # detection later silently discarded all three of these active wrappers.
+    upstream_add_cli_args = _EngineArgs.add_cli_args
+    upstream_from_cli_args = _EngineArgs.from_cli_args.__func__
+    upstream_create_engine_config = _EngineArgs.create_engine_config
+    prior_from_cli_args_calls = []
+    prior_create_engine_config_calls = []
+
+    def prior_add_cli_args(parser):
+        parser = upstream_add_cli_args(parser)
+        parser.add_argument("--enable-prior-wrapper", action="store_true")
+        return parser
+
+    def prior_from_cli_args(cls, args):
+        instance = upstream_from_cli_args(cls, args)
+        prior_from_cli_args_calls.append(
+            getattr(args, "enable_prior_wrapper", False)
+        )
+        return instance
+
+    def prior_create_engine_config(self, usage_context=None, headless=False):
+        cfg = upstream_create_engine_config(self, usage_context, headless)
+        prior_create_engine_config_calls.append((usage_context, headless))
+        return cfg
+
+    _EngineArgs.add_cli_args = staticmethod(prior_add_cli_args)
+    _EngineArgs.from_cli_args = classmethod(prior_from_cli_args)
+    _EngineArgs.create_engine_config = prior_create_engine_config
+
+    PATCH.VllmConfigRepetitionDetectionPatch.apply()
+    PATCH.EngineArgsRepetitionDetectionPatch.apply()
+    PATCH.InputProcessorRepetitionDetectionPatch.apply()
     assert _VllmConfig.repetition_detection is None
     assert _EngineArgs.repetition_detection is None
-    # add_cli_args resolves to the patched staticmethod, and the patched
-    # EngineArgs.from_cli_args copies the flag across.
+    # Both the previously-installed CLI wrapper and repetition detection remain.
     args = _EngineArgs.add_cli_args(argparse.ArgumentParser()).parse_args(
-        ["--repetition-detection", GOOD_JSON]
+        ["--enable-prior-wrapper", "--repetition-detection", GOOD_JSON]
     )
     ea = _EngineArgs.from_cli_args(args)
+    assert args.enable_prior_wrapper is True
+    assert prior_from_cli_args_calls == [True]
     assert ea.repetition_detection == _RepetitionDetectionParams(10, 2, 3)
-    vllm_config = ea.create_engine_config()
+    vllm_config = ea.create_engine_config(usage_context="test", headless=True)
+    assert prior_create_engine_config_calls == [("test", True)]
+    assert vllm_config.seen_usage_context == "test"
+    assert vllm_config.seen_headless is True
     assert PATCH._PROCESS_DEFAULT == _RepetitionDetectionParams(10, 2, 3)
     assert "repetition_detection" not in vllm_config.__dict__
     out = _InputProcessor(vllm_config).process_inputs(
