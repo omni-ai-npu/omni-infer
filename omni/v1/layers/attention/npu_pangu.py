@@ -1104,11 +1104,11 @@ class NPUPanguSparseAttention(torch.nn.Module):
             disable_tp=self.disable_o_conv_tp,
         )
 
-        self.conv_index = {
-            self.qa_conv: 0,
-            self.compresskv_conv: 1,
-            self.o_conv: 2,
-        }
+        # kv_cache slot per conv. Keep these as int attributes: a Module-keyed
+        # dict here breaks ACLGraph capture under torch >= 2.12 Dynamo.
+        self.qa_conv.mome_cache_index = 0
+        self.compresskv_conv.mome_cache_index = 1
+        self.o_conv.mome_cache_index = 2
 
     def _init_cross_layer_shared_ops(self):
         global npu_fused_infer_attention_sink_metadata, npu_ai_infra_attention_pioneer_metadata
@@ -1440,7 +1440,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             return x
 
         kv_cache = self.mome_attn.kv_cache
-        kv_index = self.conv_index[layer]
+        kv_index = layer.mome_cache_index
         if not self.on_ascend950:
             if ena_sp:
                 init_idx, save_idx, meta = mome_metadata.conv_sp_meta
@@ -1709,10 +1709,10 @@ class NPUPanguSparseAttention(torch.nn.Module):
         self,
         x: torch.Tensor,
         layer: ColumnParallelMOME,
-        kv_index: int,
         mome_metadata: Optional[NPUMomeAttentionMetadata] = None,
         sp_manager: Optional[SPManager] = None,
     ) -> torch.Tensor:
+        kv_index = layer.mome_cache_index
         merged_x = sp_manager.mome_suffix_exchange(x)
         merged_x = sp_manager.append_mome_req_global_tails(merged_x, cache_key=f'mome_tail_{kv_index}')
         kv_cache = self.mome_attn.kv_cache
