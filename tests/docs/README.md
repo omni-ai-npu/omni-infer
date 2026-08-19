@@ -194,9 +194,9 @@ Example:
 
 ```bash
 python3 tests/ut_CI_check/ut_diff_cov.py \
-  --repo-root /path/to/omni-npu \
+  --repo-root /path/to/omni \
   --coverage-xml /path/to/coverage.xml \
-  --old-prefix /workspace/omniinfer/components/omni-npu \
+  --old-prefix /workspace/omni \
   --out-html /path/to/diffcov.html \
   --out-txt /path/to/diffcov.txt
 ```

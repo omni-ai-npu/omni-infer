@@ -84,6 +84,7 @@ EC_LOAD_TIMEOUT_SECONDS = 120.0
 # below a 10GbE link; 16 MiB lets TCP grow its window to fill the pipe.
 EC_ZMQ_SNDBUF = 16 * MB
 EC_ZMQ_RCVBUF = 16 * MB
+VLLM_RPC_TIMEOUT = int(os.environ.get("VLLM_RPC_TIMEOUT", "10000"))
 # Hard cap on the number of pooled async DEALER sockets, to bound FD/memory in
 # runaway-concurrency scenarios. 32 >> typical batch size (8), so it never
 # throttles normal loads; checkout blocks (back-pressure) only past this.
@@ -604,7 +605,7 @@ class ECNetworkConnector(ECConnectorBase):
         self._server_socket = make_zmq_socket(
             self._context, self._endpoint, zmq.ROUTER, bind=True,
         )
-        self._server_socket.setsockopt(zmq.RCVTIMEO, envs.VLLM_RPC_TIMEOUT)
+        self._server_socket.setsockopt(zmq.RCVTIMEO, VLLM_RPC_TIMEOUT)
         self._server_socket.setsockopt(zmq.SNDBUF, EC_ZMQ_SNDBUF)
         self._server_socket.setsockopt(zmq.RCVBUF, EC_ZMQ_RCVBUF)
         logger.info(
@@ -630,7 +631,7 @@ class ECNetworkConnector(ECConnectorBase):
         poller = zmq.Poller()
         poller.register(self._server_socket, zmq.POLLIN)
         while self._server_running.is_set():
-            events = dict(poller.poll(timeout=envs.VLLM_RPC_TIMEOUT))
+            events = dict(poller.poll(timeout=VLLM_RPC_TIMEOUT))
             if self._server_socket not in events:
                 continue
             framed = self._recv_server_message()
@@ -719,8 +720,8 @@ class ECNetworkConnector(ECConnectorBase):
 
     def _create_client_socket(self, endpoint: str) -> zmq.Socket:
         socket = make_zmq_socket(self._context, endpoint, zmq.DEALER, bind=False)
-        socket.setsockopt(zmq.RCVTIMEO, envs.VLLM_RPC_TIMEOUT)
-        socket.setsockopt(zmq.SNDTIMEO, envs.VLLM_RPC_TIMEOUT)
+        socket.setsockopt(zmq.RCVTIMEO, VLLM_RPC_TIMEOUT)
+        socket.setsockopt(zmq.SNDTIMEO, VLLM_RPC_TIMEOUT)
         socket.setsockopt(zmq.SNDBUF, EC_ZMQ_SNDBUF)
         socket.setsockopt(zmq.RCVBUF, EC_ZMQ_RCVBUF)
         self._client_sockets[endpoint] = socket
@@ -755,8 +756,8 @@ class ECNetworkConnector(ECConnectorBase):
 
     def _create_async_socket(self, endpoint: str) -> zmq.Socket:
         socket = make_zmq_socket(self._context, endpoint, zmq.DEALER, bind=False)
-        socket.setsockopt(zmq.RCVTIMEO, envs.VLLM_RPC_TIMEOUT)
-        socket.setsockopt(zmq.SNDTIMEO, envs.VLLM_RPC_TIMEOUT)
+        socket.setsockopt(zmq.RCVTIMEO, VLLM_RPC_TIMEOUT)
+        socket.setsockopt(zmq.SNDTIMEO, VLLM_RPC_TIMEOUT)
         socket.setsockopt(zmq.SNDBUF, EC_ZMQ_SNDBUF)
         socket.setsockopt(zmq.RCVBUF, EC_ZMQ_RCVBUF)
         return socket

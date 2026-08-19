@@ -4,7 +4,7 @@ set -euo pipefail
 
 if [ $# -lt 1 ]; then
   echo "Usage: $0 <host_omni_root> [host_coverage_dir]"
-  echo "Example: $0 /path/to/omni-npu"
+  echo "Example: $0 /path/to/omni"
   exit 1
 fi
 
@@ -13,7 +13,7 @@ HOST_COV_DIR="${2:-${HOST_OMNI_DIR}/tests/coverage_from_dockers}"
 
 # Merge inside this container to avoid host path mapping issues
 MERGE_CONTAINER="${MERGE_CONTAINER:-DT_1}"
-OMNI_IN_CONTAINER="${OMNI_IN_CONTAINER:-/workspace/omniinfer/components/omni-npu}"
+OMNI_IN_CONTAINER="${OMNI_IN_CONTAINER:-/workspace/omniinfer}"
 MERGE_DIR_IN_CONTAINER="${MERGE_DIR_IN_CONTAINER:-/workspace/coverage_merge}"
 
 RCFILE_IN_CONTAINER="${OMNI_IN_CONTAINER}/tests/.coveragerc"

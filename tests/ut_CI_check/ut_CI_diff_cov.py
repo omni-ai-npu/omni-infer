@@ -14,7 +14,7 @@ Usage example:
   python3 ut_diff_cov.py \
     --repo-root /path/to/repo \
     --coverage-xml /path/to/coverage.xml \
-    --old-prefix /workspace/omniinfer/components/omni-npu \
+    --old-prefix /workspace/omni \
     --out-html /path/to/diffcov.html \
     --out-txt /path/to/diffcov.txt
 """

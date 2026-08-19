@@ -74,7 +74,7 @@ HAS_COV=true
 
 # Multi-docker CI env hook: force PYTHONPATH inside container
 if [[ "${CI_MULTI_DOCKER:-0}" == "1" ]]; then
-    export PYTHONPATH="/workspace/omniinfer/omni:/workspace/omniinfer/tests:${PYTHONPATH:-}"
+    export PYTHONPATH="/workspace/omniinfer/tests:${PYTHONPATH:-}"
 fi
 
 # durations plugin args (optional)

@@ -24,7 +24,7 @@ declare -A UT_CONTAINER_ASCEND_DEVICES=(
   ["DT_4"]="12,13,14,15"
 )
 
-UT_CONTAINER_OMNI_ROOT_DEFAULT="/workspace/omniinfer/components/omni-npu"
+UT_CONTAINER_OMNI_ROOT_DEFAULT="/workspace/omniinfer"
 
 UT_SPLITS=4
 UT_DURATIONS_PATH="${UT_CONTAINER_OMNI_ROOT_DEFAULT}/tests/test_durations_v1.json"

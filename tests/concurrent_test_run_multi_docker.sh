@@ -37,7 +37,9 @@ for CONTAINER_NAME in "${!UT_CONTAINER_TEST_ARGS[@]}"; do
     rm -rf ${CONTAINER_OMNI_ROOT}/*
     rm -rf ${CONTAINER_OMNI_ROOT}/.??* || true
     cp -r ${OMNI_ROOT}/* ${CONTAINER_OMNI_ROOT}/
+    cp -r ${OMNI_ROOT}/.gitmodules ${CONTAINER_OMNI_ROOT}/
     cp -r ${OMNI_ROOT}/.git ${CONTAINER_OMNI_ROOT}/ 2>/dev/null || true
+    pip install --no-build-isolation -e /workspace/omniinfer
 
     cd ${CONTAINER_OMNI_ROOT}/tests
     mkdir -p ${CONTAINER_DURATIONS_DIR}
