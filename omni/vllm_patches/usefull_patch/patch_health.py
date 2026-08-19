@@ -8,12 +8,14 @@ stalled while serving traffic, without killing the server. Recovery is automatic
 once the engine resumes making progress.
 
 Timestamping lives in `omni_npu.diagnostics.watchdog.heartbeat` and is driven by
-`OmniNpuStatLogger`.
+`OmniNpuStatLogger`
 
-Two patches are registered here and applied automatically by the patch manager:
+Three patches are registered here and applied automatically by the patch manager:
   - `HealthHangPatch` replaces `AsyncLLM.check_health`.
-  - `HealthAttachRouterPatch` registers an app-level exception handler that turns
-    `EngineHangError` into a 503 JSON response.
+  - `HealthExceptionHandlerPatch` registers an app-level exception handler that
+    turns `EngineHangError` into a 503 JSON response.
+  - `BusySinceAddRequestPatch` stamps the idle -> busy edge request-side.
+
 """
 
 from http import HTTPStatus
@@ -23,7 +25,7 @@ from fastapi.responses import JSONResponse
 from vllm.logger import init_logger
 from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.v1.engine.output_processor import OutputProcessor
-import vllm.entrypoints.serve.instrumentator.health as health_mod
+import vllm.entrypoints.serve.instrumentator as instrumentator_mod
 
 from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
@@ -105,19 +107,19 @@ async def _engine_hang_handler(request, exc):
     )
 
 
-_orig_attach_router = health_mod.attach_router
+_orig_register_routers = instrumentator_mod.register_instrumentator_api_routers
 
 
-def _attach_router(app):
-    _orig_attach_router(app)
+def _register_instrumentator_api_routers(app):
+    _orig_register_routers(app)
     app.add_exception_handler(EngineHangError, _engine_hang_handler)
 
 
-@register_patch("HealthAttachRouterPatch", health_mod)
-class HealthAttachRouterPatch(VLLMPatch):
-    _attr_names_to_apply = ["attach_router"]
+@register_patch("HealthExceptionHandlerPatch", instrumentator_mod)
+class HealthExceptionHandlerPatch(VLLMPatch):
+    _attr_names_to_apply = ["register_instrumentator_api_routers"]
 
-    attach_router = _attach_router
+    register_instrumentator_api_routers = _register_instrumentator_api_routers
 
 
 _orig_add_request = OutputProcessor.add_request
