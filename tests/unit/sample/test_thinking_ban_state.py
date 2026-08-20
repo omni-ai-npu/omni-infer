@@ -561,9 +561,11 @@ class TestApplyToLogitsSpec(unittest.TestCase):
         self.assertEqual(logits[0, TOOL_CALL_START].item(), float("-inf"))
         # Row 1: still IN (after '.') → tool_call banned
         self.assertEqual(logits[1, TOOL_CALL_START].item(), float("-inf"))
-        # Row 2: POST (after </think>) → think_end banned, tool_call NOT banned
+        # Row 2: walked to POST (after </think>) → think_end banned. The
+        # committed state is still IN_THINK, and that hard-bans tool markers on
+        # every row of the step, so tool_call stays banned here too.
         self.assertEqual(logits[2, THINK_END].item(), float("-inf"))
-        self.assertEqual(logits[2, TOOL_CALL_START].item(), 0.0)
+        self.assertEqual(logits[2, TOOL_CALL_START].item(), float("-inf"))
 
     def test_bonus_row_walks_all_drafts(self) -> None:
         # Same setup, but predict_bonus_token=True → 1 row per request, state
@@ -575,7 +577,9 @@ class TestApplyToLogitsSpec(unittest.TestCase):
             logits, predict_bonus_token=True, spec_token_ids=spec_tokens
         )
         self.assertEqual(logits[0, THINK_END].item(), float("-inf"))
-        self.assertEqual(logits[0, TOOL_CALL_START].item(), 0.0)
+        # Committed state is IN_THINK, so the tool-marker ban applies to the
+        # bonus row as well, even though the drafts walk it to POST.
+        self.assertEqual(logits[0, TOOL_CALL_START].item(), float("-inf"))
 
     def test_two_reqs_distinct_states(self) -> None:
         # Req 0 IN, Req 1 PRE. K=2 drafts each (we only fill 2 below).
@@ -689,8 +693,8 @@ class TestApplyToLogitsToolCallEnd(unittest.TestCase):
         self.assertEqual(logits[0, TOOL_CALL_END].item(), 0.0)
 
     def test_spec_target_rows_walk_drafts_banning_end(self) -> None:
-        # K=3, base IN_THINK. Draft [., </think>, x]: row 2 enters POST so
-        # tool_call_end must be banned on rows 0,1 and free on row 2.
+        # K=3, base IN_THINK. Draft [., </think>, x]: row 2 walks to POST, but
+        # the committed IN_THINK state hard-bans tool markers on every row.
         h = _make_holder(num_spec_tokens=3, ban_end=True)
         self._add(h, 0, [THINK_START])
         spec_tokens = [[42, THINK_END, 5]]
@@ -700,8 +704,8 @@ class TestApplyToLogitsToolCallEnd(unittest.TestCase):
         )
         self.assertEqual(logits[0, TOOL_CALL_END].item(), float("-inf"))
         self.assertEqual(logits[1, TOOL_CALL_END].item(), float("-inf"))
-        # Row 2 is POST_THINK → tool_call_end NOT banned.
-        self.assertEqual(logits[2, TOOL_CALL_END].item(), 0.0)
+        # Row 2 walked to POST_THINK, but committed IN_THINK still bans it.
+        self.assertEqual(logits[2, TOOL_CALL_END].item(), float("-inf"))
 
     def test_spec_bonus_row_bans_end_when_still_in_think(self) -> None:
         # predict_bonus_token=True, all drafts are non-sentinels → final IN_THINK.

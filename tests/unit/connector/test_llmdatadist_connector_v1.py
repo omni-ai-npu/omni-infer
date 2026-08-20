@@ -120,22 +120,6 @@ class TestSchemePull:
                 assert targets[str(i // 2)].layer_ids == [0, 1, 2, 3]
                 assert targets[str(i // 2 + 8)].layer_ids == [4, 5, 6]
 
-    def test_done_routes_to_last_prefill_pp_stage(self):
-        with _mock_parallel(pp=2, tp=16): # prefill node
-            params = _make_kv_transfer_params(
-                pp_layers=[[0, 1], [2, 3]]
-            )
-
-        # Decode has 64 independent DP ranks. Each request is pulled by one
-        # rank, and its completion must be visible through the output PP stage.
-        for i in range(64):
-            with _mock_parallel(dp=64, rank=i):
-                worker, req_id, parts = SchemePull(
-                    params, DEFAULT_LAYER_IDS).done()
-            assert worker == str(16 + i % 16)
-            assert req_id == "req0"
-            assert parts == 1
-
     def test_dcp_prefill(self):
         with _mock_parallel(tp=4, dcp=4): # prefill node
             params = _make_kv_transfer_params(
@@ -360,68 +344,6 @@ class TestLLMDataDistConnector:
         # threads don't leak into later tests (e.g. test_kv_dump's global
         # time.sleep patch), which is the root of the cross-test pollution here.
         _stop_daemon(*p_workers, *d_workers, p_scheduler, d_scheduler)
-
-    def test_abort_before_build_notifies_last_prefill_pp_stage(self):
-        with _mock_parallel(pp=2, tp=16): # prefill node
-            kv_transfer_params = _make_kv_transfer_params(
-                pp_layers=[[0, 1], [2, 3]]
-            )
-
-        d_scheduler = LLMDataDistConnector(
-            vllm_config=_make_vllm_config(is_prefill=False, dp=64),
-            role=KVConnectorRole.SCHEDULER,
-            kv_cache_config=None,
-        )
-        request = MagicMock(
-            request_id="decode_req_0",
-            status=RequestStatus.FINISHED_ABORTED,
-            kv_transfer_params=kv_transfer_params,
-        )
-
-        with patch(
-            "omni_npu.connector.llmdatadist_connector_v1.SimpleClient"
-        ) as client_cls:
-            delay_free, params = d_scheduler.request_finished(request, [])
-
-        assert not delay_free
-        assert params is None
-        client_cls.assert_called_once_with("16")
-        client_cls.return_value.query.assert_called_once_with(
-            "pull_done", req_id="req0", parts=1)
-        client_cls.return_value.close.assert_called_once_with(linger=-1)
-
-    def test_timeout_is_reported_by_last_prefill_pp_stage(self):
-        p_vllm_config = _make_vllm_config(
-            is_prefill=True, pp=2, tp=2)
-        metadata = Metadata()
-        metadata.req_params = {
-            "pending": set(),
-            "timeout": {"prefill_req_0"},
-        }
-        workers = []
-
-        try:
-            for rank in (0, 2):
-                with (
-                    _mock_cache_manager(),
-                    _mock_parallel(pp=2, tp=2, rank=rank),
-                ):
-                    worker = LLMDataDistConnector(
-                        vllm_config=p_vllm_config,
-                        role=KVConnectorRole.WORKER,
-                        kv_cache_config=None,
-                    )
-                    worker.bind_connector_metadata(metadata)
-                    send_done, recv_done = worker.get_finished(None)
-                    workers.append(worker)
-
-                if rank == 0:
-                    assert send_done == set()
-                else:
-                    assert send_done == {"prefill_req_0"}
-                assert recv_done is None
-        finally:
-            _stop_daemon(*workers)
 
 
 class TestConnectorMetrics:

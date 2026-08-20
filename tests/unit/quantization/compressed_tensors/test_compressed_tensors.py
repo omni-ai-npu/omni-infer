@@ -380,7 +380,7 @@ class TestNPUCompressedTensorsConfig:
         scheme = config._get_scheme_from_parts(
             weight_quant=weight_quant,
             input_quant=input_quant,
-            format="activation",
+            quant_format="activation",
             layer_name="Linear",
         )
         assert isinstance(scheme, DummyNPUCompressedTensorsW8A8Int8)

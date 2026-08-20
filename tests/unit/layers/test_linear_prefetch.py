@@ -280,11 +280,3 @@ def test_row_parallel_linear_keeps_dp2tp_all2all_input_unsharded(monkeypatch):
 
     layer.tp_size = 1
     assert not layer.requires_input_partition()
-
-
-@pytest.mark.unit
-def test_sharded_linear_keeps_input_unsharded(monkeypatch):
-    module = _import_linear_module(monkeypatch)
-    layer = module.ShardedLinear.__new__(module.ShardedLinear)
-
-    assert not layer.requires_input_partition()

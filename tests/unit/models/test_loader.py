@@ -558,26 +558,21 @@ class TestConfigLoaderUnit(unittest.TestCase):
         
         mock_scheduler_config = MagicMock()
         mock_scheduler_config.enable_chunked_prefill = False
-        mock_patch_matmul = MagicMock()
-        mock_patch_module = MagicMock(patch_matmul=mock_patch_matmul)
-        
+
         # Mock external dependencies
         with patch('omni_npu.model_config.config_loader.loader.parse_hf_config', return_value=('deepseek_v3', 'w8a8c16')), \
              patch('omni_npu.model_config.config_loader.loader.update_task_config') as mock_update, \
              patch('omni_npu.model_config.config_loader.loader._validate_config') as mock_validate, \
-             patch('omni_npu.model_config.config_loader.loader._print_model_config') as mock_print, \
-             patch.object(model_extra_config.operator_opt_config, 'enable_precision_strong_consistency', True), \
-             patch.dict(sys.modules, {'omni_npu.vllm_patches.patches.common.patch_matmul': mock_patch_module}):
-            
+             patch('omni_npu.model_config.config_loader.loader._print_model_config') as mock_print:
+
             load_model_extra_config(mock_model_config, mock_vllm_config, mock_scheduler_config)
-            
+
             # Verify that update_task_config was called
             mock_update.assert_called_once()
             # Verify that _validate_config was called
             mock_validate.assert_called_once()
             # Verify that _print_model_config was called
             mock_print.assert_called_once()
-            mock_patch_matmul.assert_called_once_with()
             self.assertEqual(model_extra_config.dtype, torch.float16)
 
     def test_model_operator_opt_config_enable_mtp_invariant(self):

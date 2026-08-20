@@ -73,7 +73,12 @@ def _install_mhc_rl_stubs(monkeypatch, on_ascend950=False, use_batch_invariant_o
     ]
     loader_mod = types.ModuleType("omni_npu.model_config.config_loader.loader")
     loader_mod.model_extra_config = SimpleNamespace(
-        operator_opt_config=SimpleNamespace(use_batch_invariant_op=use_batch_invariant_op)
+        operator_opt_config=SimpleNamespace(
+            use_batch_invariant_op=use_batch_invariant_op,
+            # mhc_pre/mhc_post branch on this flag; the torch reference in this file
+            # models the plain-torch branch, matching the config default (False).
+            enable_precision_strong_consistency=False,
+        )
     )
 
     monkeypatch.setitem(sys.modules, "omni_npu", omni_pkg)
