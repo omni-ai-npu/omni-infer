@@ -16,6 +16,7 @@ Pangu V2 MoE 505B int8 + EP 离线精度测试所需的最小 patch 集合。
 | `patch_mla.py` | pangu_v2_base | StaticSink MLA wrapper |
 | `patch_static_sink_attention.py` | pangu_sink_swa_mla | StaticSink attention |
 | `patch_modelconfig.py` | pangu_sink_swa_mla | ModelArchConfigConvertor 注册 |
+| `patch_torch_accelerator.py` | common | 把 `torch.accelerator` 的内存 API（`empty_cache` / `memory_stats` / `memory_reserved` / `memory_allocated` / `reset_peak_memory_stats` / `get_memory_info`）重定向到 `torch.npu`。上游 0.25.1 把内存统计从 `current_platform.*` 迁到了 `torch.accelerator.*`，而后者不会转发到 NPU，`get_memory_info` 还会直接抛 "Allocator for npu is not a DeviceAllocator" |
 | `patch_hccl_set_comm_name.py` | common | HCCL 分布式初始化 |
 | `patch_parallel_state.py` | common | NPU TP/EP 通信组 |
 | `patch_attention.py` | common | NPU attention backend 注册 |

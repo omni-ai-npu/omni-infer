@@ -5,9 +5,7 @@ import functools
 import gc
 import os
 import sys
-import time
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
 from typing import Optional, Union, List
 from types import NoneType
 
@@ -54,36 +52,11 @@ from omni_npu.compilation.acl_graph import (
     consume_aclgraph_recapture,
     set_aclgraph_recapture,
 )
-from omni_npu.v1.utils import on_ascend950, switch_torch_device
+from omni_npu.v1.utils import on_ascend950
 from omni_npu.profiler.wrapper import NpuProfilerWrapper
 import omni_npu.envs as omni_envs
 
 logger = init_logger(__name__)
-
-
-@dataclass
-class NPUMemorySnapshot(MemorySnapshot):
-
-    def measure(self) -> None:
-        device = self.device_
-
-        # we measure the torch peak memory usage via allocated_bytes,
-        # rather than `torch.accelerator.memory_reserved()` .
-        # After `torch.accelerator.reset_peak_memory_stats()`,
-        # `torch.accelerator.memory_reserved()` will keep growing, and only shrink
-        # when we call `torch.accelerator.empty_cache()` or OOM happens.
-        self.torch_peak = torch.npu.memory_stats(device).get(
-            "allocated_bytes.all.peak", 0
-        )
-        self.free_memory, self.total_memory = torch.npu.mem_get_info(device)
-        self.cuda_memory = self.total_memory - self.free_memory
-
-        # torch.accelerator.memory_reserved() is how many bytes
-        # PyTorch gets from cuda (by calling cudaMalloc, etc.)
-        # this is used to measure the non-torch memory usage
-        self.torch_memory = torch.npu.memory_reserved(device)
-        self.non_torch_memory = self.cuda_memory - self.torch_memory
-        self.timestamp = time.time()
 
 
 class NPUWorker(Worker):
@@ -215,16 +188,12 @@ class NPUWorker(Worker):
             torch.npu.empty_cache()
 
             # take current memory snapshot
-            self.init_snapshot = init_snapshot = NPUMemorySnapshot(device=self.device)
+            self.init_snapshot = init_snapshot = MemorySnapshot(device=self.device)
             self.requested_memory = request_memory(init_snapshot, self.cache_config)
             logger.debug("worker init memory snapshot: %r", self.init_snapshot)
             logger.debug(
                 "worker requested memory: %sGiB", format_gib(self.requested_memory)
             )
-
-            # with switch_torch_device():
-            #     self.init_snapshot = MemorySnapshot(device=self.device)
-            # self.requested_memory = self.init_snapshot.total_memory * self.cache_config.gpu_memory_utilization
         else:
             raise RuntimeError(f"Not support device type: {self.device_config.device}")
 
@@ -275,22 +244,20 @@ class NPUWorker(Worker):
             logger.debug("Failed to reset peak memory stats: %s", e)
 
         # Record snapshot before profile_run (to measure non-torch increase)
-        with switch_torch_device():
-            before_profile = NPUMemorySnapshot(device=self.device)
+        before_profile = MemorySnapshot(device=self.device)
 
         # profile_run triggers lazy HCCL allocation
         self.model_runner.profile_run()
 
-        with switch_torch_device():
-            after_profile = NPUMemorySnapshot(device=self.device)
+        after_profile = MemorySnapshot(device=self.device)
 
         non_torch_increase = max(
             0, after_profile.non_torch_memory - self.init_snapshot.non_torch_memory
         )
 
         weights_memory = getattr(self.model_runner, 'model_memory_usage', 0)
-        # MemorySnapshot.torch_peak is measured
-        # via method torch.npu.memory_stats(device).get("allocated_bytes.all.peak", 0)
+        # torch_peak comes from the accelerator's allocated-bytes peak counter,
+        # which TorchAcceleratorMemoryPatch redirects to torch.npu.
         peak_activation = after_profile.torch_peak - before_profile.torch_peak
 
         total = after_profile.total_memory

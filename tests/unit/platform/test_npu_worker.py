@@ -5,13 +5,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
-from omni_npu.v1.utils import switch_torch_device
 from omni_npu.profiler.wrapper import _to_bool
 from omni_npu.worker.npu_worker import (
     NPUWorker,
-    NPUMemorySnapshot,
     _patch_npu_triton_capabilities,
 )
+from vllm.utils.mem_utils import MemorySnapshot
 from vllm.sequence import IntermediateTensors
 from vllm.v1.outputs import ModelRunnerOutput
 from tests.unit.platform.utils import create_vllm_config, DeviceConfig
@@ -547,7 +546,7 @@ class TestNpuWorker:
             self.non_torch_memory = 100 if call_count[0] == 1 else 250
             self.timestamp = 0.0
 
-        monkeypatch.setattr(NPUMemorySnapshot, "measure", mock_snapshot_measure)
+        monkeypatch.setattr(MemorySnapshot, "measure", mock_snapshot_measure)
 
         result = worker.determine_available_memory()
         # available = 2000 * 0.9 - 300 - (500-400) - (250-100) = 1800 - 300 - 100 - 150 = 1250
@@ -587,7 +586,7 @@ class TestNpuWorker:
             self.non_torch_memory = 250
             self.timestamp = 0.0
 
-        monkeypatch.setattr(NPUMemorySnapshot, "measure", mock_snapshot_measure)
+        monkeypatch.setattr(MemorySnapshot, "measure", mock_snapshot_measure)
 
         result = worker.determine_available_memory()
         assert result == 1250
@@ -1433,13 +1432,31 @@ class TestNpuWorker:
         mock_consume.assert_called_once_with()
 
 
+def _patch_accelerator_onto(monkeypatch):
+    """Apply the torch.accelerator -> torch.npu redirection via monkeypatch.
+
+    TorchAcceleratorMemoryPatch binds the torch.npu functions when the module is
+    imported, so applying it would not pick up the torch.npu mocks these tests
+    install. Rebinding through monkeypatch keeps the mocks visible and restores
+    torch.accelerator afterwards.
+    """
+    monkeypatch.setattr("torch.accelerator.memory_stats",
+                        torch.npu.memory_stats, raising=False)
+    monkeypatch.setattr("torch.accelerator.memory_reserved",
+                        torch.npu.memory_reserved, raising=False)
+    monkeypatch.setattr("torch.accelerator.get_memory_info",
+                        torch.npu.mem_get_info, raising=False)
+
+
 class TestMemorySnapshot:
-    """Tests for the NPU-specific memory snapshot implementation."""
+    """
+    Tests that vLLM's MemorySnapshot works on NPU via the
+    torch.accelerator -> torch.npu redirection.
+    """
 
     def test_default_values(self):
         """Test MemorySnapshot default initialization."""
-        with switch_torch_device():
-            snapshot = NPUMemorySnapshot(device="npu:0", auto_measure=False)
+        snapshot = MemorySnapshot(device="npu:0", auto_measure=False)
         assert snapshot.torch_peak == 0
         assert snapshot.free_memory == 0
         assert snapshot.total_memory == 0
@@ -1459,8 +1476,11 @@ class TestMemorySnapshot:
         monkeypatch.setattr("vllm.platforms.current_platform.is_cuda",
                             lambda: False)
 
-        with switch_torch_device():
-            snapshot = NPUMemorySnapshot(device="npu:0", auto_measure=True)
+        # Re-apply after the mocks: the patch binds torch.npu.* eagerly, so it
+        # has to run once the mocked functions are in place.
+        _patch_accelerator_onto(monkeypatch)
+
+        snapshot = MemorySnapshot(device="npu:0", auto_measure=True)
 
         assert snapshot.torch_peak == 100
         assert snapshot.free_memory == 900
@@ -1482,8 +1502,9 @@ class TestMemorySnapshot:
         monkeypatch.setattr("vllm.platforms.current_platform.is_cuda",
                             lambda: False)
 
-        with switch_torch_device():
-            snapshot = NPUMemorySnapshot(device=None, auto_measure=True)
+        _patch_accelerator_onto(monkeypatch)
+
+        snapshot = MemorySnapshot(device=None, auto_measure=True)
 
         assert snapshot.torch_peak == 200
         assert snapshot.cuda_memory == 200  # 1000 - 800

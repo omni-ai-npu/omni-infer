@@ -9,7 +9,6 @@ import torch
 import numpy as np
 import torch.nn as nn
 from functools import wraps
-from unittest.mock import patch
 
 import vllm.envs as envs
 
@@ -670,15 +669,7 @@ class NPUModelRunner(GPUModelRunner):
             # Release old graphs and rotate the shared graph pool before
             # recapturing to avoid stale pool memory staying live.
             reset_stale_aclgraph_resources(self._iter_aclgraph_wrappers())
-        with (
-            switch_torch_device(),
-            patch("torch.accelerator.empty_cache", torch.npu.empty_cache),
-            patch(
-                "torch.accelerator.get_memory_info",
-                torch.npu.mem_get_info,
-                create=True,
-            ),
-        ):
+        with switch_torch_device():
             return super().capture_model()
 
     def _execute_mm_encoder(self, scheduler_output: "SchedulerOutput"):
