@@ -38,15 +38,19 @@ import torch
 
 from transformers import DeepseekV3Config as _DeepseekConfig
 
-from omni_npu.attention.backends.mla import NPUMLAImpl
+from omni_npu.attention.backends.mla import NPUMLAImpl, NPUMLAPrefillBackend
+from omni_npu.platform import NPUPlatform
 from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 from omni_npu.v1.layers.linear import (
     ColumnParallelFlashCommLinear,
     RowParallelFlashCommLinear,
 )
-from vllm.model_executor.layers.rotary_embedding.common import ApplyRotaryEmb
-
 from vllm.config import CacheConfig
+from vllm.model_executor.layers.rotary_embedding.common import ApplyRotaryEmb
+from vllm.v1.attention.backends.mla.prefill.registry import (
+    MLAPrefillBackendEnum,
+    register_mla_prefill_backend,
+)
 
 try:
     import torch_npu  # noqa: F401
@@ -57,6 +61,24 @@ if not (hasattr(torch, "npu") and torch.npu.device_count() > 0):
     raise RuntimeError("NPU hardware is required for NPU MLA tests")
 
 NPU_AVAILABLE = True
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _register_npu_mla_prefill_backend() -> None:
+    """Mirror vLLM's platform initialization for direct module construction."""
+    backend = MLAPrefillBackendEnum.FLASH_ATTN
+    was_overridden = backend.is_overridden()
+    previous_path = backend.get_path()
+
+    NPUPlatform.pre_register_and_update()
+    try:
+        assert backend.get_class() is NPUMLAPrefillBackend
+        yield
+    finally:
+        if was_overridden:
+            register_mla_prefill_backend(backend, previous_path)
+        else:
+            backend.clear_override()
 
 
 @pytest.fixture(autouse=True)
@@ -699,8 +721,8 @@ def test_npu_mla_prefill_matches_reference(
 
     module = _build_module(device, dtype, monkeypatch, attn_metadata)
     kv_cache = _init_kv_cache(batch_size, seq_len, device, dtype)
-    # Attn module stores kv_cache in a list keyed by virtual_engine (0 here).
-    module.attn.kv_cache[0] = kv_cache
+    # NPU runtime wraps each layer's cache for virtual-engine compatibility.
+    module.attn.kv_cache = [kv_cache]
 
     # Cos/sin for every token position (length = B * S).
     # Example: positions = [0, 1, 2, ..., S-1] repeated for each sequence.
@@ -773,7 +795,7 @@ def test_npu_mla_decode_matches_reference(
     kv_cache[0].copy_(ref_kv_cache[0])
     kv_cache[1].copy_(ref_kv_cache[1])
 
-    module.attn.kv_cache[0] = kv_cache
+    module.attn.kv_cache = [kv_cache]
 
     # Cos/sin for the decode token position (last position for each sequence).
     # Positions shape [B], cos/sin shape [B, 1, 1, rope_dim] in NPU rotary emb.
