@@ -15,7 +15,7 @@ The older pangu_v2_hybrid coordinator patch used the deprecated ``use_eagle``
 kwarg and would regress APC if applied on top of modern vLLM.
 """
 
-from vllm.v1.core import single_type_kv_cache_manager
+from vllm.v1.core import kv_cache_coordinator, single_type_kv_cache_manager
 from vllm.v1.core.block_pool import BlockPool
 from vllm.v1.core.single_type_kv_cache_manager import (
     ChunkedLocalAttentionSpec,
@@ -138,3 +138,11 @@ class SingleTypeKVCacheManagerPatch(VLLMPatch):
     MomeManager = MomeManager
     ShareKVSlidingWindowManager = ShareKVSlidingWindowManager
 
+
+@register_patch("KVCacheCoordinatorManagerFactoryPatch", kv_cache_coordinator)
+class KVCacheCoordinatorManagerFactoryPatch(VLLMPatch):
+    """Keep the coordinator's imported manager factory in sync."""
+
+    _attr_names_to_apply = ["get_manager_for_kv_cache_spec"]
+
+    get_manager_for_kv_cache_spec = get_manager_for_kv_cache_spec
