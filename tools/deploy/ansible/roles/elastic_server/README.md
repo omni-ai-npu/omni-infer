@@ -1,8 +1,7 @@
 # Elastic Server Role
 
 `elastic_server` 是在 `common` 公共部署阶段之上增加弹性生命周期的专用 role。
-它不保存 PanguV2 模型参数；当前由 PanguV2 playbook 使用，但能力本身只负责
-增删节点、增量代码同步和 Proxy 刷新。
+它不保存模型参数，只负责增删节点、增量代码同步和 Proxy 刷新。
 
 模型路径、容器镜像、环境变量、启动 runner 和 CLI 参数仍由 playbook 的 profiles
 声明。容器、拓扑、服务、Proxy 和日志等同构任务继续从 `common` 导入。
@@ -120,7 +119,7 @@ Role 需要 playbook 或 Inventory 提供：
 
 ```bash
 INVENTORY=/path/to/inventory.yml
-PLAYBOOK=playbooks/omni_infer_server_template_panguv2.yml
+PLAYBOOK=playbooks/omni_infer_server_template_performance2P1D_505B_bf16_open.yml
 
 # 先检查解析结果。
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --syntax-check

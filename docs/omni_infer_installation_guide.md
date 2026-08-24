@@ -261,8 +261,8 @@ Ansible 详细说明参考
 `playbooks/` 和 `roles/`：
 
 1. `tools/deploy/ansible/inventories/` 提供 1P1D、2P1D、4P1D 三种拓扑模板；
-2. `tools/deploy/ansible/playbooks/` 保存当前维护的模型部署入口，现支持 DSV32 和
-   PanguV2；
+2. `tools/deploy/ansible/playbooks/` 保存当前维护的 Playbook，应根据模型、拓扑和
+   性能场景选择对应入口；
 3. `tools/deploy/ansible/roles/` 保存公共任务和弹性生命周期实现，由 Playbook
    调用，用户不需要直接执行 Role；
 4. `tools/deploy/omni_cli/` 提供独立的命令行部署流程，与 Ansible Playbook
@@ -389,10 +389,8 @@ Ansible 配置由 Inventory 和模型 Playbook 两部分组成。
 - `ascend_rt_visible_devices`：当前实例使用的 NPU 卡号；
 - `node_rank`、`kv_rank`、`node_port` 和 `api_port`：实例拓扑及端口。
 
-当前维护的模型 Playbook 位于 `tools/deploy/ansible/playbooks/`：
-
-- `omni_infer_server_template_dsv32.yml`：DeepSeek V3.2；
-- `omni_infer_server_template_panguv2.yml`：PanguV2。
+当前维护的 Playbook 位于 `tools/deploy/ansible/playbooks/`。选择时应确认文件名
+标识的模型、拓扑和性能场景与目标环境一致。
 
 执行前需要在选定的 Playbook 中修改 `environment` 下的 `CODE_PATH`、
 `DOCKER_IMAGE_ID`、容器名称、日志路径，以及 `vars` 下的 `model_path`。模型参数、
@@ -401,13 +399,13 @@ Ansible 配置由 Inventory 和模型 Playbook 两部分组成。
 
 #### 执行命令
 
-以 2P1D 部署 PanguV2 为例：
+以 2P1D 部署 PanguV2 505B BF16 为例：
 
 ```bash
 cd omniinfer/tools/deploy/ansible
 
 INVENTORY=inventories/omni_infer_inventory_used_for_2P1D.yml
-PLAYBOOK=playbooks/omni_infer_server_template_panguv2.yml
+PLAYBOOK=playbooks/omni_infer_server_template_performance2P1D_505B_bf16_open.yml
 
 # 部署前检查
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --syntax-check
@@ -417,8 +415,8 @@ ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --list-tags
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK"
 ```
 
-DSV32 使用
-`playbooks/omni_infer_server_template_dsv32.yml`，Inventory 的选择方式相同。
+Inventory 拓扑必须与 Playbook 文件名中的 1P1D、2P1D 或 4P1D 一致，并根据
+模型、拓扑和性能场景选择对应的部署入口。
 
 #### 按阶段执行
 

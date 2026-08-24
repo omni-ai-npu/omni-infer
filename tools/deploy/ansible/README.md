@@ -10,18 +10,14 @@
 - [OmniInfer Ansible 开发与部署指南](DEVELOPMENT_GUIDE.md)：目录结构、Inventory、
   profiles、阶段派生变量、旧版变量迁移、tags、执行顺序和扩展规范。
 
-当前维护的生产 Playbook 只有：
+当前维护的部署入口位于 [`playbooks/`](playbooks/)，应根据模型、拓扑和性能场景
+选择。新增场景可以复制
+[通用 Playbook 示例](examples/omni_infer_server_template_example.yml)，再根据实际
+模型、拓扑和环境完成配置。
 
-- [PanguV2](playbooks/omni_infer_server_template_panguv2.yml)
-- [DSV32](playbooks/omni_infer_server_template_dsv32.yml)
-
-新增场景可以复制
-[通用 Playbook 示例](examples/omni_infer_server_template_example.yml)。
-该文件不是生产部署入口。
-
-`playbooks/` 和 `roles/` 是部署入口。`inventories/` 保留单机 1P1D、多机
-1P1D、2P1D 和 4P1D 的拓扑模板；使用前应复制到仓库外并填写实际连接信息。新增
-模型场景和公共流程应落在 `playbooks/`、`roles/common/` 或对应的专用 role 中。
+`roles/` 提供部署流程。`inventories/` 保留单机 1P1D、多机 1P1D、2P1D 和 4P1D
+的拓扑模板；使用前应复制到仓库外并填写实际连接信息。新增模型场景和公共流程应
+落在 `playbooks/`、`roles/common/` 或对应的专用 role 中。
 
 ## 框架运行链路
 
@@ -176,8 +172,8 @@ Prefill/Decode 最大模型长度直接配置在各自 profile 的 `args` 中；
 ```bash
 cd tools/deploy/ansible
 
-PLAYBOOK=playbooks/omni_infer_server_template_panguv2.yml
-INVENTORY=/path/to/inventory.yml
+PLAYBOOK=playbooks/omni_infer_server_template_performance2P1D_505B_bf16_open.yml
+INVENTORY=/path/to/2p1d_inventory.yml
 
 # 先验证语法和 tags
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --syntax-check
@@ -208,7 +204,7 @@ ansible-playbook -i examples/inventory_1p1d.yml "$PLAYBOOK" \
 该 fixture 使用本地连接；不要对它执行完整部署、`run_docker` 或弹性生命周期
 tags，否则仍可能操作执行机上的 Docker。
 
-PanguV2 使用 `elastic_server`，还支持 `add_node`、
+导入 `elastic_server` 的 Playbook 还支持 `add_node`、
 `add_node_with_sync_code`、`delete_node` 和 `reload_proxy`；这些生命周期必须通过
 对应 tag 显式执行。扩缩容前应先更新 Inventory，并阅读
 [Tags 说明](DEVELOPMENT_GUIDE.md#8-tags)。

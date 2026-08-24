@@ -3,9 +3,7 @@
 本文面向需要编写模型 Playbook 或新增专用 Role 的开发者，说明当前目录结构、
 Playbook 写法、Inventory 约定、Profile、Tags 和 Role 扩展方式。
 
-当前维护的生产入口只有
-[`playbooks/omni_infer_server_template_panguv2.yml`](playbooks/omni_infer_server_template_panguv2.yml) 和
-[`playbooks/omni_infer_server_template_dsv32.yml`](playbooks/omni_infer_server_template_dsv32.yml)。
+当前维护的部署入口位于 [`playbooks/`](playbooks/)，按模型、拓扑和性能场景选择。
 新增场景可以从受维护的
 [`examples/omni_infer_server_template_example.yml`](examples/omni_infer_server_template_example.yml)
 开始。
@@ -41,8 +39,7 @@ tools/deploy/ansible/
 │   ├── omni_infer_inventory_used_for_2P1D.yml
 │   └── omni_infer_inventory_used_for_4P1D.yml
 ├── playbooks/
-│   ├── omni_infer_server_template_panguv2.yml
-│   └── omni_infer_server_template_dsv32.yml
+│   └── *.yml                         # 按模型、拓扑和场景维护的 Playbook
 ├── roles/
 │   ├── common/
 │   │   ├── defaults/main.yml       # 公共默认值
@@ -838,8 +835,8 @@ Inventory 的 P/D 分组中移除目标节点，使 Proxy 按删除后的拓扑�
 从 `tools/deploy/ansible` 目录执行：
 
 ```bash
-PLAYBOOK=playbooks/omni_infer_server_template_panguv2.yml
-INVENTORY=/path/to/inventory.yml
+PLAYBOOK=playbooks/omni_infer_server_template_performance2P1D_505B_bf16_open.yml
+INVENTORY=/path/to/2p1d_inventory.yml
 
 # 查看语法、任务和 tags，不修改远端
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --syntax-check

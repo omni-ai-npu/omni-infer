@@ -6,11 +6,14 @@
   any_errors_fatal: true
   max_fail_percentage: 0
   gather_facts: true
+  # =============================================================================
+  # 注意：此文件仅作为配置示例，使用前请复制并根据实际环境检查模型、拓扑、路径、镜像及各项服务配置。
+  # =============================================================================
   environment:
     LOG_PATH: /data/log_path
     LOG_PATH_IN_EXECUTOR: /data/log_path_in_executor
     CODE_PATH: /data/local_code_path
-    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer_dev/ai-infra-infer-1.0.3-a3-arm-feature/vllm_0.25.1-202608140942-daily:0.0.2"
+    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer_dev/ai-infra-infer-1.0.3-a3-arm-feature/vllm_0.25.1-202608211426-daily:0.0.2"
     DOCKER_NAME_P: "docker_name_p"
     DOCKER_NAME_D: "docker_name_d"
     DOCKER_NAME_C: "docker_name_c"
@@ -76,7 +79,7 @@
           --enable-expert-parallel --enforce-eager'
         - --hccl-buffsize 500
         - --hccl-op-expansion-mode AIV
-        - --num-speculative-tokens 0
+        - --num-speculative-tokens 3
 
     run_server_decode_profile:
       prepare_commands: |-
@@ -86,7 +89,7 @@
         export HCCL_CONNECT_TIMEOUT=1800
         export HCCL_EXEC_TIMEOUT=1800
         export VLLM_DISABLE_COMPILE_CACHE=1
-        export VLLM_CACHE_ROOT='/data/z00938669/workspace/tests/temp/graph_cache_decode'
+        export VLLM_CACHE_ROOT='./graph_cache'
         export VLLM_WORKER_MULTIPROC_METHOD=fork
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
         export TASK_QUEUE_ENABLE=1
@@ -102,20 +105,23 @@
         - --max-model-len 131072
         - --tp 1
         - --served-model-name pangu_ultra_moe
-        - '--additional-config ''{"enable_low_latency": true}'''
+        - >-
+          --additional-config '{"enable_low_latency": true}'
         - --gpu-util 0.85
         - >-
           --extra-args '--dtype bfloat16
           --max-num-batched-tokens 8192 --max-num-seqs 4
           --no-disable-hybrid-kv-cache-manager --enable-chunked-prefill
           --no-enable-prefix-caching --distributed-executor-backend mp
-          --enable-expert-parallel --enforce-eager'
+          --enable-expert-parallel
+          --compilation-config {"mode": 3, "cudagraph_mode":"FULL",
+          "cudagraph_capture_sizes":[16], "backend":"", "compile_sizes":[16]}'
         - --hccl-buffsize 500
         - --hccl-op-expansion-mode AIV
-        - --num-speculative-tokens 0
+        - --num-speculative-tokens 3
 
     run_server_common_profile:
-      single_node_prefill_wait_seconds: 0
+      single_node_prefill_wait_seconds: 5
       restart_proxy: true
 
     run_proxy_profile:

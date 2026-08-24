@@ -16,7 +16,10 @@
 
 ## 模型准备
 
-基于开源的 DeepSeek-V3/R1 进行[权重转换](https://gitee.com/omniai/omniinfer/blob/master/docs/omni_infer_installation_guide.md#%E6%9D%83%E9%87%8D%E8%BD%AC%E6%8D%A2)。目前提供一份转换好的权重供直接下载使用，[下载链接](https://e-share.obs-website.cn-north-1.myhuaweicloud.com?v2token=KBL+tPW8sihb1DQcY03GYZZdWrdKg8E2xUI8XrCsr7jo72H22pg6bY8V89ZgmD4Zq4VEcQa802+q2nR4Bydrzm9jjAO1ohYLIIDMeRtttFZR+EpCA2PWmZaVxazPlkJ6qtADFZaESGpEHUxChlLlFQ2xeLp6sXP5qVsj6JEPRh7MA6SmfqK8mLdgi/rmBjY6A0CRJFEe1K5JrgONubynmJaescenf5t0h36szT23dHV46pjw0BCjCFtxJyXqgGWc4T7pv3tugR09oHNLFaVoPi4ZlElNciul9a90kZ6ZOoNJ3ufoRyHA9bTdwqeJGg8jsBFzRr+d+tU1GXd8UaswFHUo805A3MoPlqSRiYThAz+3aPorLkveex99xiEwCq+pajn6S9GzSeY8FLjEMlopGMKfHJ6Z1B5aoGpIBY8UsjG878ixsE/YiZmetkXDO/FPYr/r9sbHqg5pLVXCmaH7uHqVvDabx6Mx0a8GRITN+yjwg08LjS3C76gwCfEqD7FegGitodr7RLSDsuewjGqjgK/7ST2J320CoBBBw5vtAAsDYiDC6LJOEZCN2ht/eAZUHvy7ZrCeBMN1AmagvqsXVJrsn2tof/CL5LpRm7z5eVoFAhLjpyKIOgWjUksthT0MLmqIZCiMoslj9BfCKv780nEeDQZqO/eerh7zT4qojk8Xaxuj9Xvv1fKtJnId608QPtLXDireSzh6aa4tF1b5W747AhNAPzLoNdOzcLheYyw=_Vsd2i2lmljqrcbVJHDC8TZw7tQFHpoZ6ZS0O3b864QM=_DuHhemY++UqCJXeQyjgwdA==)（提取码为12345678）。
+准备与本示例匹配的 openPangu-2.0-Pro（PanguV2 505B BF16）模型权重。将完整
+权重放置在所有 Prefill 和 Decode 节点均可访问的相同绝对路径；使用共享存储时，
+需确认各节点均已正确挂载该目录。随后将 Playbook 中的 `vars.model_path` 修改为
+该权重目录。
 
 ## 部署
 
@@ -42,7 +45,7 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
 部署配置由 Inventory 和模型 Playbook 两部分组成。Inventory 模板位于
 `omniinfer/tools/deploy/ansible/inventories/`，当前提供 1P1D、2P1D 和 4P1D
 三种拓扑。模型 Playbook 位于 `omniinfer/tools/deploy/ansible/playbooks/`。
-本节以 2P1D 部署 PanguV2 为例。
+本节以 2P1D 部署 PanguV2 505B BF16 为例。
 
 1. **omni_infer_inventory_used_for_2P1D.yml**
 
@@ -103,10 +106,11 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
         ...
    ```
 
-2. **omni_infer_server_template_panguv2.yml**
+2. **omni_infer_server_template_performance2P1D_505B_bf16_open.yml**
 
-   修改 `playbooks/omni_infer_server_template_panguv2.yml` 中的环境路径、镜像、
-   容器名称和模型路径：
+   修改
+   `playbooks/omni_infer_server_template_performance2P1D_505B_bf16_open.yml`
+   中的环境路径、镜像、容器名称和模型路径：
 
    ```yaml
    environment:
@@ -120,8 +124,8 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
      SCRIPTS_PATH: /tmp/scripts_path
 
    vars:
-     model: pangu-v2-92b
-     model_path: /data/models/Pangu-V2-92B
+     model: pangu-v2-505b
+     model_path: /data/models/Pangu-V2-505B
    ```
 
    同时检查 `run_docker_profile.extra_mounts` 是否覆盖模型和源码使用的宿主机
@@ -135,7 +139,7 @@ git clone https://github.com/vllm-project/vllm.git omniinfer/infer_engines/vllm
 cd omniinfer/tools/deploy/ansible
 
 INVENTORY=inventories/omni_infer_inventory_used_for_2P1D.yml
-PLAYBOOK=playbooks/omni_infer_server_template_panguv2.yml
+PLAYBOOK=playbooks/omni_infer_server_template_performance2P1D_505B_bf16_open.yml
 
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --syntax-check
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK"
@@ -146,8 +150,12 @@ ansible-playbook -i "$INVENTORY" "$PLAYBOOK"
 拉起成功后，可以通过curl命令进行测试：
 
 ```bash
-curl -X POST http://127.0.0.1:7000/v1/completions -H "Content-Type:application/json" -d '{"model": "pangu-v2-92b","temperature":0,"max_tokens":50,"prompt": "how are you?", "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}'
+curl -X POST http://127.0.0.1:7000/v1/completions -H "Content-Type:application/json" -d '{"model": "pangu_v2_moe","temperature":0,"max_tokens":50,"prompt": "how are you?", "stream":true,"stream_options": {"include_usage": true,"continuous_usage_stats": true}}'
 ```
+
+该 Playbook 未覆盖 `--served-model-name`，因此使用启动脚本的默认服务名
+`pangu_v2_moe`。如果在 Playbook 中显式修改该参数，curl 请求中的 `model` 也要
+保持一致。
 
 #### 注意事项
 
@@ -166,7 +174,7 @@ curl -X POST http://127.0.0.1:7000/v1/completions -H "Content-Type:application/j
 cd omniinfer/tools/deploy/ansible
 ansible-playbook \
   -i inventories/omni_infer_inventory_used_for_2P1D.yml \
-  playbooks/omni_infer_server_template_panguv2.yml \
+  playbooks/omni_infer_server_template_performance2P1D_505B_bf16_open.yml \
   --tags run_server
 ```
 

@@ -76,6 +76,6 @@ tasks:
       name: common
 ```
 
-当前维护的 PanguV2 Playbook 导入固定的 `elastic_server` 入口。入口只负责静态
+需要扩缩容能力的 Playbook 导入固定的 `elastic_server` 入口。入口只负责静态
 编排，模型参数仍保留在 Playbook 中。动态 `include_role` 仅用于现有的、
 带 `never` tag 的 Proxy 重放流程，因为该流程需要在运行时附加额外 tag。
