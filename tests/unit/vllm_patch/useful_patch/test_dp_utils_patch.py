@@ -7,15 +7,23 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from omni_npu.vllm_patches.patches.common import patch_dp_utils
+from vllm.config import CUDAGraphMode
+
+from omni_npu.vllm_patches.usefull_patch import patch_dp_utils
 
 
-def _make_parallel_config(dp_size=2, dp_rank=0, tp_size=1):
+def _make_parallel_config(
+    dp_size=2,
+    dp_rank=0,
+    tp_size=1,
+    enable_expert_parallel=False,
+):
     return SimpleNamespace(
         data_parallel_size=dp_size,
         data_parallel_rank=dp_rank,
         tensor_parallel_size=tp_size,
         num_ubatches=2,
+        enable_expert_parallel=enable_expert_parallel,
     )
 
 
@@ -52,7 +60,6 @@ def test_run_ar_falls_back_when_aicpu_dp_sync_disabled(monkeypatch):
 
     result = patch_dp_utils._run_ar(
         should_ubatch=False,
-        should_dp_pad=True,
         orig_num_tokens_per_ubatch=10,
         padded_num_tokens_per_ubatch=16,
         cudagraph_mode=0,
@@ -99,21 +106,19 @@ def test_run_ar_populates_cpu_tensor_correctly(monkeypatch):
 
     result = patch_dp_utils._run_ar(
         should_ubatch=True,
-        should_dp_pad=False,
         orig_num_tokens_per_ubatch=orig_tokens,
         padded_num_tokens_per_ubatch=padded_tokens,
         cudagraph_mode=cudagraph_mode,
         parallel_config=_make_parallel_config(dp_size=dp_size, dp_rank=dp_rank),
     )
 
-    assert result.shape == (5, dp_size)
+    assert result.shape == (4, dp_size)
     assert result[0][dp_rank].item() == orig_tokens
     assert result[1][dp_rank].item() == padded_tokens
     assert result[2][dp_rank].item() == 1  # should_ubatch=True
-    assert result[3][dp_rank].item() == 0  # should_dp_pad=False
-    assert result[4][dp_rank].item() == cudagraph_mode
+    assert result[3][dp_rank].item() == cudagraph_mode
 
-    for row in range(5):
+    for row in range(4):
         for col in range(dp_size):
             if col != dp_rank:
                 assert result[row][col].item() == 0
@@ -154,7 +159,6 @@ def test_run_ar_cpu_tensor_is_pinned(monkeypatch):
 
     patch_dp_utils._run_ar(
         should_ubatch=False,
-        should_dp_pad=False,
         orig_num_tokens_per_ubatch=10,
         padded_num_tokens_per_ubatch=10,
         cudagraph_mode=0,
@@ -166,8 +170,9 @@ def test_run_ar_cpu_tensor_is_pinned(monkeypatch):
 
 @pytest.mark.unit
 def test_run_ar_signature_matches_upstream():
-    """Patched _run_ar must have the same signature as upstream to be a drop-in replacement."""
+    """The active usefull_patch _run_ar must match the upstream signature."""
     import inspect
+
     upstream_sig = inspect.signature(patch_dp_utils._original_run_ar)
     patched_sig = inspect.signature(patch_dp_utils._run_ar)
     assert list(upstream_sig.parameters.keys()) == list(patched_sig.parameters.keys())
@@ -279,7 +284,6 @@ def test_run_ar_calls_all_reduce_with_dedicated_group(monkeypatch):
 
     patch_dp_utils._run_ar(
         should_ubatch=False,
-        should_dp_pad=True,
         orig_num_tokens_per_ubatch=10,
         padded_num_tokens_per_ubatch=16,
         cudagraph_mode=0,
@@ -292,8 +296,8 @@ def test_run_ar_calls_all_reduce_with_dedicated_group(monkeypatch):
 
 @pytest.mark.unit
 def test_synchronize_dp_ranks_preserves_synced_dp_padding(monkeypatch):
-    """Original synced DP padding is preserved outside the eager all2all path."""
-    full_cudagraph_mode = patch_dp_utils.CUDAGraphMode.FULL.value
+    """A synced FULL cudagraph mode preserves DP padding in usefull_patch."""
+    full_cudagraph_mode = CUDAGraphMode.FULL.value
     monkeypatch.setattr(
         patch_dp_utils,
         "_run_ar",
@@ -301,14 +305,8 @@ def test_synchronize_dp_ranks_preserves_synced_dp_padding(monkeypatch):
             [1, 128],
             [4, 128],
             [0, 0],
-            [1, 1],
             [full_cudagraph_mode, full_cudagraph_mode],
         ], dtype=torch.int32),
-    )
-    monkeypatch.setattr(
-        patch_dp_utils.torch_npu.npu,
-        "get_device_name",
-        lambda index=0: "Ascend910B",
     )
 
     should_ubatch, num_tokens_across_dp, synced_cudagraph_mode = (
@@ -316,7 +314,6 @@ def test_synchronize_dp_ranks_preserves_synced_dp_padding(monkeypatch):
             num_tokens_unpadded=1,
             num_tokens_padded=4,
             should_attempt_ubatching=False,
-            should_attempt_dp_padding=True,
             cudagraph_mode=full_cudagraph_mode,
             parallel_config=_make_parallel_config(dp_size=2, tp_size=2),
         )
@@ -328,48 +325,8 @@ def test_synchronize_dp_ranks_preserves_synced_dp_padding(monkeypatch):
 
 
 @pytest.mark.unit
-def test_synchronize_dp_ranks_skips_padding_for_a2_all2all(monkeypatch):
-    """A2 TP+DP all2all eager path keeps each rank's local padded token count."""
-    monkeypatch.setattr(
-        patch_dp_utils,
-        "_run_ar",
-        lambda **kwargs: torch.tensor([
-            [1, 128],
-            [4, 128],
-            [0, 0],
-            [1, 1],
-            [0, 0],
-        ], dtype=torch.int32),
-    )
-    monkeypatch.setattr(
-        patch_dp_utils.torch_npu.npu,
-        "get_device_name",
-        lambda index=0: "Ascend910B",
-    )
-
-    should_ubatch, num_tokens_across_dp, synced_cudagraph_mode = (
-        patch_dp_utils._synchronize_dp_ranks(
-            num_tokens_unpadded=1,
-            num_tokens_padded=4,
-            should_attempt_ubatching=False,
-            should_attempt_dp_padding=True,
-            cudagraph_mode=0,
-            parallel_config=_make_parallel_config(dp_size=2, tp_size=2),
-        )
-    )
-
-    assert should_ubatch is False
-    assert synced_cudagraph_mode == 0
-    assert num_tokens_across_dp.tolist() == [4, 128]
-
-
-@pytest.mark.unit
 def test_patch_registers_dp_sync_functions():
-    """DpUtilsPatch should register DP sync functions for patching."""
-    assert "_run_ar" in patch_dp_utils.DpUtilsPatch._attr_names_to_apply
-    assert "_synchronize_dp_ranks" in patch_dp_utils.DpUtilsPatch._attr_names_to_apply
-    assert patch_dp_utils.DpUtilsPatch._run_ar is patch_dp_utils._run_ar
-    assert (
-        patch_dp_utils.DpUtilsPatch._synchronize_dp_ranks
-        is patch_dp_utils._synchronize_dp_ranks
-    )
+    """The active patch should register its DP synchronization override."""
+    patch_cls = patch_dp_utils.DpUtilsEagerEpPadPatch
+    assert patch_cls._attr_names_to_apply == ["_synchronize_dp_ranks"]
+    assert patch_cls._synchronize_dp_ranks is patch_dp_utils._synchronize_dp_ranks

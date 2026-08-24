@@ -8,8 +8,8 @@ under tests/vllm_patches/ rather than tests/unit/ for the same reason as
 tests/config/: tests/unit/conftest.py imports torch at module level, which would
 defeat the point.  Run either way::
 
-    pytest omni/tests/vllm_patches/test_patch_serving_apc.py -v
-    python  omni/tests/vllm_patches/test_patch_serving_apc.py
+    pytest tests/unit/vllm_patch/useful_patch/test_patch_serving_apc.py -v
+    python tests/unit/vllm_patch/useful_patch/test_patch_serving_apc.py
 
 The fake "upstream" generators below reproduce 0.25.1's observable behaviour:
   * the final SSE usage chunk carries prompt_tokens_details only when
@@ -27,6 +27,9 @@ import logging
 import sys
 import types
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 # <repo>/tests/unit/vllm_patch/useful_patch/ -> parents[4] is <repo>
 PATCH_PATH = (
@@ -225,7 +228,20 @@ def _load_patch_module():
     return mod
 
 
-apc = _load_patch_module()
+if __name__ == "__main__":
+    apc = _load_patch_module()
+else:
+    apc = None
+
+    @pytest.fixture(scope="module", autouse=True)
+    def _isolated_apc_module():
+        global apc
+
+        with patch.dict(sys.modules):
+            apc = _load_patch_module()
+            yield
+
+        apc = None
 
 
 async def _agen(items):
@@ -504,4 +520,5 @@ if __name__ == "__main__":
                 print(f"FAIL {name}: {type(exc).__name__}: {exc}")
     print("=" * 60)
     print("ALL PASSED" if not failed else f"{failed} FAILED")
-    sys.exit(1 if failed else 0)
+    if failed:
+        raise RuntimeError(f"{failed} tests failed")
