@@ -275,18 +275,29 @@ class NPUCommunicator(CudaCommunicator):
         # Nothing special for HCCL torch.distributed
         return None
 
-    def dispatch(
+    def dispatch_router_logits(
             self,
             hidden_states: torch.Tensor,
             router_logits: torch.Tensor,
             is_sequence_parallel: bool = False,
             extra_tensors: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Dispatch the hidden states and router logits to the appropriate device.
-        This is a no-op in the base class.
-        """
         return hidden_states, router_logits
+
+    def dispatch(
+            self,
+            hidden_states: torch.Tensor,
+            topk_weights: torch.Tensor,
+            topk_ids: torch.Tensor,
+            is_sequence_parallel: bool = False,
+            extra_tensors: list[torch.Tensor] | None = None,
+    ) -> (
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+            | tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor]]
+    ):
+        if extra_tensors is None:
+            return hidden_states, topk_weights, topk_ids
+        return hidden_states, topk_weights, topk_ids, extra_tensors
 
     def combine(
             self, hidden_states: torch.Tensor, is_sequence_parallel: bool = False

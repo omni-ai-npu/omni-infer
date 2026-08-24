@@ -121,6 +121,14 @@ def bootstrap_worker(kv_role: Optional[str] = None,
     # Single-host multi-process: give each rank's HCCL socket a distinct port.
     os.environ.setdefault("HCCL_NPU_SOCKET_PORT_RANGE", "60000-60100")
     apply_patches()
+    # The engine boot path (EngineArgs.create_engine_config / add_cli_args /
+    # NPUWorker) invokes NPUPlatform.pre_register_and_update(), which is where
+    # the MLA prefill backend override is registered (omni/platform.py). This
+    # harness builds VllmConfig directly, so trigger the same pre-registration
+    # explicitly -- otherwise FLASH_ATTN resolves to the vLLM CUDA-only
+    # implementation and prefill fails with an ImportError on NPU.
+    from vllm.platforms import current_platform
+    current_platform.pre_register_and_update()
     torch.set_default_dtype(torch.bfloat16)
     _set_model_extra_config(
         enable_cp=enable_cp, enable_fc2=enable_fc2,
@@ -192,6 +200,10 @@ def build_vllm_config(kv_role: Optional[str], tp_size: int = 1,
             kv_role=kv_role,
             is_kv_producer=(kv_role == "kv_producer"),
             is_kv_consumer=(kv_role == "kv_consumer"),
+            # vLLM 0.25 selector.py reads is_kv_transfer_instance directly to
+            # decide whether to use the KV-connector backend. A PD producer /
+            # consumer role simulates an active KV transfer instance.
+            is_kv_transfer_instance=(kv_role in ("kv_producer", "kv_consumer")),
         )
     hf = build_hf_config()
 
@@ -353,15 +365,29 @@ def alloc_caches(layer, vllm_config, num_blocks: int) -> None:
     raw = torch.zeros(num_blocks * spec.page_size_bytes, dtype=torch.int8,
                       device=NPU)
     backend = NPUDSABackend if layer.is_dsa_layer else NPUMLABackend
-    layer.attn.kv_cache = [backend.reshape_kv_cache(raw, num_blocks, spec)]
+    attn_kv_cache = backend.reshape_kv_cache(raw, num_blocks, spec)
 
     mome_layer, _ = _mome_layer_and_name(layer)
     mspec = mome_layer.get_kv_cache_spec(vllm_config)
     mraw = torch.zeros(num_blocks * mspec.page_size_bytes, dtype=torch.int8,
                        device=NPU)
-    mome_layer.kv_cache = [
-        NPUPanguMomeBackend.reshape_kv_cache(mraw, num_blocks, mspec)
-    ]
+    mome_kv_cache = NPUPanguMomeBackend.reshape_kv_cache(
+        mraw, num_blocks, mspec,
+    )
+
+    if getattr(layer, "_test_implementation", "low_latency") == "high_performance":
+        # HP layers follow the vLLM bind convention: one entry per virtual
+        # engine, read as layer.kv_cache[forward_context.virtual_engine].
+        layer.attn.kv_cache = [attn_kv_cache]
+        mome_layer.kv_cache = [mome_kv_cache]
+    else:
+        # Low-latency NPUPanguSparseAttention indexes the reshape tuple
+        # directly (attn.kv_cache[i] / mome_attn.kv_cache[mome_cache_index]
+        # must be individual tensors), mirroring AttentionLayerBase.
+        # bind_kv_cache in vLLM 0.25. A list would hand the whole cache
+        # tuple to the mome/attn kernels as a single "state".
+        layer.attn.kv_cache = attn_kv_cache
+        mome_layer.kv_cache = mome_kv_cache
 
 
 def _mome_layer_and_name(layer):
@@ -432,6 +458,10 @@ def build_metadata(layer, vllm_config, reqs, num_blocks: int,
         block_table_tensor=block_table.to(device),
         slot_mapping=slot_mapping.to(device),
         causal=True,
+        # vLLM 0.25.x: the MLA metadata builder reads the CPU seq-len upper
+        # bound directly (mla_attention.py build asserts it for prefills);
+        # the deprecated _seq_lens_cpu fallback no longer satisfies it.
+        seq_lens_cpu_upper_bound=seq_lens,
     )
     common._seq_lens_cpu = seq_lens
     common._num_computed_tokens_cpu = num_computed_cpu
@@ -485,11 +515,7 @@ def run_forward(layer, hidden, cos, sin, attn_meta, mome_meta):
     from omni_npu.v1.layers.attention import (
         npu_dsa, npu_mla, npu_pangu, npu_pangu_custom_ops,
     )
-    from omni_npu.vllm_patches.patches.models.pangu_v2_hybrid import (
-        patch_mome_hybrid,
-    )
-    modules = (npu_pangu, npu_pangu_custom_ops, npu_dsa, npu_mla,
-               patch_mome_hybrid)
+    modules = (npu_pangu, npu_pangu_custom_ops, npu_dsa, npu_mla)
     with ExitStack() as stack:
         for module in modules:
             stack.enter_context(

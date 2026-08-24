@@ -34,12 +34,41 @@ def _install_chat_stubs(monkeypatch):
     _stub_module(monkeypatch, "vllm", is_package=True)
     _stub_module(monkeypatch, "vllm.entrypoints", is_package=True)
     _stub_module(monkeypatch, "vllm.entrypoints.openai", is_package=True)
-    _stub_module(monkeypatch, "vllm.inputs", is_package=True)
+    inputs_mod = _stub_module(monkeypatch, "vllm.inputs", is_package=True)
     _stub_module(monkeypatch, "vllm.v1", is_package=True)
     _stub_module(monkeypatch, "vllm.v1.engine", is_package=True)
     _stub_module(monkeypatch, "vllm.v1.core", is_package=True)
     _stub_module(monkeypatch, "vllm.v1.core.sched", is_package=True)
     _stub_module(monkeypatch, "vllm.lora", is_package=True)
+
+    # Modules imported by patch_input_ids_piggyback (v0.25.1). Without these,
+    # the stub `vllm` package (empty __path__) raises ModuleNotFoundError.
+    parser_mod = _stub_module(monkeypatch, "vllm.parser")
+    parser_mod.Parser = type("Parser", (), {})
+    _stub_module(monkeypatch, "vllm.utils", is_package=True)
+    utils_mistral = _stub_module(monkeypatch, "vllm.utils.mistral")
+
+    def _mistral_feature_false(*a, **kw):
+        return False
+
+    utils_mistral.is_mistral_tokenizer = _mistral_feature_false
+    utils_mistral.is_mistral_tool_parser = _mistral_feature_false
+    _stub_module(monkeypatch, "vllm.renderers", is_package=True)
+    hf_renderers = _stub_module(monkeypatch, "vllm.renderers.hf")
+
+    def _resolve_content_format(*args, **kwargs):
+        return "resolved"
+
+    hf_renderers.resolve_chat_template_content_format = _resolve_content_format
+
+    online_renderer = _stub_module(monkeypatch,
+                                   "vllm.renderers.online_renderer")
+
+    class OnlineRenderer:
+        async def preprocess_chat(self, *args, **kwargs):
+            return ["orig"], [{"prompt_token_ids": [9, 9]}]
+
+    online_renderer.OnlineRenderer = OnlineRenderer
 
     logger_mod = _stub_module(monkeypatch, "vllm.logger")
 
@@ -47,16 +76,28 @@ def _install_chat_stubs(monkeypatch):
         def __getattr__(self, name):
             return lambda *args, **kwargs: None
 
-    logger_mod.init_logger = lambda *_a, **_kw: Logger()
+    def _init_logger(*_a, **_kw):
+        return Logger()
+
+    logger_mod.init_logger = _init_logger
     logger_mod.logger = Logger()
 
     chat_utils = _stub_module(monkeypatch, "vllm.entrypoints.chat_utils")
     chat_utils.ChatCompletionMessageParam = dict
     chat_utils.ChatTemplateContentFormatOption = str
-    chat_utils.resolve_chat_template_content_format = (
-        lambda *args, **kwargs: "resolved")
-    chat_utils.parse_chat_messages_futures = (
-        lambda messages, *_a, **_kw: (messages, _ready_value(None), None))
+    chat_utils.ConversationMessage = dict
+    chat_utils.resolve_chat_template_content_format = _resolve_content_format
+
+    def _parse_chat_messages_futures(messages, *_a, **_kw):
+        return (messages, _ready_value(None), None)
+
+    chat_utils.parse_chat_messages_futures = _parse_chat_messages_futures
+
+    # v0.25.1: parse_chat_messages is sync and returns (conv, mm_data, mm_uuids).
+    def _parse_chat_messages(messages, *_a, **_kw):
+        return (messages, None, None)
+
+    chat_utils.parse_chat_messages = _parse_chat_messages
 
     protocol = _stub_module(monkeypatch, "vllm.entrypoints.openai.protocol")
     for _parent in ("chat_completion", "completion", "responses", "engine", "models"):
@@ -77,6 +118,13 @@ def _install_chat_stubs(monkeypatch):
             cls.rebuild_force = force
 
     protocol.ChatCompletionRequest = ChatCompletionRequest
+    # The 0.25.1 patch imports from the chat_completion.protocol SUBMODULE (not
+    # the legacy parent path), so the rich class (model_fields / model_rebuild
+    # needed by patch_input_ids_piggyback._register_input_ids_field) must land
+    # there too, not just on `protocol`.
+    chat_comp_proto = sys.modules[
+        "vllm.entrypoints.openai.chat_completion.protocol"]
+    chat_comp_proto.ChatCompletionRequest = ChatCompletionRequest
     protocol.ChatCompletionNamedToolChoiceParam = type(
         "ChatCompletionNamedToolChoiceParam", (), {}
     )
@@ -117,6 +165,7 @@ def _install_chat_stubs(monkeypatch):
     _new_chat_serving.OpenAIServingChat = OpenAIServingChat
     _new_comp_serving = _stub_module(
         monkeypatch, "vllm.entrypoints.openai.completion.serving")
+
     class _DummyCompletion(OpenAIServing):
         pass
     _new_comp_serving.OpenAIServingCompletion = _DummyCompletion
@@ -134,6 +183,21 @@ def _install_chat_stubs(monkeypatch):
 
     inputs_data.TokensPrompt = TokensPrompt
     inputs_data.PromptType = object
+
+    # v0.25.1: patch_input_ids_piggyback does `from vllm.inputs import
+    # EngineInput, tokens_input`. Match the real tokens_input() shape
+    # (vllm/inputs/engine.py: TokensInput(type="token", prompt_token_ids,
+    # cache_salt)).
+    inputs_mod.EngineInput = dict
+
+    def _tokens_input(prompt_token_ids, *, prompt=None, cache_salt=None):
+        return {
+            "type": "token",
+            "prompt_token_ids": list(prompt_token_ids),
+            **({"cache_salt": cache_salt} if cache_salt is not None else {}),
+        }
+
+    inputs_mod.tokens_input = _tokens_input
 
     tokenizers = _stub_module(monkeypatch, "vllm.tokenizers")
     tokenizers.TokenizerLike = type("TokenizerLike", (), {})
@@ -154,7 +218,11 @@ def _install_chat_stubs(monkeypatch):
     kv_cache_interface.AttentionSpec = type("AttentionSpec", (), {})
 
     sched_utils = _stub_module(monkeypatch, "vllm.v1.core.sched.utils")
-    sched_utils.check_stop = lambda request, max_model_len: False
+
+    def _check_stop_stub(request, max_model_len):
+        return False
+
+    sched_utils.check_stop = _check_stop_stub
 
     exceptions_mod = _stub_module(monkeypatch, "vllm.exceptions")
 
@@ -200,7 +268,7 @@ def _install_chat_stubs(monkeypatch):
 def _load_input_ids_module(monkeypatch):
     _install_chat_stubs(monkeypatch)
     module_name = (
-        "omni_npu.vllm_patches.patches.common.patch_input_ids_piggyback")
+        "omni_npu.vllm_patches.usefull_patch.patch_input_ids_piggyback")
     sys.modules.pop(module_name, None)
     return importlib.import_module(module_name)
 
@@ -230,38 +298,29 @@ def test_input_ids_fast_path_reuses_piggyback_ids(monkeypatch):
     request = mod.ChatCompletionRequest()
     request.input_ids = [10, 11]
     request.truncate_prompt_tokens = None
-    request.mm_processor_kwargs = {"foo": "bar"}
     request.cache_salt = "salt"
-    request.tool_choice = "auto"
-
-    adjusted = types.SimpleNamespace(**request.__dict__)
-
-    class ToolParser:
-        def adjust_request(self, request):
-            return adjusted
 
     serving = types.SimpleNamespace(
+        renderer=types.SimpleNamespace(tokenizer=object()),
         model_config=object(),
-        _validate_input=lambda request, ids, prompt: {
-            "prompt_token_ids": list(ids),
-        },
     )
 
-    conversation, prompts = asyncio.run(
-        mod.InputIdsPiggybackPatch._preprocess_chat(
+    conversation, engine_inputs = asyncio.run(
+        mod.InputIdsPiggybackPatch.preprocess_chat(
             serving,
             request,
-            tokenizer=object(),
             messages=[{"role": "user", "content": "hello"}],
-            chat_template="template",
-            chat_template_content_format="auto",
-            tool_parser=lambda tokenizer: ToolParser(),
+            default_template="template",
+            default_template_content_format="auto",
+            default_template_kwargs=None,
         ))
 
     assert conversation == [{"role": "user", "content": "hello"}]
-    assert prompts == [{
+    # tokens_input() drops mm_processor_kwargs (text-only fast path); the
+    # piggybacked ids are preserved.
+    assert engine_inputs == [{
+        "type": "token",
         "prompt_token_ids": [10, 11],
-        "mm_processor_kwargs": {"foo": "bar"},
         "cache_salt": "salt",
     }]
 
@@ -275,7 +334,7 @@ def test_input_ids_validation_mismatch_raises(monkeypatch):
     async def fake_original(*args, **kwargs):
         return ["orig"], [{"prompt_token_ids": [99]}]
 
-    monkeypatch.setattr(mod, "_prefilled_preprocess_chat", fake_original)
+    monkeypatch.setattr(mod, "_original_preprocess_chat", fake_original)
 
     request = mod.ChatCompletionRequest()
     request.input_ids = [10]
@@ -285,13 +344,16 @@ def test_input_ids_validation_mismatch_raises(monkeypatch):
 
     with pytest.raises(ValueError, match="Input IDs verification failed"):
         asyncio.run(
-            mod.InputIdsPiggybackPatch._preprocess_chat(
-                types.SimpleNamespace(model_config=object()),
+            mod.InputIdsPiggybackPatch.preprocess_chat(
+                types.SimpleNamespace(
+                    renderer=types.SimpleNamespace(tokenizer=tokenizer),
+                    model_config=object(),
+                ),
                 request,
-                tokenizer=tokenizer,
                 messages=[{"role": "user", "content": "hello"}],
-                chat_template="template",
-                chat_template_content_format="auto",
+                default_template="template",
+                default_template_content_format="auto",
+                default_template_kwargs=None,
             ))
 
 
@@ -303,20 +365,23 @@ def test_input_ids_fallback_calls_original_for_multimodal(monkeypatch):
     async def fake_original(*args, **kwargs):
         return ["fallback"], [{"prompt_token_ids": [1]}]
 
-    monkeypatch.setattr(mod, "_prefilled_preprocess_chat", fake_original)
+    monkeypatch.setattr(mod, "_original_preprocess_chat", fake_original)
 
     request = mod.ChatCompletionRequest()
     request.input_ids = [10]
     request.truncate_prompt_tokens = None
 
     result = asyncio.run(
-        mod.InputIdsPiggybackPatch._preprocess_chat(
-            types.SimpleNamespace(model_config=object()),
+        mod.InputIdsPiggybackPatch.preprocess_chat(
+            types.SimpleNamespace(
+                renderer=types.SimpleNamespace(tokenizer=object()),
+                model_config=object(),
+            ),
             request,
-            tokenizer=object(),
             messages=[{"content": [{"type": "image_url"}]}],
-            chat_template="template",
-            chat_template_content_format="auto",
+            default_template="template",
+            default_template_content_format="auto",
+            default_template_kwargs=None,
         ))
 
     assert result == (["fallback"], [{"prompt_token_ids": [1]}])
@@ -330,13 +395,13 @@ def test_input_ids_conflicting_skip_decode_setting_asserts(monkeypatch):
 
     with pytest.raises(AssertionError, match="requires OMNI_SKIP_DECODE_TOKENIZE=0"):
         asyncio.run(
-            mod.InputIdsPiggybackPatch._preprocess_chat(
-                types.SimpleNamespace(model_config=object()),
+            mod.InputIdsPiggybackPatch.preprocess_chat(
+                types.SimpleNamespace(),
                 types.SimpleNamespace(input_ids=[1]),
-                tokenizer=object(),
                 messages=[],
-                chat_template=None,
-                chat_template_content_format="auto",
+                default_template=None,
+                default_template_content_format="auto",
+                default_template_kwargs=None,
             ))
 
 
@@ -355,7 +420,7 @@ def test_grammar_bitmask_backend_forces_native_on_npu(monkeypatch):
         lambda logits, bitmask, *args, **kwargs: calls.append(kwargs))
 
     module_name = (
-        "omni_npu.vllm_patches.patches.common.patch_vllm_structured_output")
+        "omni_npu.vllm_patches.usefull_patch.patch_vllm_structured_output")
     sys.modules.pop(module_name, None)
     mod = importlib.import_module(module_name)
 

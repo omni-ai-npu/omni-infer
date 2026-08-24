@@ -245,8 +245,12 @@ _saved_vllm_engine_args = getattr(
 )
 _saved_omni_envs = getattr(sys.modules.get("omni_npu"), "envs", _MISSING)
 
-PATCH = _load_patch()
-PATCH = None  # _load_patch() moved into _restore_sys_modules fixture to avoid collection-time pollution
+# Only the _restore_sys_modules fixture loads the patch module.  Loading it at
+# module level as well would create a second module object under the same
+# "patch_rep_det" alias: REGISTERED would keep the first load's classes while
+# PATCH pointed at the second, so apply()-based tests would write
+# _PROCESS_DEFAULT into a different module than the assertion reads (C6).
+PATCH = None
 
 for _name, _module_value in _saved_modules.items():
     if _module_value is _MISSING:

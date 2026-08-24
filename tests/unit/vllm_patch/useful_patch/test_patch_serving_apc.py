@@ -221,11 +221,28 @@ class FakeServing:
 
 
 def _load_patch_module():
-    _install_stubs()
-    spec = importlib.util.spec_from_file_location("_patch_serving_apc", PATCH_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    # This file runs at collection time (module-level ``apc = _load_patch_module()``),
+    # so without a restore the stubs would clobber the real vllm/omni_npu modules for
+    # every later test file in the session. Snapshot sys.modules before installing the
+    # fakes and restore it in a finally. The loaded module keeps direct references to
+    # the fake modules/classes, so removing them from sys.modules is safe.
+    saved = dict(sys.modules)
+    try:
+        _install_stubs()
+        spec = importlib.util.spec_from_file_location("_patch_serving_apc", PATCH_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        for name, prev in saved.items():
+            if sys.modules.get(name) is not prev:
+                if prev is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = prev
+        for name in list(sys.modules):
+            if name not in saved:
+                sys.modules.pop(name, None)
 
 
 if __name__ == "__main__":
@@ -369,7 +386,22 @@ def test_chat_stream_d_side_reports_p_side_hit():
 
 
 def test_chat_stream_forwards_new_0251_keywords():
-    """chat_template_kwargs / mm_token_counts are passed by keyword at the call site."""
+    """chat_template_kwargs / mm_token_counts are passed by keyword at the call site.
+
+    Self-contained: it populates CALLS itself (the sibling stub records args/kwargs
+    during the generator run), so it no longer depends on
+    test_chat_stream_d_side_reports_p_side_hit having executed first in the same
+    process -- CI may distribute the two tests across separate workers.
+    """
+    serving = FakeServing(enable_details=True)
+    request = FakeRequest({"prefill_cached_tokens": 800, "prefill_prompt_tokens": 1000})
+    gen = apc.OpenAIServingChatStreamAPCPatch.chat_completion_stream_generator(
+        serving, request, _agen([FakeOutput(0)]), "req-1", "model",
+        chat_template_kwargs={"enable_thinking": False},
+        mm_token_counts={"image": 32},
+    )
+    asyncio.run(_collect(gen))
+
     assert CALLS["chat_stream"]["kwargs"]["mm_token_counts"] == {"image": 32}
     assert CALLS["chat_stream"]["kwargs"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert CALLS["chat_stream"]["args"] == ("req-1", "model")
@@ -458,7 +490,7 @@ def test_completion_create_preserves_original_and_skips_streams():
     assert hasattr(out, "__anext__")
 
 
-def test_chain_falls_back_to_vllm_when_sibling_patch_is_unavailable():
+def test_chain_falls_back_to_vllm_when_sibling_patch_is_unavailable(monkeypatch):
     """OMNI_NPU_SKIP_PATCH_FILES / an unported sibling must not break this patch.
 
     _chain_to should hand back the vLLM implementation instead of raising, so the
@@ -484,14 +516,27 @@ def test_chain_falls_back_to_vllm_when_sibling_patch_is_unavailable():
     )
     assert missing_method is sentinel
 
-    # And the happy path still resolves to the sibling's own method.
-    import omni_npu.vllm_patches.patches.common.patch_routed_experts as sibling
+    # And the happy path still resolves to the sibling's own method.  The real
+    # patch_routed_experts module is still being ported to vLLM 0.25.1 (it imports
+    # v0.14-only symbols such as _BUFFER_PREFIX), so install a self-contained fake
+    # sibling instead of importing it -- this test only exercises _chain_to's
+    # resolution, not the sibling patch's body.  monkeypatch restores sys.modules at
+    # teardown, so nothing leaks into the rest of the session.
+    sibling = types.ModuleType(
+        "omni_npu.vllm_patches.patches.common.patch_routed_experts")
+
+    class ExpertIdServingChatStream:
+        async def chat_completion_stream_generator(self, *a, **kw):
+            pass
+
+    sibling.ExpertIdServingChatStream = ExpertIdServingChatStream
+    monkeypatch.setitem(sys.modules, sibling.__name__, sibling)
 
     resolved = apc._chain_to(
         "omni_npu.vllm_patches.patches.common.patch_routed_experts",
         "ExpertIdServingChatStream", "chat_completion_stream_generator", sentinel,
     )
-    assert resolved is sibling.ExpertIdServingChatStream.__dict__[
+    assert resolved is ExpertIdServingChatStream.__dict__[
         "chat_completion_stream_generator"
     ]
 

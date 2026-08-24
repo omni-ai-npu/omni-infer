@@ -2352,9 +2352,15 @@ class TestStartLoadCachesTPBroadcast:
         c.start_load_caches(encoder_cache)
 
         assert "h1" in encoder_cache
+        got = encoder_cache.get("h1")
+        assert got is not None
+        # Pin BOTH sides to cpu: some earlier module (e.g.
+        # test_deepseek_scaling_rope.py) sets `torch.set_default_device("npu")`
+        # at import time, which would put the bare torch.arange on npu:0 and
+        # break torch.equal(got.cpu(), ...) with a device mismatch.
         assert torch.equal(
-            encoder_cache.get("h1"),
-            torch.arange(4, dtype=torch.float32).view(2, 2),
+            got.cpu(),
+            torch.arange(4, dtype=torch.float32).view(2, 2).cpu(),
         )
 
     @patch('omni_npu.connector.ec_connector.network_connector.current_platform')

@@ -29,32 +29,17 @@ pytestmark = pytest.mark.skipif(not _HAS_NPU, reason="requires NPU hardware")
 
 
 # ==============================================================================
-# vLLM 0.14 workarounds for NPU tests (stub modules from conftest interfere)
-# ==============================================================================
-import sys as _sys
-
-# 1. RoPE _compute_inv_freq CPU/NPU device mismatch
-_dsr_key = "vllm.model_executor.layers.rotary_embedding.deepseek_scaling_rope"
-if _dsr_key in _sys.modules:
-    _dsr = _sys.modules[_dsr_key]
-    def _patched_cif(self, scaling_factor):
-        dim = self.rotary_dim
-        inv_freq = 1.0 / (scaling_factor * self.base ** (
-            torch.arange(0, dim, 2, dtype=torch.float) / dim))
-        return inv_freq.to("npu") if torch.npu.is_available() else inv_freq
-    _dsr.DeepseekScalingRotaryEmbedding._compute_inv_freq = _patched_cif
-
-
-# ==============================================================================
 # Helpers
 # ==============================================================================
 
 def _make_vllm_wrapper_config():
     """Create a SimpleNamespace for set_current_vllm_config with all fields
-    needed by vLLM 0.14 code paths."""
+    needed by vLLM 0.25.1 code paths."""
+    from vllm.config import CompilationMode, KVTransferConfig
+
     return SimpleNamespace(
         compilation_config=SimpleNamespace(
-            mode="DISABLED", static_forward_context={},
+            mode=CompilationMode.NONE, static_forward_context={},
             custom_ops=["none"], disabled_custom_ops=set(),
         ),
         model_config=SimpleNamespace(
@@ -72,7 +57,11 @@ def _make_vllm_wrapper_config():
             calculate_kv_scales=False,
             user_specified_block_size=None,
         ),
-        attention_config=SimpleNamespace(backend=None),
+        # vLLM 0.25.1 reads vllm_config.kv_transfer_config.is_kv_transfer_instance
+        # (e.g. vllm/v1/attention/selector.py get_attn_backend).  Use the real
+        # config object: is_kv_transfer_instance is False without a connector.
+        kv_transfer_config=KVTransferConfig(),
+        attention_config=SimpleNamespace(backend=None, use_non_causal=False),
     )
 
 def _init_hccl_dist(monkeypatch):
@@ -122,6 +111,7 @@ def _make_npu_hf_config():
 
 def _make_npu_vllm_cfg(hf_config=None):
     """SimpleNamespace VllmConfig."""
+    from vllm.config import CompilationMode
     if hf_config is None:
         hf_config = _make_npu_hf_config()
     draft_model_cfg = SimpleNamespace(hf_config=hf_config)
@@ -133,7 +123,7 @@ def _make_npu_vllm_cfg(hf_config=None):
         ),
         quant_config=None,
         compilation_config=SimpleNamespace(
-            mode="DISABLED", static_forward_context={}, custom_ops=["none"],
+            mode=CompilationMode.NONE, static_forward_context={}, custom_ops=["none"],
         ),
         scheduler_config=SimpleNamespace(max_num_seqs=8, enable_chunked_prefill=False),
         cache_config=SimpleNamespace(block_size=16, gpu_memory_utilization=0.3,
@@ -143,7 +133,8 @@ def _make_npu_vllm_cfg(hf_config=None):
                                       user_specified_block_size=None),
         parallel_config=SimpleNamespace(
             tensor_parallel_size=1, data_parallel_size=1, pipeline_parallel_size=1,
-            enable_expert_parallel=False,
+            enable_expert_parallel=False, decode_context_parallel_size=1,
+            dcp_comm_backend="hccl",
             eplb_config=SimpleNamespace(num_redundant_experts=0),
         ),
         kv_transfer_config=None,
@@ -167,6 +158,7 @@ def _patch_model_extra_config(monkeypatch):
             num_extra_reserved_blocks=0, enable_prefill_mla_absorb_pa=False,
             enable_kv_rmsnorm_rope_cache=False, decode_moe_dispatch_combine=False,
             kv_nz=False, enable_super_kernel=False,
+            enable_precision_strong_consistency=False,
         ),
     )
     for path in [
@@ -193,28 +185,24 @@ class TestNPUMTPInit:
         _init_hccl_dist(monkeypatch)
         _patch_model_extra_config(monkeypatch)
 
-        # vLLM 0.14: yarn_linear_ramp_mask returns CPU tensor but RoPE uses NPU
-        import vllm.model_executor.layers.rotary_embedding.deepseek_scaling_rope as _dsr
-        _orig_cif = _dsr.DeepseekScalingRotaryEmbedding._compute_inv_freq
-        def _patched_cif(self, scaling_factor):
-            r = _orig_cif(self, scaling_factor)
-            return r.to("npu") if r.device.type != "npu" else r
-        monkeypatch.setattr(_dsr.DeepseekScalingRotaryEmbedding,
-                            "_compute_inv_freq", _patched_cif)
-
         # Ensure get_current_vllm_config returns a valid config
         # VllmConfig() has model_config=None in vLLM 0.14; provide explicit config
-        from vllm.config import set_current_vllm_config
+        from vllm.config import CompilationMode, KVTransferConfig, set_current_vllm_config
         _wrap = SimpleNamespace(
-            compilation_config=SimpleNamespace(mode="DISABLED", static_forward_context={},
+            compilation_config=SimpleNamespace(mode=CompilationMode.NONE, static_forward_context={},
                 custom_ops=["none"], disabled_custom_ops=set()),
             model_config=SimpleNamespace(device=torch.device("npu"), max_model_len=512),
             parallel_config=SimpleNamespace(tensor_parallel_size=1, data_parallel_size=1, pipeline_parallel_size=1,
-                enable_expert_parallel=False),
+                enable_expert_parallel=False, decode_context_parallel_size=1,
+                dcp_comm_backend="hccl"),
             scheduler_config=SimpleNamespace(max_num_seqs=8, max_num_batched_tokens=2048),
             cache_config=SimpleNamespace(block_size=16, enable_prefix_caching=False,
-                calculate_kv_scales=False),
-            attention_config=SimpleNamespace(backend=None),
+                calculate_kv_scales=False, user_specified_block_size=None),
+            # vLLM 0.25.1 reads kv_transfer_config.is_kv_transfer_instance
+            # (e.g. vllm/v1/attention/selector.py get_attn_backend); real config
+            # reports False without a connector.
+            kv_transfer_config=KVTransferConfig(),
+            attention_config=SimpleNamespace(backend=None, use_non_causal=False),
         )
         with set_current_vllm_config(_wrap):
             from omni_npu.v1.models.pangu.pangu_ultra_moe_mtp import \

@@ -231,7 +231,9 @@ def test_api_server_bootstrap_contract():
     assert list(b_sig.parameters.keys()) == ["args", "supported_tasks", "model_config"]
 
     i_sig = inspect.signature(init_app_state)
-    assert list(i_sig.parameters.keys()) == ["engine_client", "state", "args"]
+    assert list(i_sig.parameters.keys()) == [
+        "engine_client", "state", "args", "supported_tasks"
+    ]
 
     assert callable(build_app)
     assert callable(init_app_state)

@@ -42,7 +42,7 @@ Golden update usage:
 3) Update with a custom golden directory:
    FUSED_MOE_GOLDEN_DIR=/your/golden/path UPDATE_FUSED_MOE_GOLDEN=1 pytest tests/unit/layers/st/test_fused_moe.py -v
 '''
-FUSED_MOE_GOLDEN_DIR = Path(os.getenv("FUSED_MOE_GOLDEN_DIR","/data/models/ut_pt",))
+FUSED_MOE_GOLDEN_DIR = Path(os.getenv("FUSED_MOE_GOLDEN_DIR", "/data/models/ut_pt"))
 UPDATE_FUSED_MOE_GOLDEN = os.getenv("UPDATE_FUSED_MOE_GOLDEN", "0") == "1"
 MULTI_DP_REQUIRED_NPUS = 2
 TWO_CARD_EP_RUNTIME_CONFIG = {
@@ -402,7 +402,7 @@ def _load_or_update_fused_moe_golden(
     return golden.to(device=actual.device, dtype=actual.dtype)
 
 
-def _build_w8a8_quant_config():
+def _build_quant_config(weights_num_bits):
     from omni_npu.layers.quantization.compressed_tensors.compressed_tensors import (
         NPUCompressedTensorsConfig,
     )
@@ -412,7 +412,7 @@ def _build_w8a8_quant_config():
     quant_config.target_scheme_map = {
         "Linear": {
             "weights": SimpleNamespace(
-                num_bits=8,
+                num_bits=weights_num_bits,
                 strategy="channel",
                 dynamic=False,
                 symmetric=True,
@@ -427,37 +427,20 @@ def _build_w8a8_quant_config():
     }
     quant_config.ignore = []
     quant_config.packed_modules_mapping = {}
-    quant_config.get_name = lambda: "npu-compressed-tensors"
+
+    def _get_quant_config_name():
+        return "npu-compressed-tensors"
+
+    quant_config.get_name = _get_quant_config_name
     return quant_config
+
+
+def _build_w8a8_quant_config():
+    return _build_quant_config(8)
 
 
 def _build_w4a8_quant_config():
-    from omni_npu.layers.quantization.compressed_tensors.compressed_tensors import (
-        NPUCompressedTensorsConfig,
-    )
-
-    quant_config = NPUCompressedTensorsConfig.__new__(NPUCompressedTensorsConfig)
-    quant_config.quant_format = "activation"
-    quant_config.target_scheme_map = {
-        "Linear": {
-            "weights": SimpleNamespace(
-                num_bits={"mlp.experts": 4},
-                strategy="channel",
-                dynamic=False,
-                symmetric=True,
-            ),
-            "input_activations": SimpleNamespace(
-                num_bits=8,
-                strategy="token",
-                dynamic=True,
-                symmetric=True,
-            ),
-        }
-    }
-    quant_config.ignore = []
-    quant_config.packed_modules_mapping = {}
-    quant_config.get_name = lambda: "npu-compressed-tensors"
-    return quant_config
+    return _build_quant_config({"mlp.experts": 4})
 
 
 def _install_omni_layer_packages() -> None:

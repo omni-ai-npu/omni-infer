@@ -120,13 +120,13 @@ def connector(tmp_path, mock_meta):
 
 # -------------------- Tests for has_item --------------------
 class TestHasItem:
-    def test_has_item_producer_returns_false_and_increments_refcount(self, connector):
-        """A missing producer-side item still participates in refcount tracking."""
+    def test_has_item_producer_returns_false_without_incrementing_refcount(self, connector):
+        """Producer mode short-circuits before refcount tracking: inc_refcount is not called."""
         mm_hash = "producer_hash"
         with patch.object(connector, "is_profile_run", return_value=False):
             result = connector.has_item(mm_hash)
             assert result is False
-            connector._meta_mock.inc_refcount.assert_called_once_with(mm_hash)
+            connector._meta_mock.inc_refcount.assert_not_called()
 
     def test_has_item_consumer_file_exists_returns_true_and_increments_refcount(self, connector):
         """If metadata file exists in consumer mode, return True and inc refcount."""

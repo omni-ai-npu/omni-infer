@@ -500,8 +500,22 @@ class TestNPUCommunicatorUnit(unittest.TestCase):
             communicator.rank_in_group = 0
             communicator.ranks = [0, 1]
 
-            communicator.dispatch(None, None, None)
-            communicator.combine(None, None)
+            # vLLM 0.25.1 dispatch contract: the gate output is split into
+            # topk_weights/topk_ids; on NPU both dispatch variants stay a
+            # passthrough no-op (EP communication is handled by the modular
+            # MoE kernels, not by an all2all manager).
+            hidden, weights, ids = object(), object(), object()
+            assert communicator.dispatch(hidden, weights, ids) == (
+                hidden, weights, ids,
+            )
+            extra = [object()]
+            assert communicator.dispatch(
+                hidden, weights, ids, extra_tensors=extra,
+            ) == (hidden, weights, ids, extra)
+            assert communicator.dispatch_router_logits(hidden, ids) == (
+                hidden, ids,
+            )
+            assert communicator.combine(None, None) is None
 
     def test_prepare_communication_buffer_for_model(self):
         with mock_distributed_environment():
