@@ -232,6 +232,8 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
         query_start_loc = common_attn_metadata.query_start_loc
         query_start_loc_cpu = common_attn_metadata.query_start_loc_cpu
         seq_lens = common_attn_metadata.seq_lens
+        # Upper bound is exact for prefill rows and needs no D2H sync.
+        seq_lens_cpu = common_attn_metadata.seq_lens_cpu_upper_bound
         dcp_local_seq_lens = common_attn_metadata.dcp_local_seq_lens
 
         num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = (
@@ -253,9 +255,6 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
                 common_attn_metadata.query_start_loc_cpu[1:]
                 - common_attn_metadata.query_start_loc_cpu[:-1]
             )
-            seq_lens_cpu = common_attn_metadata.seq_lens_cpu_upper_bound
-            if seq_lens_cpu is None:
-                seq_lens_cpu = common_attn_metadata.seq_lens_cpu
             num_computed_tokens_cpu = (
                 seq_lens_cpu - query_lens_cpu
             )

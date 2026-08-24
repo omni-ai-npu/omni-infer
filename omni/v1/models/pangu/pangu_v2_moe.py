@@ -4,7 +4,7 @@
 import os
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext
-from typing import Optional, cast
+from typing import NamedTuple, Optional, cast
 
 import torch
 import torch.distributed as dist
@@ -61,6 +61,7 @@ from vllm.model_executor.models.utils import (
 from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
 from vllm.forward_context import get_forward_context
+from vllm.utils.torch_utils import direct_register_custom_op
 
 from omni_npu.layers.fused_moe.layer import NPUSharedFusedMoE
 from omni_npu.layers.mhc.cube_side_task_ops import (
@@ -77,6 +78,54 @@ from omni_npu.v1.utils import on_ascend910b, on_ascend950
 
 
 logger = init_logger(__name__)
+
+
+def _resolve_decode_mc2_mask(num_tokens: int) -> Optional[torch.Tensor]:
+    """Resolve and slice the current decode MC2 mask at runtime."""
+    attn_metadata = get_forward_context().attn_metadata
+    if isinstance(attn_metadata, dict):
+        for metadata in attn_metadata.values():
+            decode_metadata = getattr(metadata, "decode", None)
+            if (
+                decode_metadata is not None
+                and getattr(decode_metadata, "mc2_mask", None) is not None
+            ):
+                attn_metadata = metadata
+                break
+        else:
+            attn_metadata = None
+    if (
+        hasattr(attn_metadata, "decode")
+        and attn_metadata.decode is not None
+        and attn_metadata.num_decode_tokens == attn_metadata.num_actual_tokens
+    ):
+        mc2_mask = getattr(attn_metadata.decode, "mc2_mask", None)
+        if mc2_mask is not None and num_tokens <= mc2_mask.shape[0]:
+            return mc2_mask[:num_tokens]
+    return None
+
+
+def npu_get_mc2_mask(tokens: torch.Tensor) -> torch.Tensor:
+    """Keep the runtime-dependent MC2 mask slice opaque to Dynamo."""
+    mask = _resolve_decode_mc2_mask(tokens.shape[0])
+    if mask is not None:
+        return mask
+    # Custom ops cannot return Optional[Tensor], so an empty tensor encodes None.
+    return tokens.new_empty(0, dtype=torch.bool)
+
+
+def npu_get_mc2_mask_fake(tokens: torch.Tensor) -> torch.Tensor:
+    return tokens.new_empty(tokens.shape[0], dtype=torch.bool)
+
+
+direct_register_custom_op(
+    op_name="npu_get_mc2_mask",
+    op_func=npu_get_mc2_mask,
+    mutates_args=[],
+    fake_impl=npu_get_mc2_mask_fake,
+    dispatch_key="PrivateUse1",
+)
+
 
 # Singleton marker used to signal "non-fused mhc_pre done, sinkhorn deferred
 # to the next block's attention pre_epilog hook". Carried in the sk_event slot
@@ -705,21 +754,11 @@ class PanguV2MOE(nn.Module):
             shared_output.record_stream(main_stream)
         return result
 
-    def _get_mc2_mask(self, num_tokens: int) -> torch.Tensor | None:
-        attn_metadata = get_forward_context().attn_metadata
-        if isinstance(attn_metadata, dict):
-            layer_prefix = self.prefix.rsplit(".", 1)[0]
-            attn_metadata = attn_metadata.get(f"{layer_prefix}.self_attn.attn")
-        if (
-            hasattr(attn_metadata, "decode") and 
-            attn_metadata.decode is not None and 
-            attn_metadata.num_decode_tokens == attn_metadata.num_actual_tokens
-        ):
-            mc2_mask = getattr(attn_metadata.decode, "mc2_mask", None)
-            if mc2_mask is not None:
-                mc2_mask = mc2_mask[:num_tokens] if num_tokens <= mc2_mask.shape[0] else None
-            return mc2_mask
-        return None
+    def _get_mc2_mask(self, tokens: torch.Tensor) -> torch.Tensor | None:
+        mask = torch.ops.vllm.npu_get_mc2_mask(tokens)
+        if mask.numel() == 0:
+            return None
+        return mask
 
     def _forward_dispatch_combine(
         self,
@@ -811,7 +850,7 @@ class PanguV2MOE(nn.Module):
         # NPU fusion operators have batch size limit of 512
         max_batch_size = 128
         num_tokens = hidden_states.shape[0]
-        x_active_mask = self._get_mc2_mask(topk_ids.shape[0])
+        x_active_mask = self._get_mc2_mask(topk_ids)
 
         if num_tokens <= max_batch_size:
             # Single batch processing
@@ -1299,6 +1338,17 @@ class PanguV2MOE(nn.Module):
         return final_output
 
 
+class PanguV2DecoderLayerOutput(NamedTuple):
+    """Named outputs threaded between Pangu decoder layers."""
+
+    hidden_states: torch.Tensor
+    residual: torch.Tensor | None
+    h_post: torch.Tensor | None
+    h_res: torch.Tensor | None
+    sk_event: Optional[torch.npu.Event]
+    topk_indices_buffer: Optional[torch.Tensor]
+
+
 class PanguV2DecoderLayer(nn.Module):
     def __init__(
         self,
@@ -1714,13 +1764,8 @@ class PanguV2DecoderLayer(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         sk_event: Optional[torch.npu.Event] = None,
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.npu.Event | None,
-    ]:
+        topk_indices_buffer: Optional[torch.Tensor] = None,
+    ) -> PanguV2DecoderLayerOutput:
 
         # Clear any stale callback from a previous forward (e.g. installed but
         # never fired because that step was prefill instead of decode).
@@ -1782,9 +1827,10 @@ class PanguV2DecoderLayer(nn.Module):
 
             self.self_attn.pre_epilog_callback = _pre_epilog_sinkhorn_hook
 
-        hidden_states = self.self_attn(
+        hidden_states, topk_indices_buffer = self.self_attn(
             hidden_states,
             cos, sin,
+            topk_indices_buffer,
         )
 
         if deferred:
@@ -1845,14 +1891,22 @@ class PanguV2DecoderLayer(nn.Module):
             defer_side_launch=not is_model_tail,
         )
 
-        return hidden_states, residual, h_post, h_res, sk_event
+        return PanguV2DecoderLayerOutput(
+            hidden_states,
+            residual,
+            h_post,
+            h_res,
+            sk_event,
+            topk_indices_buffer,
+        )
 
     def _forward_naive(
         self,
         hidden_states: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
-    ) -> torch.Tensor:
+        topk_indices_buffer: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Original (pre-refactor) forward kept as a reference / fallback.
         """
         ###### Attention Block with MHC & SandwichNorm ######
@@ -1866,9 +1920,10 @@ class PanguV2DecoderLayer(nn.Module):
             )
 
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(
+        hidden_states, topk_indices_buffer = self.self_attn(
             hidden_states,
-            cos, sin
+            cos, sin,
+            topk_indices_buffer,
         )
         hidden_states = self.post_attention_layernorm(hidden_states)
 
@@ -1926,7 +1981,7 @@ class PanguV2DecoderLayer(nn.Module):
         elif not self.use_mhc and hidden_states.dim() == 3:
             hidden_states = hidden_states.view(-1, self.hidden_size)
 
-        return hidden_states
+        return hidden_states, topk_indices_buffer
 
 
 def _maybe_padding_and_slice(
@@ -2150,16 +2205,28 @@ class PanguV2Model(nn.Module):
         cos = self.cos_cached.index_select(dim=0, index=positions)
         sin = self.sin_cached.index_select(dim=0, index=positions)
 
+        topk_indices_buffer = torch.zeros(
+            (hidden_states.shape[0], 1, self.config.index_topk),
+            dtype=torch.int32,
+            device=hidden_states.device,
+        )
         hidden_states, residual, h_post, h_res, sk_event = self.layers[0].mhc_head(hidden_states)
         for i in range(self.start_layer, self.end_layer):
-            hidden_states, residual, h_post, h_res, sk_event = self.layers[i](
+            layer_out = self.layers[i](
                 hidden_states,
                 residual,
                 h_post,
                 h_res,
                 cos, sin,
                 sk_event,
+                topk_indices_buffer,
             )
+            hidden_states = layer_out.hidden_states
+            residual = layer_out.residual
+            h_post = layer_out.h_post
+            h_res = layer_out.h_res
+            sk_event = layer_out.sk_event
+            topk_indices_buffer = layer_out.topk_indices_buffer
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors(

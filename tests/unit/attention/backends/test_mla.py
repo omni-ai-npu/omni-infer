@@ -314,13 +314,14 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         seq_lens,
         query_start_loc,
         block_table=None,
+        **metadata_overrides,
     ):
         seq_lens = torch.tensor(seq_lens, dtype=torch.int32)
         query_start_loc = torch.tensor(query_start_loc, dtype=torch.int32)
         num_reqs = len(seq_lens)
         if block_table is None:
             block_table = torch.zeros(num_reqs, 2, dtype=torch.int32)
-        return MagicMock(
+        metadata = dict(
             num_reqs=num_reqs,
             num_actual_tokens=int(query_start_loc[-1].item()),
             max_query_len=1,
@@ -331,9 +332,11 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             query_start_loc_cpu=query_start_loc.cpu(),
             seq_lens=seq_lens,
             seq_lens_cpu=seq_lens.cpu(),
-            seq_lens_cpu_upper_bound=None,
+            seq_lens_cpu_upper_bound=seq_lens.cpu(),
             dcp_local_seq_lens=seq_lens,
         )
+        metadata.update(metadata_overrides)
+        return MagicMock(**metadata)
 
 
     def test_builder_build_prefill_with_sink_len_updates_seq_lens(self):
@@ -364,6 +367,29 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         self.assertEqual(result.prefill.sink_len, 128)
         self.assertEqual(result.prefill.query_cumlens, [3])
         self.assertEqual(result.prefill.seq_lens, [128])
+
+    def test_builder_uses_seq_lens_cpu_upper_bound_without_legacy_shadow(self):
+        with torch.device("cpu"):
+            builder, mla_mod = self._new_builder_for_current_build()
+            common_attn_metadata = self._make_common_for_current_build(
+                seq_lens=[3],
+                query_start_loc=[0, 3],
+                seq_lens_cpu=object(),
+                seq_lens_cpu_upper_bound=torch.tensor([3], dtype=torch.int32),
+            )
+
+            with patch.object(
+                mla_mod,
+                "split_decodes_and_prefills",
+                return_value=(0, 1, 0, 3),
+            ):
+                result = builder.build(
+                    common_prefix_len=0,
+                    common_attn_metadata=common_attn_metadata,
+                    fast_build=False,
+                )
+
+        self.assertEqual(result.prefill.query_cumlens, [3])
 
     def test_builder_build_prefill_creates_chunked_context_metadata(self):
         builder, mla_mod = self._new_builder_for_current_build()

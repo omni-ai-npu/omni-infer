@@ -195,18 +195,24 @@ class EagleProposerPatch(VLLMPatch):
         total_num_tokens = query_start_loc_cpu[-1].item()
         token_indices = self.arange[:total_num_tokens]
 
-        # Adapt: used padded num_actual_tokens and slot_mapping across dp
+        # Adapt: used padded num_actual_tokens and slot_mapping across dp.
+        # Carry CPU seq_lens shadows through so later draft metadata
+        # builders do not hit seq_lens.to("cpu") (D2H + stream sync).
         spec_common_attn_metadata = CommonAttentionMetadata(
             query_start_loc=common_attn_metadata.query_start_loc,
             seq_lens=common_attn_metadata.seq_lens,
             query_start_loc_cpu=query_start_loc_cpu,
+            _seq_lens_cpu=common_attn_metadata._seq_lens_cpu,
+            _num_computed_tokens_cpu=common_attn_metadata._num_computed_tokens_cpu,
+            seq_lens_cpu_upper_bound=common_attn_metadata.seq_lens_cpu_upper_bound,
             num_reqs=common_attn_metadata.num_reqs,
             num_actual_tokens=common_attn_metadata.num_actual_tokens,
             max_query_len=new_query_len_per_req.max().item(),
-            max_seq_len=common_attn_metadata.seq_lens_cpu.max().item(),
+            max_seq_len=common_attn_metadata.max_seq_len,
             block_table_tensor=common_attn_metadata.block_table_tensor,
             slot_mapping=common_attn_metadata.slot_mapping,
             causal=True,
+            dcp_local_seq_lens=common_attn_metadata.dcp_local_seq_lens,
         )
         # End Adapt
 

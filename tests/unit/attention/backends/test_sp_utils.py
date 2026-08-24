@@ -1180,3 +1180,45 @@ def _mock_conv_sp_ops():
         ),
     ):
         yield
+
+
+def test_scheme_conv_sp_stages_metadata_with_non_blocking_copy():
+    utils = importlib.import_module(MODULE)
+    group = MagicMock(rank_in_group=0, world_size=1)
+    pinned = []
+    to_calls = []
+    target_device = torch.device("npu")
+
+    def fake_pin_memory(tensor):
+        pinned.append(tensor)
+        return tensor
+
+    def tracked_to(tensor, *args, **kwargs):
+        to_calls.append((args, kwargs))
+        return tensor
+
+    with (
+        patch.object(torch.Tensor, "pin_memory", fake_pin_memory),
+        patch.object(torch.Tensor, "to", tracked_to),
+    ):
+        metadata = utils.scheme_conv_sp(
+            group,
+            np.array([0, 4], dtype=np.int32),
+            np.array([0], dtype=np.int32),
+            like=MagicMock(device=target_device),
+            block_size=4,
+            state_len=3,
+        )
+
+    async_to_calls = [
+        (args, kwargs) for args, kwargs in to_calls if kwargs.get("non_blocking")
+    ]
+    assert len(pinned) == 4
+    assert len(async_to_calls) == 4
+    assert all(args == (target_device,) for args, _ in async_to_calls)
+
+    (send_idx, _, _), (prefix, cumlens, reorg_idx), _, _ = metadata
+    assert send_idx.dtype == torch.int32
+    assert prefix.dtype == torch.int32
+    assert cumlens.dtype == torch.int32
+    assert reorg_idx.dtype == torch.int32

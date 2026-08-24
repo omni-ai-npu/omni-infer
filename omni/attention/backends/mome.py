@@ -386,11 +386,13 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         block_size: int = 128,
     ) -> tuple:
         save_all = bool(block_table.dim() == 2)
+        # seq_cumlens/num_computed are already the CPU shadows the model runner
+        # keeps, so numpy() is a plain view -- no GPU->CPU sync here.
         meta = scheme_conv_sp(
             get_tp_group(),
-            seq_cumlens.cpu().numpy(),
-            num_computed.cpu().numpy(),
-            like=seq_cumlens,
+            seq_cumlens.numpy(),
+            num_computed.numpy(),
+            like=block_table,
             block_size=block_size,
             state_len=self.state_len,
             save_all=save_all,
@@ -399,8 +401,13 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         if save_all:
             save_idx = [tab[idxs] for tab, idxs in zip(block_table, save_range)]
             save_idx = torch.cat(save_idx, dim=0)
-            init_idx = [tab[i : i + 1] for tab, i in zip(block_table, init_block_idx)]
-            init_idx = torch.cat(init_idx, dim=0)
+            # ``tab[i : i + 1]`` calls ``.item()`` on both slice endpoints
+            # (two host syncs per request). Advanced indexing stays on device.
+            rows = torch.arange(block_table.size(0), device=block_table.device)
+            cols = init_block_idx.to(
+                device=block_table.device, dtype=torch.long, non_blocking=True
+            )
+            init_idx = block_table[rows, cols]
         else:
             init_idx = save_idx = block_table
         return init_idx, save_idx, meta
@@ -598,8 +605,8 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             and model_extra_config.operator_opt_config.enable_mome_sp
         ):
             attn_metadata.conv_sp_meta = self._build_for_sp(
-                seq_cumlens=common_attn_metadata.query_start_loc,
-                num_computed=num_computed_tokens,
+                seq_cumlens=common_attn_metadata.query_start_loc_cpu,
+                num_computed=common_attn_metadata.num_computed_tokens_cpu,
                 init_block_idx=block_idx_last_computed_token,
                 block_table=cache_indices,
                 block_size=self.mome_block_size,

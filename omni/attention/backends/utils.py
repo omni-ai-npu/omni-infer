@@ -1481,10 +1481,21 @@ def scheme_conv_sp(
     recv_split = [len(src) for src in a2a_map[self_rank]]
     save_range = [slice(min(it), max(it) + 1) for it in blocks]
 
-    send_idx = like.new_tensor(send_idx)
-    reorg_idx = like.new_tensor(reorg_idx)
-    conv_prefix = like.new_tensor([prefix for _, prefix in convs])
-    conv_cumlens = like.new_tensor([0] + [size for size, _ in convs]).cumsum(0).int()
+    # Pin on CPU then async H2D. like.new_tensor(list) is a blocking H2D.
+    # prefix/cumlens must be int32 for simple_conv.
+    send_idx = torch.tensor(send_idx, dtype=torch.int32, device="cpu").pin_memory()
+    reorg_idx = torch.tensor(reorg_idx, dtype=torch.int32, device="cpu").pin_memory()
+    conv_prefix = torch.tensor(
+        [prefix for _, prefix in convs], dtype=torch.int32, device="cpu"
+    ).pin_memory()
+    conv_cumlens = torch.tensor(
+        [0] + [size for size, _ in convs], dtype=torch.int64, device="cpu"
+    ).cumsum(0).int().pin_memory()
+    if like is not None:
+        send_idx = send_idx.to(like.device, non_blocking=True)
+        reorg_idx = reorg_idx.to(like.device, non_blocking=True)
+        conv_prefix = conv_prefix.to(like.device, non_blocking=True)
+        conv_cumlens = conv_cumlens.to(like.device, non_blocking=True)
 
     a2a_meta = (send_idx, send_split, recv_split)
     conv_meta = (conv_prefix, conv_cumlens, reorg_idx)

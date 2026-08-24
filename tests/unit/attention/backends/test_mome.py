@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import torch
 
 import omni_npu.attention.backends.mome as mome_mod
@@ -13,6 +14,55 @@ from omni_npu.vllm_patches.usefull_patch.patch_kv_cache_interface import MomeSpe
 
 
 class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
+    @patch("omni_npu.attention.backends.mome.get_tp_group")
+    @patch("omni_npu.attention.backends.mome.scheme_conv_sp")
+    def test_build_for_sp_reuses_cpu_shadows_and_device_indexes(
+        self, mock_scheme_conv_sp, mock_get_tp_group
+    ):
+        builder = mome_mod.NPUMomeAttentionMetadataBuilder.__new__(
+            mome_mod.NPUMomeAttentionMetadataBuilder
+        )
+        builder.state_len = 3
+
+        query_start_loc_cpu = MagicMock()
+        query_start_loc_np = np.array([0, 4, 7], dtype=np.int32)
+        query_start_loc_cpu.numpy.return_value = query_start_loc_np
+        num_computed_tokens_cpu = MagicMock()
+        num_computed_tokens_np = np.array([8, 16], dtype=np.int32)
+        num_computed_tokens_cpu.numpy.return_value = num_computed_tokens_np
+
+        block_table = torch.tensor(
+            [[10, 11, 12, 13], [20, 21, 22, 23]], dtype=torch.int32
+        )
+        init_block_idx = torch.tensor([2, 1], dtype=torch.int32)
+        metadata = (object(), object(), object(), [slice(1, 3), slice(0, 2)])
+        mock_scheme_conv_sp.return_value = metadata
+        tp_group = object()
+        mock_get_tp_group.return_value = tp_group
+
+        init_idx, save_idx, result_metadata = builder._build_for_sp(
+            seq_cumlens=query_start_loc_cpu,
+            num_computed=num_computed_tokens_cpu,
+            init_block_idx=init_block_idx,
+            block_table=block_table,
+            block_size=128,
+        )
+
+        query_start_loc_cpu.numpy.assert_called_once_with()
+        num_computed_tokens_cpu.numpy.assert_called_once_with()
+        mock_scheme_conv_sp.assert_called_once_with(
+            tp_group,
+            query_start_loc_np,
+            num_computed_tokens_np,
+            like=block_table,
+            block_size=128,
+            state_len=3,
+            save_all=True,
+        )
+        self.assertTrue(torch.equal(init_idx, torch.tensor([12, 21])))
+        self.assertTrue(torch.equal(save_idx, torch.tensor([11, 12, 20, 21])))
+        self.assertIs(result_metadata, metadata)
+
     def test_build_masks_zero_len_slots_when_prefix_caching_disabled(self):
         """
         When enable_prefix_caching is False, cache_indices come from block_table[:, 0];
