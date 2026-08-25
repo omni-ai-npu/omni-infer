@@ -45,4 +45,11 @@ def register_connectors() -> None:
         "LLMDataDistConnector",
     )
 
+    # NPU OffloadingConnector: tuple/list KV views at registration.
+    _safe_register(
+        "NPUOffloadingConnector",
+        "omni_npu.connector.npu_offloading_connector",
+        "NPUOffloadingConnector",
+    )
+
     logger.info("connector: KV connector registration finished")

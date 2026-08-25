@@ -277,6 +277,11 @@ class TestLLMDataDistConnector:
 
         assert p_scheduler.get_finished_count() == 1
         assert d_scheduler.get_finished_count() is None
+        assert p_scheduler.get_finished_send_count() == 1
+        assert d_scheduler.get_finished_send_count() is None
+        # None => Aggregator uses world_size (needed with Offloading loads).
+        assert p_scheduler.get_finished_recv_count() is None
+        assert d_scheduler.get_finished_recv_count() is None
 
         prefill_done = []
         decode_done = []

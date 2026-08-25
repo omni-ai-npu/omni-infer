@@ -25,6 +25,8 @@ Pangu V2 MoE 505B int8 + EP 离线精度测试所需的最小 patch 集合。
 | `patch_serving_apc.py` | common（已迁入本目录） | PD 分离下把 APC 命中率上报改对：D 侧原生恒报 100%，改为转发 P 的真实命中；并补 `cached_rate` 字段 |
 | `patch_health.py` | common | 卡死检测（OMNI-WATCHDOG）：引擎有在途请求却超 `OMNI_HEALTH_HANG_SEC`不推进时，`/health` 与 `/ping` 转 503，不杀进程、恢复后自动回 200。心跳由 `omni_npu_metrics` 插件（实现在 `omni/diagnostics/watchdog/`）驱动，**该插件名必须列进 `VLLM_PLUGINS`，否则不生效** |
 | `patch_dump.py` | common（原文件保留未动） | OMNI-DUMP 退出取证的三个挂载点（`AsyncLLM.__init__` / `EngineCoreProc.run_busy_loop` + `DPEngineCoreProc.run_busy_loop` / `NPUWorker.init_device`）。实现在 `omni/diagnostics/dump/`；0.25.1 接口零改动，engine 挂载点从 `EngineCore.__init__` 挪走是修一个与版本无关的缺陷（spawn 下静默失效，见 commit message）；`OMNI_DUMP_ENABLE` 未设置时默认开启 |
+| `patch_kv_output_aggregator.py` | — | 拆分 `KVOutputAggregator` send/recv 计数策略 |
+| `patch_multi_connector.py` | — | MultiConnector 分向透传 `get_finished_send_count` / `get_finished_recv_count`（PD 释块 send=1，Offloading load recv=world_size） |
 
 ## 加载方式
 

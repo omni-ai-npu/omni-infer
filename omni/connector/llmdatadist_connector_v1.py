@@ -99,8 +99,16 @@ class LLMDataDistConnector(KVConnectorBase_V1, SupportsHMA):
             self.scheduler.update_connector_output(connector_output)
 
     def get_finished_count(self):
-        # prefill only requires one of ranks get_finish
+        # Prefill pull_done is reported by a single TP rank (send barrier).
+        return self.get_finished_send_count()
+
+    def get_finished_send_count(self):
+        # prefill only requires one of ranks to report finished_sending
         return 1 if self.is_prefill else None
+
+    def get_finished_recv_count(self):
+        # None => Aggregator uses world_size (needed with Offloading loads).
+        return None
 
     # ================= Worker overrides =================
 
@@ -613,7 +621,7 @@ class SchemePull:
         p_pp_offset = d_pp_offset * p.pp_stride // d.pp_stride
 
         if p.dcp != d.dcp:  # need kvsp reorg
-            # assert caches interleaved with block size
+            # caches must be interleaved with block size
             targets = self._dcp_broadcast(p_pp_offset)
         else:  # simple 1v1 connection scheme
             p_blocks, d_blocks = self._parse_blocks()

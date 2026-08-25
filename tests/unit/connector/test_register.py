@@ -139,12 +139,21 @@ class TestRegisterConnectors:
         # Verify start log
         mock_logger.info.assert_any_call("connector: starting KV connector registration")
 
-        # Verify _safe_register was called with correct parameters
-        mock_safe_register.assert_called_once_with(
-            "LLMDataDistConnector",
-            "omni_npu.connector.llmdatadist_connector_v1",
-            "LLMDataDistConnector"
+        mock_safe_register.assert_has_calls(
+            [
+                call(
+                    "LLMDataDistConnector",
+                    "omni_npu.connector.llmdatadist_connector_v1",
+                    "LLMDataDistConnector",
+                ),
+                call(
+                    "NPUOffloadingConnector",
+                    "omni_npu.connector.npu_offloading_connector",
+                    "NPUOffloadingConnector",
+                ),
+            ]
         )
+        assert mock_safe_register.call_count == 2
 
         # Verify finish log
         mock_logger.info.assert_any_call("connector: KV connector registration finished")
@@ -155,8 +164,7 @@ class TestRegisterConnectors:
         register_connectors()
         register_connectors()
 
-        # Verify _safe_register was called twice
-        assert mock_safe_register.call_count == 2
+        assert mock_safe_register.call_count == 4
 
         # Verify logs were called twice
         assert mock_logger.info.call_count == 4  # 2 start + 2 finish

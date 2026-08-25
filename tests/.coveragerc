@@ -7,6 +7,12 @@ concurrency = multiprocessing, thread
 omit =
     */omni/vllm_patches/*
     */omni/v1/layers/attention/npu_pangu.py
+    *.cpp
+    */*.cpp
+    */*/*.cpp
+    */*/*/*.cpp
+    */*/*/*/*.cpp
+    */csrc/*
 
 [paths]
 source =

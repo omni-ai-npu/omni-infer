@@ -48,6 +48,31 @@ def ensure_diff_cover() -> str:
     return cmd
 
 
+# C/C++ sources are not measured by pytest-cov; keep them out of incremental coverage.
+_CPP_SUFFIXES = (".cpp", ".cc", ".cxx", ".c", ".cu", ".h", ".hpp", ".hxx")
+
+
+def _is_cpp_path(path: str) -> bool:
+    lower = path.split("\t", 1)[0].strip().lower()
+    return lower.endswith(_CPP_SUFFIXES)
+
+
+def filter_cpp_from_unified_diff(text: str) -> str:
+    """Drop unified-diff file hunks whose path is a C/C++ source."""
+    out: list[str] = []
+    skip = False
+    for line in text.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            parts = line.strip().split()
+            skip = any(
+                _is_cpp_path(p[2:] if p.startswith(("a/", "b/")) else p)
+                for p in parts[2:]
+            )
+        if not skip:
+            out.append(line)
+    return "".join(out)
+
+
 def normalize_prefix(p: str) -> str:
     if p != "/" and p.endswith("/"):
         return p[:-1]
@@ -189,13 +214,19 @@ def main() -> int:
             print(f"[ERROR] git diff --cached failed: {msg}", file=sys.stderr)
             return 2
         with open(diff_file, "w", encoding="utf-8") as f:
-            f.write(cp.stdout)
+            f.write(filter_cpp_from_unified_diff(cp.stdout))
         print(f"[INFO] diff written: {diff_file}")
 
-    if os.path.isfile(diff_file) and os.path.getsize(diff_file) == 0:
-        print("[INFO] diff is empty; no changed lines to measure.")
-        print_summary(total=0, missing=0)
-        return 0
+    if os.path.isfile(diff_file):
+        original = Path(diff_file).read_text(encoding="utf-8", errors="replace")
+        filtered = filter_cpp_from_unified_diff(original)
+        if filtered != original:
+            Path(diff_file).write_text(filtered, encoding="utf-8")
+            print("[INFO] excluded C/C++ files from incremental coverage diff")
+        if os.path.getsize(diff_file) == 0:
+            print("[INFO] diff is empty; no changed lines to measure.")
+            print_summary(total=0, missing=0)
+            return 0
 
     set_source = None if args.set_source == "NONE" else args.set_source
     if args.old_prefix:

@@ -49,6 +49,7 @@ ADDITIONAL_CONFIG=""
 HCCL_BUFFSIZE=0
 HCCL_OP_EXPANSION_MODE=""
 NUM_SPECULATIVE_TOKENS=1
+KV_TRANSFER_CONFIG_OVERRIDE=""
 
 # Help information
 print_help() {
@@ -203,6 +204,9 @@ parse_long_option() {
         --kv-parallel-size)
             KV_PARALLEL_SIZE="$2"
             ;;
+        --kv-transfer-config)
+            KV_TRANSFER_CONFIG_OVERRIDE="$2"
+            ;;
         --extra-args)
             EXTRA_ARGS="$2"
             ;;
@@ -251,7 +255,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Build KV transfer config JSON
-KV_TRANSFER_CONFIG=$(cat <<EOF
+if [ -n "$KV_TRANSFER_CONFIG_OVERRIDE" ]; then
+    KV_TRANSFER_CONFIG="$KV_TRANSFER_CONFIG_OVERRIDE"
+else
+    KV_TRANSFER_CONFIG=$(cat <<EOF
 {
     "kv_connector": "$KV_CONNECTOR",
     "kv_role": "$KV_ROLE",
@@ -261,6 +268,7 @@ KV_TRANSFER_CONFIG=$(cat <<EOF
 }
 EOF
 )
+fi
 
 # Export environment variables
 export GLOBAL_RANK_TABLE_FILE_PATH

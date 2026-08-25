@@ -2,7 +2,6 @@
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import os
-import sys
 
 import pybind11
 import torch
@@ -65,8 +64,8 @@ class PathManagerBase:
         if not os.path.isdir(self.ascend_lib):
             raise FileNotFoundError(f"Ascend library path not found: {self.ascend_lib}")
 
-    def get_include_dirs(self):
-        include_dirs = [self.header, self.ascend_inc, self.torch_inc]
+    def get_include_dirs(self, header):
+        include_dirs = [header, self.ascend_inc, self.torch_inc]
         if os.path.exists(self.torch_csrc_inc):
             include_dirs.append(self.torch_csrc_inc)
         include_dirs.extend(self.torch_npu_inc_dirs)
@@ -109,88 +108,158 @@ class PathManagerBase:
         return [path for path in candidates if os.path.exists(path)]
 
 
-class AllocatorPathManager(PathManagerBase):
+class PathManager(PathManagerBase):
     def __init__(self):
         super().__init__()
-        self.header = os.path.join(OMNI_NPU_ROOT, "allocator")
-        self.sources = [
-            os.path.join(self.header, "npu_mem_allocator.cpp"),
+        self.allocator_header = os.path.join(OMNI_NPU_ROOT, "allocator")
+        self.allocator_sources = [
+            os.path.join(self.allocator_header, "npu_mem_allocator.cpp"),
         ]
         self.uva_sources = [
-            os.path.join(self.header, "npu_view.cpp"),
+            os.path.join(self.allocator_header, "npu_view.cpp"),
+        ]
+        self.kv_offload_header = os.path.join(
+            OMNI_NPU_ROOT, "v1", "kv_offload", "cpu", "csrc"
+        )
+        self.host_register_sources = [
+            os.path.join(self.kv_offload_header, "tensor_register.cpp"),
+        ]
+        self.zero_copy_sources = [
+            os.path.join(self.kv_offload_header, "zero_copy_npu.cpp"),
+        ]
+        self.swap_blocks_sources = [
+            os.path.join(self.kv_offload_header, "swap_blocks_batch.cpp"),
+        ]
+        self.lopt_header = os.path.join(OMNI_NPU_ROOT, "lopt", "csrc")
+        self.lopt_sources = [
+            os.path.join(self.lopt_header, "match_merge.cpp"),
         ]
         self.check()
 
     def check(self):
         super().check()
-        if not os.path.isdir(self.header):
+        if not os.path.isdir(self.allocator_header):
             raise FileNotFoundError(
-                f"omni_npu source directory not found: {self.header}. "
+                f"omni_npu source directory not found: {self.allocator_header}. "
                 "Move the contents of omni/src/omni_npu directly into omni "
                 "before building."
             )
-        for source in self.sources + self.uva_sources:
+        if not os.path.isdir(self.kv_offload_header):
+            raise FileNotFoundError(
+                f"KV offload source directory not found: {self.kv_offload_header}"
+            )
+        if not os.path.isdir(self.lopt_header):
+            raise FileNotFoundError(
+                f"LoPT source directory not found: {self.lopt_header}"
+            )
+        for source in (
+            self.allocator_sources
+            + self.uva_sources
+            + self.host_register_sources
+            + self.zero_copy_sources
+            + self.swap_blocks_sources
+            + self.lopt_sources
+        ):
             if not os.path.isfile(source):
                 raise FileNotFoundError(f"Extension source not found: {source}")
 
 
-allocator_paths = AllocatorPathManager()
+def get_cann_memcpy_batch_flags(ascend_inc):
+    cann_batch_flags = []
+    acl_rt_header = os.path.join(ascend_inc, "acl", "acl_rt.h")
+    try:
+        with open(acl_rt_header, encoding="utf-8", errors="ignore") as acl_rt:
+            acl_rt_text = acl_rt.read()
+        if (
+            "aclrtMemcpyBatchAsync" in acl_rt_text
+            and "aclrtMemcpyBatchAttr" in acl_rt_text
+        ):
+            cann_batch_flags.append("-DCANN_MEMCPY_BATCH_ASYNC")
+    except OSError:
+        pass
+    return cann_batch_flags
+
+
+paths = PathManager()
+
+
+def _allocator_extension_kwargs():
+    return dict(
+        include_dirs=paths.get_include_dirs(paths.allocator_header),
+        language="c++",
+        extra_compile_args=[
+            "-std=c++17",
+            "-pthread",
+        ],
+        extra_link_args=[
+            "-pthread",
+        ] + paths.get_extra_link_args(),
+        library_dirs=paths.get_library_dirs(),
+    )
 
 
 ext_modules = [
     Extension(
         "omni_npu.allocator.npu_mem_allocator",
-        sources=allocator_paths.sources,
-        include_dirs=allocator_paths.get_include_dirs(),
-        language="c++",
-        extra_compile_args=[
-            "-std=c++17",
-            "-pthread",
-        ],
-        extra_link_args=[
-            "-pthread",
-        ] + allocator_paths.get_extra_link_args(),
-        library_dirs=allocator_paths.get_library_dirs(),
+        sources=paths.allocator_sources,
         libraries=["torch", "torch_python", "ascendcl"],
+        **_allocator_extension_kwargs(),
     ),
     Extension(
         "omni_npu.allocator.npu_uva",
-        sources=allocator_paths.uva_sources,
-        include_dirs=allocator_paths.get_include_dirs(),
-        language="c++",
-        extra_compile_args=[
-            "-std=c++17",
-            "-pthread",
+        sources=paths.uva_sources,
+        libraries=["torch", "torch_python", "ascendcl", "torch_npu"],
+        **_allocator_extension_kwargs(),
+    ),
+    Extension(
+        "omni_npu.v1.kv_offload.cpu._host_register",
+        sources=paths.host_register_sources,
+        include_dirs=[
+            pybind11.get_include(),
+            paths.ascend_inc,
         ],
-        extra_link_args=[
-            "-pthread",
-        ] + allocator_paths.get_extra_link_args(),
-        library_dirs=allocator_paths.get_library_dirs(),
+        language="c++",
+        extra_compile_args=["-std=c++17", "-pthread"],
+        extra_link_args=["-pthread"] + paths.get_extra_link_args(),
+        library_dirs=paths.get_library_dirs(),
+        libraries=["ascendcl"],
+    ),
+    Extension(
+        "omni_npu.v1.kv_offload.cpu._zero_copy_npu",
+        sources=paths.zero_copy_sources,
+        include_dirs=paths.get_include_dirs(paths.kv_offload_header) + [
+            pybind11.get_include()
+        ],
+        language="c++",
+        extra_compile_args=["-std=c++17", "-pthread", "-O3"],
+        extra_link_args=["-pthread"] + paths.get_extra_link_args(),
+        library_dirs=paths.get_library_dirs(),
         libraries=["torch", "torch_python", "ascendcl", "torch_npu"],
     ),
+    Extension(
+        "omni_npu.v1.kv_offload.cpu._swap_blocks_batch",
+        sources=paths.swap_blocks_sources,
+        include_dirs=paths.get_include_dirs(paths.kv_offload_header) + [
+            pybind11.get_include()
+        ],
+        language="c++",
+        extra_compile_args=(
+            ["-std=c++17", "-pthread", "-O3"] + get_cann_memcpy_batch_flags(
+                paths.ascend_inc
+            )
+        ),
+        extra_link_args=["-pthread"] + paths.get_extra_link_args(),
+        library_dirs=paths.get_library_dirs(),
+        libraries=["torch", "torch_python", "ascendcl", "torch_npu"],
+    ),
+    Extension(
+        "Cpp_match_merge",
+        sources=paths.lopt_sources,
+        include_dirs=[pybind11.get_include()],
+        language="c++",
+        extra_compile_args=["-std=c++17"],
+    ),
 ]
-
-# LoPT can fall back to standard tokenization when this optional extension is
-# unavailable, but pybind11 is normally present through pyproject.toml.
-try:
-    lopt_source = os.path.join(OMNI_NPU_ROOT, "lopt", "csrc", "match_merge.cpp")
-    if not os.path.isfile(lopt_source):
-        raise FileNotFoundError(f"LoPT extension source not found: {lopt_source}")
-    ext_modules.append(
-        Extension(
-            "Cpp_match_merge",
-            sources=[lopt_source],
-            include_dirs=[pybind11.get_include()],
-            language="c++",
-            extra_compile_args=["-std=c++17"],
-        )
-    )
-except (ImportError, FileNotFoundError) as error:
-    print(
-        f"Skipping optional LoPT C++ extension: {error}. "
-        "LoPT will fall back to standard tokenization.",
-        file=sys.stderr,
-    )
 
 
 # Distribution metadata is defined in pyproject.toml. The package mapping keeps
