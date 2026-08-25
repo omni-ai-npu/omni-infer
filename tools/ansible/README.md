@@ -82,19 +82,19 @@ rm  /etc/yum.repos.d/*
 
 echo "[openEuler-everything]
 name=openEuler-everything
-baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/everything/aarch64/
+baseurl=http://repo.openeuler.org/openEuler-22.03-LTS-SP4/everything/aarch64/
 enabled=1
 gpgcheck=0
-gpgkey=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/everything/aarch64/RPM-GPG-KEY-openEuler
+gpgkey=http://repo.openeuler.org/openEuler-22.03-LTS-SP4/everything/aarch64/RPM-GPG-KEY-openEuler
         
 [openEuler-EPOL]
 name=openEuler-epol
-baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/EPOL/main/aarch64/
+baseurl=http://repo.openeuler.org/openEuler-22.03-LTS-SP4/EPOL/main/aarch64/
 enabled=1
 gpgcheck=0
 [openEuler-update]
 name=openEuler-update
-baseurl=http://mirrors.tools.huawei.com/openeuler/openEuler-22.03-LTS-SP4/update/aarch64/
+baseurl=http://repo.openeuler.org/openEuler-22.03-LTS-SP4/update/aarch64/
 enabled=1
 gpgcheck=0" > /etc/yum.repos.d/openeuler.repo
 ```

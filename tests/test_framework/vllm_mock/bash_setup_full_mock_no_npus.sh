@@ -19,7 +19,7 @@ source /usr/local/Ascend/nnal/atb/set_env.sh
 
 pip install setuptools wheel pip -U
 
-git clone --recurse-submodules -b omni_infer_v1 ssh://git@codehub-dg-g.huawei.com:2222/DataScience/omni_infer.git
+git clone --recurse-submodules -b <your-open-repo-branch> https://<your-open-repo-url>/omni_infer.git
 cd omni_infer/infer_engines/
 sh bash_install_code.sh
 cd vllm

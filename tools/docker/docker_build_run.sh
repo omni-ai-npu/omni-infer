@@ -6,8 +6,8 @@ set -exo pipefail
 ARCH="aarch64"
 PROXY="http://username:passward@hostIP:port/"
 HUGGING_FACE_PROXY="http://username:passward@hostIP:port/"
-PIP_INDEX_URL="https://mirrors.huaweicloud.com/repository/pypi/simple"
-PIP_TRUSTED_HOST="mirrors.huaweicloud.com"
+PIP_INDEX_URL="https://pypi.org/simple"
+PIP_TRUSTED_HOST="pypi.org"
 MODEL_NAME="Qwen/Qwen2.5-0.5B"
 ## CANN install mode: whole or split
 CANN_INSTALL_MODE="whole"

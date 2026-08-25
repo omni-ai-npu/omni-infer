@@ -1,10 +1,10 @@
 #!/bin/bash
 
 
-IP="7.150.12.18"
+IP="<YOUR_HOST_IP>"
 PORT=8000
 LOG_FILE="./server.log"
-MODEL_PATH="/data/models/DeepSeek-V31-Terminus-INT8"
+MODEL_PATH="<YOUR_MODEL_PATH>"
 # Parse long options
 parse_long_option() {
     case "$1" in
