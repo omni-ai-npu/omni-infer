@@ -441,8 +441,8 @@ class TestNPUDSAMetadataBuilder(unittest.TestCase):
         self.assertTrue(torch.equal(result.query_cumlens, torch.tensor([3], dtype=torch.int32)))
         self.assertEqual(int(result.num_actual_tokens), 3)
 
-    def test_build_prefill_calls_init_cp_when_seq_parallel_enabled(self):
-        """When ena_seq_parallel is on, prefill must attach an SPManager from init_cp (dsa ~234-244)."""
+    def test_build_prefill_calls_init_cp_when_context_parallel_enabled(self):
+        """Context-parallel prefill attaches an SPManager from init_cp."""
         b = self._new_builder_minimal()
         b.vllm_config.model_config = MagicMock()
         b.vllm_config.model_config.hf_config = MagicMock()
@@ -471,7 +471,7 @@ class TestNPUDSAMetadataBuilder(unittest.TestCase):
         fake_meta = _Meta()
         fake_sp = object()
         me = SimpleNamespace(
-            parall_config=SimpleNamespace(ena_seq_parallel=True),
+            parall_config=SimpleNamespace(ena_context_parallel=True),
         )
         init_cp_m = MagicMock(return_value=fake_sp)
         sp_cls = MagicMock()

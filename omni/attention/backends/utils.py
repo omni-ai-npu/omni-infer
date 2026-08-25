@@ -426,7 +426,9 @@ class SPManager:
 
         sp_manager = SPManager(sp_group)
         sp_manager._scheme_sp_ctrl(cumlens_np[-1])
-        sp_manager._scheme_cp_attn(cumlens, computed_lens, block_table_ref, page_size, table_size)
+        sp_manager._scheme_cp_attn(
+            cumlens, computed_lens, block_table_ref, page_size, table_size
+        )
         sp_manager._scheme_cp_slice(cumlens_np)
         sp_manager._scheme_cp_reorg(cumlens_np)
         if mome_kernel_width > 1:
@@ -642,10 +644,14 @@ class SPManager:
         return y
 
     # ===================== cp_attn =====================
-
     @lazy_init
     def _scheme_cp_attn(
-        self, cumlens: torch.Tensor, computed_lens: torch.Tensor, blk_table_ref: torch.Tensor, pg: int, tab: int
+        self,
+        cumlens: torch.Tensor,
+        computed_lens: torch.Tensor,
+        blk_table_ref: torch.Tensor,
+        pg: int,
+        tab: int,
     ):
         frag_num = self.sp_size * 2
         cumlens = cumlens.to(torch.int32)  # [B + 1]
@@ -669,10 +675,6 @@ class SPManager:
         cp_block_table = blk_table_ref.repeat_interleave(2, dim=0)
         self.cp_attn_metadata = (q_cumlens, kv_lens, blk_table, cp_block_table)
 
-        tok = int(cumlens[-1])
-        seq_lens = seq_lens.tolist()
-        align_lens = (seq_blks * pg).tolist()
-        self.blk_align_metadata = (seq_lens, align_lens, pg, tok)
 
     @depends_on(_scheme_cp_attn)
     def cp_attn_meta(self) -> tuple:  # FA once:
@@ -682,16 +684,7 @@ class SPManager:
     def cp_attn_meta_2(self) -> tuple:
         return self.cp_attn_metadata_half
 
-    @depends_on(_scheme_cp_attn)
-    def page_align(self, x: torch.Tensor) -> torch.Tensor:
-        seq_lens, align_lens, pg, tok = self.blk_align_metadata
-        assert x.size(0) == tok
-        y = x.new_empty(sum(align_lens), *x.shape[1:])
-        torch.split_with_sizes_copy(x, seq_lens, out=[it[:n] for it, n in zip(y.split(align_lens), seq_lens)])
-        return y.view(-1, pg, 1, x.size(-1))
-
     # ===================== cp_mome =====================
-
     def _scheme_cp_mome(self, seq_lens: np.ndarray, mome_kernel_width: int, num_spec: int = 0):
         """
         TP4, req_num = 2 for example, 8 chunks per request in total
@@ -889,8 +882,6 @@ class DummySPManager:
     def align_tokens(self, x: torch.Tensor):
         return x
 
-    def page_align(self, x: torch.Tensor):
-        return x
 
     def slice_tokens(self, x: torch.Tensor, cached=None):
         return x[: x.size(0) // self.sp_size].clone()

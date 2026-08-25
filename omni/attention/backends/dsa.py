@@ -288,7 +288,11 @@ class NPUDSAMetadataBuilder(MLACommonMetadataBuilder[NPUDSAMetadata]):
                 metadata.num_decodes:metadata.num_decodes + metadata.num_prefills
             ]
 
-            if model_extra_config.parall_config.ena_seq_parallel:
+            should_build_cp_metadata = (
+                model_extra_config.parall_config.ena_context_parallel
+                and metadata.num_decodes == 0
+            )
+            if should_build_cp_metadata:
                 prefill = metadata.prefill
                 mome_kernel_width = getattr(self.vllm_config.model_config.hf_config, "router_sliding_window", 0)
                 computed_lens = prefill.seq_lens - (prefill.query_start_loc[1:] - prefill.query_start_loc[:-1])
@@ -296,6 +300,7 @@ class NPUDSAMetadataBuilder(MLACommonMetadataBuilder[NPUDSAMetadata]):
                     getattr(prefill, "chunked_context", None) is not None
                     or self.force_first_chunk_context
                 )
+
                 prefill.sp_manager = SPManager.init_cp(
                     cumlens=prefill.query_start_loc,  # [B + 1]
                     computed_lens=computed_lens,
