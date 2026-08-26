@@ -566,7 +566,12 @@ class Glm4MoeModelToolParser(ToolParser):
             )
         return args_json
 
-    def _extract_content(self, current_text: str, finished: bool = False) -> str | None:
+    def _extract_content(
+        self,
+        current_text: str,
+        finished: bool = False,
+        current_token_ids: Sequence[int] | None = None,
+    ) -> str | None:
         content_segments: list[str] = []
         pos = self._sent_content_idx
 
@@ -575,6 +580,25 @@ class Glm4MoeModelToolParser(ToolParser):
             if start == -1:
                 tail = current_text[pos:]
                 overlap = _partial_tag_overlap(tail, self.tool_call_start_token)
+                # At stream finish there is no further text coming to resolve a
+                # partial tag, so a trailing "<" must be emitted, not dropped.
+                if overlap and finished:
+                    overlap = 0
+                # When the tool_call tag is a single special token (true for all
+                # GLM models), a trailing "<" is only a partial tag if that
+                # token id is actually present in current_token_ids. Otherwise
+                # it is a literal "<" in the content (e.g. "<head>", "i < days")
+                # and must be emitted, not held back. The old code sliced it off
+                # via tail[:-overlap] and advanced _sent_content_idx past it,
+                # permanently dropping the "<" from the content stream.
+                if (
+                    overlap
+                    and not finished
+                    and self.tool_call_start_token_id is not None
+                    and current_token_ids is not None
+                    and self.tool_call_start_token_id not in current_token_ids
+                ):
+                    overlap = 0
                 sendable = tail[: len(tail) - overlap] if overlap else tail
                 if sendable:
                     content_segments.append(sendable)
@@ -739,7 +763,7 @@ class Glm4MoeModelToolParser(ToolParser):
             return DeltaMessage(content=delta_text) if delta_text else None
 
         self._last_current_text = current_text
-        content = self._extract_content(current_text, finished=False)
+        content = self._extract_content(current_text, finished=False, current_token_ids=current_token_ids)
         regions = self._extract_tool_call_regions(current_text)
         tool_call_deltas: list[DeltaToolCall] = []
 

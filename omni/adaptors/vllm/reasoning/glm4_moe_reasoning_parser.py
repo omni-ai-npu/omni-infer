@@ -178,11 +178,26 @@ class Glm4MoeModelReasoningParser(ReasoningParser):
         previous_text: str,
         current_text: str,
         delta_text: str,
+        current_token_ids: Sequence[int] | None = None,
     ) -> DeltaMessage | None:
         tool_index = current_text.find(self.tool_call_start_token)
         if tool_index == -1:
             overlap = _partial_tag_overlap(current_text, self.tool_call_start_token)
             if not overlap:
+                return None
+            # When the tool_call tag is a single special token (true for all
+            # GLM models), a trailing "<" can only be a partial tag if that
+            # single token id is actually present in the current token ids.
+            # If it is not, the trailing "<" is a literal "<" in the reasoning
+            # text (e.g. "i < days", "<head>") and must NOT be held back - the
+            # old code dropped it via delta_text[:-holdback] with no recovery.
+            # Returning None lets the caller emit the full delta_text, keeping
+            # the "<".
+            if (
+                self.tool_call_start_token_id is not None
+                and current_token_ids is not None
+                and self.tool_call_start_token_id not in current_token_ids
+            ):
                 return None
             holdback = min(overlap, len(delta_text))
             reasoning_content = delta_text[:-holdback] if holdback else delta_text
@@ -237,8 +252,15 @@ class Glm4MoeModelReasoningParser(ReasoningParser):
         if self.start_token_id in previous_token_ids:
             if self.end_token_id in delta_token_ids:
                 end_index = delta_text.find(self.end_token)
-                reasoning_content = delta_text[:end_index]
-                content = delta_text[end_index + len(self.end_token) :]
+                if end_index == -1:
+                    # skip_special_tokens=True stripped the end_token text from
+                    # delta_text, so the whole delta is post-reasoning content
+                    # (the reasoning text was already emitted in prior deltas).
+                    reasoning_content = None
+                    content = delta_text or None
+                else:
+                    reasoning_content = delta_text[:end_index]
+                    content = delta_text[end_index + len(self.end_token) :]
                 self._reasoning_end_seen = True
                 return self._with_reasoning_delta(
                     reasoning_content,
@@ -249,6 +271,7 @@ class Glm4MoeModelReasoningParser(ReasoningParser):
                 previous_text,
                 current_text,
                 delta_text,
+                current_token_ids,
             )
             if tool_boundary_delta is not None:
                 return tool_boundary_delta
@@ -259,8 +282,16 @@ class Glm4MoeModelReasoningParser(ReasoningParser):
             reasoning_start = start_index + len(self.start_token)
             if self.end_token_id in delta_token_ids:
                 end_index = delta_text.find(self.end_token, reasoning_start)
-                reasoning_content = delta_text[reasoning_start:end_index]
-                content = delta_text[end_index + len(self.end_token) :]
+                if end_index == -1:
+                    # skip_special_tokens=True stripped the end_token text.
+                    # Reasoning is the text after the start token; the rest is
+                    # content. With the end_token text absent, everything after
+                    # reasoning_start is content.
+                    reasoning_content = delta_text[reasoning_start:] or None
+                    content = None
+                else:
+                    reasoning_content = delta_text[reasoning_start:end_index]
+                    content = delta_text[end_index + len(self.end_token) :]
                 self._reasoning_end_seen = True
                 return self._with_reasoning_delta(
                     reasoning_content,
@@ -275,6 +306,14 @@ class Glm4MoeModelReasoningParser(ReasoningParser):
                     reasoning_text[:tool_index] or None,
                     reasoning_text[tool_index:] or None,
                 )
+            # Same single-token gate as _split_delta_on_tool_call: if the
+            # tool_call tag's single id is not in the current tokens, a
+            # trailing "<" is a literal char and must not be held back.
+            if (
+                self.tool_call_start_token_id is not None
+                and self.tool_call_start_token_id not in current_token_ids
+            ):
+                return self._reasoning_delta(reasoning_text or None)
             overlap = _partial_tag_overlap(reasoning_text, self.tool_call_start_token)
             if overlap:
                 reasoning_text = reasoning_text[:-overlap]
@@ -282,8 +321,14 @@ class Glm4MoeModelReasoningParser(ReasoningParser):
 
         if self.end_token_id in delta_token_ids:
             end_index = delta_text.find(self.end_token)
-            reasoning_content = delta_text[:end_index]
-            content = delta_text[end_index + len(self.end_token) :]
+            if end_index == -1:
+                # skip_special_tokens=True stripped the end_token text from
+                # delta_text; the entire delta is post-reasoning content.
+                reasoning_content = None
+                content = delta_text or None
+            else:
+                reasoning_content = delta_text[:end_index]
+                content = delta_text[end_index + len(self.end_token) :]
             self._reasoning_end_seen = True
             return self._with_reasoning_delta(
                 reasoning_content if reasoning_content else None,
@@ -294,6 +339,7 @@ class Glm4MoeModelReasoningParser(ReasoningParser):
             previous_text,
             current_text,
             delta_text,
+            current_token_ids,
         )
         if tool_boundary_delta is not None:
             return tool_boundary_delta

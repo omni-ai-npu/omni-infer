@@ -1,22 +1,28 @@
 diff --git a/vllm/entrypoints/openai/protocol.py b/vllm/entrypoints/openai/protocol.py
-index fab1b1005..fe9838419 100644
+index fab1b1005..3dba2f65e 100644
 --- a/vllm/entrypoints/openai/protocol.py
 +++ b/vllm/entrypoints/openai/protocol.py
-@@ -247,7 +247,11 @@ class ChatCompletionRequest(OpenAIBaseModel):
+@@ -247,7 +247,17 @@ class ChatCompletionRequest(OpenAIBaseModel):
          ChatCompletionNamedToolChoiceParam,
      ]] = "none"
  
 -    reasoning_effort: Optional[Literal["low", "medium", "high"]] = None
-+    # "none" disables thinking for this request (drives enable_thinking=False
-+    # downstream). low/medium/high keep thinking on. omni: for GLM the
-+    # low/medium/high levels are accepted but currently equivalent at the
-+    # model level; "none" vs the rest is the functional distinction.
-+    reasoning_effort: Optional[Literal["none", "low", "medium", "high"]] = None
++    # omni: align with latest vLLM. "none" disables thinking for this request
++    # (drives enable_thinking=False downstream). minimal/low/medium/high/xhigh/max
++    # keep thinking on and are forwarded to the chat template as a plain string.
++    # For GLM the levels are accepted but currently equivalent at the model
++    # level (the template only distinguishes "high" vs "max"); "none" vs the
++    # rest is the functional distinction. minimal/xhigh/max are honored by
++    # models whose chat template branches on them (e.g. gpt-oss Harmony).
++    reasoning_effort: (
++        Optional[Literal["none", "minimal", "low", "medium", "high",
++                         "xhigh", "max"]]
++    ) = None
      include_reasoning: bool = True
  
      # NOTE this will be ignored by vLLM -- the model determines the behavior
 diff --git a/vllm/entrypoints/openai/serving_chat.py b/vllm/entrypoints/openai/serving_chat.py
-index 1d6f608e8..d742ed8b6 100644
+index 1d6f608e8..6b2ee3a13 100644
 --- a/vllm/entrypoints/openai/serving_chat.py
 +++ b/vllm/entrypoints/openai/serving_chat.py
 @@ -231,10 +231,42 @@ class OpenAIServingChat(OpenAIServing):
@@ -83,15 +89,18 @@ index 1d6f608e8..d742ed8b6 100644
              else:
                  # For GPT-OSS.
                  (
-@@ -1773,8 +1816,13 @@ class OpenAIServingChat(OpenAIServing):
+@@ -1773,8 +1816,16 @@ class OpenAIServingChat(OpenAIServing):
          # if the model supports it. TODO: Support browsing.
          assert not self.supports_browsing
          assert not self.supports_code_interpreter
-+        # omni: Harmony (gpt-oss) only accepts low/medium/high; "none" has no
-+        # enum entry. Pass None so the effort is simply omitted from the
-+        # system message rather than raising KeyError.
-+        harmony_effort = None if request.reasoning_effort == "none" \
-+            else request.reasoning_effort
++        # omni: Harmony (gpt-oss) only accepts low/medium/high (the
++        # REASONING_EFFORT enum has no entry for none/minimal/xhigh/max). Pass
++        # the effort only when it is one of those three; otherwise pass None so
++        # the effort is simply omitted from the system message rather than
++        # raising KeyError.
++        harmony_effort = (request.reasoning_effort
++                           if request.reasoning_effort in ("low", "medium", "high")
++                           else None)
          sys_msg = get_system_message(
 -            reasoning_effort=request.reasoning_effort,
 +            reasoning_effort=harmony_effort,
