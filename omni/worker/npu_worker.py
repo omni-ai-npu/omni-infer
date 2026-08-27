@@ -203,7 +203,9 @@ class NPUWorker(Worker):
 
         # Construct the model runner
         if self.use_v2_model_runner:
-            raise NotImplementedError("V2 Model Runner is not supported for NPU")
+            from omni_npu.worker.npu.model_runner import NPUModelRunnerV2
+
+            self.model_runner = NPUModelRunnerV2(self.vllm_config, self.device)
         else:
             from omni_npu.worker.npu_model_runner import NPUModelRunner
 

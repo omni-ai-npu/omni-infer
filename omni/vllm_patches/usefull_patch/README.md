@@ -27,6 +27,12 @@ Pangu V2 MoE 505B int8 + EP 离线精度测试所需的最小 patch 集合。
 | `patch_dump.py` | common（原文件保留未动） | OMNI-DUMP 退出取证的三个挂载点（`AsyncLLM.__init__` / `EngineCoreProc.run_busy_loop` + `DPEngineCoreProc.run_busy_loop` / `NPUWorker.init_device`）。实现在 `omni/diagnostics/dump/`；0.25.1 接口零改动，engine 挂载点从 `EngineCore.__init__` 挪走是修一个与版本无关的缺陷（spawn 下静默失效，见 commit message）；`OMNI_DUMP_ENABLE` 未设置时默认开启 |
 | `patch_kv_output_aggregator.py` | — | 拆分 `KVOutputAggregator` send/recv 计数策略 |
 | `patch_multi_connector.py` | — | MultiConnector 分向透传 `get_finished_send_count` / `get_finished_recv_count`（PD 释块 send=1，Offloading load recv=world_size） |
+| `patch_mrv2_sampler.py` | MRv2 | V2 采样算子 `gumbel_sample` / `apply_top_k_top_p` 换 NPU 实现（上游 kernel 在 triton-ascend 3.2.2 上编译不过）。只换 V2 消费方，MRv1 用的定义模块 `v1/sample/ops/topk_topp_sampler.py` 不动 |
+| `patch_mrv2_buffer_utils.py` | MRv2 | `gpu/buffer_utils.UvaBuffer` → `NPUUvaBuffer`：默认 pinned host + H2D 拷贝，`OMNI_NPU_V2_UVA=1` 走 npu_uva 真视图 |
+| `patch_mrv2_attn_utils.py` | MRv2 | `gpu/attn_utils._reshape_kv_cache`：把 KV 布局交给 NPU attention backend |
+| `patch_mrv2_dp_utils.py` | MRv2 | V2 侧 DP：每步发布 LM head 的 all_gather pad 目标 + eager 下为 MoE EP 补齐各 rank token 数。V1 的对应实现是 `patch_dp_utils.py`，改一个要想另一个 |
+
+> MRv2 四个 patch 的实现在 `omni/worker/npu/`；绑定按消费方逐个枚举（应用晚于消费方 import，只改定义模块盖不住），目标模块 import 失败只记 error 不注册。
 
 ## 加载方式
 
