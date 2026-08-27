@@ -379,6 +379,7 @@ class EagleProposerPatch(VLLMPatch):
                 "OpenPanguVLForConditionalGeneration",
                 "OpenPanguV2VLForConditionalGeneration",
                 "OpenPanguUltraOmniForConditionalGeneration",
+                "OpenPanguOmniV2ForConditionalGeneration",
                 ### patch end
             ]:
                 self.model.config.image_token_index = target_model.config.image_token_id

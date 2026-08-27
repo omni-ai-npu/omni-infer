@@ -20,7 +20,7 @@ def _convertor(model_type=None, kv_lora_rank=None):
 
 @pytest.mark.parametrize(
     "model_type",
-    ["pangu_v2_moe", "openpangu_v2_vl_moe", "openpangu_v2_omni_moe"],
+    ["openpangu_v2", "openpangu_v2_vl_moe", "openpangu_v2_omni_moe"],
 )
 def test_pangu_mla_detection_requires_kv_lora_rank(model_type):
     assert _convertor(model_type, 128).is_deepseek_mla() is True

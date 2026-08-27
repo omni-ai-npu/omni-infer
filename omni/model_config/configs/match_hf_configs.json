@@ -230,7 +230,8 @@
         "moe_intermediate_size": 1280
     },
     "pangu_v2_moe_34B":{
-        "model_type": "pangu_v2_moe",
+        "model_type": "openpangu_v2",
+        "architectures": ["OpenPanguV2ForCausalLM"],
         "hidden_size": 2560,
         "num_attention_heads": 32,
         "vocab_size": 151552,
@@ -240,7 +241,8 @@
         "moe_intermediate_size": 512
     },
     "pangu_v2_moe_92B":{
-        "model_type": "pangu_v2_moe",
+        "model_type": "openpangu_v2",
+        "architectures": ["OpenPanguV2ForCausalLM"],
         "hidden_size": 2560,
         "num_attention_heads": 48,
         "vocab_size": 151552,
@@ -250,7 +252,8 @@
         "moe_intermediate_size": 1024
     },
     "pangu_v2_moe_505B":{
-        "model_type": "pangu_v2_moe",
+        "model_type": "openpangu_v2",
+        "architectures": ["OpenPanguV2ForCausalLM"],
         "hidden_size": 5120,
         "num_attention_heads": 64,
         "vocab_size": 151552,
@@ -261,6 +264,7 @@
     },
     "openpangu_v2_35B":{
         "model_type": "openpangu_v2",
+        "architectures": ["PanguUltraMoEForCausalLM"],
         "hidden_size": 2560,
         "num_attention_heads": 32,
         "vocab_size": 151552,
@@ -271,6 +275,7 @@
     },
     "openpangu_v2_92B":{
         "model_type": "openpangu_v2",
+        "architectures": ["PanguUltraMoEForCausalLM"],
         "hidden_size": 2560,
         "num_attention_heads": 48,
         "vocab_size": 151552,
@@ -281,6 +286,7 @@
     },
     "openpangu_v2_505B":{
         "model_type": "openpangu_v2",
+        "architectures": ["PanguUltraMoEForCausalLM"],
         "hidden_size": 5120,
         "num_attention_heads": 64,
         "vocab_size": 151552,

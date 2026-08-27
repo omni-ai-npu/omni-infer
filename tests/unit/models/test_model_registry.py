@@ -1,7 +1,22 @@
 # SPDX-License-Identifier: MIT
 
-# test_register_models_uses_mock_qwen2_when_capture_env_enabled was removed during the
-# vLLM 0.25.1 migration: the capture/replay mock-model path it covered was not migrated
-# (there is no omni/v1/models/mock/ package and register_models() no longer has a
-# CAPTURE_MODE branch), and it pinned Qwen2ForCausalLM, an open-source model that is
-# out of scope for this stage.
+from unittest.mock import MagicMock, patch
+
+from omni_npu.v1 import models as omni_models
+
+
+def test_register_models_uses_openpangu_v2_architectures():
+    registry = MagicMock()
+    with patch.object(omni_models, "ModelRegistry", registry):
+        omni_models.register_models()
+
+    registry.register_model.assert_any_call(
+        "OpenPanguV2ForCausalLM",
+        "omni_npu.v1.models.pangu.pangu_v2_moe:OpenPanguV2ForCausalLM",
+    )
+    registry.register_model.assert_any_call(
+        "OpenPanguV2MTPModel",
+        "omni_npu.v1.models.pangu.pangu_v2_moe_mtp:OpenPanguV2MTP",
+    )
+    assert registry.register_model.call_count == 2
+

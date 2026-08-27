@@ -60,6 +60,7 @@ from vllm.model_executor.models.utils import (
 )
 from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
+from vllm.transformers_utils.config import set_default_rope_theta
 from vllm.forward_context import get_forward_context
 from vllm.utils.torch_utils import direct_register_custom_op
 
@@ -181,7 +182,7 @@ def _has_mla_config(config: PretrainedConfig) -> bool:
     )
 
 
-class PanguV2MLP(nn.Module):
+class OpenPanguV2MLP(nn.Module):
     """Dense FFN block used by Pangu layers (and shared experts)."""
 
     def __init__(
@@ -248,7 +249,7 @@ class PanguV2MLP(nn.Module):
         return out
 
 
-class PanguV2MOE(nn.Module):
+class OpenPanguV2MOE(nn.Module):
     def __init__(
         self,
         config: PretrainedConfig,
@@ -302,7 +303,7 @@ class PanguV2MOE(nn.Module):
 
         assert config.n_shared_experts is not None
         intermediate_size = config.moe_intermediate_size * config.n_shared_experts
-        self.shared_experts = PanguV2MLP(
+        self.shared_experts = OpenPanguV2MLP(
             hidden_size=config.hidden_size,
             intermediate_size=intermediate_size,
             hidden_act=config.hidden_act,
@@ -363,7 +364,9 @@ class PanguV2MOE(nn.Module):
         self._is_quant = self.experts.w13_weight.dtype == torch.int8
 
         self.gmm_fr_token_threshold = model_extra_config.operator_opt_config.gmm_fr_token_threshold
-        
+        self.moe_dispatch_combine_max_batch_size = (
+            model_extra_config.operator_opt_config.moe_dispatch_combine_max_batch_size
+        )
         self.moe_seq_split_length = model_extra_config.operator_opt_config.moe_seq_split_length
 
         self.side_stream = None
@@ -848,11 +851,10 @@ class PanguV2MOE(nn.Module):
         quant_mode = 2 if self._is_quant else 0
 
         # NPU fusion operators have batch size limit of 512
-        max_batch_size = 128
         num_tokens = hidden_states.shape[0]
         x_active_mask = self._get_mc2_mask(topk_ids)
 
-        if num_tokens <= max_batch_size:
+        if num_tokens <= self.moe_dispatch_combine_max_batch_size:
             # Single batch processing
             moe_output = self._dispatch_combine_single_batch(
                 hidden_states,
@@ -865,8 +867,8 @@ class PanguV2MOE(nn.Module):
         else:
             # Multi-batch processing
             outputs = []
-            for i in range(0, num_tokens, max_batch_size):
-                end_idx = min(i + max_batch_size, num_tokens)
+            for i in range(0, num_tokens, self.moe_dispatch_combine_max_batch_size):
+                end_idx = min(i + self.moe_dispatch_combine_max_batch_size, num_tokens)
                 batch_hidden = hidden_states[i:end_idx]
                 batch_topk_weights = topk_weights[i:end_idx]
                 batch_topk_ids = topk_ids[i:end_idx]
@@ -1338,7 +1340,7 @@ class PanguV2MOE(nn.Module):
         return final_output
 
 
-class PanguV2DecoderLayerOutput(NamedTuple):
+class OpenPanguV2DecoderLayerOutput(NamedTuple):
     """Named outputs threaded between Pangu decoder layers."""
 
     hidden_states: torch.Tensor
@@ -1349,7 +1351,7 @@ class PanguV2DecoderLayerOutput(NamedTuple):
     topk_indices_buffer: Optional[torch.Tensor]
 
 
-class PanguV2DecoderLayer(nn.Module):
+class OpenPanguV2DecoderLayer(nn.Module):
     def __init__(
         self,
         config: PretrainedConfig | None,
@@ -1380,10 +1382,11 @@ class PanguV2DecoderLayer(nn.Module):
         self.use_mla = _has_mla_config(config)
         if not self.use_mla:
             raise ValueError(
-                "PanguV2 expects MLA-related config fields "
+                "OpenPanguV2 expects MLA-related config fields "
                 "(qk_nope_head_dim/qk_rope_head_dim/v_head_dim/kv_lora_rank)."
             )
 
+        set_default_rope_theta(config, default_theta=10000)
         _normalize_rope_parameters(
             config,
             max_position_embeddings=max_position_embeddings,
@@ -1422,7 +1425,7 @@ class PanguV2DecoderLayer(nn.Module):
             v_head_dim=config.v_head_dim,
             q_lora_rank=config.q_lora_rank if hasattr(config, "q_lora_rank") else None,
             kv_lora_rank=config.kv_lora_rank,
-            rope_theta=config.rope_theta,
+            rope_theta=config.rope_parameters["rope_theta"],
             max_position_embeddings=max_position_embeddings,
             sliding_window_list=getattr(config, "sliding_window_list", []),
             swa_layers=getattr(config, "swa_layers", []),
@@ -1436,14 +1439,14 @@ class PanguV2DecoderLayer(nn.Module):
             getattr(config, "n_routed_experts", None) is not None
             and self.layer_idx >= config.first_k_dense_replace
         ):
-            self.mlp = PanguV2MOE(
+            self.mlp = OpenPanguV2MOE(
                 config=config,
                 parallel_config=parallel_config,
                 quant_config=quant_config,
                 prefix=f"{prefix}.mlp",
             )
         else:
-            self.mlp = PanguV2MLP(
+            self.mlp = OpenPanguV2MLP(
                 hidden_size=self.hidden_size,
                 intermediate_size=config.intermediate_size,
                 hidden_act=config.hidden_act,
@@ -1494,7 +1497,7 @@ class PanguV2DecoderLayer(nn.Module):
         # Pre-compute task keys for the cube-side multistream optimization.
         # None means "run sinkhorn synchronously" — either because the
         # optimization is disabled, or because the call site is the dense
-        # PanguV2MLP whose down_proj isn't wrapped in a custom op (no cube-side
+        # OpenPanguV2MLP whose down_proj isn't wrapped in a custom op (no cube-side
         # overlap available). The helpers in cube_side_task_ops short-circuit
         # on None, so forward() doesn't need to branch on the flag itself.
         self.attn_mhc_task_key = (
@@ -1520,7 +1523,7 @@ class PanguV2DecoderLayer(nn.Module):
         self.side_stream = side_stream
         self.fetch_stream = fetch_stream
         # Forward to MoE layer for shared expert overlap and prefetch
-        if isinstance(self.mlp, PanguV2MOE):
+        if isinstance(self.mlp, OpenPanguV2MOE):
             self.mlp.side_stream = side_stream
             self.mlp.fetch_stream = fetch_stream
         # Forward to attention layer for future MLA prolog overlap
@@ -1765,7 +1768,7 @@ class PanguV2DecoderLayer(nn.Module):
         sin: torch.Tensor,
         sk_event: Optional[torch.npu.Event] = None,
         topk_indices_buffer: Optional[torch.Tensor] = None,
-    ) -> PanguV2DecoderLayerOutput:
+    ) -> OpenPanguV2DecoderLayerOutput:
 
         # Clear any stale callback from a previous forward (e.g. installed but
         # never fired because that step was prefill instead of decode).
@@ -1891,7 +1894,7 @@ class PanguV2DecoderLayer(nn.Module):
             defer_side_launch=not is_model_tail,
         )
 
-        return PanguV2DecoderLayerOutput(
+        return OpenPanguV2DecoderLayerOutput(
             hidden_states,
             residual,
             h_post,
@@ -2075,7 +2078,7 @@ def _maybe_gather_and_unpadding(
 
 
 @support_torch_compile
-class PanguV2Model(nn.Module):
+class OpenPanguV2Model(nn.Module):
     fall_back_to_pt_during_load = False
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
@@ -2108,7 +2111,7 @@ class PanguV2Model(nn.Module):
 
         self.start_layer, self.end_layer, self.layers = make_layers(
             config.num_hidden_layers,
-            lambda prefix: PanguV2DecoderLayer(config, prefix, vllm_config),
+            lambda prefix: OpenPanguV2DecoderLayer(config, prefix, vllm_config),
             prefix=f"{prefix}.layers",
         )
 
@@ -2241,7 +2244,7 @@ class PanguV2Model(nn.Module):
         return hidden_states
 
 
-class PanguV2MoEForCausalLM(
+class OpenPanguV2ForCausalLM(
     nn.Module,
     SupportsPP,
     SupportsLoRA,
@@ -2300,7 +2303,7 @@ class PanguV2MoEForCausalLM(
                 "kv_a_proj_with_mqa",
             ]
 
-        self.model = PanguV2Model(
+        self.model = OpenPanguV2Model(
             vllm_config=vllm_config, prefix=maybe_prefix(prefix, "model")
         )
         parall_cfg = model_extra_config.parall_config
@@ -2342,8 +2345,8 @@ class PanguV2MoEForCausalLM(
             if isinstance(layer, PPMissingLayer):
                 continue
 
-            assert isinstance(layer, PanguV2DecoderLayer)
-            if isinstance(layer.mlp, PanguV2MOE):
+            assert isinstance(layer, OpenPanguV2DecoderLayer)
+            if isinstance(layer.mlp, OpenPanguV2MOE):
                 # Pick last one layer since the first ones may be dense layers.
                 example_moe = layer.mlp
                 self.moe_layers.append(layer.mlp.experts)
@@ -2394,7 +2397,7 @@ class PanguV2MoEForCausalLM(
         self.num_local_physical_experts = num_local_physical_experts
         self.num_redundant_experts = num_physical_experts - self.num_logical_experts
         for layer in self.model.layers:
-            if isinstance(layer.mlp, PanguV2MOE):
+            if isinstance(layer.mlp, OpenPanguV2MOE):
                 moe = layer.mlp
                 moe.n_local_physical_experts = num_local_physical_experts
                 moe.n_physical_experts = num_physical_experts

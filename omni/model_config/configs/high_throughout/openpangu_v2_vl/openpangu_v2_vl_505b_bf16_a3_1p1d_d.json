@@ -23,6 +23,7 @@
         "enable_moe_agrs": false,
         "disable_npu_top_k_top_p_sample": false,
         "use_batch_invariant_op": true,
-        "router_gating_in_fp32": true
+        "router_gating_in_fp32": true,
+        "use_aicpu_fa_tiling": true
     }
 }

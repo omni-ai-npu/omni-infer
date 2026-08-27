@@ -141,6 +141,20 @@ class TestECSharedMemoryConnectorMetadata:
         metadata = ECSharedMemoryConnectorMetadata()
         assert metadata.mm_hashes == []
         assert len(metadata.mm_hashes) == 0
+        assert metadata.mm_hashes_hit == []
+        assert len(metadata.mm_hashes_hit) == 0
+
+    def test_add_mm_hash_hit(self):
+        """Test adding a cache-hit hash to the dedicated hit-list."""
+        metadata = ECSharedMemoryConnectorMetadata()
+        metadata.add_mm_hash_hit("hit1")
+        assert len(metadata.mm_hashes_hit) == 1
+        assert "hit1" in metadata.mm_hashes_hit
+        # The hit-list is independent of the load list.
+        assert metadata.mm_hashes == []
+
+        metadata.add_mm_hash_hit("hit2")
+        assert metadata.mm_hashes_hit == ["hit1", "hit2"]
 
     def test_add_mm_hash(self):
         """Test adding mm_hash to metadata."""
@@ -1721,3 +1735,131 @@ class TestECSharedMemoryConnectorEdgeCases:
 
             # Cache should remain empty since load failed due to OS error
             assert mm_hash not in encoder_cache
+
+
+class TestECSharedMemoryConnectorHitList:
+    """Test the dedicated cache-hit list and producer LRU refresh on hit.
+
+    Hit detection (has_cache_item) runs in the scheduler process, while eviction
+    runs on the producer worker. The hit-list is carried in the connector metadata
+    so the producer worker can refresh its LRU on hits (see bind_connector_metadata).
+    """
+
+    def test_has_cache_item_records_hits_on_success(self, mock_vllm_config):
+        """has_cache_item adds a hash to the hit-list only when the SHM probe succeeds."""
+        connector = ECSharedMemoryConnector(
+            vllm_config=mock_vllm_config,
+            role=ECConnectorRole.SCHEDULER,
+        )
+        request = MockRequest("req_hits", ["hit_a", "hit_b"])
+
+        with patch('multiprocessing.shared_memory.SharedMemory') as mock_shm:
+            mock_shm.return_value.close = MagicMock()
+            result = [
+                connector.has_cache_item(feature.identifier)
+                for feature in request.mm_features
+            ]
+
+        assert result == [True, True]
+        assert connector._mm_hashes_hit == {"hit_a", "hit_b"}
+        assert connector._mm_hashes_need_loads == {"hit_a", "hit_b"}
+
+    def test_has_cache_item_records_no_hits_on_miss(self, mock_vllm_config):
+        """has_cache_item leaves the hit-list empty when the SHM probe fails (miss)."""
+        connector = ECSharedMemoryConnector(
+            vllm_config=mock_vllm_config,
+            role=ECConnectorRole.SCHEDULER,
+        )
+        request = MockRequest("req_miss", ["miss_a", "miss_b"])
+
+        with patch('multiprocessing.shared_memory.SharedMemory') as mock_shm:
+            mock_shm.side_effect = FileNotFoundError
+            result = [
+                connector.has_cache_item(feature.identifier)
+                for feature in request.mm_features
+            ]
+
+        assert result == [False, False]
+        assert connector._mm_hashes_hit == set()
+        assert connector._mm_hashes_need_loads == {"miss_a", "miss_b"}
+
+    def test_build_connector_meta_carries_hit_list(self, mock_vllm_config):
+        """build_connector_meta drains both the load list and the hit-list."""
+        connector = ECSharedMemoryConnector(
+            vllm_config=mock_vllm_config,
+            role=ECConnectorRole.SCHEDULER,
+        )
+        connector._mm_hashes_need_loads = {"hash_a", "hash_b"}
+        connector._mm_hashes_hit = {"hash_a"}
+
+        meta = connector.build_connector_meta(
+            scheduler_output=Mock(spec=SchedulerOutput))
+
+        assert set(meta.mm_hashes) == {"hash_a", "hash_b"}
+        assert set(meta.mm_hashes_hit) == {"hash_a"}
+        assert connector._mm_hashes_need_loads == set()
+        assert connector._mm_hashes_hit == set()
+
+    def test_bind_refreshes_lru_for_hits_on_producer_worker(self, mock_vllm_config):
+        """Binding hit metadata moves the hit hash to MRU on the producer worker."""
+        connector = ECSharedMemoryConnector(
+            vllm_config=mock_vllm_config,
+            role=ECConnectorRole.WORKER,
+        )
+        for h in ["hash1", "hash2", "hash3"]:
+            connector._touch_lru(h)
+        assert list(connector._lru.keys())[0] == "hash1"
+
+        metadata = ECSharedMemoryConnectorMetadata()
+        metadata.add_mm_hash_hit("hash1")
+        connector.bind_connector_metadata(metadata)
+
+        assert list(connector._lru.keys()) == ["hash2", "hash3", "hash1"]
+
+    def test_bind_does_not_add_phantom_hits(self, mock_vllm_config):
+        """A hit hash not present in the LRU must not create a phantom entry."""
+        connector = ECSharedMemoryConnector(
+            vllm_config=mock_vllm_config,
+            role=ECConnectorRole.WORKER,
+        )
+        connector._touch_lru("hash1")
+        connector._touch_lru("hash2")
+
+        metadata = ECSharedMemoryConnectorMetadata()
+        metadata.add_mm_hash_hit("hash1")
+        metadata.add_mm_hash_hit("ghost")
+        connector.bind_connector_metadata(metadata)
+
+        assert set(connector._lru.keys()) == {"hash1", "hash2"}
+        assert "ghost" not in connector._lru
+        assert list(connector._lru.keys())[-1] == "hash1"
+
+    def test_bind_skips_consumer(self, mock_vllm_config_consumer):
+        """Consumer workers never evict, so their LRU is not refreshed on bind."""
+        connector = ECSharedMemoryConnector(
+            vllm_config=mock_vllm_config_consumer,
+            role=ECConnectorRole.WORKER,
+        )
+        connector._touch_lru("hash1")
+        connector._touch_lru("hash2")
+
+        metadata = ECSharedMemoryConnectorMetadata()
+        metadata.add_mm_hash_hit("hash1")
+        connector.bind_connector_metadata(metadata)
+
+        assert list(connector._lru.keys()) == ["hash1", "hash2"]
+
+    def test_bind_skips_scheduler_role(self, mock_vllm_config):
+        """Scheduler-role instances do not manage the eviction LRU."""
+        connector = ECSharedMemoryConnector(
+            vllm_config=mock_vllm_config,
+            role=ECConnectorRole.SCHEDULER,
+        )
+        connector._touch_lru("hash1")
+        connector._touch_lru("hash2")
+
+        metadata = ECSharedMemoryConnectorMetadata()
+        metadata.add_mm_hash_hit("hash1")
+        connector.bind_connector_metadata(metadata)
+
+        assert list(connector._lru.keys()) == ["hash1", "hash2"]

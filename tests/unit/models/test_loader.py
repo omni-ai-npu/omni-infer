@@ -183,6 +183,19 @@ class TestConfigLoaderUnit(unittest.TestCase):
         config = ModelOperatorOptConfig()
         self.assertFalse(config.lmhead_fp32)
 
+    def test_pr1_config_defaults_for_vit_sp_and_dispatch_combine(self):
+        from omni_npu.model_config.config_loader.loader import (
+            ModelOperatorOptConfig,
+            ModelParallelConfig,
+        )
+
+        parallel = ModelParallelConfig()
+        self.assertFalse(parallel.vit_dynamic_sp)
+        self.assertEqual(parallel.vit_cp_min_patch_tokens, {})
+
+        operator = ModelOperatorOptConfig()
+        self.assertEqual(operator.moe_dispatch_combine_max_batch_size, 128)
+
     def test_model_operator_opt_config_lmhead_fp32_from_config(self):
         """Test _init_model_extra_config loads lmhead_fp32 from operator config"""
         from omni_npu.model_config.config_loader.loader import (

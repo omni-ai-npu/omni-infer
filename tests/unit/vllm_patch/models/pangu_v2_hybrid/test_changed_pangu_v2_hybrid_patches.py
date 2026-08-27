@@ -436,22 +436,30 @@ def test_pangu_model_arch_convertor_and_speculative_mapping(monkeypatch):
     )
 
     class HFConfig:
-        def __init__(self, model_type):
+        def __init__(self, model_type, architectures=()):
             self.model_type = model_type
             self.num_nextn_predict_layers = 2
+            self.architectures = list(architectures)
 
         def update(self, values):
             self.__dict__.update(values)
 
+    # openpangu_v2 + PanguUltraMoEForCausalLM -> the sink/swa MTP
     openpangu = spec_mod.PanguV2MoeSpeculativeConfigPatch.hf_config_override(
-        HFConfig("openpangu_v2"))
+        HFConfig("openpangu_v2", ["PanguUltraMoEForCausalLM"]))
     assert openpangu.model_type == "openpangu_mtp"
     assert openpangu.architectures == ["OpenPanguMTPModel"]
 
+    # openpangu_v2 + OpenPanguV2ForCausalLM -> the MoME/mHC MTP
     pangu_moe = spec_mod.PanguV2MoeSpeculativeConfigPatch.hf_config_override(
-        HFConfig("pangu_v2_moe"))
+        HFConfig("openpangu_v2", ["OpenPanguV2ForCausalLM"]))
     assert pangu_moe.model_type == "mtp"
-    assert pangu_moe.architectures == ["PanguV2MTPModel"]
+    assert pangu_moe.architectures == ["OpenPanguV2MTPModel"]
+
+    # pangu_v2_moe is no longer handled here and must fall through
+    dropped = spec_mod.PanguV2MoeSpeculativeConfigPatch.hf_config_override(
+        HFConfig("pangu_v2_moe"))
+    assert dropped.fallback is True
 
     fallback = spec_mod.PanguV2MoeSpeculativeConfigPatch.hf_config_override(
         HFConfig("other"))

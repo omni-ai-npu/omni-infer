@@ -7,7 +7,6 @@
     },
     "operator_optimization_config": {
         "moe_comm_strategy": "dispatch_combine",
-        "moe_dispatch_combine_max_batch_size": 256,
         "use_aicpu_fa_tiling": true,
         "use_noncontiguous_kv": true,
         "use_rope_fusion_op": true,

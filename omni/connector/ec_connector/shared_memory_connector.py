@@ -79,12 +79,20 @@ def _mm_hash_to_sha256(mm_hash: str) -> str:
 @dataclass
 class ECSharedMemoryConnectorMetadata(ECConnectorMetadata):
     mm_hashes: list[str]
+    # Hashes confirmed to already exist in shared memory (cache hits) for this step.
+    # Detected by has_cache_item() in the scheduler process and shipped to the worker so
+    # the producer can refresh its eviction LRU on hits (see bind_connector_metadata).
+    mm_hashes_hit: list[str]
 
     def __init__(self) -> None:
         self.mm_hashes = []
+        self.mm_hashes_hit = []
 
     def add_mm_hash(self, mm_hash: str) -> None:
         self.mm_hashes.append(mm_hash)
+
+    def add_mm_hash_hit(self, mm_hash: str) -> None:
+        self.mm_hashes_hit.append(mm_hash)
 
 
 @dataclass(frozen=True)
@@ -111,6 +119,7 @@ class ECSharedMemoryConnector(ECConnectorBase):
         self._max_bytes = min(int(available_mem * 0.1), _max_bytes)
         logger.info(f"shm ecconnector max bytes:{self._max_bytes / GB}GB")
         self._mm_hashes_need_loads: set[str] = set()
+        self._mm_hashes_hit: set[str] = set()
         self._mm_hash_sizes: dict[str, int] = {}
         self._mm_hash_refcounts: dict[str, int] = {}
         self._lru: OrderedDict[str, None] = OrderedDict()
@@ -292,6 +301,26 @@ class ECSharedMemoryConnector(ECConnectorBase):
             self.shutdown()
         except Exception as exc:
             logger.warning("Failed to shutdown EC shared memory connector: %s", exc, exc_info=True)
+
+    def bind_connector_metadata(self, connector_metadata: ECConnectorMetadata) -> None:
+        super().bind_connector_metadata(connector_metadata)
+        # Hit detection (has_cache_item) runs in the scheduler process, while eviction
+        # runs on the producer worker. start_load_caches only runs on the consumer
+        # (which never evicts), so without this the producer's LRU only advances on
+        # save. Refresh it here from the dedicated hit-list so hot entries survive
+        # pressure.
+        if (self.is_producer and self.role == ECConnectorRole.WORKER
+                and connector_metadata is not None):
+            hit_hashes = getattr(connector_metadata, "mm_hashes_hit", None) or []
+            refreshed = 0
+            for mm_hash in hit_hashes:
+                # Only move entries the producer actually holds; skip phantoms so we
+                # never insert LRU/sizes tracking for segments this worker did not create.
+                if mm_hash in self._lru:
+                    self._lru.move_to_end(mm_hash)
+                    refreshed += 1
+            if refreshed:
+                logger.debug("EC shm producer refreshed LRU for %d hit hash(es).", refreshed)
 
     def _evict_if_needed(self, extra_bytes: int) -> None:
         if not self.is_producer or self.role != ECConnectorRole.WORKER:
@@ -552,6 +581,7 @@ class ECSharedMemoryConnector(ECConnectorBase):
         logger.debug(f"ecconnector has caches:{identifier}")
         try:
             shared_memory.SharedMemory(name=_mm_hash_to_sha256(identifier)).close()
+            self._mm_hashes_hit.add(identifier)
             return True
         except FileNotFoundError:
             return False
@@ -566,5 +596,8 @@ class ECSharedMemoryConnector(ECConnectorBase):
         meta = ECSharedMemoryConnectorMetadata()
         for mm_hash in self._mm_hashes_need_loads:
             meta.add_mm_hash(mm_hash)
+        for mm_hash in self._mm_hashes_hit:
+            meta.add_mm_hash_hit(mm_hash)
         self._mm_hashes_need_loads.clear()
+        self._mm_hashes_hit.clear()
         return meta

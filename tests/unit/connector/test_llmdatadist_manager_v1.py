@@ -746,6 +746,11 @@ class TestCacheManager:
 class TestGetPhysicalDeviceId:
     """Tests for LLMDataDistManager._get_physical_device_id."""
 
+    @pytest.fixture(autouse=True)
+    def _bare_metal(self, monkeypatch):
+        """Bare metal exposes no container->host device mapping."""
+        monkeypatch.delenv("ASCEND_VISIBLE_DEVICES", raising=False)
+
     def _make_manager(self, local_rank=0):
         """Create a minimal manager without calling __init__."""
         mgr = DatadistEngine.__new__(DatadistEngine)
@@ -783,8 +788,87 @@ class TestGetPhysicalDeviceId:
         assert mgr._get_physical_device_id() == 3
 
 
+class TestContainerToHostDeviceMapping:
+    """Container runtimes pass a subset of the host devices through ASCEND_VISIBLE_DEVICES;
+    the selected index must be translated before it is used to look up the host-scoped
+    /etc/hccl_rootinfo.json. The container-local index follows the physical ids in ascending
+    order, not the order they appear in the variable."""
+
+    def _make_manager(self, local_rank=0):
+        mgr = DatadistEngine.__new__(DatadistEngine)
+        mgr.local_rank = local_rank
+        return mgr
+
+    def test_maps_container_index_to_host_device(self, monkeypatch):
+        # Container holds host devices 4-7, so container-local 2 is host physical 6
+        monkeypatch.setenv("ASCEND_VISIBLE_DEVICES", "4,5,6,7")
+        monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "2")
+        assert self._make_manager(local_rank=0)._get_physical_device_id() == 6
+
+    def test_orders_by_physical_id_not_by_listed_order(self, monkeypatch):
+        """Observed on an A5 prefill node: ASCEND_VISIBLE_DEVICES="7,4,5,6" with
+        ASCEND_RT_VISIBLE_DEVICES="0,1"; the driver reported phyId 4 for local rank 0 and
+        phyId 5 for local rank 1, i.e. sorted([7,4,5,6]) rather than the listed order."""
+        monkeypatch.setenv("ASCEND_VISIBLE_DEVICES", "7,4,5,6")
+        monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "0,1")
+        assert self._make_manager(local_rank=0)._get_physical_device_id() == 4
+        assert self._make_manager(local_rank=1)._get_physical_device_id() == 5
+
+    def test_maps_each_rank_through_the_sorted_set(self, monkeypatch):
+        monkeypatch.setenv("ASCEND_VISIBLE_DEVICES", "3,4,5,6,7,0,1,2")
+        monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "2,3")
+        assert self._make_manager(local_rank=0)._get_physical_device_id() == 2
+        assert self._make_manager(local_rank=1)._get_physical_device_id() == 3
+
+    def test_identity_mapping_leaves_id_unchanged(self, monkeypatch):
+        monkeypatch.setenv("ASCEND_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7")
+        monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "4,5")
+        assert self._make_manager(local_rank=1)._get_physical_device_id() == 5
+
+    def test_applies_to_local_rank_fallback_path(self, monkeypatch):
+        # Without ASCEND_RT_VISIBLE_DEVICES local_rank itself is a container-local index
+        monkeypatch.delenv("ASCEND_RT_VISIBLE_DEVICES", raising=False)
+        monkeypatch.setenv("ASCEND_VISIBLE_DEVICES", "4,5,6,7")
+        assert self._make_manager(local_rank=2)._get_physical_device_id() == 6
+
+    def test_applies_to_exceeded_rank_fallback_path(self, monkeypatch):
+        monkeypatch.setenv("ASCEND_VISIBLE_DEVICES", "4,5,6,7")
+        monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "1,2")
+        # local_rank out of range falls back to devices[0]=1, which maps to host 5
+        assert self._make_manager(local_rank=9)._get_physical_device_id() == 5
+
+    def test_logical_id_out_of_range_keeps_original(self, monkeypatch):
+        monkeypatch.setenv("ASCEND_VISIBLE_DEVICES", "4,5")
+        monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "5")
+        assert self._make_manager(local_rank=0)._get_physical_device_id() == 5
+
+    def test_empty_mapping_is_ignored(self, monkeypatch):
+        monkeypatch.setenv("ASCEND_VISIBLE_DEVICES", "")
+        monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "2,3")
+        assert self._make_manager(local_rank=1)._get_physical_device_id() == 3
+
+    def test_unparsable_mapping_falls_back_to_logical_id(self, monkeypatch):
+        monkeypatch.setenv("ASCEND_VISIBLE_DEVICES", "4,not-a-number,6")
+        monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "1")
+        assert self._make_manager(local_rank=0)._get_physical_device_id() == 1
+
+    def test_cluster_device_id_reads_the_host_entry(self, monkeypatch):
+        """The regression this guards: the rootinfo lookup used the container-local index."""
+        rootinfo = {"rank_list": [{"device_id": i * 10} for i in range(8)]}
+        with _mock_hccl_rootinfo(rootinfo):
+            monkeypatch.setenv("ASCEND_VISIBLE_DEVICES", "4,5,6,7")
+            monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "2")
+            # host physical 6 -> rank_list[6], not rank_list[2]
+            assert self._make_manager(local_rank=0)._get_cluster_device_id() == 60
+
+
 class TestGetClusterDeviceId:
     """Tests for DatadistEngine._get_cluster_device_id."""
+
+    @pytest.fixture(autouse=True)
+    def _bare_metal(self, monkeypatch):
+        """Bare metal exposes no container->host device mapping."""
+        monkeypatch.delenv("ASCEND_VISIBLE_DEVICES", raising=False)
 
     def _make_manager(self, local_rank=0):
         mgr = DatadistEngine.__new__(DatadistEngine)

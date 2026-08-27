@@ -50,11 +50,14 @@ class PanguV2SchedulerPatch(VLLMPatch):
                 end_token_id = end_token_ids[-1]
 
         if not hasattr(request, "content_generated"):
-            request.content_generated = 0
             request.reasoning_ended = end_token_id is None
+            request.content_generated = (
+                request.num_output_tokens if request.reasoning_ended else 0
+            )
             request._original_max_tokens = request.max_tokens
             request._reasoning_started = start_token_id is None or (
                 start_token_id in (request.prompt_token_ids or [])
+                or start_token_id in request.output_token_ids
             )
 
         original_max_tokens = request._original_max_tokens

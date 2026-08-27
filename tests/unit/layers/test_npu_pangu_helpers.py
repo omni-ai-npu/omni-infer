@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import unittest
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +19,108 @@ from omni_npu.v1.models.pangu import pangu_v2_moe as model_mod
 from omni_npu.v1.models.pangu import pangu_v2_moe_mtp as mtp_mod
 
 
+_FA_CALLERS = (
+    "decode",
+    "decode_mla",
+    "prefill_absorb",
+    "prefill_absorb_mla",
+    "prefill",
+    "prefill_mla",
+)
+
+
+def _build_sparse_attention(
+    *,
+    layer_idx,
+    num_hidden_layers=4,
+    swa_layers=None,
+    sliding_window_list=None,
+    index_topk=None,
+    index_head_dim=8,
+    indexer_types=None,
+    rope_interleave=None,
+    rope_interleaved=None,
+):
+    if swa_layers is None:
+        swa_layers = [0, 1]
+    if sliding_window_list is None:
+        sliding_window_list = [512, 512]
+    config_kwargs = {
+        "num_hidden_layers": num_hidden_layers,
+        "index_head_dim": index_head_dim,
+        "use_mome": False,
+    }
+    if index_topk is not None:
+        config_kwargs["index_topk"] = index_topk
+    if indexer_types is not None:
+        config_kwargs["indexer_types"] = indexer_types
+    if rope_interleave is not None:
+        config_kwargs["rope_interleave"] = rope_interleave
+    if rope_interleaved is not None:
+        config_kwargs["rope_interleaved"] = rope_interleaved
+    config = SimpleNamespace(**config_kwargs)
+    cache_config = SimpleNamespace(block_size=16, cache_dtype="auto")
+    vllm_config = SimpleNamespace(
+        kv_transfer_config=None,
+        scheduler_config=SimpleNamespace(enable_chunked_prefill=False),
+        cache_config=SimpleNamespace(enable_prefix_caching=False),
+    )
+    compilation_config = SimpleNamespace(static_forward_context={})
+    original_zeros = torch.zeros
+
+    def cpu_zeros(*args, **kwargs):
+        if kwargs.get("device") == "npu":
+            kwargs["device"] = "cpu"
+        return original_zeros(*args, **kwargs)
+
+    patches = [
+        patch.object(NPUPanguSparseAttention, "_init_MLA_weights"),
+        patch.object(NPUPanguSparseAttention, "_init_rotary_emb"),
+        patch.object(NPUPanguSparseAttention, "_init_param_sinks"),
+        patch.object(NPUPanguSparseAttention, "_align_pagesize"),
+        patch.object(NPUPanguSparseAttention, "_init_attention_layers"),
+        patch.object(NPUPanguSparseAttention, "_init_mome_layer"),
+        patch.object(NPUPanguSparseAttention, "_init_cross_layer_shared_ops"),
+        patch.object(
+            pangu_mod,
+            "get_tp_group",
+            return_value=SimpleNamespace(world_size=1),
+        ),
+        patch.object(pangu_mod, "on_ascend950", return_value=False),
+        patch.object(
+            pangu_mod,
+            "get_current_vllm_config",
+            return_value=SimpleNamespace(compilation_config=compilation_config),
+        ),
+        patch.object(
+            pangu_mod.model_extra_config.operator_opt_config,
+            "use_noncontiguous_kv",
+            True,
+        ),
+        patch.object(torch, "zeros", side_effect=cpu_zeros),
+    ]
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        return NPUPanguSparseAttention(
+            vllm_config=vllm_config,
+            config=config,
+            hidden_size=16,
+            num_heads=2,
+            qk_nope_head_dim=4,
+            qk_rope_head_dim=4,
+            v_head_dim=4,
+            q_lora_rank=8,
+            kv_lora_rank=8,
+            rope_theta=10000,
+            swa_layers=swa_layers,
+            param_sink_number=1,
+            sliding_window_list=sliding_window_list,
+            cache_config=cache_config,
+            prefix=f"model.layers.{layer_idx}.self_attn",
+        )
+
+
 class TestGetSlotMapping2d(unittest.TestCase):
     def test_fast_path_returns_existing_slot_mapping_2d(self):
         cached = torch.tensor([[0, 0], [1, 1]])
@@ -31,7 +134,13 @@ class TestGetSlotMapping2d(unittest.TestCase):
     def test_default_layer_idx_invokes_zero_arg_callback(self):
         """Mirrors MLA's lambda which accepts no arguments."""
         sentinel = torch.tensor([[1, 2]])
-        meta = SimpleNamespace(slot_mapping_2d=None, get_slot_mapping_2d=lambda: sentinel)
+
+        def _zero_arg_slot_mapping():
+            return sentinel
+
+        meta = SimpleNamespace(
+            slot_mapping_2d=None, get_slot_mapping_2d=_zero_arg_slot_mapping
+        )
         self.assertIs(_get_slot_mapping_2d(meta), sentinel)
 
     def test_explicit_layer_idx_is_passed_through(self):
@@ -70,84 +179,32 @@ class TestPanguIndexShare(unittest.TestCase):
         self.assertEqual(output_topk.shape, topk_buffer.shape)
         self.assertEqual(output_topk.dtype, topk_buffer.dtype)
 
-    @patch.object(NPUPanguSparseAttention, "_init_MLA_weights")
-    @patch.object(NPUPanguSparseAttention, "_init_rotary_emb")
-    @patch.object(NPUPanguSparseAttention, "_init_param_sinks")
-    @patch.object(NPUPanguSparseAttention, "_align_pagesize")
-    @patch.object(NPUPanguSparseAttention, "_init_attention_layers")
-    @patch.object(NPUPanguSparseAttention, "_init_mome_layer")
-    @patch.object(NPUPanguSparseAttention, "_init_cross_layer_shared_ops")
-    def test_constructor_marks_shared_indexer_layer(self, *_init_mocks):
-        config = SimpleNamespace(
+    def test_constructor_marks_shared_indexer_layer(self):
+        attention = _build_sparse_attention(
+            layer_idx=1,
             num_hidden_layers=2,
+            swa_layers=[0],
+            sliding_window_list=[128],
             index_topk=4,
-            index_head_dim=8,
             indexer_types=["unique", "shared"],
             rope_interleaved=True,
-            use_mome=False,
         )
-        cache_config = SimpleNamespace(block_size=16, cache_dtype="auto")
-        vllm_config = SimpleNamespace(
-            kv_transfer_config=None,
-            scheduler_config=SimpleNamespace(enable_chunked_prefill=False),
-            cache_config=SimpleNamespace(enable_prefix_caching=False),
-        )
-        compilation_config = SimpleNamespace(static_forward_context={})
-        original_zeros = torch.zeros
-
-        def cpu_zeros(*args, **kwargs):
-            if kwargs.get("device") == "npu":
-                kwargs["device"] = "cpu"
-            return original_zeros(*args, **kwargs)
-
-        with (
-            patch.object(
-                pangu_mod,
-                "get_tp_group",
-                return_value=SimpleNamespace(world_size=1),
-            ),
-            patch.object(pangu_mod, "on_ascend950", return_value=False),
-            patch.object(
-                pangu_mod,
-                "get_current_vllm_config",
-                return_value=SimpleNamespace(compilation_config=compilation_config),
-            ),
-            patch.object(
-                pangu_mod.model_extra_config.operator_opt_config,
-                "use_noncontiguous_kv",
-                True,
-            ),
-            patch.object(torch, "zeros", side_effect=cpu_zeros),
-        ):
-            attention = NPUPanguSparseAttention(
-                vllm_config=vllm_config,
-                config=config,
-                hidden_size=16,
-                num_heads=2,
-                qk_nope_head_dim=4,
-                qk_rope_head_dim=4,
-                v_head_dim=4,
-                q_lora_rank=8,
-                kv_lora_rank=8,
-                rope_theta=10000,
-                swa_layers=[0],
-                param_sink_number=1,
-                sliding_window_list=[128],
-                cache_config=cache_config,
-                prefix="model.layers.1.self_attn",
-            )
 
         self.assertTrue(attention.is_dsa_layer)
         self.assertTrue(attention.skip_topk)
 
     def test_prepare_phase_inputs_slices_shared_topk_buffer(self):
         attention = NPUPanguSparseAttention.__new__(NPUPanguSparseAttention)
+
+        def _no_slot_mapping():
+            return None
+
         metadata = SimpleNamespace(
             num_decode_tokens=2,
             num_actual_tokens=5,
             slot_mapping=torch.arange(5),
             slot_mapping_2d=None,
-            get_slot_mapping_2d=lambda: None,
+            get_slot_mapping_2d=_no_slot_mapping,
             prefill=SimpleNamespace(),
             decode=SimpleNamespace(),
         )
@@ -275,12 +332,12 @@ class TestPanguModelTopkBuffer(unittest.TestCase):
                     if self.replacement_buffer is not None
                     else topk_indices_buffer
                 )
-                return model_mod.PanguV2DecoderLayerOutput(
+                return model_mod.OpenPanguV2DecoderLayerOutput(
                     hidden_states, residual, h_post, h_res, sk_event,
                     output_buffer,
                 )
 
-        model = model_mod.PanguV2Model.__new__(model_mod.PanguV2Model)
+        model = model_mod.OpenPanguV2Model.__new__(model_mod.OpenPanguV2Model)
         torch.nn.Module.__init__(model)
         replacement = torch.full((3, 1, 4), 7, dtype=torch.int32)
         first_layer = FakeLayer(replacement)
@@ -314,13 +371,12 @@ class TestPanguModelTopkBuffer(unittest.TestCase):
     def test_mtp_layer_allocates_and_passes_topk_buffer(self):
         class FakeMTPBlock:
             def __init__(self):
+                def _get_cos_sin(positions):
+                    zeros = torch.zeros(positions.shape[0], 2)
+                    return zeros, zeros
+
                 self.self_attn = SimpleNamespace(
-                    rotary_emb=SimpleNamespace(
-                        get_cos_sin=lambda positions: (
-                            torch.zeros(positions.shape[0], 2),
-                            torch.zeros(positions.shape[0], 2),
-                        )
-                    )
+                    rotary_emb=SimpleNamespace(get_cos_sin=_get_cos_sin)
                 )
                 self.seen_buffer = None
 
@@ -329,13 +385,13 @@ class TestPanguModelTopkBuffer(unittest.TestCase):
 
             def __call__(self, hidden_states, residual, *args):
                 self.seen_buffer = args[-1]
-                return model_mod.PanguV2DecoderLayerOutput(
+                return model_mod.OpenPanguV2DecoderLayerOutput(
                     hidden_states, residual, None, None, None,
                     self.seen_buffer,
                 )
 
-        layer = mtp_mod.PanguV2MultiTokenPredictorLayer.__new__(
-            mtp_mod.PanguV2MultiTokenPredictorLayer
+        layer = mtp_mod.OpenPanguV2MultiTokenPredictorLayer.__new__(
+            mtp_mod.OpenPanguV2MultiTokenPredictorLayer
         )
         torch.nn.Module.__init__(layer)
         layer.enorm = torch.nn.Identity()
@@ -411,6 +467,217 @@ class TestDSALazySlotMapping2d(unittest.TestCase):
         seeded = meta.slot_mapping_cache
         out = inner(3)
         self.assertIs(out, seeded)
+
+
+class TestPanguFAMetadataIsolation(unittest.TestCase):
+    def test_hybrid_swa_and_full_mla_use_separate_producers(self):
+        cases = (
+            (0, True, "", False, False),
+            (1, False, "", False, False),
+            (2, True, "_mla", False, False),
+            (3, False, "_mla", False, False),
+            (4, True, "", False, False),
+        )
+        for layer_idx, producer, suffix, is_dsa, skip_topk in cases:
+            with self.subTest(layer_idx=layer_idx):
+                attention = _build_sparse_attention(layer_idx=layer_idx)
+                self.assertEqual(attention.is_fa_metadata_producer, producer)
+                self.assertEqual(attention._fa_meta_suffix, suffix)
+                self.assertEqual(attention.is_dsa_layer, is_dsa)
+                self.assertEqual(attention.skip_topk, skip_topk)
+
+    def test_dsa_skips_full_mla_producer_and_uses_mla_suffix(self):
+        attention = _build_sparse_attention(
+            layer_idx=2,
+            swa_layers=[0, 1],
+            sliding_window_list=[512, 512],
+            index_topk=4,
+            indexer_types=["unique", "unique", "unique", "unique"],
+        )
+        self.assertTrue(attention.is_dsa_layer)
+        self.assertFalse(attention.is_fa_metadata_producer)
+        self.assertEqual(attention._fa_meta_suffix, "_mla")
+
+    def test_index_topk_none_or_zero_falls_back_to_full_mla(self):
+        for index_topk in (None, 0):
+            with self.subTest(index_topk=index_topk):
+                kwargs = {"layer_idx": 2}
+                if index_topk is not None:
+                    kwargs["index_topk"] = index_topk
+                attention = _build_sparse_attention(**kwargs)
+                self.assertFalse(attention.is_dsa_layer)
+                self.assertTrue(attention.is_fa_metadata_producer)
+                self.assertEqual(attention._fa_meta_suffix, "_mla")
+
+    def test_rope_interleave_prefers_explicit_flag(self):
+        interleaved = _build_sparse_attention(
+            layer_idx=0, rope_interleave=True, rope_interleaved=False
+        )
+        self.assertTrue(interleaved.rope_interleave)
+        fallback = _build_sparse_attention(
+            layer_idx=0, rope_interleaved=True
+        )
+        self.assertTrue(fallback.rope_interleave)
+        disabled = _build_sparse_attention(layer_idx=0)
+        self.assertFalse(disabled.rope_interleave)
+
+    def test_shared_ops_register_swa_and_mla_callers(self):
+        created = []
+
+        class FakeSharedOp:
+            def __init__(self, **kwargs):
+                created.append(kwargs)
+
+        attention = NPUPanguSparseAttention.__new__(NPUPanguSparseAttention)
+        attention.on_ascend950 = True
+        fake_ops = SimpleNamespace(
+            _npu_fused_infer_attention_sink_metadata=object(),
+            npu_ai_infra_attention_pioneer_metadata=object(),
+        )
+        with patch.object(pangu_mod, "CrossLayerSharedOp", FakeSharedOp), \
+                patch.object(
+                    pangu_mod, "npu_fused_infer_attention_sink_metadata", None
+                ), \
+                patch.object(
+                    pangu_mod, "npu_ai_infra_attention_pioneer_metadata", None
+                ), \
+                patch.object(pangu_mod.torch.ops, "custom", fake_ops, raising=False):
+            attention._init_cross_layer_shared_ops()
+
+        self.assertEqual(len(created), 2)
+        self.assertEqual(created[0]["callers"], _FA_CALLERS)
+        self.assertEqual(created[1]["callers"], _FA_CALLERS)
+        self.assertEqual(created[1]["shape"], (1024,))
+
+    def test_kv_rmsnorm_rope_cache_kwargs_honor_rotary_mode(self):
+        attention = NPUPanguSparseAttention.__new__(NPUPanguSparseAttention)
+        attention.kv_lora_rank = 8
+        attention.qk_rope_head_dim = 4
+        attention.kv_a_layernorm = SimpleNamespace(
+            weight=torch.ones(8), variance_epsilon=1e-6
+        )
+        kv = torch.zeros(2, 12)
+        cos = torch.zeros(2, 4)
+        sin = torch.zeros(2, 4)
+        metadata = SimpleNamespace(slot_mapping=torch.arange(2))
+
+        attention.rope_interleave = False
+        half = attention._kv_rmsnorm_rope_cache_v2_kwargs(
+            kv, cos, sin, metadata, k_cache=None, ckv_cache=torch.zeros(2, 1, 8)
+        )
+        self.assertEqual(half["rotary_mode"], "half")
+        self.assertIsNone(half["k_cache"])
+
+        attention.rope_interleave = True
+        interleave = attention._kv_rmsnorm_rope_cache_v2_kwargs(
+            kv, cos, sin, metadata
+        )
+        self.assertEqual(interleave["rotary_mode"], "interleave-half")
+
+    def test_page_size_without_dsa_uses_mla_page(self):
+        attention = NPUPanguSparseAttention.__new__(NPUPanguSparseAttention)
+        attention.kv_lora_rank = 8
+        attention.qk_rope_head_dim = 4
+        attention.use_mome = False
+        cache_config = SimpleNamespace(block_size=16)
+        page = attention._calculate_page_size_padded(
+            cache_config, "auto", SimpleNamespace()
+        )
+        self.assertEqual(page, 16 * (8 + 4) * 2)
+
+
+class TestOpenPanguV2DecoderAndMoE(unittest.TestCase):
+    def test_decoder_init_sets_default_rope_theta(self):
+        captured = {}
+
+        def fake_attn(*_args, **kwargs):
+            captured["rope_theta"] = kwargs["rope_theta"]
+            return SimpleNamespace(o_proj=SimpleNamespace(prefix="o_proj"))
+
+        config = SimpleNamespace(
+            hidden_size=16,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            qk_nope_head_dim=4,
+            qk_rope_head_dim=4,
+            v_head_dim=4,
+            kv_lora_rank=8,
+            param_sink_number=1,
+            first_k_dense_replace=99,
+            rope_parameters={"rope_theta": 10000},
+            max_position_embeddings=128,
+            rms_norm_eps=1e-6,
+            intermediate_size=32,
+            hidden_act="silu",
+        )
+        vllm_config = SimpleNamespace(
+            model_config=SimpleNamespace(hf_config=config),
+            cache_config=SimpleNamespace(),
+            quant_config=None,
+            parallel_config=SimpleNamespace(),
+        )
+        with patch.object(model_mod, "NPUPanguSparseAttention", fake_attn), \
+                patch.object(model_mod, "OpenPanguV2MLP", MagicMock()), \
+                patch.object(model_mod, "RMSNorm", MagicMock()), \
+                patch.object(model_mod, "_normalize_rope_parameters"):
+            layer = model_mod.OpenPanguV2DecoderLayer(
+                config, "model.layers.0", vllm_config
+            )
+
+        self.assertEqual(captured["rope_theta"], 10000)
+        self.assertNotIsInstance(layer.mlp, model_mod.OpenPanguV2MOE)
+
+    def test_set_side_stream_forwards_to_moe(self):
+        layer = model_mod.OpenPanguV2DecoderLayer.__new__(
+            model_mod.OpenPanguV2DecoderLayer
+        )
+        moe = model_mod.OpenPanguV2MOE.__new__(model_mod.OpenPanguV2MOE)
+        layer.mlp = moe
+        layer.self_attn = SimpleNamespace()
+        side = object()
+        fetch = object()
+        layer.set_side_stream(side, fetch)
+        self.assertIs(moe.side_stream, side)
+        self.assertIs(moe.fetch_stream, fetch)
+        self.assertIs(layer.self_attn.side_stream, side)
+
+    def test_dispatch_combine_splits_over_configured_max_batch(self):
+        moe = model_mod.OpenPanguV2MOE.__new__(model_mod.OpenPanguV2MOE)
+        moe.ep_comm_name = "ep"
+        moe.side_stream = None
+        moe.gate = MagicMock(return_value=(torch.zeros(4, 2), None))
+        moe.experts = SimpleNamespace(
+            top_k=1, topk_group=1, num_expert_group=1
+        )
+        moe.e_score_correction_bias = None
+        moe.routed_scaling_factor = 1.0
+        moe.use_moe_force_load_balance = False
+        moe.enable_eplb = False
+        moe._is_quant = False
+        moe.moe_dispatch_combine_max_batch_size = 2
+        moe.shared_experts = MagicMock(return_value=torch.ones(4, 3))
+        chunks = []
+
+        def fake_single(hidden, *_args, **_kwargs):
+            chunks.append(hidden.shape[0])
+            return torch.zeros(hidden.shape[0], 3)
+
+        moe._dispatch_combine_single_batch = fake_single
+        moe._get_mc2_mask = MagicMock(return_value=None)
+        hidden = torch.zeros(4, 3)
+        with patch.object(
+            model_mod.torch_npu,
+            "npu_moe_gating_top_k",
+            return_value=(
+                torch.ones(4, 1),
+                torch.zeros(4, 1, dtype=torch.int32),
+                None,
+            ),
+        ):
+            out = moe._forward_dispatch_combine(hidden)
+
+        self.assertEqual(chunks, [2, 2])
+        self.assertEqual(tuple(out.shape), (4, 3))
 
 
 if __name__ == "__main__":

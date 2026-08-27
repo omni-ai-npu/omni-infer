@@ -179,6 +179,43 @@ class DatadistEngine:
 
     # ================= A5 hixl =================
 
+    def _get_host_physical_device_id(self, logical_device_id: int) -> int:
+        """
+        Translate a container-local device index into the host physical device id.
+
+        Container runtimes (ModelArts, Ascend docker runtime, k8s device plugin) hand a
+        subset of the host devices to the container and publish it in ASCEND_VISIBLE_DEVICES.
+        The container-local index follows the physical ids in ascending order, which is not
+        necessarily the order they are written in, so the list is sorted before indexing.
+        On bare metal the variable is absent and the two numbering spaces already coincide.
+
+        Example: ASCEND_VISIBLE_DEVICES="7,4,5,6" -> [4,5,6,7], logical 0 -> host physical 4.
+        """
+        host_devices = os.getenv("ASCEND_VISIBLE_DEVICES")
+        if not host_devices:
+            return logical_device_id
+        try:
+            mapping = sorted(int(d) for d in host_devices.split(",") if d.strip())
+        except ValueError:
+            logger.warning(
+                f"cannot parse ASCEND_VISIBLE_DEVICES={host_devices}, "
+                f"using logical device {logical_device_id} as the physical id"
+            )
+            return logical_device_id
+        if logical_device_id < len(mapping):
+            host_device_id = mapping[logical_device_id]
+            if host_device_id != logical_device_id:
+                logger.info(
+                    f"container logical device {logical_device_id} maps to "
+                    f"host physical device {host_device_id}"
+                )
+            return host_device_id
+        logger.warning(
+            f"logical device {logical_device_id} out of range in "
+            f"ASCEND_VISIBLE_DEVICES={host_devices}, using it as the physical id"
+        )
+        return logical_device_id
+
     def _get_physical_device_id(self) -> int:
         """
         Get physical device ID from ASCEND_RT_VISIBLE_DEVICES environment variable.
@@ -188,6 +225,10 @@ class DatadistEngine:
         - ASCEND_RT_VISIBLE_DEVICES="0,1,2,3", local_rank=0 -> physical_device_id=0
         - ASCEND_RT_VISIBLE_DEVICES="4,5,6,7", local_rank=0 -> physical_device_id=4
         - ASCEND_RT_VISIBLE_DEVICES="4,5,6,7", local_rank=1 -> physical_device_id=5
+
+        The value selected above is a container-local index, so it is translated once more
+        through ASCEND_VISIBLE_DEVICES to reach the host physical id that
+        /etc/hccl_rootinfo.json is keyed by.
 
         Returns:
             int: Physical device ID.
@@ -200,14 +241,14 @@ class DatadistEngine:
             if devices:
                 # Use the device corresponding to local_rank
                 if self.local_rank < len(devices):
-                    return int(devices[self.local_rank])
+                    return self._get_host_physical_device_id(int(devices[self.local_rank]))
                 # Fallback: local_rank exceeds device count, log warning
                 logger.warning(
                     f"local_rank ({self.local_rank}) >= visible device count ({len(devices)}), "
                     f"falling back to first device {devices[0]}"
                 )
-                return int(devices[0])
-        return self.local_rank
+                return self._get_host_physical_device_id(int(devices[0]))
+        return self._get_host_physical_device_id(self.local_rank)
 
     def _get_cluster_device_id(self) -> int:
         """

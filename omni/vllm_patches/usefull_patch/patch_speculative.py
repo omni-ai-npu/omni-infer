@@ -68,7 +68,10 @@ class PanguV2MoeSpeculativeConfigPatch(VLLMPatch):
         is_pangu_v2_moe_vl = is_openpangu_vl and has_pangu_v2_moe_patch
         is_openpangu_mtp_vl = is_openpangu_vl and not has_pangu_v2_moe_patch
     
-        if hf_config.model_type == "openpangu_v2" or is_openpangu_mtp_vl:
+        archs = getattr(hf_config, "architectures", None) or []
+
+        if (hf_config.model_type == "openpangu_v2"
+                and "PanguUltraMoEForCausalLM" in archs) or is_openpangu_mtp_vl:
             hf_config.model_type = "openpangu_mtp"
 
         if hf_config.model_type == "openpangu_mtp":
@@ -78,14 +81,15 @@ class PanguV2MoeSpeculativeConfigPatch(VLLMPatch):
             )
             return hf_config
 
-        # patch start: for pangu_v2_moe_mtp
-        if hf_config.model_type == "pangu_v2_moe" or is_pangu_v2_moe_vl:
+        # patch start: for openpangu_v2 OpenPanguV2ForCausalLM MTP
+        if (hf_config.model_type == "openpangu_v2"
+                and "OpenPanguV2ForCausalLM" in archs) or is_pangu_v2_moe_vl:
             hf_config.model_type = "mtp"
 
         if hf_config.model_type == "mtp":
             n_predict = getattr(hf_config, "num_nextn_predict_layers", None)
             hf_config.update(
-                {"n_predict": n_predict, "architectures": ["PanguV2MTPModel"]}
+                {"n_predict": n_predict, "architectures": ["OpenPanguV2MTPModel"]}
             )
             return hf_config
 

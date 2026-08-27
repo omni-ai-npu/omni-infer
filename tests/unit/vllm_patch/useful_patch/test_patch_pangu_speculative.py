@@ -12,30 +12,58 @@ from omni_npu.vllm_patches.usefull_patch import patch_speculative as patch_mod
 
 
 class HFConfig:
-    def __init__(self, model_type, num_nextn_predict_layers=2):
+    def __init__(self, model_type, architectures=(), num_nextn_predict_layers=2):
         self.model_type = model_type
         self.num_nextn_predict_layers = num_nextn_predict_layers
+        self.architectures = list(architectures)
 
     def update(self, values):
         self.__dict__.update(values)
 
 
 @pytest.mark.parametrize(
-    "model_type,patch_dirs,expected_type,expected_arch",
+    "model_type,architectures,patch_dirs,expected_type,expected_arch",
     [
-        ("openpangu_v2", "", "openpangu_mtp", "OpenPanguMTPModel"),
-        ("openpangu_v2_vl_moe", "", "openpangu_mtp", "OpenPanguMTPModel"),
-        ("openpangu_v2_omni_moe", "pangu_v2_moe", "mtp", "PanguV2MTPModel"),
-        ("pangu_v2_moe", "", "mtp", "PanguV2MTPModel"),
+        (
+            "openpangu_v2",
+            ["PanguUltraMoEForCausalLM"],
+            "",
+            "openpangu_mtp",
+            "OpenPanguMTPModel",
+        ),
+        (
+            "openpangu_v2",
+            ["OpenPanguV2ForCausalLM"],
+            "",
+            "mtp",
+            "OpenPanguV2MTPModel",
+        ),
+        ("openpangu_v2_vl_moe", [], "", "openpangu_mtp", "OpenPanguMTPModel"),
+        (
+            "openpangu_v2_omni_moe",
+            [],
+            "pangu_v2_moe",
+            "mtp",
+            "OpenPanguV2MTPModel",
+        ),
     ],
 )
 def test_pangu_speculative_model_mapping(
-    monkeypatch, model_type, patch_dirs, expected_type, expected_arch
+    monkeypatch,
+    model_type,
+    architectures,
+    patch_dirs,
+    expected_type,
+    expected_arch,
 ):
     monkeypatch.setattr(
         patch_mod.envs, "OMNI_VLLM_PATCHES_DIR", patch_dirs, raising=False
     )
-    config = HFConfig(model_type, num_nextn_predict_layers=3)
+    config = HFConfig(
+        model_type,
+        architectures=architectures,
+        num_nextn_predict_layers=3,
+    )
 
     result = patch_mod.PanguV2MoeSpeculativeConfigPatch.hf_config_override(config)
 
@@ -64,6 +92,20 @@ def test_non_pangu_speculative_config_delegates_to_upstream(monkeypatch):
         is sentinel
     )
     assert calls == [config]
+
+
+def test_pangu_v2_moe_model_type_falls_through(monkeypatch):
+    sentinel = SimpleNamespace(source="upstream")
+
+    def _upstream(_config):
+        return sentinel
+
+    monkeypatch.setattr(patch_mod, "_origin_hf_config_override", _upstream)
+    config = HFConfig("pangu_v2_moe")
+    assert (
+        patch_mod.PanguV2MoeSpeculativeConfigPatch.hf_config_override(config)
+        is sentinel
+    )
 
 
 def test_mtp_model_types_include_both_pangu_drafters():
@@ -121,3 +163,47 @@ def test_prepare_inputs_padded_carries_cpu_metadata_shadows():
     assert result._num_computed_tokens_cpu is num_computed_tokens_cpu
     assert result.seq_lens_cpu_upper_bound is seq_lens_upper_bound
     assert captured["query_start_loc_cpu"] is common.query_start_loc_cpu
+
+
+def test_eagle_load_model_sets_image_token_index_for_omni_v2(monkeypatch):
+    from omni_npu.vllm_patches.usefull_patch import patch_eagle as eagle_mod
+
+    proposer = eagle_mod.EagleProposerPatch.__new__(eagle_mod.EagleProposerPatch)
+    proposer.vllm_config = object()
+    proposer.supports_mm_inputs = False
+    proposer.parallel_drafting = False
+    proposer.pass_hidden_states_to_model = False
+    proposer.parallel_drafting_hidden_state_tensor = None
+
+    def _get_model():
+        return SimpleNamespace(config=SimpleNamespace())
+
+    def _model_name(_model):
+        return "OpenPanguOmniV2ForConditionalGeneration"
+
+    def _noop(*_args, **_kwargs):
+        return None
+
+    def _no_layers(*_args, **_kwargs):
+        return {}
+
+    def _is_multimodal(_model):
+        return True
+
+    proposer._get_model = _get_model
+    proposer.get_model_name = _model_name
+    proposer._maybe_share_embeddings = _noop
+    proposer._maybe_share_lm_head = _noop
+    monkeypatch.setattr(eagle_mod, "get_layers_from_vllm_config", _no_layers)
+    monkeypatch.setattr(eagle_mod, "supports_multimodal", _is_multimodal)
+
+    target = SimpleNamespace(config=SimpleNamespace(image_token_id=77))
+
+    def _get_language_model():
+        return target
+
+    target.get_language_model = _get_language_model
+    eagle_mod.EagleProposerPatch.load_model(proposer, target)
+
+    assert proposer.model.config.image_token_index == 77
+

@@ -674,7 +674,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             # MTP layer
             self.sliding_window = self.sliding_window_list[-1]
             self.is_dsa_layer = False
-        elif hasattr(config, "index_topk") and config.index_topk > 0:
+        elif (getattr(config, "index_topk", None) or 0) > 0:
             # DSA layer
             self.sliding_window = None
             self.is_dsa_layer = True
@@ -692,11 +692,25 @@ class NPUPanguSparseAttention(torch.nn.Module):
             # set a very large sliding window to disable the sliding window attention and fall back to global attention
             self.sliding_window = max(1024 * 1024, self.aligned_window_size + 1)
             self.is_dsa_layer = False
-        # First SWA layer of each component (main model, MTP) recomputes the
-        # FA sink metadata; later SWA layers reuse the shared buffer.
-        first_main_swa = self.swa_layers[0] if self.swa_layers else None
-        first_mtp_layer = config.num_hidden_layers
-        self.is_fa_metadata_producer = self.layer_idx in (first_main_swa, first_mtp_layer)
+        # SWA / Full MLA differ in pre_tokens; keep separate metadata buffers + producers.
+        # Non-SWA is Full MLA only when DSA is not enabled (index_topk); otherwise non-SWA is DSA.
+        first_swa = self.swa_layers[0] if self.swa_layers else None
+        has_dsa = bool(getattr(config, "index_topk", None))
+        first_mla = None
+        if not has_dsa:
+            first_mla = next(
+                (i for i in range(config.num_hidden_layers) if i not in self.swa_layers),
+                None,
+            )
+        self.is_fa_metadata_producer = self.layer_idx in (
+            first_swa, first_mla, config.num_hidden_layers,
+        )
+        self._fa_meta_suffix = (
+            ""
+            if self.sliding_window is not None
+            and self.sliding_window <= self.aligned_window_size
+            else "_mla"
+        )
         self.qk_nope_head_dim = qk_nope_head_dim
         self.qk_rope_head_dim = qk_rope_head_dim
         self.qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
@@ -715,7 +729,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         self.scaling = self.qk_head_dim**-0.5
         self.max_position_embeddings = max_position_embeddings
         self.quant_symbol = quant_config is not None
-        self.rope_interleaved = getattr(config, "rope_interleaved", True)
+        self.rope_interleave = getattr(config, "rope_interleave", False) or getattr(config, "rope_interleaved", False)
         self.moe_comm_strategy = model_extra_config.operator_opt_config.moe_comm_strategy
         self.vllm_config = vllm_config
         self.quant_config = quant_config
@@ -939,7 +953,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 self.qk_rope_head_dim,
                 max_position=self.max_position_embeddings,
                 rope_parameters=rope_parameters,
-                is_neox_style=(not self.rope_interleaved),
+                is_neox_style=(not self.rope_interleave),
             )
 
         def _get_num_cache_layers(default_num_layers: int):
@@ -1126,7 +1140,11 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 op=torch.ops.custom._npu_fused_infer_attention_sink_metadata,
                 shape=(1024,),
                 dtype=torch.int32,
-                callers=("decode", "prefill_absorb", "prefill"),
+                callers=(
+                    "decode", "decode_mla",
+                    "prefill_absorb", "prefill_absorb_mla",
+                    "prefill", "prefill_mla",
+                ),
             )
         if npu_ai_infra_attention_pioneer_metadata is None and self.on_ascend950:
             npu_ai_infra_attention_pioneer_metadata = CrossLayerSharedOp(
@@ -1134,7 +1152,11 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 # A5 (Ascend950) pioneer FA-metadata is length 1024, not 2048.
                 shape=(1024,) if self.on_ascend950 else (2048,),
                 dtype=torch.int32,
-                callers=("decode", "prefill_absorb", "prefill"),
+                callers=(
+                    "decode", "decode_mla",
+                    "prefill_absorb", "prefill_absorb_mla",
+                    "prefill", "prefill_mla",
+                ),
             )
 
     def _calculate_page_size_padded(
@@ -1171,7 +1193,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         # Calculate DSA page size if DSA layer exists
         dsa_page_size = None
-        if hasattr(config, "index_topk") and config.index_topk > 0:
+        if (getattr(config, "index_topk", None) or 0) > 0:
             index_head_dim = getattr(config, "index_head_dim", 0)
             if cache_dtype_str in ["fp8_ds_mla", "hif8_ds_mla"]:
                 # Quant case: 512 fp8 + 64 bf16 + 4 fp32 + 128 int8 + 1 fp32
@@ -1552,7 +1574,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 meta_data = npu_ai_infra_attention_pioneer_metadata(
                     fia_meta_args,
                     self.is_fa_metadata_producer,
-                    "decode",
+                    "decode" + self._fa_meta_suffix,
                 )
                 kwargs.update({
                     "metaData": meta_data,
@@ -1619,7 +1641,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             meta_data = npu_fused_infer_attention_sink_metadata(
                 meta_data_args,
                 self.is_fa_metadata_producer,
-                "decode",
+                "decode" + self._fa_meta_suffix,
             )
             kwargs.update({
                 "num_query_heads": self.num_local_heads,
@@ -1795,7 +1817,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             q_pe.view(-1, 1, self.num_local_heads, self.qk_rope_head_dim),
             cp_cos.view(-1, 1, 1, self.qk_rope_head_dim),
             cp_sin.view(-1, 1, 1, self.qk_rope_head_dim),
-            rotary_mode="half" if not self.rope_interleaved else "interleave",
+            rotary_mode="half" if not self.rope_interleave else "interleave",
         ).squeeze(1)
         q_nope = q_nope.contiguous()
         q_pe = q_pe.contiguous()
@@ -1856,20 +1878,11 @@ class NPUPanguSparseAttention(torch.nn.Module):
             )
             kv = sp_manager.ag_tokens(kv)
 
-        kwargs = {
-            "kv": kv.view(-1, 1, 1, self.kv_lora_rank + self.qk_rope_head_dim),
-            "k_cache": None,
-            "ckv_cache": kv_cache[0].unsqueeze(2),
-            "gamma": self.kv_a_layernorm.weight,
-            "cos": cos.view(-1, 1, 1, self.qk_rope_head_dim),
-            "sin": sin.view(-1, 1, 1, self.qk_rope_head_dim),
-            "index": attn_metadata.slot_mapping,
-            "epsilon": self.kv_a_layernorm.variance_epsilon,
-            "cache_mode": "PA",
-            "rotary_mode": "half" if not self.rope_interleaved else "interleave-half",
-            "quant_mode": "none",
-            "is_output_kv": True,
-        }
+        kwargs = self._kv_rmsnorm_rope_cache_v2_kwargs(
+            kv, cos, sin, attn_metadata,
+            k_cache=None,
+            ckv_cache=kv_cache[0].unsqueeze(2),
+        )
 
         if self.cache_config.cache_dtype in ["int8_ds_mla"]:
             kwargs.update({
@@ -2068,7 +2081,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             q_pe.view(-1, 1, self.num_local_heads, self.qk_rope_head_dim),
             prefill_cos.view(-1, 1, 1, self.qk_rope_head_dim),
             prefill_sin.view(-1, 1, 1, self.qk_rope_head_dim),
-            rotary_mode="half" if not self.rope_interleaved else "interleave",
+            rotary_mode="half" if not self.rope_interleave else "interleave",
         ).squeeze(1)
         if enable_pa:
             q_nope = q_nope.view(-1, self.num_local_heads, self.qk_nope_head_dim)            
@@ -2267,7 +2280,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             meta_data = npu_fused_infer_attention_sink_metadata(
                 meta_data_args,
                 self.is_fa_metadata_producer,
-                "prefill_absorb",
+                "prefill_absorb" + self._fa_meta_suffix,
             )
             kwargs.update({
                 "num_query_heads": self.num_local_heads,
@@ -2347,7 +2360,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 meta_data = npu_ai_infra_attention_pioneer_metadata(
                     fia_meta_args,
                     self.is_fa_metadata_producer,
-                    "prefill",
+                    "prefill" + self._fa_meta_suffix,
                 )
                 kwargs = {
                     "query": query.contiguous(),
@@ -2434,7 +2447,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 meta_data = npu_fused_infer_attention_sink_metadata(
                     meta_data_args,
                     self.is_fa_metadata_producer,
-                    "prefill",
+                    "prefill" + self._fa_meta_suffix,
                 )
                 kwargs.update({
                     "actual_seq_qlen": query_cumlens,
@@ -2708,7 +2721,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             q_pe.view(-1, 1, self.num_local_heads, self.qk_rope_head_dim),
             cos.view(-1, 1, 1, self.qk_rope_head_dim),
             sin.view(-1, 1, 1, self.qk_rope_head_dim),
-            rotary_mode="half" if not self.rope_interleaved else "interleave",
+            rotary_mode="half" if not self.rope_interleave else "interleave",
         ).squeeze(1)
         q_nope = q_nope.contiguous()
         q_pe = q_pe.contiguous()
@@ -2794,7 +2807,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             q_pe.view(-1, 1, self.num_local_heads, self.qk_rope_head_dim),
             cos.view(-1, 1, 1, self.qk_rope_head_dim),
             sin.view(-1, 1, 1, self.qk_rope_head_dim),
-            rotary_mode="half" if not self.rope_interleaved else "interleave",
+            rotary_mode="half" if not self.rope_interleave else "interleave",
         ).squeeze(1)
         return q_pe.contiguous()
 
@@ -3195,6 +3208,29 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         return (q_nope, q_pe, new_kv_cache, topk_indices)
 
+    def _kv_rmsnorm_rope_cache_v2_kwargs(
+        self,
+        kv: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        attn_metadata: Optional[MLACommonMetadata],
+        **extra,
+    ) -> dict:
+        kwargs = {
+            "kv": kv.view(-1, 1, 1, self.kv_lora_rank + self.qk_rope_head_dim),
+            "gamma": self.kv_a_layernorm.weight,
+            "cos": cos.view(-1, 1, 1, self.qk_rope_head_dim),
+            "sin": sin.view(-1, 1, 1, self.qk_rope_head_dim),
+            "index": attn_metadata.slot_mapping,
+            "epsilon": self.kv_a_layernorm.variance_epsilon,
+            "cache_mode": "PA",
+            "rotary_mode": "half" if not self.rope_interleave else "interleave-half",
+            "quant_mode": "none",
+            "is_output_kv": True,
+        }
+        kwargs.update(extra)
+        return kwargs
+
     def _npu_kvrmsnorm_rope_cache(self, *args, **kwargs):
         if self.is_dsa_layer and self.cache_config.cache_dtype in self.quant_cache_dtype:
             return self._npu_kvrmsnorm_rope_cache_quant(*args, **kwargs)
@@ -3281,20 +3317,12 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
             kv = kv[:actual_seq_kvlen, ...]
 
-            kwargs = {
-                "kv": kv.view(-1, 1, 1, self.kv_lora_rank + self.qk_rope_head_dim),
-                "gamma": self.kv_a_layernorm.weight,
-                "cos": cos.view(-1, 1, 1, self.qk_rope_head_dim),
-                "sin": sin.view(-1, 1, 1, self.qk_rope_head_dim),
-                "index": attn_metadata.slot_mapping,
-                "epsilon": self.kv_a_layernorm.variance_epsilon,
-                "cache_mode": "PA",
-                "rotary_mode": "half" if not self.rope_interleaved else "interleave-half",
-                "quant_mode": "pertile128",
-                "is_output_kv": True,
-                "k_cache": None,
-                "ckv_cache": kv_cache[0].unsqueeze(2),
-            }
+            kwargs = self._kv_rmsnorm_rope_cache_v2_kwargs(
+                kv, cos, sin, attn_metadata,
+                quant_mode="pertile128",
+                k_cache=None,
+                ckv_cache=kv_cache[0].unsqueeze(2),
+            )
             k_pe, k_nope = torch.ops.custom.npu_ai_infra_kv_rmsnorm_rope_cache_v2(**kwargs)
             return kv_cache, topk_indices
         else:
@@ -3321,7 +3349,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         k_nope = torch_npu.npu_rms_norm(k_nope, self.kv_a_layernorm.weight, self.kv_a_layernorm.variance_epsilon)[0]
 
         # Rotary embedding on k_pe
-        rotary_mode = "half" if not self.rope_interleaved else "interleave"
+        rotary_mode = "half" if not self.rope_interleave else "interleave"
         k_pe = torch_npu.npu_rotary_mul(k_pe, cos, sin, rotary_mode=rotary_mode)
 
         # Scatter update caches
@@ -3368,18 +3396,9 @@ class NPUPanguSparseAttention(torch.nn.Module):
             )
         else:
         # 950 use naive kernel for kv rmsnorm and update, accept separate nope and rope
-            kwargs = {
-                "kv": kv.view(-1, 1, 1, self.kv_lora_rank + self.qk_rope_head_dim),
-                "gamma": self.kv_a_layernorm.weight,
-                "cos": cos.view(-1, 1, 1, self.qk_rope_head_dim),
-                "sin": sin.view(-1, 1, 1, self.qk_rope_head_dim),
-                "index": attn_metadata.slot_mapping,
-                "epsilon": self.kv_a_layernorm.variance_epsilon,
-                "cache_mode": "PA",
-                "rotary_mode": "half" if not self.rope_interleaved else "interleave-half",
-                "quant_mode": "none",
-                "is_output_kv": True,
-            }
+            kwargs = self._kv_rmsnorm_rope_cache_v2_kwargs(
+                kv, cos, sin, attn_metadata,
+            )
 
         if self.is_dsa_layer:
             # DSA shape
