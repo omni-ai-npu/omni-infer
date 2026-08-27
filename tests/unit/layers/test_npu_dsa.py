@@ -9,6 +9,11 @@ from unittest.mock import MagicMock, patch
 import torch
 import pytest
 
+from tests.unit.layers.test_attn_unit_helpers import (
+    mock_torch_npu_stream as _mock_torch_npu_stream,
+    run_maybe_mome_out_partition_case,
+)
+
 DSA_MODULE = "omni_npu.v1.layers.attention.npu_dsa"
 
 cfg_i32 = {"device": "cpu", "dtype": torch.int32}
@@ -61,47 +66,17 @@ def test_dsa_mome_out_partitions_only_when_o_proj_requires_it(
     from omni_npu.v1.layers.attention import npu_mla as mla_mod
     from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
 
-    attention = NPUDeepseekSparseAttention.__new__(NPUDeepseekSparseAttention)
-    torch.nn.Module.__init__(attention)
-    mome_output = torch.arange(8, dtype=torch.float32).reshape(2, 4)
-    split_output = (mome_output[:, :2], mome_output[:, 2:])
-    split = MagicMock(return_value=split_output)
-    monkeypatch.setattr(mla_mod, "split_tensor_along_last_dim", split)
-    attention.use_mome = True
-    attention.kv_b_proj = SimpleNamespace(tp_size=1)
-    attention.o_proj = SimpleNamespace(
-        tp_size=2,
-        tp_rank=1,
-        requires_input_partition=MagicMock(return_value=requires_partition),
+    run_maybe_mome_out_partition_case(
+        NPUDeepseekSparseAttention,
+        mla_mod,
+        monkeypatch,
+        requires_partition,
     )
-    attention._apply_mome = MagicMock(return_value=mome_output)
-
-    output = attention._maybe_mome_out(
-        torch.zeros_like(mome_output), MagicMock()
-    )
-
-    attention.o_proj.requires_input_partition.assert_called_once_with()
-    if requires_partition:
-        split.assert_called_once_with(mome_output, num_partitions=2)
-        torch.testing.assert_close(output, split_output[1])
-        assert output.is_contiguous()
-    else:
-        split.assert_not_called()
-        assert output is mome_output
 
 
 # =========================
 # 1. 无效果或简单mock
 # =========================
-
-@contextmanager
-def _mock_torch_npu_stream():
-    mock_npu = MagicMock()
-    mock_npu.current_stream.return_value = MagicMock()
-    mock_npu.Stream.return_value = MagicMock()
-    mock_npu.stream.side_effect = lambda x: nullcontext()
-    with patch("torch.npu", mock_npu):
-        yield
 
 @contextmanager
 def _mock_misc(yarn_get_mscale_ret: float = 1.0):
@@ -193,6 +168,9 @@ def _mock_torch_npu():
     def rotary_mul(x, cos, sin):
         return x
 
+    def apply_rotary_pos_emb(query, key, cos, sin, *args, **kwargs):
+        return query, key
+
     def interleave_rope(x, cos, sin):
         return x
 
@@ -247,6 +225,9 @@ def _mock_torch_npu():
             npu_mla_prolog_v3=MagicMock(side_effect=mla_prolog_v3),
             npu_scatter_nd_update_=MagicMock(side_effect=scatter_nd_update_),
             npu_rotary_mul=MagicMock(side_effect=rotary_mul),
+            npu_apply_rotary_pos_emb=MagicMock(
+                side_effect=apply_rotary_pos_emb
+            ),
             npu_interleave_rope=MagicMock(side_effect=interleave_rope),
             npu_transpose_batchmatmul=MagicMock(side_effect=transpose_batchmatmul),
             npu_kv_rmsnorm_rope_cache=MagicMock(side_effect=kv_rmsnorm_rope_cache),
@@ -676,6 +657,9 @@ def _mock_model_extra_config(
     use_noncontiguous_kv=False,
     use_batch_invariant_op=False,
     enable_precision_strong_consistency=False,
+    enable_multi_stream=False,
+    split_q_up_in_multistream=False,
+    use_rope_fusion_op=False,
     dtype=torch.bfloat16,
 ):
     with patch(
@@ -696,6 +680,10 @@ def _mock_model_extra_config(
                 merge_q_kv_conv=False,
                 use_batch_invariant_op=use_batch_invariant_op,
                 enable_precision_strong_consistency=enable_precision_strong_consistency,
+                enable_multi_stream=enable_multi_stream,
+                split_q_up_in_multistream=split_q_up_in_multistream,
+                use_rope_fusion_op=use_rope_fusion_op,
+                li_prolog_multi_stream=False,
             ),
         ),
     ):
@@ -825,6 +813,9 @@ def _patch_and_gen_configs(
     use_noncontiguous_kv: bool = False,
     use_batch_invariant_op: bool = False,
     enable_precision_strong_consistency: bool = False,
+    enable_multi_stream: bool = False,
+    split_q_up_in_multistream: bool = False,
+    use_rope_fusion_op: bool = False,
     use_mome: bool = False,
     init_flash_comm = None,
     seq_lens: list = [32, 47],
@@ -923,6 +914,9 @@ def _patch_and_gen_configs(
             use_noncontiguous_kv=use_noncontiguous_kv,
             use_batch_invariant_op=use_batch_invariant_op,
             enable_precision_strong_consistency=enable_precision_strong_consistency,
+            enable_multi_stream=enable_multi_stream,
+            split_q_up_in_multistream=split_q_up_in_multistream,
+            use_rope_fusion_op=use_rope_fusion_op,
         ),
         patch(f"{DSA_MODULE}.get_current_vllm_config", return_value=vllm_cfg, create=True),
         # 功能模块
@@ -970,7 +964,78 @@ def _install_indexer_li_prolog_fakes(
     idx.wq_b = _ConstProj(qi_flat)
     idx.wk = _ConstProj(ki_flat)
     idx.k_norm = _IdentityNorm()
-    idx._apply_rope = lambda x, *_args: x
+
+    def _identity_rope(x, *_args):
+        return x
+
+    idx._apply_rope = _identity_rope
+
+
+def _make_indexer(cfg, vllm_cfg, env, **kwargs):
+    from omni_npu.v1.layers.attention.npu_dsa import Indexer
+
+    return Indexer(
+        vllm_config=vllm_cfg,
+        config=cfg,
+        hidden_size=env.hidden_size,
+        q_lora_rank=env.q_lora_rank,
+        quant_config=None,
+        cache_config=vllm_cfg.cache_config,
+        **kwargs,
+    )
+
+
+def _li_prolog_wi(idx, env, wi_raw):
+    T = wi_raw.shape[0]
+    return idx._li_prolog_ext(
+        wx=torch.zeros(T, env.hidden_size, dtype=torch.float32),
+        qr=torch.zeros(T, env.q_lora_rank, dtype=torch.float32),
+        kx=torch.zeros(T, env.hidden_size, dtype=torch.float32),
+        q_cos_sin=(torch.zeros(1), torch.zeros(1)),
+        k_cos_sin=(torch.zeros(1), torch.zeros(1)),
+    )[0]
+
+
+def _precision_indexer_wi(cfg, vllm_cfg, env):
+    idx = _make_indexer(cfg, vllm_cfg, env, sink_len=128)
+    T, N, D = 3, cfg.index_n_heads, cfg.index_head_dim
+    wi_raw = torch.full((T, N), 2.0, dtype=torch.float32)
+    _install_indexer_li_prolog_fakes(
+        idx,
+        wi_raw=wi_raw,
+        qi_flat=torch.zeros(T, N * D, dtype=torch.float32),
+        ki_flat=torch.zeros(T, D, dtype=torch.float32),
+    )
+    return idx, _li_prolog_wi(idx, env, wi_raw), wi_raw
+
+
+def _forward_indexer(cfg, env, idx, *, with_buffer=False):
+    from omni_npu.v1.layers.attention.npu_dsa import get_forward_context
+
+    D, R = env.hidden_size, env.qk_rope_head_dim
+    QR, KI = env.q_lora_rank, cfg.index_head_dim
+    attn_metadata = get_forward_context().attn_metadata
+    meta = attn_metadata.prefill
+    meta.slot_mapping = attn_metadata.slot_mapping
+    meta.slot_mapping_2d = attn_metadata.get_slot_mapping_2d()
+    T = meta.query_cumlens.flatten()[-1].item()
+    K = cfg.index_topk
+    extra = {}
+    if with_buffer:
+        extra["topk_indices_buffer"] = torch.empty(
+            128, K, dtype=torch.int32, device="cpu"
+        )
+    tok_idx, ki = idx.forward(
+        x=torch.zeros(T, D, **env.cfg_bf16),
+        qr=torch.zeros(T, QR, **env.cfg_bf16),
+        cos=torch.zeros(T, 1, 1, R, **env.cfg_bf16),
+        sin=torch.zeros(T, 1, 1, R, **env.cfg_bf16),
+        attn_metadata=meta,
+        ki_cache=torch.zeros(16, env.pg, 1, KI, **env.cfg_bf16),
+        **extra,
+    )
+    assert tok_idx.shape == (T, 1, K)
+    assert ki.shape == (T, 1, KI)
 
 
 class TestIndexer:
@@ -982,36 +1047,8 @@ class TestIndexer:
             indexer_rope_interleave=False,
             rope_type="default",
         ) as (cfg, vllm_cfg, env):
-            from omni_npu.v1.layers.attention.npu_dsa import Indexer, get_forward_context
-
-            idx = Indexer(
-                vllm_config=vllm_cfg,
-                config=cfg,
-                hidden_size=env.hidden_size,
-                q_lora_rank=env.q_lora_rank,
-                quant_config=None,
-                cache_config=vllm_cfg.cache_config,
-                sink_len=128,
-            )
-            D, R = env.hidden_size, env.qk_rope_head_dim
-            QR, KI = env.q_lora_rank, cfg.index_head_dim
-
-            attn_metadata = get_forward_context().attn_metadata
-            meta = attn_metadata.prefill
-            meta.slot_mapping = attn_metadata.slot_mapping
-            meta.slot_mapping_2d = attn_metadata.get_slot_mapping_2d()
-            T = meta.query_cumlens.flatten()[-1].item()
-            K = cfg.index_topk
-            tok_idx, ki = idx.forward(
-                x=torch.zeros(T, D, **env.cfg_bf16),
-                qr=torch.zeros(T, QR, **env.cfg_bf16),
-                cos=torch.zeros(T, 1, 1, R, **env.cfg_bf16),
-                sin=torch.zeros(T, 1, 1, R, **env.cfg_bf16),
-                attn_metadata=meta,
-                ki_cache=torch.zeros(16, env.pg, 1, KI, **env.cfg_bf16),
-            )
-            assert tok_idx.shape == (T, 1, K)
-            assert ki.shape == (T, 1, KI)
+            idx = _make_indexer(cfg, vllm_cfg, env, sink_len=128)
+            _forward_indexer(cfg, env, idx)
 
     def test_case_2(self):
         with _patch_and_gen_configs(
@@ -1020,35 +1057,8 @@ class TestIndexer:
             indexer_rope_interleave=True,
             rope_type="deepseek_yarn",
         ) as (cfg, vllm_cfg, env):
-            from omni_npu.v1.layers.attention.npu_dsa import Indexer, get_forward_context
-
-            idx = Indexer(
-                vllm_config=vllm_cfg,
-                config=cfg,
-                hidden_size=env.hidden_size,
-                q_lora_rank=env.q_lora_rank,
-                quant_config=None,
-                cache_config=vllm_cfg.cache_config,
-            )
-            D, R = env.hidden_size, env.qk_rope_head_dim
-            QR, KI = env.q_lora_rank, cfg.index_head_dim
-
-            attn_metadata = get_forward_context().attn_metadata
-            meta = attn_metadata.prefill
-            meta.slot_mapping = attn_metadata.slot_mapping
-            meta.slot_mapping_2d = attn_metadata.get_slot_mapping_2d()
-            T = meta.query_cumlens.flatten()[-1].item()
-            K = cfg.index_topk
-            tok_idx, ki = idx.forward(
-                x=torch.zeros(T, D, **env.cfg_bf16),
-                qr=torch.zeros(T, QR, **env.cfg_bf16),
-                cos=torch.zeros(T, 1, 1, R, **env.cfg_bf16),
-                sin=torch.zeros(T, 1, 1, R, **env.cfg_bf16),
-                attn_metadata=meta,
-                ki_cache=torch.zeros(16, env.pg, 1, KI, **env.cfg_bf16),
-            )
-            assert tok_idx.shape == (T, 1, K)
-            assert ki.shape == (T, 1, KI)
+            idx = _make_indexer(cfg, vllm_cfg, env)
+            _forward_indexer(cfg, env, idx)
 
     def test_precision_strong_consistency_sets_scales(self):
         with _patch_and_gen_configs(
@@ -1056,19 +1066,36 @@ class TestIndexer:
             use_omni_cache=False,
             enable_precision_strong_consistency=True,
         ) as (cfg, vllm_cfg, env):
-            from omni_npu.v1.layers.attention.npu_dsa import Indexer
-
-            idx = Indexer(
-                vllm_config=vllm_cfg,
-                config=cfg,
-                hidden_size=env.hidden_size,
-                q_lora_rank=env.q_lora_rank,
-                quant_config=None,
-                cache_config=vllm_cfg.cache_config,
-                sink_len=128,
-            )
+            idx = _make_indexer(cfg, vllm_cfg, env, sink_len=128)
             assert idx.softmax_scale == pytest.approx(cfg.index_head_dim ** -0.5)
             assert idx.weights_scale == pytest.approx(cfg.index_n_heads ** -0.5)
+
+    def test_precision_strong_consistency_disables_rope_fusion(self):
+        with _patch_and_gen_configs(
+            ena_seq_parallel=False,
+            use_omni_cache=False,
+            enable_precision_strong_consistency=True,
+            use_rope_fusion_op=True,
+            indexer_rope_interleave=False,
+            rope_type="default",
+        ) as (cfg, vllm_cfg, env):
+            import torch_npu
+            idx = _make_indexer(cfg, vllm_cfg, env, sink_len=128)
+            tokens = 2
+            x = torch.zeros(
+                tokens, idx.n_head, idx.head_dim, **env.cfg_bf16
+            )
+            cos = torch.zeros(
+                tokens, 1, 1, idx.rope_dim, **env.cfg_bf16
+            )
+            sin = torch.zeros_like(cos)
+
+            out = idx._apply_rope(x, cos, sin)
+
+            assert not idx.use_rope_fusion_op
+            assert out.shape == x.shape
+            torch_npu.npu_apply_rotary_pos_emb.assert_not_called()
+            torch_npu.npu_rotary_mul.assert_called_once()
 
     def test_precision_strong_consistency_disabled_skips_scales(self):
         with _patch_and_gen_configs(
@@ -1076,17 +1103,7 @@ class TestIndexer:
             use_omni_cache=False,
             enable_precision_strong_consistency=False,
         ) as (cfg, vllm_cfg, env):
-            from omni_npu.v1.layers.attention.npu_dsa import Indexer
-
-            idx = Indexer(
-                vllm_config=vllm_cfg,
-                config=cfg,
-                hidden_size=env.hidden_size,
-                q_lora_rank=env.q_lora_rank,
-                quant_config=None,
-                cache_config=vllm_cfg.cache_config,
-                sink_len=128,
-            )
+            idx = _make_indexer(cfg, vllm_cfg, env, sink_len=128)
             assert not hasattr(idx, "softmax_scale")
             assert not hasattr(idx, "weights_scale")
 
@@ -1100,34 +1117,7 @@ class TestIndexer:
             hidden_size=16,
             q_lora_rank=16,
         ) as (cfg, vllm_cfg, env):
-            from omni_npu.v1.layers.attention.npu_dsa import Indexer
-
-            idx = Indexer(
-                vllm_config=vllm_cfg,
-                config=cfg,
-                hidden_size=env.hidden_size,
-                q_lora_rank=env.q_lora_rank,
-                quant_config=None,
-                cache_config=vllm_cfg.cache_config,
-                sink_len=128,
-            )
-            T, N, D = 3, cfg.index_n_heads, cfg.index_head_dim
-            wi_raw = torch.full((T, N), 2.0, dtype=torch.float32)
-            _install_indexer_li_prolog_fakes(
-                idx,
-                wi_raw=wi_raw,
-                qi_flat=torch.zeros(T, N * D, dtype=torch.float32),
-                ki_flat=torch.zeros(T, D, dtype=torch.float32),
-            )
-
-            wi, _qi, _ki = idx._li_prolog_ext(
-                wx=torch.zeros(T, env.hidden_size, dtype=torch.float32),
-                qr=torch.zeros(T, env.q_lora_rank, dtype=torch.float32),
-                kx=torch.zeros(T, env.hidden_size, dtype=torch.float32),
-                q_cos_sin=(torch.zeros(1), torch.zeros(1)),
-                k_cos_sin=(torch.zeros(1), torch.zeros(1)),
-            )
-
+            idx, wi, wi_raw = _precision_indexer_wi(cfg, vllm_cfg, env)
             expected = wi_raw * idx.weights_scale * idx.softmax_scale
             torch.testing.assert_close(wi, expected)
 
@@ -1141,34 +1131,7 @@ class TestIndexer:
             hidden_size=16,
             q_lora_rank=16,
         ) as (cfg, vllm_cfg, env):
-            from omni_npu.v1.layers.attention.npu_dsa import Indexer
-
-            idx = Indexer(
-                vllm_config=vllm_cfg,
-                config=cfg,
-                hidden_size=env.hidden_size,
-                q_lora_rank=env.q_lora_rank,
-                quant_config=None,
-                cache_config=vllm_cfg.cache_config,
-                sink_len=128,
-            )
-            T, N, D = 3, cfg.index_n_heads, cfg.index_head_dim
-            wi_raw = torch.full((T, N), 2.0, dtype=torch.float32)
-            _install_indexer_li_prolog_fakes(
-                idx,
-                wi_raw=wi_raw,
-                qi_flat=torch.zeros(T, N * D, dtype=torch.float32),
-                ki_flat=torch.zeros(T, D, dtype=torch.float32),
-            )
-
-            wi, _qi, _ki = idx._li_prolog_ext(
-                wx=torch.zeros(T, env.hidden_size, dtype=torch.float32),
-                qr=torch.zeros(T, env.q_lora_rank, dtype=torch.float32),
-                kx=torch.zeros(T, env.hidden_size, dtype=torch.float32),
-                q_cos_sin=(torch.zeros(1), torch.zeros(1)),
-                k_cos_sin=(torch.zeros(1), torch.zeros(1)),
-            )
-
+            _idx, wi, wi_raw = _precision_indexer_wi(cfg, vllm_cfg, env)
             torch.testing.assert_close(wi, wi_raw)
 
     def test_forward_with_buffer(self):
@@ -1179,38 +1142,8 @@ class TestIndexer:
             indexer_rope_interleave=False,
             rope_type="default",
         ) as (cfg, vllm_cfg, env):
-            from omni_npu.v1.layers.attention.npu_dsa import Indexer, get_forward_context
-
-            idx = Indexer(
-                vllm_config=vllm_cfg,
-                config=cfg,
-                hidden_size=env.hidden_size,
-                q_lora_rank=env.q_lora_rank,
-                quant_config=None,
-                cache_config=vllm_cfg.cache_config,
-                sink_len=128,
-            )
-            D, R = env.hidden_size, env.qk_rope_head_dim
-            QR, KI = env.q_lora_rank, cfg.index_head_dim
-
-            attn_metadata = get_forward_context().attn_metadata
-            meta = attn_metadata.prefill
-            meta.slot_mapping = attn_metadata.slot_mapping
-            meta.slot_mapping_2d = attn_metadata.get_slot_mapping_2d()
-            T = meta.query_cumlens.flatten()[-1].item()
-            K = cfg.index_topk
-            buf = torch.empty(128, K, dtype=torch.int32, device="cpu")
-            tok_idx, ki = idx.forward(
-                x=torch.zeros(T, D, **env.cfg_bf16),
-                qr=torch.zeros(T, QR, **env.cfg_bf16),
-                cos=torch.zeros(T, 1, 1, R, **env.cfg_bf16),
-                sin=torch.zeros(T, 1, 1, R, **env.cfg_bf16),
-                attn_metadata=meta,
-                ki_cache=torch.zeros(16, env.pg, 1, KI, **env.cfg_bf16),
-                topk_indices_buffer=buf,
-            )
-            assert tok_idx.shape == (T, 1, K)
-            assert ki.shape == (T, 1, KI)
+            idx = _make_indexer(cfg, vllm_cfg, env, sink_len=128)
+            _forward_indexer(cfg, env, idx, with_buffer=True)
 
 
 # =========================
@@ -1225,6 +1158,10 @@ class TestNPUDeepseekSparseAttention:
         ena_context_parallel: bool = False,
         use_noncontiguous_kv: bool = False,
         use_batch_invariant_op: bool = False,
+        enable_precision_strong_consistency: bool = False,
+        enable_multi_stream: bool = False,
+        split_q_up_in_multistream: bool = False,
+        use_rope_fusion_op: bool = False,
         use_mome: bool = False,
         use_omni_cache: bool = False,
         enable_mlaprolog: bool = False,
@@ -1265,6 +1202,10 @@ class TestNPUDeepseekSparseAttention:
             ena_context_parallel=ena_context_parallel,
             use_noncontiguous_kv=use_noncontiguous_kv,
             use_batch_invariant_op=use_batch_invariant_op,
+            enable_precision_strong_consistency=enable_precision_strong_consistency,
+            enable_multi_stream=enable_multi_stream,
+            split_q_up_in_multistream=split_q_up_in_multistream,
+            use_rope_fusion_op=use_rope_fusion_op,
             use_mome=use_mome,
             use_omni_cache=use_omni_cache,
             enable_mlaprolog=enable_mlaprolog,
@@ -1350,6 +1291,39 @@ class TestNPUDeepseekSparseAttention:
     def test_decode(self):
         self._test_with_cfg(mode="decode")
 
+    def test_decode_rope_fusion(self):
+        self._test_with_cfg(
+            mode="decode",
+            use_rope_fusion_op=True,
+        )
+
+    def test_decode_multistream_split_q(self):
+        self._test_with_cfg(
+            mode="decode",
+            enable_multi_stream=True,
+            split_q_up_in_multistream=True,
+            use_rope_fusion_op=True,
+            use_topk_indices_buffer=True,
+        )
+
+    def test_decode_multistream_precision_strong_consistency(self):
+        self._test_with_cfg(
+            mode="decode",
+            enable_precision_strong_consistency=True,
+            enable_multi_stream=True,
+            split_q_up_in_multistream=True,
+            use_topk_indices_buffer=True,
+        )
+
+    def test_decode_multistream_skip_topk_falls_back(self):
+        self._test_with_cfg(
+            mode="decode",
+            enable_multi_stream=True,
+            split_q_up_in_multistream=True,
+            indexer_types=["shared"] * 49,
+            use_topk_indices_buffer=True,
+        )
+
     def test_pd_mixed(self):
         self._test_with_cfg(mode="pd_mixed")
 
@@ -1372,6 +1346,14 @@ class TestNPUDeepseekSparseAttention:
             mode="prefill",
             ena_seq_parallel=True,
             ena_context_parallel=True,
+        )
+
+    def test_prefill_cp_rope_fusion(self):
+        self._test_with_cfg(
+            mode="prefill",
+            ena_seq_parallel=True,
+            ena_context_parallel=True,
+            use_rope_fusion_op=True,
         )
 
     def test_prefill_kvsp(self):

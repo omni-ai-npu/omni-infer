@@ -104,8 +104,26 @@ class NPUUnquantizedFusedMoEMethod(UnquantizedFusedMoEMethod, NPUFusedMoEMethodB
             end = (self.tp_rank + 1) * local_num_tokens
             x_slice = x_slice[start:end]
 
-        if layer.gate is not None:
-            if model_extra_config.operator_opt_config.router_gating_in_fp32:
+        if router_logits is not None and (
+            layer.gate is None
+            or getattr(layer, "use_precomputed_router_logits", False)
+        ):
+            if is_need_slice:
+                if num_pads > 0:
+                    router_logits = torch.nn.functional.pad(
+                        router_logits, (0, 0, 0, num_pads), value=0
+                    )
+                router_logits = router_logits[start:end]
+        elif layer.gate is not None:
+            gate_weight = getattr(layer.gate, "weight", None)
+            gate_in_fp32 = (
+                model_extra_config.operator_opt_config.router_gating_in_fp32
+                or (
+                    gate_weight is not None
+                    and gate_weight.dtype == torch.float32
+                )
+            )
+            if gate_in_fp32:
                 router_logits, _ = layer.gate(x_slice.float())
             else:
                 router_logits, _ = layer.gate(x_slice)

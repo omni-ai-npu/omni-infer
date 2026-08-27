@@ -45,6 +45,17 @@ def apply_top_k_top_p_npu(
 
 
 # edit from vllm.v1.sample.ops.topk_topp_sampler.random_sample
+def _fill_noise(
+    q: torch.Tensor,
+    generators: dict[int, torch.Generator],
+) -> None:
+    if len(generators) != q.shape[0]:
+        q.exponential_()
+    if generators:
+        for i, generator in generators.items():
+            q[i].exponential_(generator=generator)
+
+
 def generate_coins(
     probs: torch.Tensor,
     generators: dict[int, torch.Generator],
@@ -57,15 +68,23 @@ def generate_coins(
         q = sampler.bonus_q
         sampler.bonus_q = None
         return q
-    cur_stream = torch.npu.current_stream()
-    with torch.npu.stream(sampler.dsa_stream):
+    if model_extra_config.operator_opt_config.sampler_multi_stream:
+        cur_stream = torch.npu.current_stream()
+        # Allocate inside the side-stream context. The caching allocator pools
+        # blocks per allocation stream: a default-stream allocation filled on
+        # the side stream may reuse a block that in-flight default-stream
+        # kernels (e.g. drafter block_table/topk_indices) are still reading,
+        # and the side-stream write has no ordering against them.
+        with torch.npu.stream(sampler.dsa_stream):
+            q = torch.empty_like(probs, dtype=torch.float32)
+            _fill_noise(q, generators)
+        cur_stream.wait_stream(sampler.dsa_stream)
+        # q is consumed on the default stream by the caller; keep its block
+        # from being reused early by the next side-stream allocation.
+        q.record_stream(cur_stream)
+    else:
         q = torch.empty_like(probs, dtype=torch.float32)
-        if len(generators) != probs.shape[0]:
-            q.exponential_()
-        if generators:
-            for i, generator in generators.items():
-                q[i].exponential_(generator=generator)
-    cur_stream.wait_stream(sampler.dsa_stream)
+        _fill_noise(q, generators)
     return q
 
 

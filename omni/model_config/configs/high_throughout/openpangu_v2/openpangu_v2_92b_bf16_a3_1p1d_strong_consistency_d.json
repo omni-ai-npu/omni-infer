@@ -25,6 +25,12 @@
         "use_batch_invariant_op": true,
         "router_gating_in_fp32": false,
         "use_aicpu_fa_tiling": true,
-        "enable_mtp_invariant": true
+        "enable_mtp_invariant": true,
+        "enable_multi_stream": true,
+        "split_q_up_in_multistream": true,
+        "enable_mhc_multistream": true,
+        "use_mhc_fusion_op": false,
+        "use_rope_fusion_op": false,
+        "sampler_multi_stream": false
     }
 }

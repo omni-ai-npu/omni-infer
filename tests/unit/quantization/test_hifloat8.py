@@ -173,7 +173,8 @@ def hifloat8_module(monkeypatch):
     layer_utils_module = _make_module(monkeypatch, "omni_npu.layers.utils")
     layer_utils_module.named_stream = lambda _name: _DummyStream()
     layer_utils_module.CUBE_SIDE_TASKS_KEY = "cube_side_tasks"
-    layer_utils_module.CUBE_SIDE_STREAM_NAME = "cube_side_task"
+    layer_utils_module.SIDE_STREAM_NAME = "side_stream"
+    layer_utils_module.CUBE_SIDE_STREAM_NAME = layer_utils_module.SIDE_STREAM_NAME
 
     @dataclass
     class _CubeSideTask:

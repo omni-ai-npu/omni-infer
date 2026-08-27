@@ -27,6 +27,9 @@ class _DummyDefaultStream:
 @pytest.fixture
 def topk_mod(monkeypatch):
     fake_default_stream = _DummyDefaultStream()
+    # Streams are dummied out in these tests; no-op Tensor.record_stream so
+    # real tensors can flow through code that records cross-stream usage.
+    monkeypatch.setattr(torch.Tensor, "record_stream", lambda self, stream: None)
     # Keep real torch_npu package for vllm/torch.compile imports; only stub
     # the sampling-related entry points used by this module.
     fake_aiter_ops = types.ModuleType("vllm._aiter_ops")
@@ -162,6 +165,73 @@ def test_generate_coins_waits_stream_and_supports_seeded_generators(topk_mod):
     assert q1.shape == probs.shape
     assert torch.allclose(q1, q2)
     assert fake_default_stream.waited_streams[-1] is stream
+
+
+def test_generate_coins_single_stream_when_switch_off(topk_mod, monkeypatch):
+    """sampler_multi_stream=False: noise stays on the current stream and the dsa side stream is never touched."""
+    mod, _, fake_default_stream = topk_mod
+    monkeypatch.setattr(
+        mod,
+        "model_extra_config",
+        types.SimpleNamespace(
+            operator_opt_config=types.SimpleNamespace(sampler_multi_stream=False)
+        ),
+    )
+    probs = torch.zeros((2, 4), dtype=torch.bfloat16)
+    stream = _DummyDefaultStream()
+    samp = types.SimpleNamespace(bonus_q=None, dsa_stream=stream)
+
+    q = mod.generate_coins(probs, {}, samp)
+
+    assert q.dtype == torch.float32
+    assert q.shape == probs.shape
+    assert (q > 0).all()
+    assert stream.waited_streams == []
+    assert fake_default_stream.waited_streams == []
+
+
+def test_generate_coins_allocates_noise_on_side_stream(topk_mod, monkeypatch):
+    """sampler_multi_stream=True: allocate noise inside the side-stream context."""
+    mod, _, fake_default_stream = topk_mod
+
+    state = {"in_side_ctx": False, "allocated_on_side": False}
+
+    class _TrackingStreamCtx:
+        def __enter__(self):
+            state["in_side_ctx"] = True
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            state["in_side_ctx"] = False
+            return False
+
+    monkeypatch.setattr(
+        mod.torch,
+        "npu",
+        types.SimpleNamespace(
+            current_stream=lambda: fake_default_stream,
+            stream=lambda s=None: _TrackingStreamCtx(),
+        ),
+        raising=False,
+    )
+    real_empty_like = torch.empty_like
+
+    def tracking_empty_like(*args, **kwargs):
+        if state["in_side_ctx"]:
+            state["allocated_on_side"] = True
+        return real_empty_like(*args, **kwargs)
+
+    monkeypatch.setattr(mod.torch, "empty_like", tracking_empty_like)
+
+    probs = torch.zeros((2, 4), dtype=torch.bfloat16)
+    stream = _DummyDefaultStream()
+    samp = types.SimpleNamespace(bonus_q=None, dsa_stream=stream)
+
+    q = mod.generate_coins(probs, {}, samp)
+
+    assert state["allocated_on_side"]
+    assert q.dtype == torch.float32
+    assert q.shape == probs.shape
 
 
 @pytest.mark.parametrize(

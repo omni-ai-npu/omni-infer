@@ -772,3 +772,38 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         # mc2_mask should remain None since kv_transfer_config is None
         self.assertIsNone(result.decode.mc2_mask)
         mock_gen_mask.assert_not_called()
+
+
+@pytest.mark.unit
+def test_process_weights_after_loading_materializes_absorb_weights(
+    mla_setup, monkeypatch
+):
+    impl_cls = mla_setup["impl"]
+    base_cls = impl_cls.__mro__[1]
+    super_call = MagicMock()
+    monkeypatch.setattr(
+        base_cls,
+        "process_weights_after_loading",
+        super_call,
+        raising=False,
+    )
+
+    impl = impl_cls.__new__(impl_cls)
+    impl.W_UK_T = torch.arange(24, dtype=torch.float32).reshape(
+        2, 3, 4
+    ).transpose(0, 1)
+    impl.W_UV = torch.arange(40, dtype=torch.float32).reshape(
+        2, 4, 5
+    ).transpose(0, 1)
+    expected_w_uk_t = impl.W_UK_T.clone()
+    expected_w_uv = impl.W_UV.clone()
+    assert not impl.W_UK_T.is_contiguous()
+    assert not impl.W_UV.is_contiguous()
+
+    impl.process_weights_after_loading(torch.bfloat16)
+
+    super_call.assert_called_once_with(torch.bfloat16)
+    assert impl.W_UK_T.is_contiguous()
+    assert impl.W_UV.is_contiguous()
+    torch.testing.assert_close(impl.W_UK_T, expected_w_uk_t)
+    torch.testing.assert_close(impl.W_UV, expected_w_uv)

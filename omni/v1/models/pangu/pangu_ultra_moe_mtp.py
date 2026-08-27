@@ -35,6 +35,9 @@ from .pangu_ultra_moe import OpenPanguDecoderLayer
 from omni_npu.attention.backends.utils import SPManager
 from omni_npu.layers.mhc.mhc_rl import NPUmHCRL
 from omni_npu.model_config.config_loader.loader import model_extra_config
+from omni_npu.v1.layers.attention.weight_utils import (
+    mark_split_q_up_params_loaded,
+)
 
 
 class SharedHead(nn.Module):
@@ -349,6 +352,7 @@ class OpenPanguMTP(nn.Module, SupportsPP):
                     weight_loader(param, loaded_weight)
             loaded_params.add(name)
 
+        mark_split_q_up_params_loaded(self, loaded_params)
         self.post_weight_load()
         
         return loaded_params

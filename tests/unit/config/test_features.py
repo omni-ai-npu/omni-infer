@@ -18,6 +18,11 @@ def _make_config(graph_mode="eager_mode", moe_multi_stream_tune=False):
         operator_opt_config=SimpleNamespace(
             moe_multi_stream_tune=moe_multi_stream_tune,
             enable_scmoe_multi_stream=True,
+            enable_multi_stream=True,
+            li_prolog_multi_stream=True,
+            enable_mhc_multistream=True,
+            use_mhc_fusion_op=True,
+            split_q_up_in_multistream=True,
             enable_super_kernel=True,
             enable_prefetch=True,
             expert_gate_up_prefetch=50,
@@ -46,6 +51,11 @@ def test_eager_mode_disables_other_optimizations():
     assert cfg.operator_opt_config.enable_super_kernel is False
     assert cfg.operator_opt_config.enable_scmoe_multi_stream is False
     assert cfg.operator_opt_config.expert_gate_up_prefetch == 0
+    assert cfg.operator_opt_config.enable_multi_stream is False
+    assert cfg.operator_opt_config.li_prolog_multi_stream is False
+    assert cfg.operator_opt_config.enable_mhc_multistream is False
+    assert cfg.operator_opt_config.use_mhc_fusion_op is False
+    assert cfg.operator_opt_config.split_q_up_in_multistream is False
 
 
 def test_non_eager_mode_does_not_touch_config():
@@ -54,3 +64,8 @@ def test_non_eager_mode_does_not_touch_config():
     apply_eager_mode_config(cfg)
     assert cfg.operator_opt_config.moe_multi_stream_tune is True
     assert cfg.operator_opt_config.enable_prefetch is True
+    assert cfg.operator_opt_config.enable_multi_stream is True
+    assert cfg.operator_opt_config.enable_mhc_multistream is True
+    assert cfg.operator_opt_config.use_mhc_fusion_op is True
+    assert cfg.operator_opt_config.split_q_up_in_multistream is True
+    assert cfg.operator_opt_config.li_prolog_multi_stream is True

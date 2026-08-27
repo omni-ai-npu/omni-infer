@@ -689,6 +689,12 @@ class NPUMLAImpl(MLAAttentionImpl[NPUMLAMetadata]):
         self.sink_compressed_kv = sink_compressed_kv.unsqueeze(1)
         self.sink_len = sink_compressed_kv.shape[0]
 
+    def process_weights_after_loading(self, act_dtype: torch.dtype) -> None:
+        super().process_weights_after_loading(act_dtype)
+
+        self.W_UK_T = self.W_UK_T.contiguous()
+        self.W_UV = self.W_UV.contiguous()
+
     def do_kv_cache_update(
         self,
         kv_c_normed: torch.Tensor,

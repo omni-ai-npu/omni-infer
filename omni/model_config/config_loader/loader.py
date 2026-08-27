@@ -196,6 +196,7 @@ class ModelOperatorOptConfig:
     moe_dispatch_combine_max_batch_size: int = 128
     fix_multi_mtp_kvcache: bool = False # Whether or not to fix kvcache in multi-mtp
     use_topk_topp_stream: bool = False # 是否开启采样topk_topp多流
+    sampler_multi_stream: bool = True # 是否开启采样器多流，默认开启；开启mhc融合算子的配置需关闭，避免图外kernel与图内融合算子竞态
     li_prolog_multi_stream: bool = False # 是否在 li_prolog 中使用 ki_stream 和 wi_stream 多流并行，会影响确定性
     num_extra_reserved_blocks: int = 0 # 保留额外block数用于APC
     enable_mome_sp: bool = False # prefill only, support prefix cache

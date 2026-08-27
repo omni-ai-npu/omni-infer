@@ -97,17 +97,25 @@ class NPURejectionSampler(RejectionSampler):
         target_q = None
         saved_generator_states = {}
         if draft_probs is None and not sampling_metadata.all_greedy:
-            with torch.npu.stream(self.dsa_stream):
-                # Save per-request RNG states so we can roll them back after the
-                # first rejected position is known (rejected tokens must not
-                # consume RNG, matching non-MTP sampling order).
-                if model_extra_config.operator_opt_config.enable_mtp_invariant:
-                    for i, generator in sampling_metadata.generators.items():
-                        saved_generator_states[i] = generator.get_state()
+            # Save per-request RNG states so we can roll them back after the
+            # first rejected position is known (rejected tokens must not
+            # consume RNG, matching non-MTP sampling order).
+            if model_extra_config.operator_opt_config.enable_mtp_invariant:
+                for i, generator in sampling_metadata.generators.items():
+                    saved_generator_states[i] = generator.get_state()
+            if model_extra_config.operator_opt_config.sampler_multi_stream:
+                with torch.npu.stream(self.dsa_stream):
+                    q = generate_random_sequence(
+                        logits, sampling_metadata, metadata,
+                    )
+                cur_stream.wait_stream(self.dsa_stream)
+                # q is consumed on the default stream below; keep its block
+                # from being reused early by the next side-stream allocation.
+                q.record_stream(cur_stream)
+            else:
                 q = generate_random_sequence(
                     logits, sampling_metadata, metadata,
                 )
-            cur_stream.wait_stream(self.dsa_stream)
             self.sampler.bonus_q = q[bonus_logits_indices].contiguous()
             target_q = q[target_logits_indices].contiguous()
 
@@ -264,7 +272,7 @@ def rejection_sample(
     assert bonus_token_ids.is_contiguous()
     assert target_probs.shape == (num_tokens, vocab_size)
     cur_stream = torch.npu.current_stream()
-    stream.wait_stream(cur_stream)
+    multi_stream = model_extra_config.operator_opt_config.sampler_multi_stream
 
     # Create output buffer.
     output_token_ids = torch.full(
@@ -295,14 +303,25 @@ def rejection_sample(
 
     # Generate uniform probabilities for rejection sampling.
     # [num_tokens]
-    with torch.npu.stream(stream):
+    if multi_stream:
+        with torch.npu.stream(stream):
+            uniform_probs = generate_uniform_probs(
+                num_tokens,
+                num_draft_tokens,
+                sampling_metadata.generators,
+                device,
+            )
+        cur_stream.wait_stream(stream)
+        # Consumed on the default stream below; keep its block from being
+        # reused early by the next side-stream allocation.
+        uniform_probs.record_stream(cur_stream)
+    else:
         uniform_probs = generate_uniform_probs(
             num_tokens,
             num_draft_tokens,
             sampling_metadata.generators,
             device,
         )
-    cur_stream.wait_stream(stream)
 
     # Sample recovered tokens for each position.
     # [num_tokens]
@@ -461,7 +480,25 @@ def sample_recovered_tokens(
     batch_size = len(num_draft_tokens)
     vocab_size = target_probs.shape[-1]
     cur_stream = torch.npu.current_stream()
-    with torch.npu.stream(stream):
+    multi_stream = model_extra_config.operator_opt_config.sampler_multi_stream
+    if multi_stream:
+        with torch.npu.stream(stream):
+            q = torch.empty(
+                (batch_size, vocab_size),
+                dtype=torch.float32,
+                device=device,
+            )
+            q.exponential_()
+            for i, generator in sampling_metadata.generators.items():
+                # Do not generate random numbers for requests with no draft tokens.
+                # This can be important for reproducibility.
+                if num_draft_tokens[i] > 0:
+                    q[i].exponential_(generator=generator)
+        cur_stream.wait_stream(stream)
+        # Consumed on the default stream below; keep its block from being
+        # reused early by the next side-stream allocation.
+        q.record_stream(cur_stream)
+    else:
         q = torch.empty(
             (batch_size, vocab_size),
             dtype=torch.float32,
@@ -473,7 +510,6 @@ def sample_recovered_tokens(
             # This can be important for reproducibility.
             if num_draft_tokens[i] > 0:
                 q[i].exponential_(generator=generator)
-    cur_stream.wait_stream(stream)
 
     recovered_token_ids = torch.empty_like(draft_token_ids)
     sample_recovered_tokens_native(

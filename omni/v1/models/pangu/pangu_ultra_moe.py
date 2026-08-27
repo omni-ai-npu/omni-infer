@@ -54,6 +54,9 @@ from omni_npu.layers.mhc.mhc_rl import NPUmHCRL
 from omni_npu.plugin_decorators import post_model_forward_decorator
 from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
+from omni_npu.v1.layers.attention.weight_utils import (
+    mark_split_q_up_params_loaded,
+)
 from omni_npu.v1.layers.fused_mlp.layer import FusedMLP
 from omni_npu.v1.layers.vocab_parallel_embedding import (
     NPUParallelLMHead,
@@ -132,7 +135,11 @@ class OpenPanguMoE(nn.Module):
 
         self.is_sequence_parallel = False
         check_ffn_act_fn(config.hidden_act)
-        if model_extra_config.operator_opt_config.router_gating_in_fp32:
+        # MHC fusion must not silently change the master-side gate precision.
+        self.gate_in_fp32 = bool(
+            model_extra_config.operator_opt_config.router_gating_in_fp32
+        )
+        if self.gate_in_fp32:
             self.gate = ReplicatedLinear(
             config.hidden_size,
             config.n_routed_experts,
@@ -233,19 +240,38 @@ class OpenPanguMoE(nn.Module):
                 num_redundant_experts=self.n_redundant_experts,
                 is_sequence_parallel=self.is_sequence_parallel,
             )
+        # Only this model's fused FP32-router path may bypass the gate owned by
+        # SharedFusedMoE. Other models retain the historical gate-first path.
+        self.experts.use_precomputed_router_logits = True
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
+        hidden_states: torch.Tensor | dict[str, torch.Tensor],
     ) -> torch.Tensor:
+        if isinstance(hidden_states, dict):
+            hidden_states_fp32 = hidden_states["hidden_states_fp32"]
+            hidden_states = hidden_states["hidden_states_bf16"]
+        else:
+            hidden_states_fp32 = None
+
         num_tokens, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
 
         if self.is_sequence_parallel:
             hidden_states = sequence_parallel_chunk(hidden_states)
+            if hidden_states_fp32 is not None:
+                hidden_states_fp32 = sequence_parallel_chunk(
+                    hidden_states_fp32.view(-1, hidden_dim)
+                )
+
+        router_logits = None
+        if hidden_states_fp32 is not None:
+            router_logits, _ = self.gate(
+                hidden_states_fp32.view(-1, hidden_dim)
+            )
 
         fused_moe_out = self.experts(
-            hidden_states=hidden_states, router_logits=None
+            hidden_states=hidden_states, router_logits=router_logits
         )
 
         shared_output, final_hidden_states = fused_moe_out
@@ -365,10 +391,22 @@ class OpenPanguDecoderLayer(nn.Module):
                 pre_only=False,
                 prefix=f"{prefix}.mlp_mhc_module",
             )
+            self.attn_mhc_task_key = f"{prefix}.self_attn.o_proj"
+            self.mlp_mhc_task_key = (
+                f"{prefix}.mlp.experts"
+                if isinstance(self.mlp, OpenPanguMoE)
+                else f"{prefix}.mlp.down_proj"
+            )
             block_post_layernorm_hidden_size *= getattr(config, "mhc_num_stream", 4)
         self.has_block_post_layernorm = layer_idx in getattr(config, "block_post_layernorm_idx", [])
         if self.has_block_post_layernorm:
             self.block_post_layernorm = RMSNorm(block_post_layernorm_hidden_size, eps=config.rms_norm_eps)
+        self.use_mhc_fusion_op = bool(
+            self.use_mhc
+            and self.sandwich_norm
+            and getattr(model_extra_config.operator_opt_config, "use_mhc_fusion_op", False)
+        )
+        self._mhc_tail_refs = None
 
     def forward(
         self,
@@ -422,27 +460,177 @@ class OpenPanguDecoderLayer(nn.Module):
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states, h_post, h_res = self.attn_mhc_module.mhc_pre(hidden_states)
+        h_res = self.attn_mhc_module.maybe_register_sinkhorn(
+            h_res, self.attn_mhc_task_key
+        )
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states = self.self_attn(hidden_states, cos, sin)
         if self.sandwich_norm:
             hidden_states = self.post_attention_layernorm(hidden_states)
-        h_res = self.attn_mhc_module.mhc_sinkhorn(h_res)
+        h_res = self.attn_mhc_module.resolve_sinkhorn(
+            h_res, self.attn_mhc_task_key
+        )
         hidden_states = self.attn_mhc_module.mhc_post(hidden_states, h_post, residual, h_res)
         
         residual = hidden_states
         hidden_states, h_post, h_res = self.mlp_mhc_module.mhc_pre(hidden_states)
 
+        h_res = self.mlp_mhc_module.maybe_register_sinkhorn(
+            h_res, self.mlp_mhc_task_key
+        )
         hidden_states = self.pre_mlp_layernorm(hidden_states)
         # Fully Connected
         hidden_states = self.mlp(hidden_states)
         if self.sandwich_norm:
             hidden_states = self.post_mlp_layernorm(hidden_states)
-        h_res = self.mlp_mhc_module.mhc_sinkhorn(h_res)
+        h_res = self.mlp_mhc_module.resolve_sinkhorn(
+            h_res, self.mlp_mhc_task_key
+        )
         hidden_states = self.mlp_mhc_module.mhc_post(hidden_states, h_post, residual, h_res)
         if self.has_block_post_layernorm:
             hidden_states = self.block_post_layernorm(hidden_states)
         
         return hidden_states, None
+
+    def mhc_head(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        """Prepare the first local attention block for the fused MHC path."""
+        residual = hidden_states.clone()
+        hidden_states, h_post, h_res = self.attn_mhc_module.mhc_pre(
+            hidden_states
+        )
+        h_res = self.attn_mhc_module.maybe_register_sinkhorn(
+            h_res, self.attn_mhc_task_key
+        )
+        hidden_states = self.input_layernorm(hidden_states)
+        return hidden_states, residual, h_post, h_res
+
+    def _finish_mhc_partition_tail(
+        self,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor,
+        h_post: torch.Tensor,
+        h_res: torch.Tensor,
+    ) -> tuple[torch.Tensor, None, None, None]:
+        """Finish a PP partition after its side-stream MHC work is ready."""
+        hidden_states = self.post_mlp_layernorm(hidden_states)
+        hidden_states = self.mlp_mhc_module.mhc_post(
+            hidden_states, h_post, residual, h_res
+        )
+        if self.has_block_post_layernorm:
+            hidden_states = self.block_post_layernorm(hidden_states)
+        return hidden_states, None, None, None
+
+    def forward_mhc_fused(
+        self,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor,
+        h_post: torch.Tensor | None,
+        h_res: torch.Tensor | None,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        h_res_from_fused_split: bool = False,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]:
+        """Run fused MHC while custom ops manage side-stream overlap."""
+        deferred_split = h_post is None and h_res is None
+        if deferred_split:
+            if not h_res_from_fused_split:
+                raise ValueError(
+                    "Deferred MHC split requires fused-split state"
+                )
+            hidden_states, h_post, h_res = (
+                self.self_attn.forward_mhc_deferred(
+                    hidden_states,
+                    cos,
+                    sin,
+                    residual,
+                    self.attn_mhc_module.prefix,
+                    self.attn_mhc_task_key,
+                )
+            )
+        else:
+            hidden_states = self.self_attn(hidden_states, cos, sin)
+        assert h_post is not None and h_res is not None
+        if h_res_from_fused_split:
+            h_post, h_res = self.attn_mhc_module.resolve_fused_split_sinkhorn(
+                h_post, h_res, self.attn_mhc_task_key
+            )
+        else:
+            h_res = self.attn_mhc_module.resolve_sinkhorn(
+                h_res, self.attn_mhc_task_key
+            )
+        hidden_states, residual = (
+            self.attn_mhc_module.mhc_sandwich_norm_post_preonly(
+                hidden_states,
+                residual,
+                h_post,
+                h_res,
+                self.post_attention_layernorm,
+                self.mlp_mhc_module,
+                self.pre_mlp_layernorm,
+                return_h_in_f32=(
+                    isinstance(self.mlp, OpenPanguMoE)
+                    and self.mlp.gate_in_fp32
+                ),
+            )
+        )
+        h_post, h_res = self.mlp_mhc_module.launch_fused_split_sinkhorn(
+            residual, self.mlp_mhc_task_key
+        )
+
+        hidden_states = self.mlp(hidden_states)
+        h_post, h_res = self.mlp_mhc_module.resolve_fused_split_sinkhorn(
+            h_post, h_res, self.mlp_mhc_task_key
+        )
+
+        if self._mhc_tail_refs is None or self._mhc_tail_refs[0] is None:
+            return self._finish_mhc_partition_tail(
+                hidden_states, residual, h_post, h_res
+            )
+
+        next_mhc_module, next_norm_module, next_task_key, is_model_tail = (
+            self._mhc_tail_refs
+        )
+        hidden_states, residual = (
+            self.mlp_mhc_module.mhc_sandwich_norm_post_preonly(
+                hidden_states,
+                residual,
+                h_post,
+                h_res,
+                self.post_mlp_layernorm,
+                next_mhc_module,
+                next_norm_module,
+                (
+                    self.block_post_layernorm
+                    if self.has_block_post_layernorm
+                    else None
+                ),
+            )
+        )
+        if is_model_tail:
+            return hidden_states, None, None, None
+
+        if next_mhc_module.enable_mhc_multistream and next_task_key:
+            # The next MLA block launches this after attention and before
+            # v_up/o_proj, matching the 1.2.1 pre-epilog schedule.
+            return hidden_states, residual, None, None
+
+        h_post, h_res = next_mhc_module.launch_fused_split_sinkhorn(
+            residual, next_task_key
+        )
+        return hidden_states, residual, h_post, h_res
 
 
 @support_torch_compile
@@ -495,6 +683,37 @@ class OpenPanguModel(nn.Module):
                 prefix=f"{prefix}.merge_mhc_module",
             )
 
+        self.use_mhc_fusion_op = bool(
+            self.use_mhc
+            and self.start_layer < self.end_layer
+            and all(
+                self.layers[i].use_mhc_fusion_op
+                for i in range(self.start_layer, self.end_layer)
+            )
+        )
+        if self.use_mhc_fusion_op:
+            last_layer_idx = config.num_hidden_layers - 1
+            for i in range(self.start_layer, self.end_layer):
+                layer = self.layers[i]
+                if i + 1 < self.end_layer:
+                    next_layer = self.layers[i + 1]
+                    layer._mhc_tail_refs = (
+                        next_layer.attn_mhc_module,
+                        next_layer.input_layernorm,
+                        next_layer.attn_mhc_task_key,
+                        False,
+                    )
+                elif i == last_layer_idx and get_pp_group().is_last_rank:
+                    layer._mhc_tail_refs = (
+                        self.merge_mhc_module,
+                        self.norm,
+                        None,
+                        True,
+                    )
+                else:
+                    # Do not carry h_post/h_res across a PP boundary.
+                    layer._mhc_tail_refs = (None, None, None, False)
+
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids, enable_scatter=model_extra_config.parall_config.ena_seq_parallel)
 
@@ -522,17 +741,43 @@ class OpenPanguModel(nn.Module):
             positions
         )
 
-        for i in range(self.start_layer, self.end_layer):
-            layer = self.layers[i]
-            hidden_states, residual = layer(hidden_states, cos, sin, residual)
+        use_fused_mhc = (
+            self.use_mhc_fusion_op
+            and self.layers[self.start_layer].attn_mhc_module.can_use_fusion(
+                hidden_states
+            )
+        )
+        if use_fused_mhc:
+            hidden_states, residual, h_post, h_res = self.layers[
+                self.start_layer
+            ].mhc_head(hidden_states)
+            for i in range(self.start_layer, self.end_layer):
+                hidden_states, residual, h_post, h_res = self.layers[
+                    i
+                ].forward_mhc_fused(
+                    hidden_states,
+                    residual,
+                    h_post,
+                    h_res,
+                    cos,
+                    sin,
+                    h_res_from_fused_split=i > self.start_layer,
+                )
+        else:
+            for i in range(self.start_layer, self.end_layer):
+                layer = self.layers[i]
+                hidden_states, residual = layer(
+                    hidden_states, cos, sin, residual
+                )
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors(
                 {"hidden_states": hidden_states, "residual": residual}
             )
         if self.use_mhc:
-            hidden_states, _, _ = self.merge_mhc_module.mhc_pre(hidden_states)
-            hidden_states = self.norm(hidden_states)
+            if not use_fused_mhc:
+                hidden_states, _, _ = self.merge_mhc_module.mhc_pre(hidden_states)
+                hidden_states = self.norm(hidden_states)
         else:
             hidden_states, _ = self.norm(hidden_states, residual)
 
@@ -606,12 +851,21 @@ class OpenPanguModelBase(nn.Module, SupportsPP, SupportsLoRA):
         logits = self.logits_processor(self.lm_head, hidden_states.to(dtype))
         return logits
 
+    def _process_mhc_weights_after_loading(self) -> None:
+        """Build the derived FP32 weights required by the MHC fusion kernels."""
+        for module in self.modules():
+            if isinstance(module, NPUmHCRL):
+                module.process_weights_after_loading()
+
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(
             self,
             skip_prefixes=(["lm_head."] if self.config.tie_word_embeddings else None),
         )
-        return loader.load_weights(weights)
+        loaded_params = loader.load_weights(weights)
+        mark_split_q_up_params_loaded(self, loaded_params)
+        self._process_mhc_weights_after_loading()
+        return loaded_params
 
 
 class OpenPanguMoEModel(OpenPanguModelBase, MixtureOfExperts):
@@ -798,6 +1052,7 @@ class OpenPanguMoEModel(OpenPanguModelBase, MixtureOfExperts):
             weight_loader(param, loaded_weight)
             loaded_params.add(remapped_name)
 
+        mark_split_q_up_params_loaded(self, loaded_params)
         self.post_weight_load()
         return loaded_params
 
@@ -807,6 +1062,7 @@ class OpenPanguMoEModel(OpenPanguModelBase, MixtureOfExperts):
                 continue
             if hasattr(module, "post_weight_load"):
                 module.post_weight_load()
+        self._process_mhc_weights_after_loading()
 
 
 def insert_conv_before(name: str) -> str:

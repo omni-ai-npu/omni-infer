@@ -227,6 +227,28 @@ class TestLoadWeights:
         assert "model.layers.2.mtp_block.self_attn.q_proj.weight" in loaded
         mock_loader.assert_called_once()
 
+    def test_marks_split_q_params_after_loading(self):
+        m, mtp_mod = _make_minimal_mtp()
+        m.model.mtp_start_layer_idx = 2
+
+        def _empty_named_parameters():
+            return []
+
+        m.named_parameters = _empty_named_parameters
+
+        with patch.object(
+            mtp_mod.FusedMoE,
+            "make_expert_params_mapping",
+            return_value=[],
+            create=True,
+        ), patch.object(
+            mtp_mod,
+            "mark_split_q_up_params_loaded",
+        ) as mark_split, patch.object(m, "post_weight_load"):
+            loaded = m.load_weights([])
+
+        mark_split.assert_called_once_with(m, loaded)
+
     def test_loads_stacked_gate_up_proj(self):
         m, mtp_mod = _make_minimal_mtp()
         m.model.mtp_start_layer_idx = 2

@@ -30,6 +30,8 @@ def mhc_register(
     fwctx = get_forward_context()
     layer = fwctx.no_compile_layers[holder_layer_name]
     mhc = getattr(layer, "mhc_module", None)
+    if mhc is None and hasattr(layer, "mhc_sinkhorn"):
+        mhc = layer
     if mhc is None:
         return h_res
 
@@ -55,6 +57,12 @@ def mhc_register_fake(
 
 def mhc_fetch(task_key: str, fallback: torch.Tensor) -> torch.Tensor:
     fwctx = get_forward_context()
+    # If no matching Cube op consumed the task, preserve correctness by
+    # executing it synchronously before fetching the holder.
+    tasks = fwctx.additional_kwargs.get(CUBE_SIDE_TASKS_KEY)
+    pending_task = tasks.pop(task_key, None) if tasks else None
+    if pending_task is not None:
+        pending_task.fn()
     holders = fwctx.additional_kwargs.get(MHC_HOLDER_KEY)
     if not holders:
         return fallback

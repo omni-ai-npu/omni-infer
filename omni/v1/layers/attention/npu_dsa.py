@@ -52,10 +52,15 @@ from omni_npu.attention.backends.utils import (
     lazy_zero_like,
     sp_disabled,
 )
-from omni_npu.layers.utils import named_stream
+from omni_npu.layers.mhc.mhc_deferred import (
+    attention_mhc_deferred_fake,
+    call_attention_mhc_deferred,
+)
+from omni_npu.layers.utils import SIDE_STREAM_NAME, named_stream
 from omni_npu.model_config.config_loader.loader import model_extra_config
 from omni_npu.plugin_decorators import attn_decorator
 from omni_npu.v1.layers.attention.npu_mla import MomeAttentionMixin
+from omni_npu.v1.layers.attention.weight_utils import install_q_b_split_loaders
 from omni_npu.v1.layers.linear import (
     ColumnParallelFlashCommLinear,
     ReplicatedFlashCommLinear,
@@ -118,6 +123,10 @@ class Indexer(torch.nn.Module):
         self.sink_len = sink_len
         self.wi_stream = None
         self.ki_stream = None
+        self.use_rope_fusion_op = (
+            model_extra_config.operator_opt_config.use_rope_fusion_op
+            and not model_extra_config.operator_opt_config.enable_precision_strong_consistency
+        )
 
     def _apply_rope(
         self,
@@ -127,6 +136,18 @@ class Indexer(torch.nn.Module):
     ) -> torch.Tensor:  # TND
         assert x.dim() == 3  # TND
         R, D, N = self.rope_dim, self.head_dim, x.size(1)
+        if self.use_rope_fusion_op:
+            shape = x.shape
+            x, _ = torch_npu.npu_apply_rotary_pos_emb(
+                x.view(-1, 1, N, D),
+                x.view(-1, 1, N, D),
+                cos.view(-1, 1, 1, R),
+                sin.view(-1, 1, 1, R),
+                layout="BSND",
+                rotary_mode="half",
+            )
+            return x.view(shape)
+
         pe, nope = torch.split(x, [R, D - R], dim=-1)
         pe = pe.view(-1, N, 1, R)  # BNSD
         if getattr(self.config, "indexer_rope_interleave", False):
@@ -325,6 +346,12 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
 
         self.kv_nz = model_extra_config.operator_opt_config.kv_nz
         self.noncontiguous_kv = model_extra_config.operator_opt_config.use_noncontiguous_kv
+        self.enable_decode_multi_stream = model_extra_config.operator_opt_config.enable_multi_stream
+        self.split_q_up_in_multistream = (
+            self.enable_decode_multi_stream
+            and model_extra_config.operator_opt_config.split_q_up_in_multistream
+            and self.q_lora_rank is not None
+        )
         self.on_ascend950 = on_ascend950()
         self.use_mlaprolog = model_extra_config.operator_opt_config.enable_mlaprolog
         self.use_omni_cache = model_extra_config.operator_opt_config.use_omni_cache
@@ -353,6 +380,30 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
                 prefix=f"{prefix}.q_b_proj",
                 disable_tp=self.ena_cp,
             )
+            if self.split_q_up_in_multistream:
+                self.q_b_nope_proj = ColumnParallelFlashCommLinear(
+                    self.q_lora_rank,
+                    self.num_heads * self.qk_nope_head_dim,
+                    bias=False,
+                    quant_config=quant_config,
+                    prefix=f"{prefix}.q_b_nope_proj",
+                    disable_tp=self.ena_cp,
+                )
+                self.q_b_pe_proj = ColumnParallelFlashCommLinear(
+                    self.q_lora_rank,
+                    self.num_heads * self.qk_rope_head_dim,
+                    bias=False,
+                    quant_config=quant_config,
+                    prefix=f"{prefix}.q_b_pe_proj",
+                    disable_tp=self.ena_cp,
+                )
+                install_q_b_split_loaders(
+                    self.q_b_proj,
+                    self.q_b_nope_proj,
+                    self.q_b_pe_proj,
+                    self.qk_head_dim,
+                    self.qk_nope_head_dim,
+                )
         else:
             self.q_proj = ColumnParallelFlashCommLinear(
                 self.hidden_size,
@@ -566,6 +617,12 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         if prefix in compilation_config.static_forward_context:
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
+        self.side_stream = (
+            named_stream(SIDE_STREAM_NAME)
+            if self.enable_decode_multi_stream
+            else None
+        )
+        self.pre_epilog_callback = None
 
         if not self.skip_topk and model_extra_config.operator_opt_config.li_prolog_multi_stream:
             self.wi_stream = named_stream("wi_stream")
@@ -674,21 +731,24 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         q = self.q_b_proj(q_lora)[0].view(-1, N, Q + R)  # TND
         q_nope, q_pe = torch.split(q, [Q, R], dim=-1)  # TND
         q_pe = self._apply_rope(q_pe, cos, sin)  # TND
+        q_nope = self._q_nope_absorb(q_nope)
 
+        return q_nope, q_pe  # TND
+
+    def _q_nope_absorb(self, q_nope: torch.Tensor) -> torch.Tensor:
         absorb = self.attn.impl.W_UK_T
         if absorb.size(-1) % 128 != 0 or absorb.size(-2) % 128 != 0:
-            q_nope = (q_nope.transpose(0, 1) @ absorb).transpose(1, 0)
-        else:
-            if q_nope.size(1) * q_nope.size(2) < 65536:
-                args = {"input": q_nope, "perm_x1": (1, 0, 2)}
-            else:  # perm_x1 only support batch*k < 65536
-                args = {"input": q_nope.transpose(0, 1)}
-            q_nope = torch_npu.npu_transpose_batchmatmul(
-                **args,  # TND -> NTD
-                weight=absorb,  # [N, Q, L]
-                perm_y=(1, 0, 2),  # NTD -> TND
-            )
-        return q_nope, q_pe  # TND
+            return (q_nope.transpose(0, 1) @ absorb).transpose(1, 0)
+
+        if q_nope.size(1) * q_nope.size(2) < 65536:
+            args = {"input": q_nope, "perm_x1": (1, 0, 2)}
+        else:  # perm_x1 only support batch*k < 65536
+            args = {"input": q_nope.transpose(0, 1)}
+        return torch_npu.npu_transpose_batchmatmul(
+            **args,  # TND -> NTD
+            weight=absorb,  # [N, Q, L]
+            perm_y=(1, 0, 2),  # NTD -> TND
+        )
 
     def _kv_norm_rope_cache(
         self,
@@ -996,8 +1056,35 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
 
     # ======================= forward =======================
 
+    def _run_pre_epilog_callback(self) -> None:
+        """Run and clear deferred work before the DSA output epilog."""
+        if self.pre_epilog_callback is None:
+            return
+        callback = self.pre_epilog_callback
+        self.pre_epilog_callback = None
+        callback()
+
     def forward(self, x, cos, sin) -> torch.Tensor:  # adaptor
         return torch.ops.vllm.npu_dsa_forward(x, cos, sin, self.prefix)
+
+    def forward_mhc_deferred(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        residual: torch.Tensor,
+        mhc_layer_name: str,
+        task_key: str,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return torch.ops.vllm.npu_dsa_forward_mhc_deferred(
+            x,
+            cos,
+            sin,
+            residual,
+            self.prefix,
+            mhc_layer_name,
+            task_key,
+        )
 
     def _forward_prefill(
         self,
@@ -1245,6 +1332,13 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
     ) -> torch.Tensor:
         assert not self.ena_sp  # TODO: support decode sp in the future
         assert not self.sharded_o_proj  # sharded_o_proj is for prefill only
+        use_fused_mla_prolog = self.use_mlaprolog and not self.use_mome and self.param_sink_number == 0
+        can_decode_multistream = self.side_stream is not None and not self.skip_topk
+        if can_decode_multistream and not use_fused_mla_prolog and not self.ena_kvsp:
+            return self._forward_decode_multistream(
+                x, cos, sin, attn_metadata, kv_cache, pd_mixed_flag
+            )
+
         ki_cache = kv_cache[1] if self.noncontiguous_kv else kv_cache[2]
         q_cumlens = attn_metadata.query_cumlens.to(torch.int32)
         kv_lens = attn_metadata.seq_lens.to(torch.int32)
@@ -1263,7 +1357,7 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
 
         ki_cache = kv_cache[1] if self.noncontiguous_kv else kv_cache[2]
 
-        if self.use_mlaprolog and not self.use_mome and self.param_sink_number == 0:
+        if use_fused_mla_prolog:
             q_nope, q_pe, q_lora, *_ = self._mla_prolog(x, cos, sin, kv_cache, attn_metadata)
         else:
             q_lora = self.q_a_proj(x)[0]  # TD
@@ -1318,9 +1412,123 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
             attn_metadata=attn_metadata,
         )  # -> TND
 
-        out = self._post_attn_absorb(out)  # TND
-        out = self._maybe_mome_out(out, get_mome_args)  # T,ND
-        return self.o_proj(out)[0]
+        return self._decode_attn_epilog(out, get_mome_args)
+
+    def _forward_decode_multistream(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        attn_metadata: NPUDSAMetadata,
+        kv_cache: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        pd_mixed_flag: int = 0,
+    ) -> torch.Tensor:
+        """Overlap attention Q/KV-cache work with the complete indexer path."""
+        q_cumlens = attn_metadata.query_cumlens.to(torch.int32)
+        kv_lens = attn_metadata.seq_lens.to(torch.int32)
+        block_table = attn_metadata.block_table
+        ki_cache = kv_cache[1] if self.noncontiguous_kv else kv_cache[2]
+
+        def get_mome_args():
+            if self.noncontiguous_kv:
+                return {}
+            return {
+                "force_decode": pd_mixed_flag == 1,
+                "short_prefill": pd_mixed_flag == 2,
+            }
+
+        main_stream = torch.npu.current_stream()
+        side_stream = self.side_stream
+        input_ready = torch.npu.Event()
+        input_ready.record()
+        x.record_stream(side_stream)
+        cos.record_stream(side_stream)
+        sin.record_stream(side_stream)
+
+        with torch.npu.npugraph_ex.scope.limit_core_num(16, 24):
+            q_lora = self.q_a_proj(x)[0]
+            q_lora = self._maybe_mome_q(q_lora, get_mome_args)
+            q_lora = self.q_a_layernorm(q_lora)
+            q_lora_ready = torch.npu.Event()
+            q_lora_ready.record()
+            q_lora.record_stream(side_stream)
+
+            indexer_k = self.indexer.wk(x)[0]
+            indexer_k = self.indexer.k_norm(indexer_k).view(-1, 1, self.indexer.head_dim)
+            indexer_weights = self.indexer.weights_proj(x)[0]
+            if model_extra_config.operator_opt_config.enable_precision_strong_consistency:
+                indexer_weights = (
+                    indexer_weights * self.indexer.weights_scale * self.indexer.softmax_scale
+                )
+            indexer_kw_ready = torch.npu.Event()
+            indexer_kw_ready.record()
+            indexer_k.record_stream(side_stream)
+            indexer_weights.record_stream(side_stream)
+
+        kv_ready = torch.npu.Event()
+
+        with torch.npu.stream(side_stream):
+            input_ready.wait(side_stream)
+            with torch.npu.npugraph_ex.scope.limit_core_num(8, 24):
+                kv = self.kv_a_proj_with_mqa(x)[0]
+                kv = self._maybe_mome_kv(kv, get_mome_args)
+                kv.record_stream(main_stream)
+                kv_ready.record()
+
+                q_lora_ready.wait(side_stream)
+                indexer_q = self.indexer.wq_b(q_lora)[0].view(
+                    -1, self.indexer.n_head, self.indexer.head_dim
+                )
+                indexer_q = self.indexer._apply_rope(indexer_q, cos, sin)
+
+                indexer_kw_ready.wait(side_stream)
+                indexer_k = self.indexer._apply_rope(indexer_k, cos, sin)
+                self.indexer._update_cache(indexer_k, attn_metadata, ki_cache)
+            with torch.npu.npugraph_ex.scope.limit_core_num(20, 40):
+                topk_idx = self.indexer._apply_lightning_indexer(
+                    indexer_weights,
+                    indexer_q,
+                    ki_cache,
+                    q_cumlens,
+                    kv_lens,
+                    block_table,
+                )
+            side_done = torch.npu.Event()
+            side_done.record()
+
+        with torch.npu.npugraph_ex.scope.limit_core_num(12, 24):
+            if self.split_q_up_in_multistream:
+                q_nope = self.q_b_nope_proj(q_lora)[0].view(
+                    -1, self.num_local_heads, self.qk_nope_head_dim
+                )
+                q_pe = self.q_b_pe_proj(q_lora)[0].view(
+                    -1, self.num_local_heads, self.qk_rope_head_dim
+                )
+                q_nope = self._q_nope_absorb(q_nope)
+                q_pe = self._apply_rope(q_pe, cos, sin)
+            else:
+                q_nope, q_pe = self._q_absorb(q_lora, cos, sin)
+            kv_ready.wait(main_stream)
+            self._kv_norm_rope_cache(kv, cos, sin, attn_metadata, kv_cache)
+        side_done.wait(main_stream)
+        topk_idx.record_stream(main_stream)
+        if self.topk_indices_buffer is not None:
+            self.topk_indices_buffer[
+                :topk_idx.shape[0], :topk_idx.shape[2]
+            ] = topk_idx[:, 0, :]
+        topk_idx = self._apply_sink_offset(topk_idx)
+
+        out = self._apply_attn_absorb(
+            q_nope=q_nope,
+            q_pe=q_pe,
+            q_cumlens=q_cumlens,
+            kv_lens=kv_lens,
+            topk_idx=topk_idx,
+            block_table=block_table,
+            kv_cache=kv_cache,
+            attn_metadata=attn_metadata,
+        )
+        return self._decode_attn_epilog(out, get_mome_args)
 
 
 def npu_dsa_forward(
@@ -1379,6 +1587,30 @@ def npu_dsa_forward_fake(
 ) -> torch.Tensor:
     return torch.empty_like(x)
 
+
+def npu_dsa_forward_mhc_deferred(
+    hidden_states: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    residual: torch.Tensor,
+    layer_name: str,
+    mhc_layer_name: str,
+    task_key: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Launch next-layer MHC work between attention and the DSA epilog."""
+    return call_attention_mhc_deferred(
+        npu_dsa_forward, hidden_states, cos, sin, residual,
+        layer_name, mhc_layer_name, task_key,
+    )
+
+
+direct_register_custom_op(
+    op_name="npu_dsa_forward_mhc_deferred",
+    op_func=npu_dsa_forward_mhc_deferred,
+    mutates_args=[],
+    fake_impl=attention_mhc_deferred_fake,
+    dispatch_key="PrivateUse1",
+)
 
 direct_register_custom_op(
     op_name="npu_dsa_forward",

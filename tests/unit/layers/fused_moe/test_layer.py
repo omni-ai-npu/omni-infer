@@ -177,6 +177,106 @@ def _stub_apply_prefetch_attrs(method, module, monkeypatch):
     monkeypatch.setattr(module.torch.npu, "stream", _stream_ctx, raising=False)
 
 
+def _stub_select_experts(module, monkeypatch, weights=None, ids=None):
+    if weights is None:
+        weights = torch.ones(2, 1, dtype=torch.float32)
+    if ids is None:
+        ids = torch.zeros(2, 1, dtype=torch.int32)
+    monkeypatch.setattr(
+        module.NPUFusedMoERunner,
+        "select_experts",
+        MagicMock(return_value=(weights, ids)),
+    )
+
+
+def _make_unquantized_apply_method(
+    module,
+    monkeypatch,
+    *,
+    tp_size=1,
+    tp_rank=0,
+    strategy="agrs",
+    permute_tokens=2,
+    hidden=4,
+    experts_value=2.0,
+    finalize_value=3.0,
+    stub_select_experts=True,
+):
+    method = module.NPUUnquantizedFusedMoEMethod.__new__(
+        module.NPUUnquantizedFusedMoEMethod
+    )
+    method.tp_size = tp_size
+    method.tp_rank = tp_rank
+    _stub_apply_prefetch_attrs(method, module, monkeypatch)
+    method.select_communication_strategy = MagicMock(
+        return_value=(strategy, _DummyStrategy())
+    )
+    method.apply_prepare_permute = MagicMock(
+        return_value=module.PreparePermuteResult(
+            hidden_states_sorted_by_experts=torch.ones(permute_tokens, hidden),
+            expert_tokens=torch.tensor([permute_tokens], dtype=torch.int64),
+            dynamic_scale=None,
+        )
+    )
+    method.apply_experts = MagicMock(
+        return_value=torch.full((permute_tokens, hidden), experts_value)
+    )
+    method.apply_unpermute_finalize = MagicMock(
+        return_value=torch.full((permute_tokens, hidden), finalize_value)
+    )
+    if stub_select_experts:
+        _stub_select_experts(module, monkeypatch)
+    return method
+
+
+def _bare_runner(module):
+    return module.NPUFusedMoERunner.__new__(module.NPUFusedMoERunner)
+
+
+def _ep_layer(gate=None, shared_experts=None):
+    return SimpleNamespace(
+        moe_parallel_config=SimpleNamespace(use_ep=True),
+        gate=gate,
+        shared_experts=shared_experts,
+    )
+
+
+def _set_router_gating_in_fp32(module, monkeypatch, enabled):
+    monkeypatch.setattr(
+        module.model_extra_config.operator_opt_config,
+        "router_gating_in_fp32",
+        enabled,
+    )
+
+
+def _recording_gate(gate_calls):
+
+    def _gate(x):
+        gate_calls.append(x)
+        return torch.zeros(x.shape[0], 2, dtype=torch.float32), None
+
+    return _gate
+
+
+def _apply(method, layer, hidden_states, router_logits, top_k=1, renormalize=False):
+    return method.apply(
+        layer=layer,
+        hidden_states=hidden_states,
+        router_logits=router_logits,
+        top_k=top_k,
+        renormalize=renormalize,
+    )
+
+
+def _gated_apply_setup(layer_module, monkeypatch, router_gating_in_fp32):
+    module, _, context_holder = layer_module
+    context_holder.attn_metadata = {}
+    method = _make_unquantized_apply_method(module, monkeypatch)
+    _set_router_gating_in_fp32(module, monkeypatch, router_gating_in_fp32)
+    gate_calls = []
+    return method, _ep_layer(gate=_recording_gate(gate_calls)), gate_calls
+
+
 @pytest.mark.unit
 def test_select_experts_profile_mode(layer_module):
     module, _, context_holder = layer_module
@@ -232,23 +332,6 @@ def test_apply_experts_uses_grouped_matmul_twice(layer_module):
 
 
 @pytest.mark.unit
-def test_maybe_all_reduce_tensor_model_parallel(layer_module):
-    module, _, _ = layer_module
-    fused = module.NPUFusedMoE.__new__(module.NPUFusedMoE)
-    fused.moe_parallel_config = SimpleNamespace(use_ep=True)
-    module.tensor_model_parallel_all_reduce = MagicMock(return_value=torch.tensor([9.0]))
-
-    x = torch.tensor([1.0])
-    assert torch.equal(fused.maybe_all_reduce_tensor_model_parallel(x), x)
-    module.tensor_model_parallel_all_reduce.assert_not_called()
-
-    fused.moe_parallel_config.use_ep = False
-    y = fused.maybe_all_reduce_tensor_model_parallel(x)
-    module.tensor_model_parallel_all_reduce.assert_called_once_with(x)
-    assert torch.equal(y, torch.tensor([9.0]))
-
-
-@pytest.mark.unit
 def test_select_experts_custom_routing_function(layer_module):
     module, _, context_holder = layer_module
     context_holder.attn_metadata = {}
@@ -276,47 +359,25 @@ def test_select_experts_custom_routing_function(layer_module):
 def test_apply_slices_and_gathers_on_all2all(layer_module, monkeypatch):
     module, _, context_holder = layer_module
     context_holder.attn_metadata = {}
-    method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
-    method.tp_size = 2
-    method.tp_rank = 1
-    _stub_apply_prefetch_attrs(method, module, monkeypatch)
-    method.select_communication_strategy = MagicMock(return_value=("all2all", _DummyStrategy()))
-    method.apply_prepare_permute = MagicMock(
-        return_value=module.PreparePermuteResult(
-            hidden_states_sorted_by_experts=torch.ones(2, 4),
-            expert_tokens=torch.tensor([2], dtype=torch.int64),
-            dynamic_scale=None,
-        )
+    method = _make_unquantized_apply_method(
+        module,
+        monkeypatch,
+        tp_size=2,
+        tp_rank=1,
+        strategy="all2all",
+        experts_value=3.0,
+        finalize_value=4.0,
     )
-    method.apply_experts = MagicMock(return_value=torch.full((2, 4), 3.0))
-    method.apply_unpermute_finalize = MagicMock(return_value=torch.full((2, 4), 4.0))
     monkeypatch.setattr(
         module,
         "tensor_model_parallel_all_gather",
         lambda x, dim=0: torch.cat([x, x], dim=dim),
     )
-    monkeypatch.setattr(
-        module.NPUFusedMoE,
-        "select_experts",
-        MagicMock(
-            return_value=(
-                torch.ones(2, 1, dtype=torch.float32),
-                torch.zeros(2, 1, dtype=torch.int32),
-            )
-        ),
-    )
-
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
-        gate=None,
-        shared_experts=None,
-    )
-    output = method.apply(
-        layer=layer,
-        hidden_states=torch.arange(12, dtype=torch.float32).view(3, 4),
-        router_logits=torch.zeros(3, 2, dtype=torch.float32),
-        top_k=1,
-        renormalize=False,
+    output = _apply(
+        method,
+        _ep_layer(),
+        torch.arange(12, dtype=torch.float32).view(3, 4),
+        torch.zeros(3, 2, dtype=torch.float32),
     )
 
     assert output.shape == (3, 4)
@@ -327,47 +388,28 @@ def test_apply_slices_and_gathers_on_all2all(layer_module, monkeypatch):
 def test_apply_sorts_topk_when_precision_strong_consistency(layer_module, monkeypatch):
     module, _, context_holder = layer_module
     context_holder.attn_metadata = {}
-    method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
-    method.tp_size = 1
-    method.tp_rank = 0
-    _stub_apply_prefetch_attrs(method, module, monkeypatch)
-    method.select_communication_strategy = MagicMock(
-        return_value=("all2all", _DummyStrategy())
-    )
-    method.apply_prepare_permute = MagicMock(
-        return_value=module.PreparePermuteResult(
-            hidden_states_sorted_by_experts=torch.ones(2, 4),
-            expert_tokens=torch.tensor([2], dtype=torch.int64),
-            dynamic_scale=None,
-        )
-    )
-    method.apply_experts = MagicMock(return_value=torch.ones(2, 4))
-    method.apply_unpermute_finalize = MagicMock(return_value=torch.ones(2, 4))
-
     unsorted_ids = torch.tensor([[3, 1], [2, 0]], dtype=torch.int32)
     unsorted_weights = torch.tensor([[0.7, 0.3], [0.6, 0.4]], dtype=torch.float32)
-    monkeypatch.setattr(
-        module.NPUFusedMoE,
-        "select_experts",
-        MagicMock(return_value=(unsorted_weights.clone(), unsorted_ids.clone())),
+    method = _make_unquantized_apply_method(
+        module, monkeypatch, strategy="all2all", stub_select_experts=False
+    )
+    _stub_select_experts(
+        module,
+        monkeypatch,
+        weights=unsorted_weights.clone(),
+        ids=unsorted_ids.clone(),
     )
     monkeypatch.setattr(
         module.model_extra_config.operator_opt_config,
         "enable_precision_strong_consistency",
         True,
     )
-
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
-        gate=None,
-        shared_experts=None,
-    )
-    method.apply(
-        layer=layer,
-        hidden_states=torch.ones(2, 4),
-        router_logits=torch.zeros(2, 4),
+    _apply(
+        method,
+        _ep_layer(),
+        torch.ones(2, 4),
+        torch.zeros(2, 4),
         top_k=2,
-        renormalize=False,
     )
 
     topk_ids = method.apply_prepare_permute.call_args.args[3]
@@ -382,20 +424,9 @@ def test_apply_sorts_topk_when_precision_strong_consistency(layer_module, monkey
 def test_apply_agrs_overlaps_experts_while_metadata_stays_on_main_stream(layer_module, monkeypatch):
     module, _, context_holder = layer_module
     context_holder.attn_metadata = {}
-    method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
-    method.tp_size = 1
-    method.tp_rank = 0
-    _stub_apply_prefetch_attrs(method, module, monkeypatch)
+    method = _make_unquantized_apply_method(module, monkeypatch)
     events = []
     metadata = object()
-    method.select_communication_strategy = MagicMock(return_value=("agrs", _DummyStrategy()))
-    method.apply_prepare_permute = MagicMock(
-        return_value=module.PreparePermuteResult(
-            hidden_states_sorted_by_experts=torch.ones(2, 4),
-            expert_tokens=torch.tensor([2], dtype=torch.int64),
-            dynamic_scale=None,
-        )
-    )
     method.prepare_finalize_metadata = MagicMock(
         side_effect=lambda *args: events.append("metadata") or metadata
     )
@@ -409,29 +440,7 @@ def test_apply_agrs_overlaps_experts_while_metadata_stays_on_main_stream(layer_m
         return torch.full((2, 4), 3.0)
 
     method.apply_unpermute_finalize = MagicMock(side_effect=_finalize)
-    monkeypatch.setattr(
-        module.NPUFusedMoE,
-        "select_experts",
-        MagicMock(
-            return_value=(
-                torch.ones(2, 1, dtype=torch.float32),
-                torch.zeros(2, 1, dtype=torch.int32),
-            )
-        ),
-    )
-
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
-        gate=None,
-        shared_experts=None,
-    )
-    output = method.apply(
-        layer=layer,
-        hidden_states=torch.ones(2, 4),
-        router_logits=torch.zeros(2, 2, dtype=torch.float32),
-        top_k=1,
-        renormalize=False,
-    )
+    output = _apply(method, _ep_layer(), torch.ones(2, 4), torch.zeros(2, 2, dtype=torch.float32))
 
     assert torch.equal(output, torch.full((2, 4), 3.0))
     assert events == ["experts", "metadata", "finalize"]
@@ -442,51 +451,21 @@ def test_apply_agrs_overlaps_experts_while_metadata_stays_on_main_stream(layer_m
 def test_apply_with_gate_and_shared_experts_adds_plugin_output(layer_module, monkeypatch):
     module, _, context_holder = layer_module
     context_holder.attn_metadata = {}
-    method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
-    method.tp_size = 1
-    method.tp_rank = 0
-    _stub_apply_prefetch_attrs(method, module, monkeypatch)
-    method.select_communication_strategy = MagicMock(return_value=("agrs", _DummyStrategy()))
-    method.apply_prepare_permute = MagicMock(
-        return_value=module.PreparePermuteResult(
-            hidden_states_sorted_by_experts=torch.ones(2, 4),
-            expert_tokens=torch.tensor([2], dtype=torch.int64),
-            dynamic_scale=None,
-        )
-    )
-    method.apply_experts = MagicMock(return_value=torch.full((2, 4), 2.0))
-    method.apply_unpermute_finalize = MagicMock(return_value=torch.full((2, 4), 3.0))
+    method = _make_unquantized_apply_method(module, monkeypatch)
     monkeypatch.setattr(module, "named_stream", lambda _name: _DummyStream())
     monkeypatch.setattr(module.torch.npu, "current_stream", lambda: _DummyStream(), raising=False)
     monkeypatch.setattr(module.torch.npu, "stream", _stream_ctx, raising=False)
     monkeypatch.setenv("VLLM_PLUGINS", "omni_custom_models")
-    monkeypatch.setattr(
-        module.NPUFusedMoE,
-        "select_experts",
-        MagicMock(
-            return_value=(
-                torch.ones(2, 1, dtype=torch.float32),
-                torch.zeros(2, 1, dtype=torch.int32),
-            )
-        ),
-    )
 
-    def _gate(x):
-        return torch.zeros(x.shape[0], 2, dtype=torch.float32), None
+    def _shared(x):
+        return torch.full_like(x, 5.0)
 
-    shared = lambda x: torch.full_like(x, 5.0)
-    shared.gate_up_proj = SimpleNamespace(tp_size=1)
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
-        gate=_gate,
-        shared_experts=shared,
-    )
-    output = method.apply(
-        layer=layer,
-        hidden_states=torch.ones(2, 4, dtype=torch.float32),
-        router_logits=None,
-        top_k=1,
-        renormalize=False,
+    _shared.gate_up_proj = SimpleNamespace(tp_size=1)
+    output = _apply(
+        method,
+        _ep_layer(gate=_recording_gate([]), shared_experts=_shared),
+        torch.ones(2, 4, dtype=torch.float32),
+        None,
     )
     monkeypatch.delenv("VLLM_PLUGINS", raising=False)
 
@@ -500,20 +479,14 @@ def test_apply_with_gate_and_shared_experts_adds_plugin_output(layer_module, mon
 def test_apply_shared_experts_reduce_branch(layer_module, monkeypatch):
     module, _, context_holder = layer_module
     context_holder.attn_metadata = {}
-    method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
-    method.tp_size = 2
-    method.tp_rank = 1
-    _stub_apply_prefetch_attrs(method, module, monkeypatch)
-    method.select_communication_strategy = MagicMock(return_value=("all2all", _DummyStrategy()))
-    method.apply_prepare_permute = MagicMock(
-        return_value=module.PreparePermuteResult(
-            hidden_states_sorted_by_experts=torch.ones(2, 4),
-            expert_tokens=torch.tensor([2], dtype=torch.int64),
-            dynamic_scale=None,
-        )
+    method = _make_unquantized_apply_method(
+        module,
+        monkeypatch,
+        tp_size=2,
+        tp_rank=1,
+        strategy="all2all",
+        finalize_value=1.0,
     )
-    method.apply_experts = MagicMock(return_value=torch.full((2, 4), 2.0))
-    method.apply_unpermute_finalize = MagicMock(return_value=torch.full((2, 4), 1.0))
     monkeypatch.setattr(module, "named_stream", lambda _name: _DummyStream())
     monkeypatch.setattr(module.torch.npu, "current_stream", lambda: _DummyStream(), raising=False)
     monkeypatch.setattr(
@@ -523,16 +496,6 @@ def test_apply_shared_experts_reduce_branch(layer_module, monkeypatch):
     )
     all_reduce_mock = MagicMock(return_value=torch.full((2, 4), 6.0))
     monkeypatch.setattr(module, "tensor_model_parallel_all_reduce", all_reduce_mock)
-    monkeypatch.setattr(
-        module.NPUFusedMoE,
-        "select_experts",
-        MagicMock(
-            return_value=(
-                torch.ones(2, 1, dtype=torch.float32),
-                torch.zeros(2, 1, dtype=torch.int32),
-            )
-        ),
-    )
 
     hidden_states = torch.arange(12, dtype=torch.float32).view(3, 4)
     shared = MagicMock(return_value=torch.full((3, 4), 6.0))
@@ -585,7 +548,8 @@ def test_weight_loader_handles_transposed_weights(layer_module, monkeypatch):
 @pytest.mark.unit
 def test_forward_uses_expert_mask_when_rocm_enabled(layer_module, monkeypatch):
     module, _, _ = layer_module
-    fused = module.NPUFusedMoE.__new__(module.NPUFusedMoE)
+    fused = _bare_runner(module)
+    fused._shared_experts = None
     fused.shared_experts = None
     fused.layer_name = "dummy.layer"
     fused.quant_method = SimpleNamespace(apply=MagicMock(return_value=torch.ones(1, 2)))
@@ -644,20 +608,10 @@ def test_unquantized_method_init_sets_tp_info(layer_module, monkeypatch):
 def test_apply_slice_path_without_padding_slices_router_logits(layer_module, monkeypatch):
     module, _, context_holder = layer_module
     context_holder.attn_metadata = {}
-    method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
-    method.tp_size = 2
-    method.tp_rank = 1
-    _stub_apply_prefetch_attrs(method, module, monkeypatch)
-    method.select_communication_strategy = MagicMock(return_value=("all2all", _DummyStrategy()))
-    method.apply_prepare_permute = MagicMock(
-        return_value=module.PreparePermuteResult(
-            hidden_states_sorted_by_experts=torch.ones(2, 4),
-            expert_tokens=torch.tensor([2], dtype=torch.int64),
-            dynamic_scale=None,
-        )
+    method = _make_unquantized_apply_method(
+        module, monkeypatch, tp_size=2, tp_rank=1, strategy="all2all",
+        stub_select_experts=False,
     )
-    method.apply_experts = MagicMock(return_value=torch.full((2, 4), 2.0))
-    method.apply_unpermute_finalize = MagicMock(return_value=torch.full((2, 4), 3.0))
     monkeypatch.setattr(
         module,
         "tensor_model_parallel_all_gather",
@@ -669,20 +623,13 @@ def test_apply_slice_path_without_padding_slices_router_logits(layer_module, mon
             torch.zeros(2, 1, dtype=torch.int32),
         )
     )
-    monkeypatch.setattr(module.NPUFusedMoE, "select_experts", select_mock)
-
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
-        gate=None,
-        shared_experts=None,
-    )
+    monkeypatch.setattr(module.NPUFusedMoERunner, "select_experts", select_mock)
     router_logits = torch.arange(16, dtype=torch.float32).view(4, 4)
-    out = method.apply(
-        layer=layer,
-        hidden_states=torch.arange(16, dtype=torch.float32).view(4, 4),
-        router_logits=router_logits,
-        top_k=1,
-        renormalize=False,
+    out = _apply(
+        method,
+        _ep_layer(),
+        torch.arange(16, dtype=torch.float32).view(4, 4),
+        router_logits,
     )
 
     assert out.shape == (4, 4)
@@ -849,24 +796,30 @@ def test_process_weights_after_loading_transposes_and_marks(layer_module, monkey
 @pytest.mark.unit
 def test_fused_moe_init_sets_gate_and_strategy_selector(layer_module, monkeypatch):
     module, _, _ = layer_module
-    selector_mock = MagicMock()
-
-    def _fake_super_init(self, *args, **kwargs):
-        self.quant_method = SimpleNamespace(make_communication_strategy_selector=selector_mock)
-
-    monkeypatch.setattr(module.FusedMoE, "__init__", _fake_super_init, raising=False)
     gate_obj = object()
     fused = module.NPUFusedMoE(gate=gate_obj)
 
     assert fused.gate is gate_obj
-    assert fused.is_internal_router is True
-    selector_mock.assert_called_once_with(fused)
+    assert fused.runner_cls is module.NPUFusedMoERunner
+
+    selector_mock = MagicMock()
+
+    def _fake_super_init(self, *args, **kwargs):
+        self.routed_experts = SimpleNamespace(
+            quant_method=SimpleNamespace(
+                make_communication_strategy_selector=selector_mock
+            )
+        )
+
+    monkeypatch.setattr(module.MoERunner, "__init__", _fake_super_init, raising=False)
+    runner = module.NPUFusedMoERunner()
+    selector_mock.assert_called_once_with(runner)
 
 
 @pytest.mark.unit
 def test_weight_loader_skips_non_local_expert(layer_module):
     module, _, _ = layer_module
-    fused = module.NPUFusedMoE.__new__(module.NPUFusedMoE)
+    fused = _bare_runner(module)
     fused.enable_eplb = False
     fused.tp_rank = 0
     fused._map_global_expert_id_to_local_expert_id = lambda eid: -1
@@ -923,13 +876,18 @@ def test_weight_loader_handles_non_full_load_transposed_branch(layer_module, mon
 @pytest.mark.unit
 def test_weight_loader_bias_branch_channel_quant(layer_module, monkeypatch):
     module, _, _ = layer_module
-    fused = module.NPUFusedMoE.__new__(module.NPUFusedMoE)
+    fused = _bare_runner(module)
     fused.enable_eplb = False
     fused.tp_rank = 0
     fused._map_global_expert_id_to_local_expert_id = lambda eid: eid
-    fused._transpose_if_needed = lambda p: None
     load_called = {}
-    fused._load_per_channel_weight_scale = lambda **kw: load_called.update(kw)
+
+    def _load_per_channel_weight_scale(**kwargs):
+        load_called.update(kwargs)
+
+    fused.routed_experts = SimpleNamespace(
+        _load_per_channel_weight_scale=_load_per_channel_weight_scale
+    )
 
     param = torch.nn.Parameter(torch.zeros(2, 4, dtype=torch.float32))
     setattr(param, "quant_method", "channel")
@@ -952,7 +910,7 @@ def test_weight_loader_bias_branch_channel_quant(layer_module, monkeypatch):
 @pytest.mark.unit
 def test_maybe_init_modular_kernel_returns_none(layer_module):
     module, _, _ = layer_module
-    fused = module.NPUFusedMoE.__new__(module.NPUFusedMoE)
+    fused = _bare_runner(module)
     assert fused.maybe_init_modular_kernel() is None
 
 
@@ -996,58 +954,10 @@ def test_select_experts_default_path_with_renormalize(layer_module):
 @pytest.mark.unit
 def test_apply_router_gating_in_fp32_casts_input_to_float32(layer_module, monkeypatch):
     """When router_gating_in_fp32=True, gate input should be cast to float32."""
-    module, _, context_holder = layer_module
-    context_holder.attn_metadata = {}
-    method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
-    method.tp_size = 1
-    method.tp_rank = 0
-    _stub_apply_prefetch_attrs(method, module, monkeypatch)
-    method.select_communication_strategy = MagicMock(return_value=("agrs", _DummyStrategy()))
-    method.apply_prepare_permute = MagicMock(
-        return_value=module.PreparePermuteResult(
-            hidden_states_sorted_by_experts=torch.ones(2, 4),
-            expert_tokens=torch.tensor([2], dtype=torch.int64),
-            dynamic_scale=None,
-        )
+    method, layer, gate_calls = _gated_apply_setup(
+        layer_module, monkeypatch, router_gating_in_fp32=True
     )
-    method.apply_experts = MagicMock(return_value=torch.full((2, 4), 2.0))
-    method.apply_unpermute_finalize = MagicMock(return_value=torch.full((2, 4), 3.0))
-    monkeypatch.setattr(
-        module.NPUFusedMoE,
-        "select_experts",
-        MagicMock(
-            return_value=(
-                torch.ones(2, 1, dtype=torch.float32),
-                torch.zeros(2, 1, dtype=torch.int32),
-            )
-        ),
-    )
-
-    # Enable router_gating_in_fp32
-    monkeypatch.setattr(
-        module.model_extra_config.operator_opt_config,
-        "router_gating_in_fp32",
-        True,
-    )
-
-    gate_calls = []
-    def _gate(x):
-        gate_calls.append(x)
-        return torch.zeros(x.shape[0], 2, dtype=torch.float32), None
-
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
-        gate=_gate,
-        shared_experts=None,
-    )
-    hidden_states = torch.ones(2, 4, dtype=torch.float16)
-    method.apply(
-        layer=layer,
-        hidden_states=hidden_states,
-        router_logits=None,
-        top_k=1,
-        renormalize=False,
-    )
+    _apply(method, layer, torch.ones(2, 4, dtype=torch.float16), None)
 
     assert len(gate_calls) == 1
     assert gate_calls[0].dtype == torch.float32, (
@@ -1056,62 +966,49 @@ def test_apply_router_gating_in_fp32_casts_input_to_float32(layer_module, monkey
 
 
 @pytest.mark.unit
-def test_apply_router_gating_not_fp32_keeps_input_dtype(layer_module, monkeypatch):
-    """When router_gating_in_fp32=False, gate input should keep its original dtype."""
-    module, _, context_holder = layer_module
-    context_holder.attn_metadata = {}
-    method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
-    method.tp_size = 1
-    method.tp_rank = 0
-    _stub_apply_prefetch_attrs(method, module, monkeypatch)
-    method.select_communication_strategy = MagicMock(return_value=("agrs", _DummyStrategy()))
-    method.apply_prepare_permute = MagicMock(
-        return_value=module.PreparePermuteResult(
-            hidden_states_sorted_by_experts=torch.ones(2, 4),
-            expert_tokens=torch.tensor([2], dtype=torch.int64),
-            dynamic_scale=None,
-        )
-    )
-    method.apply_experts = MagicMock(return_value=torch.full((2, 4), 2.0))
-    method.apply_unpermute_finalize = MagicMock(return_value=torch.full((2, 4), 3.0))
-    monkeypatch.setattr(
-        module.NPUFusedMoE,
-        "select_experts",
-        MagicMock(
-            return_value=(
-                torch.ones(2, 1, dtype=torch.float32),
-                torch.zeros(2, 1, dtype=torch.int32),
-            )
-        ),
-    )
-
-    # Disable router_gating_in_fp32
-    monkeypatch.setattr(
-        module.model_extra_config.operator_opt_config,
-        "router_gating_in_fp32",
-        False,
-    )
-
-    gate_calls = []
-    def _gate(x):
-        gate_calls.append(x)
-        return torch.zeros(x.shape[0], 2, dtype=torch.float32), None
-
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
-        gate=_gate,
-        shared_experts=None,
+def test_precomputed_router_logits_priority_is_opt_in(
+    layer_module, monkeypatch
+):
+    """A layer gate wins by default; explicit opt-in uses supplied logits."""
+    method, layer, gate_calls = _gated_apply_setup(
+        layer_module, monkeypatch, router_gating_in_fp32=False
     )
     hidden_states = torch.ones(2, 4, dtype=torch.float16)
-    method.apply(
-        layer=layer,
-        hidden_states=hidden_states,
-        router_logits=None,
-        top_k=1,
-        renormalize=False,
-    )
+    precomputed_router_logits = torch.full((2, 2), 7.0)
+    _apply(method, layer, hidden_states, precomputed_router_logits)
 
     assert len(gate_calls) == 1
     assert gate_calls[0].dtype == torch.float16, (
         f"Expected gate input dtype float16, got {gate_calls[0].dtype}"
     )
+    gate_calls.clear()
+    layer.use_precomputed_router_logits = True
+    _apply(method, layer, hidden_states, precomputed_router_logits)
+
+    assert gate_calls == []
+
+
+@pytest.mark.unit
+def test_apply_uses_fp32_input_when_gate_weight_is_fp32(
+    layer_module, monkeypatch
+):
+    method, layer, _gate_calls = _gated_apply_setup(
+        layer_module, monkeypatch, router_gating_in_fp32=False
+    )
+
+    class FP32Gate:
+        weight = torch.empty(2, 4, dtype=torch.float32)
+
+        def __init__(self):
+            self.inputs = []
+
+        def __call__(self, value):
+            self.inputs.append(value)
+            return torch.zeros(value.shape[0], 2), None
+
+    gate = FP32Gate()
+    layer.gate = gate
+    _apply(method, layer, torch.ones(2, 4, dtype=torch.bfloat16), None)
+
+    assert len(gate.inputs) == 1
+    assert gate.inputs[0].dtype == torch.float32

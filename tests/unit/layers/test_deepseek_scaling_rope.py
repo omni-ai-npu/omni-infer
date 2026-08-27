@@ -21,8 +21,20 @@ from omni_npu.layers.rotary_embedding.deepseek_scaling_rope import (
     NPUDeepseekScalingRotaryEmbedding,
 )
 
-torch.set_default_device("npu")
-platforms.current_platform = NPUPlatform()
+
+@pytest.fixture(scope="module", autouse=True)
+def _module_default_device_npu():
+    # Save/restore global state: module-level set_default_device without
+    # restore leaks NPU as the default device into tests collected later.
+    prev_device = (
+        torch.get_default_device() if hasattr(torch, "get_default_device") else "cpu"
+    )
+    prev_platform = platforms.current_platform
+    torch.set_default_device("npu")
+    platforms.current_platform = NPUPlatform()
+    yield
+    torch.set_default_device(prev_device)
+    platforms.current_platform = prev_platform
 
 
 def _require_npu() -> torch.device:

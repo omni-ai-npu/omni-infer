@@ -29,6 +29,9 @@ class _DummyDefaultStream:
 @pytest.fixture
 def rejection_mod(monkeypatch):
     fake_default_stream = _DummyDefaultStream()
+    # Streams are dummied out in these tests; no-op Tensor.record_stream so
+    # real tensors can flow through code that records cross-stream usage.
+    monkeypatch.setattr(torch.Tensor, "record_stream", lambda self, stream: None)
     # Load real torch_npu first so package submodules (e.g. _inductor) stay
     # importable after we overlay a lightweight stub for unit tests.
     import torch_npu as real_torch_npu  # noqa: F401
@@ -442,7 +445,41 @@ def test_rejection_sample_random_path_invokes_helpers(rejection_mod, monkeypatch
 
     monkeypatch.setattr(mod, "rejection_random_sample_native", fake_rejection_random_sample_native)
 
-    out = mod.rejection_sample(
+    out = mod.rejection_sample(**_rejection_sample_kwargs(mod))
+
+    assert called["sample_recovered_tokens_called"] is True
+    assert called["random_called"] is True
+    assert called["no_draft_probs"] is True
+    assert torch.equal(out, torch.tensor([[4, 5, 6]], dtype=torch.int32))
+
+
+def _patch_tracking_stream_ctx(mod, monkeypatch, fake_default_stream, state):
+    """Replace mod.torch.npu with a version whose stream() context manager
+    tracks entry/exit depth in state, so tests can assert whether a call or
+    allocation happened inside the side-stream context."""
+
+    class _TrackingStreamCtx:
+        def __enter__(self):
+            state["depth"] += 1
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            state["depth"] -= 1
+            return False
+
+    monkeypatch.setattr(
+        mod.torch,
+        "npu",
+        SimpleNamespace(
+            current_stream=lambda: fake_default_stream,
+            stream=lambda s=None: _TrackingStreamCtx(),
+        ),
+        raising=False,
+    )
+
+
+def _rejection_sample_kwargs(mod):
+    return dict(
         draft_token_ids=torch.tensor([1, 2], dtype=torch.int32),
         num_draft_tokens=[2],
         max_spec_len=2,
@@ -459,10 +496,112 @@ def test_rejection_sample_random_path_invokes_helpers(rejection_mod, monkeypatch
         stream=_DummyDefaultStream(),
     )
 
-    assert called["sample_recovered_tokens_called"] is True
-    assert called["random_called"] is True
-    assert called["no_draft_probs"] is True
-    assert torch.equal(out, torch.tensor([[4, 5, 6]], dtype=torch.int32))
+
+def test_rejection_sample_multi_stream_side_ctx_and_record_stream(rejection_mod, monkeypatch):
+    """sampler_multi_stream=True: produce uniform_probs on the side stream."""
+    mod, _, fake_default_stream = rejection_mod
+    state = {"depth": 0}
+    _patch_tracking_stream_ctx(mod, monkeypatch, fake_default_stream, state)
+    recorded = []
+    monkeypatch.setattr(
+        torch.Tensor,
+        "record_stream",
+        lambda self, stream: recorded.append((self, stream)),
+    )
+    produced = {}
+
+    def fake_generate_uniform_probs(*args, **kwargs):
+        produced["in_side_ctx"] = state["depth"] > 0
+        produced["uniform_probs"] = torch.tensor([0.2, 0.9], dtype=torch.float32)
+        return produced["uniform_probs"]
+
+    monkeypatch.setattr(mod, "generate_uniform_probs", fake_generate_uniform_probs)
+    monkeypatch.setattr(
+        mod,
+        "sample_recovered_tokens",
+        lambda *args, **kwargs: torch.tensor([4, 5], dtype=torch.int32),
+    )
+    monkeypatch.setattr(mod, "rejection_random_sample_native", lambda *args, **kwargs: None)
+
+    mod.rejection_sample(**_rejection_sample_kwargs(mod))
+
+    assert produced["in_side_ctx"] is True
+    assert (produced["uniform_probs"], fake_default_stream) in recorded
+
+
+def _sample_recovered_tokens_kwargs():
+    return dict(
+        max_spec_len=2,
+        num_draft_tokens=[2],
+        cu_num_draft_tokens=torch.tensor([2], dtype=torch.int64),
+        draft_token_ids=torch.tensor([1, 2], dtype=torch.int32),
+        draft_probs=None,
+        target_probs=torch.tensor([[0.6, 0.4], [0.3, 0.7]], dtype=torch.float32),
+        sampling_metadata=SimpleNamespace(generators={}),
+        device=torch.device("cpu"),
+        stream=_DummyDefaultStream(),
+    )
+
+
+def test_sample_recovered_tokens_multi_stream_side_ctx_and_record_stream(rejection_mod, monkeypatch):
+    """sampler_multi_stream=True: allocate recovered-token noise on the side stream."""
+    mod, _, fake_default_stream = rejection_mod
+    state = {"depth": 0}
+    _patch_tracking_stream_ctx(mod, monkeypatch, fake_default_stream, state)
+    recorded = []
+    monkeypatch.setattr(
+        torch.Tensor,
+        "record_stream",
+        lambda self, stream: recorded.append((self, stream)),
+    )
+    allocated = {"noise_on_side": False}
+    real_empty = torch.empty
+
+    def tracking_empty(*args, **kwargs):
+        tensor = real_empty(*args, **kwargs)
+        if state["depth"] > 0 and tensor.dtype == torch.float32:
+            allocated["noise_on_side"] = True
+            allocated["noise"] = tensor
+        return tensor
+
+    monkeypatch.setattr(mod.torch, "empty", tracking_empty)
+    captured = {}
+
+    def fake_native(recovered_token_ids, cu_num_draft_tokens, draft_token_ids,
+                    draft_probs, target_probs, q, vocab_size, PADDED_VOCAB_SIZE,
+                    NO_DRAFT_PROBS):
+        captured["q"] = q
+
+    monkeypatch.setattr(mod, "sample_recovered_tokens_native", fake_native)
+
+    mod.sample_recovered_tokens(**_sample_recovered_tokens_kwargs())
+
+    assert allocated["noise_on_side"] is True
+    assert (captured["q"], fake_default_stream) in recorded
+
+
+def test_sample_recovered_tokens_single_stream_no_record_stream(rejection_mod, monkeypatch):
+    """sampler_multi_stream=False: noise stays on the current stream."""
+    mod, _, fake_default_stream = rejection_mod
+    monkeypatch.setattr(
+        mod,
+        "model_extra_config",
+        SimpleNamespace(
+            operator_opt_config=SimpleNamespace(sampler_multi_stream=False)
+        ),
+    )
+    recorded = []
+    monkeypatch.setattr(
+        torch.Tensor,
+        "record_stream",
+        lambda self, stream: recorded.append((self, stream)),
+    )
+    monkeypatch.setattr(mod, "sample_recovered_tokens_native", lambda *args, **kwargs: None)
+
+    mod.sample_recovered_tokens(**_sample_recovered_tokens_kwargs())
+
+    assert recorded == []
+    assert fake_default_stream.waited_streams == []
 
 
 @dataclass
@@ -472,7 +611,7 @@ class _ForwardSamplingMetadata:
     generators: dict = field(default_factory=dict)
 
 
-def _build_npu_rejection_sampler(mod, monkeypatch, enable_mtp_invariant=False):
+def _build_npu_rejection_sampler(mod, monkeypatch, enable_mtp_invariant=False, sampler_multi_stream=True):
     monkeypatch.setattr(mod, "on_ascend950", lambda: False)
     monkeypatch.setattr(
         mod,
@@ -481,6 +620,7 @@ def _build_npu_rejection_sampler(mod, monkeypatch, enable_mtp_invariant=False):
             operator_opt_config=SimpleNamespace(
                 disable_npu_top_k_top_p_sample=False,
                 enable_mtp_invariant=enable_mtp_invariant,
+                sampler_multi_stream=sampler_multi_stream,
             )
         ),
     )
@@ -605,7 +745,25 @@ def test_npu_rejection_sampler_forward_skips_logprobs_when_max_num_logprobs_none
     assert torch.equal(out.sampled_token_ids, output_ids)
 
 
-def test_select_tokens_by_accepted_returns_accepted_num(rejection_mod):
+def test_npu_rejection_sampler_forward_single_stream_when_switch_off(
+    rejection_mod, monkeypatch
+):
+    """sampler_multi_stream=False: noise is generated on the current stream, the dsa side stream is never touched."""
+    mod, _, _ = rejection_mod
+    rejection = _build_npu_rejection_sampler(mod, monkeypatch, sampler_multi_stream=False)
+    metadata = _build_spec_decode_metadata()
+    output_ids = torch.tensor([[1, mod.PLACEHOLDER_TOKEN_ID]], dtype=torch.int32)
+    _patch_npu_rejection_forward_deps(mod, rejection, monkeypatch, output_ids)
+
+    out = rejection.forward(
+        metadata=metadata,
+        draft_probs=None,
+        logits=torch.randn(2, 4),
+        sampling_metadata=_ForwardSamplingMetadata(max_num_logprobs=None),
+    )
+
+    assert torch.equal(out.sampled_token_ids, output_ids)
+    assert rejection.dsa_stream.waited_streams == []
     mod, _, _ = rejection_mod
     output = torch.full((2, 3), mod.PLACEHOLDER_TOKEN_ID, dtype=torch.int32)
     accepted = torch.tensor([True, False, True], dtype=torch.bool)

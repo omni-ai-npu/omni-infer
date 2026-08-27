@@ -59,7 +59,13 @@ from omni_npu.compilation.utils import (
     capture_graph_task,
 )
 from omni_npu.model_config.config_loader.loader import model_extra_config
+from omni_npu.layers.mhc.mhc_deferred import (
+    attention_mhc_deferred_fake,
+    call_attention_mhc_deferred,
+)
+from omni_npu.layers.utils import SIDE_STREAM_NAME, named_stream
 from omni_npu.plugin_decorators import attn_decorator
+from omni_npu.v1.layers.attention.weight_utils import install_q_b_split_loaders
 from omni_npu.v1.layers.linear import (
     ColumnParallelFlashCommLinear,
     RowParallelFlashCommLinear,
@@ -111,6 +117,13 @@ class MomeAttentionMixin:
                 out = split_tensor_along_last_dim(out, num_partitions=self.o_proj.tp_size)
                 out = out[self.o_proj.tp_rank].contiguous()
         return out
+
+    def _decode_attn_epilog(self, out: torch.Tensor, get_mome_args) -> torch.Tensor:
+        """Deferred callback, absorb/MoME epilog, and the output projection."""
+        self._run_pre_epilog_callback()
+        out = self._post_attn_absorb(out)
+        out = self._maybe_mome_out(out, get_mome_args)
+        return self.o_proj(out)[0]
 
 
 class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
@@ -174,6 +187,11 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         ) and not (self.param_sink_number > 0 and self.on_ascend950)
         self.use_mome = getattr(config, "use_mome", False)
         self.noncontiguous_kv = model_extra_config.operator_opt_config.use_noncontiguous_kv
+        self.enable_decode_multi_stream = model_extra_config.operator_opt_config.enable_multi_stream
+        self.split_q_up_in_multistream = (
+            self.enable_decode_multi_stream
+            and model_extra_config.operator_opt_config.split_q_up_in_multistream
+        )
         self.num_spec_tokens = (
             vllm_config.speculative_config.num_speculative_tokens if vllm_config.speculative_config is not None else 0
         )
@@ -193,6 +211,28 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.q_b_proj",
         )
+        if self.split_q_up_in_multistream:
+            self.q_b_nope_proj = ColumnParallelFlashCommLinear(
+                self.q_lora_rank,
+                self.num_heads * self.qk_nope_head_dim,
+                bias=False,
+                quant_config=quant_config,
+                prefix=f"{prefix}.q_b_nope_proj",
+            )
+            self.q_b_pe_proj = ColumnParallelFlashCommLinear(
+                self.q_lora_rank,
+                self.num_heads * self.qk_rope_head_dim,
+                bias=False,
+                quant_config=quant_config,
+                prefix=f"{prefix}.q_b_pe_proj",
+            )
+            install_q_b_split_loaders(
+                self.q_b_proj,
+                self.q_b_nope_proj,
+                self.q_b_pe_proj,
+                self.qk_head_dim,
+                self.qk_nope_head_dim,
+            )
 
         self.kv_a_proj_with_mqa = ReplicatedLinear(
             self.hidden_size,
@@ -370,6 +410,12 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         compilation_config.static_forward_context[prefix] = self
 
         self.post_weight_load()
+        self.side_stream = (
+            named_stream(SIDE_STREAM_NAME)
+            if self.enable_decode_multi_stream
+            else None
+        )
+        self.pre_epilog_callback = None
 
     @staticmethod
     def _to_metadata_pre_tokens(sliding_window: int | None) -> int:
@@ -551,8 +597,12 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         q = self.q_b_proj(q_lora)[0].view(tok, -1, Q + R)  # TND
         q_nope, q_pe = torch.split(q, [Q, R], dim=-1)  # TND
         q_pe = self._apply_rope(q_pe, cos, sin)  # TND
+        if q_nope.size(1) * q_nope.size(2) < 65536:
+            args = {"input": q_nope, "perm_x1": (1, 0, 2)}
+        else:  # perm_x1 only support batch*k < 65536
+            args = {"input": q_nope.transpose(0, 1)}
         q_nope = torch_npu.npu_transpose_batchmatmul(
-            q_nope.transpose(0, 1),  # TND -> NTD
+            **args,  # TND -> NTD
             weight=self.attn.impl.W_UK_T,  # [Q, L]
             perm_y=(1, 0, 2),  # NTD -> TND
         )
@@ -1443,8 +1493,57 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
 
     # ========================= forward =========================
 
+    def _run_pre_epilog_callback(self) -> None:
+        """Run and clear deferred work before the MLA output epilog."""
+        if self.pre_epilog_callback is None:
+            return
+        callback = self.pre_epilog_callback
+        self.pre_epilog_callback = None
+        callback()
+
     def forward(self, x, cos, sin):  # adapter
         return torch.ops.vllm.npu_mla_forward(x, cos, sin, self.prefix)
+
+    def forward_mhc_deferred(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        residual: torch.Tensor,
+        mhc_layer_name: str,
+        task_key: str,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return torch.ops.vllm.npu_mla_forward_mhc_deferred(
+            x,
+            cos,
+            sin,
+            residual,
+            self.prefix,
+            mhc_layer_name,
+            task_key,
+        )
+
+    def _decode_attention(
+        self,
+        q_nope: torch.Tensor,
+        q_pe: torch.Tensor,
+        kv_cache: torch.Tensor,
+        attn_metadata: "NPUMLADecodeMetadata",
+        get_mome_args,
+    ) -> torch.Tensor:
+        out = self._apply_attention(
+            q_nope,
+            q_pe,  # TND
+            kv_cache,  # PA, absorb
+            q_cumlens=attn_metadata.query_cumlens,
+            kv_lens=attn_metadata.seq_lens,
+            block_table=attn_metadata.block_table,
+            num_tokens=q_nope.size(0),
+            layer_name=f"{self.prefix}.attn", # for capture
+            attn_metadata=attn_metadata,
+            metadata_caller="decode",
+        ) # -> NTD
+        return self._decode_attn_epilog(out, get_mome_args)
 
     def _forward_decode(
         self,
@@ -1455,6 +1554,9 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         pd_mixed_flag: int = 0,
     ) -> torch.Tensor:
         assert attn_metadata is not None
+        if self.side_stream is not None:
+            return self._forward_decode_multistream(x, cos, sin, attn_metadata, pd_mixed_flag)
+
         kv_cache = self.attn.kv_cache[get_forward_context().virtual_engine]
 
         def get_mome_args():
@@ -1477,21 +1579,99 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         kv = self._maybe_mome_kv(kv, get_mome_args)  # TD
         self._kv_norm_rope_cache(kv, cos, sin, attn_metadata, kv_cache)
 
-        out = self._apply_attention(
-            q_nope,
-            q_pe,  # TND
-            kv_cache,  # PA, absorb
-            q_cumlens=attn_metadata.query_cumlens,
-            kv_lens=attn_metadata.seq_lens,
-            block_table=attn_metadata.block_table,
-            num_tokens=q_nope.size(0),
-            layer_name=f"{self.prefix}.attn", # for capture
-            attn_metadata=attn_metadata,
-            metadata_caller="decode",
-        ) # -> NTD
-        out = self._post_attn_absorb(out) # NTD -> T,ND
-        out = self._maybe_mome_out(out, get_mome_args) # [T, ND]
-        return self.o_proj(out)[0] # TD
+        return self._decode_attention(q_nope, q_pe, kv_cache, attn_metadata, get_mome_args)
+
+    def _forward_decode_multistream(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        attn_metadata: "NPUMLADecodeMetadata",
+        pd_mixed_flag: int = 0,
+    ) -> torch.Tensor:
+        """Overlap the decode Q path with KV/MoME/cache update on a side stream."""
+        kv_cache = self.attn.kv_cache[get_forward_context().virtual_engine]
+
+        def get_mome_args():
+            if self.noncontiguous_kv:
+                return {}
+            return {
+                "force_decode": pd_mixed_flag == 1,
+                "short_prefill": pd_mixed_flag == 2,
+            }
+
+        x = self._maybe_quant(x)
+        main_stream = torch.npu.current_stream()
+        side_stream = self.side_stream
+        input_ready = torch.npu.Event()
+        input_ready.record()
+        if isinstance(x, dict):
+            for value in x.values():
+                if isinstance(value, torch.Tensor):
+                    value.record_stream(side_stream)
+        else:
+            x.record_stream(side_stream)
+        cos.record_stream(side_stream)
+        sin.record_stream(side_stream)
+
+        with torch.npu.npugraph_ex.scope.limit_core_num(16, 24):
+            q_lora = self.q_a_proj(x)[0]
+            q_lora = self._maybe_mome_q(q_lora, get_mome_args)
+            q_lora = self.q_a_layernorm(q_lora)
+
+            if self.split_q_up_in_multistream:
+                q_lora_ready = torch.npu.Event()
+                q_lora_ready.record()
+                q_lora.record_stream(side_stream)
+                q_nope = self.q_b_nope_proj(q_lora)[0].view(
+                    -1, self.num_local_heads, self.qk_nope_head_dim
+                )
+            else:
+                q = self.q_b_proj(q_lora)[0].view(
+                    -1, self.num_local_heads, self.qk_head_dim
+                )
+                q_nope, q_pe = torch.split(
+                    q,
+                    [self.qk_nope_head_dim, self.qk_rope_head_dim],
+                    dim=-1,
+                )
+                q_nope = q_nope.contiguous()
+                q_pe = q_pe.contiguous()
+                q_pe_ready = torch.npu.Event()
+                q_pe_ready.record()
+                q_pe.record_stream(side_stream)
+
+            if q_nope.size(1) * q_nope.size(2) < 65536:
+                args = {"input": q_nope, "perm_x1": (1, 0, 2)}
+            else:  # perm_x1 only support batch*k < 65536
+                args = {"input": q_nope.transpose(0, 1)}
+            q_nope = torch_npu.npu_transpose_batchmatmul(
+                **args,
+                weight=self.attn.impl.W_UK_T,
+                perm_y=(1, 0, 2),
+            )
+
+        with torch.npu.stream(side_stream):
+            input_ready.wait(side_stream)
+            with torch.npu.npugraph_ex.scope.limit_core_num(8, 24):
+                kv = self.kv_a_proj_with_mqa(x)[0]
+                kv = self._maybe_mome_kv(kv, get_mome_args)
+                self._kv_norm_rope_cache(kv, cos, sin, attn_metadata, kv_cache)
+
+                if self.split_q_up_in_multistream:
+                    q_lora_ready.wait(side_stream)
+                    q_pe = self.q_b_pe_proj(q_lora)[0].view(
+                        -1, self.num_local_heads, self.qk_rope_head_dim
+                    )
+                else:
+                    q_pe_ready.wait(side_stream)
+                q_pe = self._apply_rope(q_pe, cos, sin)
+            side_done = torch.npu.Event()
+            side_done.record()
+
+        side_done.wait(main_stream)
+        q_pe.record_stream(main_stream)
+        return self._decode_attention(q_nope, q_pe, kv_cache, attn_metadata, get_mome_args)
 
     def _forward_prefill(
         self,
@@ -1711,6 +1891,30 @@ def npu_mla_forward_fake(
 ) -> torch.Tensor:
     return torch.empty_like(hidden_states)
 
+
+def npu_mla_forward_mhc_deferred(
+    hidden_states: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    residual: torch.Tensor,
+    layer_name: str,
+    mhc_layer_name: str,
+    task_key: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Launch next-layer MHC work between attention and the MLA epilog."""
+    return call_attention_mhc_deferred(
+        npu_mla_forward, hidden_states, cos, sin, residual,
+        layer_name, mhc_layer_name, task_key,
+    )
+
+
+direct_register_custom_op(
+    op_name="npu_mla_forward_mhc_deferred",
+    op_func=npu_mla_forward_mhc_deferred,
+    mutates_args=[],
+    fake_impl=attention_mhc_deferred_fake,
+    dispatch_key="PrivateUse1",
+)
 
 direct_register_custom_op(
     op_name="npu_mla_forward",

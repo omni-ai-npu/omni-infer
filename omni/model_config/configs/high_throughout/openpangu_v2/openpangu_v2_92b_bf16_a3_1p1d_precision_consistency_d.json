@@ -29,7 +29,8 @@
                     "tp_size_or_ranks": 4
                 }
             }
-        }
+        },
+        "enable_aicpu_dp_sync": true
     },
     "operator_optimization_config": {
         "use_noncontiguous_kv": true,
@@ -43,8 +44,14 @@
         "use_batch_invariant_op": true,
         "router_gating_in_fp32": true,
         "use_aicpu_fa_tiling": true,
-        "enable_mtp_invariant": false,
+        "enable_mtp_invariant": true,
         "lmhead_fp32": false,
-        "enable_precision_strong_consistency": true
+        "enable_precision_strong_consistency": true,
+        "enable_multi_stream": true,
+        "split_q_up_in_multistream": true,
+        "enable_mhc_multistream": true,
+        "use_mhc_fusion_op": false,
+        "use_rope_fusion_op": false,
+        "sampler_multi_stream": false
     }
 }

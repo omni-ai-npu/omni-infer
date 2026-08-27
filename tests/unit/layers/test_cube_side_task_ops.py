@@ -58,7 +58,8 @@ def cube_side_task_ops(monkeypatch):
 
     layer_utils_module.CubeSideTask = _CubeSideTask
     layer_utils_module.CUBE_SIDE_TASKS_KEY = "cube_side_tasks"
-    layer_utils_module.CUBE_SIDE_STREAM_NAME = "cube_side_task"
+    layer_utils_module.SIDE_STREAM_NAME = "side_stream"
+    layer_utils_module.CUBE_SIDE_STREAM_NAME = layer_utils_module.SIDE_STREAM_NAME
     layer_utils_module.named_stream = lambda _name: SimpleNamespace(
         wait_stream=lambda *_a: None,
         wait_event=lambda *_a: None,
@@ -300,3 +301,33 @@ def test_cube_side_fake_impls_pass_through(cube_side_task_ops):
     assert module.cube_side_run_fake("k", x) is x
     y = torch.zeros(3)
     assert module.cube_side_wait_fake("k", y) is y
+
+
+def test_register_accepts_direct_mhc_layer(cube_side_task_ops):
+    module, fwctx = cube_side_task_ops
+    mhc = SimpleNamespace(mhc_sinkhorn=lambda value: value + 1)
+    fwctx.no_compile_layers["direct.layer"] = mhc
+
+    h_res = torch.zeros(2)
+    returned = module.mhc_register("direct.layer", "direct.key", h_res)
+
+    assert returned is h_res
+    assert "direct.key" in fwctx.additional_kwargs[module.CUBE_SIDE_TASKS_KEY]
+    assert "direct.key" in fwctx.additional_kwargs[module.MHC_HOLDER_KEY]
+
+
+def test_fetch_executes_unconsumed_pending_task(cube_side_task_ops):
+    module, fwctx = cube_side_task_ops
+    post_value = torch.tensor([7.0])
+    sinkhorn = MagicMock(return_value=post_value)
+    fwctx.no_compile_layers["layer"] = SimpleNamespace(
+        mhc_module=SimpleNamespace(mhc_sinkhorn=sinkhorn)
+    )
+    h_res = torch.zeros(1)
+    module.mhc_register("layer", "pending.key", h_res)
+
+    fetched = module.mhc_fetch("pending.key", torch.tensor([-1.0]))
+
+    sinkhorn.assert_called_once_with(h_res)
+    assert fetched is post_value
+    assert "pending.key" not in fwctx.additional_kwargs[module.CUBE_SIDE_TASKS_KEY]

@@ -10,6 +10,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from tests.unit.layers.test_attn_unit_helpers import (
+    mock_torch_npu_stream as _mock_torch_npu_stream,
+    run_maybe_mome_out_partition_case,
+)
+
 MLA_MODULE = "omni_npu.v1.layers.attention.npu_mla"
 
 cfg_i32 = {"device": "cpu", "dtype": torch.int32}
@@ -49,12 +54,14 @@ def test_cross_layer_shared_op_reuses_buffers_and_isolates_callers():
 def test_cross_layer_shared_op_isolates_composite_keys_and_recomputes_unknown():
     from omni_npu.attention.backends.utils import CrossLayerSharedOp
 
+    # Pin everything to CPU: earlier tests in the suite may leave the default
+    # device on NPU, which would otherwise leak into tensor creation here.
     op = MagicMock(
         side_effect=[
-            torch.ones(4),
-            torch.full((4,), 2.0),
-            torch.full((4,), 3.0),
-            torch.full((4,), 4.0),
+            torch.ones(4, device="cpu"),
+            torch.full((4,), 2.0, device="cpu"),
+            torch.full((4,), 3.0, device="cpu"),
+            torch.full((4,), 4.0, device="cpu"),
         ]
     )
     shared_op = CrossLayerSharedOp(
@@ -62,6 +69,7 @@ def test_cross_layer_shared_op_isolates_composite_keys_and_recomputes_unknown():
         shape=(4,),
         dtype=torch.float32,
         callers=(("decode", 511), ("decode", 1023), ("prefill", 511)),
+        device="cpu",
     )
 
     decode_511 = shared_op({}, recompute=True, caller=("decode", 511))
@@ -73,10 +81,10 @@ def test_cross_layer_shared_op_isolates_composite_keys_and_recomputes_unknown():
     assert decode_511.data_ptr() == cached_decode_511.data_ptr()
     assert decode_511.data_ptr() != decode_1023.data_ptr()
     assert decode_511.data_ptr() != prefill_511.data_ptr()
-    assert torch.equal(cached_decode_511, torch.ones(4))
-    assert torch.equal(decode_1023, torch.full((4,), 2.0))
-    assert torch.equal(prefill_511, torch.full((4,), 3.0))
-    assert torch.equal(unknown, torch.full((4,), 4.0))
+    assert torch.equal(cached_decode_511, torch.ones(4, device="cpu"))
+    assert torch.equal(decode_1023, torch.full((4,), 2.0, device="cpu"))
+    assert torch.equal(prefill_511, torch.full((4,), 3.0, device="cpu"))
+    assert torch.equal(unknown, torch.full((4,), 4.0, device="cpu"))
     assert op.call_count == 4
 
 
@@ -250,45 +258,17 @@ def test_mla_mome_out_partitions_only_when_o_proj_requires_it(
     from omni_npu.v1.layers.attention import npu_mla as mla_mod
     from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
-    attention = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
-    torch.nn.Module.__init__(attention)
-    mome_output = torch.arange(8, dtype=torch.float32).reshape(2, 4)
-    split_output = (mome_output[:, :2], mome_output[:, 2:])
-    split = MagicMock(return_value=split_output)
-    monkeypatch.setattr(mla_mod, "split_tensor_along_last_dim", split)
-    attention.use_mome = True
-    attention.kv_b_proj = SimpleNamespace(tp_size=1)
-    attention.o_proj = SimpleNamespace(
-        tp_size=2,
-        tp_rank=1,
-        requires_input_partition=MagicMock(return_value=requires_partition),
+    run_maybe_mome_out_partition_case(
+        NPUDeepseekMLAAttention,
+        mla_mod,
+        monkeypatch,
+        requires_partition,
     )
-    attention._apply_mome = MagicMock(return_value=mome_output)
-
-    output = attention._maybe_mome_out(torch.zeros_like(mome_output), lambda: {})
-
-    attention.o_proj.requires_input_partition.assert_called_once_with()
-    if requires_partition:
-        split.assert_called_once_with(mome_output, num_partitions=2)
-        torch.testing.assert_close(output, split_output[1])
-        assert output.is_contiguous()
-    else:
-        split.assert_not_called()
-        assert output is mome_output
 
 
 # =========================
 # Basic / no-effect mocks
 # =========================
-
-@contextmanager
-def _mock_torch_npu_stream():
-    mock_npu = MagicMock()
-    mock_npu.current_stream.return_value = MagicMock()
-    mock_npu.Stream.return_value = MagicMock()
-    mock_npu.stream.side_effect = lambda x: nullcontext()
-    with patch("torch.npu", mock_npu, create=True):
-        yield
 
 
 @contextmanager
@@ -376,16 +356,18 @@ def _mock_torch_npu():
     def interleave_rope(x, cos, sin):
         return x
 
-    def transpose_batchmatmul(x, weight=None, perm_y=None):
+    def transpose_batchmatmul(
+        input, weight=None, perm_x1=None, perm_x2=None, perm_y=None
+    ):
         if weight is not None:
-            # x: [N, T, D] or [T, N, D] depending on usage
-            # Simple matmul simulation
+            x = input.permute(*perm_x1) if perm_x1 else input
+            w = weight.permute(*perm_x2) if perm_x2 else weight
             if x.dim() == 3:
-                out = torch.matmul(x, weight)
+                out = torch.matmul(x, w)
                 if perm_y is not None:
                     out = out.permute(*perm_y)
                 return out
-        return x
+        return input
 
     def scatter_nd_update_(x, indices, updates):
         return x
@@ -698,6 +680,8 @@ def _mock_model_extra_config(
     merge_q_kv_conv=False,
     use_batch_invariant_op=False,
     use_aicpu_fa_tiling=False,
+    enable_multi_stream=False,
+    split_q_up_in_multistream=False,
     dtype=torch.bfloat16,
 ):
     with patch(
@@ -713,6 +697,8 @@ def _mock_model_extra_config(
                 use_batch_invariant_op=use_batch_invariant_op,
                 use_aicpu_fa_tiling=use_aicpu_fa_tiling,
                 enable_precision_strong_consistency=False,
+                enable_multi_stream=enable_multi_stream,
+                split_q_up_in_multistream=split_q_up_in_multistream,
             ),
         ),
     ):
@@ -785,6 +771,8 @@ def _patch_and_gen_configs(
     use_noncontiguous_kv: bool = False,
     use_batch_invariant_op: bool = False,
     use_aicpu_fa_tiling: bool = False,
+    enable_multi_stream: bool = False,
+    split_q_up_in_multistream: bool = False,
     use_mome: bool = False,
     init_flash_comm=None,
     seq_lens: list = [32, 47],
@@ -861,6 +849,8 @@ def _patch_and_gen_configs(
             use_noncontiguous_kv=use_noncontiguous_kv,
             use_batch_invariant_op=use_batch_invariant_op,
             use_aicpu_fa_tiling=use_aicpu_fa_tiling,
+            enable_multi_stream=enable_multi_stream,
+            split_q_up_in_multistream=split_q_up_in_multistream,
         ),
         _mock_flash_comm_linear(init_comm=init_flash_comm),
         _mock_layernorm_rmsnorm(),
@@ -963,6 +953,8 @@ class TestNPUDeepseekMLAAttention:
         use_noncontiguous_kv: bool = False,
         use_batch_invariant_op: bool = False,
         use_aicpu_fa_tiling: bool = False,
+        enable_multi_stream: bool = False,
+        split_q_up_in_multistream: bool = False,
         use_mome: bool = False,
         prefill_absorb: bool = False,
         rope_type: str = "default",
@@ -999,6 +991,8 @@ class TestNPUDeepseekMLAAttention:
             use_noncontiguous_kv=use_noncontiguous_kv,
             use_batch_invariant_op=use_batch_invariant_op,
             use_aicpu_fa_tiling=use_aicpu_fa_tiling,
+            enable_multi_stream=enable_multi_stream,
+            split_q_up_in_multistream=split_q_up_in_multistream,
             use_mome=use_mome,
             init_flash_comm=init_flash_comm,
             pd_mixed=pd_mixed,
@@ -1074,6 +1068,13 @@ class TestNPUDeepseekMLAAttention:
 
     def test_decode(self):
         self._test_with_cfg(prefill=False)
+
+    def test_decode_multistream_split_q(self):
+        self._test_with_cfg(
+            prefill=False,
+            enable_multi_stream=True,
+            split_q_up_in_multistream=True,
+        )
 
     def test_pd_mixed(self):
         self._test_with_cfg(pd_mixed=True)
@@ -2506,6 +2507,71 @@ def test_import_guard_both_custom_ops_importable():
     assert hasattr(mod, "omni_custom_ops"), (
         "omni_custom_ops should be available when importable"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("module_name", "forward_name", "deferred_name"),
+    [
+        (
+            "omni_npu.v1.layers.attention.npu_mla",
+            "npu_mla_forward",
+            "npu_mla_forward_mhc_deferred",
+        ),
+        (
+            "omni_npu.v1.layers.attention.npu_dsa",
+            "npu_dsa_forward",
+            "npu_dsa_forward_mhc_deferred",
+        ),
+    ],
+)
+def test_attention_mhc_deferred_launches_before_epilog(
+    monkeypatch, module_name, forward_name, deferred_name
+):
+    module = importlib.import_module(module_name)
+    attention = SimpleNamespace(pre_epilog_callback=None)
+    h_post = torch.randn(2, 2)
+    h_res = torch.randn(2, 2, 2)
+    mhc = SimpleNamespace(
+        launch_fused_split_sinkhorn=MagicMock(
+            return_value=(h_post, h_res)
+        )
+    )
+    # Deferred MHC looks up the forward context from mhc_deferred, not
+    # from the attention module that registers the custom op.
+    monkeypatch.setattr(
+        "omni_npu.layers.mhc.mhc_deferred.get_forward_context",
+        lambda: SimpleNamespace(
+            no_compile_layers={"attention": attention, "mhc": mhc}
+        ),
+    )
+    output = torch.randn(2, 3)
+
+    def forward(*_args):
+        callback = attention.pre_epilog_callback
+        attention.pre_epilog_callback = None
+        callback()
+        return output
+
+    monkeypatch.setattr(module, forward_name, forward)
+    residual = torch.randn(2, 6)
+    result = getattr(module, deferred_name)(
+        torch.randn(2, 3),
+        torch.zeros(2, 1, 1, 1),
+        torch.zeros(2, 1, 1, 1),
+        residual,
+        "attention",
+        "mhc",
+        "task",
+    )
+
+    assert result[0] is output
+    assert result[1] is h_post
+    assert result[2] is h_res
+    mhc.launch_fused_split_sinkhorn.assert_called_once_with(
+        residual, "task"
+    )
+    assert attention.pre_epilog_callback is None
 
 
 # Allow running directly
