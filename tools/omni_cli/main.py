@@ -882,10 +882,6 @@ def install_code(
     /bin/bash -c '
     {
         . ~/.bashrc
-        export http_proxy=http://10.155.96.5:8081
-        export https_proxy=http://10.155.96.5:8081
-        sed -i s#https://pypi.tuna.tsinghua.edu.cn/simple#https://mirrors.tools.huawei.com/pypi/simple#g /root/.config/pip/pip.conf
-        sed -i s#pypi.tuna.tsinghua.cn#mirrors.tools.huawei.com#g /root/.config/pip/pip.conf
         pip install setuptools_scm
         cd /workspace/omniinfer/infer_engines
         git config --global --add safe.directory /workspace/omniinfer/infer_engines/vllm
