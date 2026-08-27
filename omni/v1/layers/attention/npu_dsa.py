@@ -824,43 +824,6 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
             q_norm = {"x_int8": q_norm, "pertoken_scale": dequant_scale_q_norm}
         return q_nope, q_pe, q_norm, k_nope, k_pe, dequant_scale_q_nope, dequant_scale_q_norm
 
-    def _apply_mome_prefill_cp(
-        self,
-        x: torch.Tensor,
-        state_indice: int,
-        sp_manager: SPManager,
-    ) -> torch.Tensor:
-        assert not self.merge_q_kv_conv, "merge_q_kv_conv is not supported when prefill cp is enabled"
-        assert self.noncontiguous_kv, "use_noncontiguous_kv is required when prefill cp is enabled"
-
-        forward_context = get_forward_context()
-        attn_metadata = forward_context.attn_metadata
-        if attn_metadata is None:
-            return x
-        mome_metadata = attn_metadata[self.conv.prefix]
-        if mome_metadata.prefill is None:
-            return x  # dummy_run
-
-        conv = [self.conv.qa_conv, self.conv.compresskv_conv, self.conv.o_conv]
-        kv_cache = self.conv.kv_cache[forward_context.virtual_engine]
-
-        merged_x = sp_manager.mome_suffix_exchange(x)
-        merged_x = sp_manager.append_mome_req_global_tails(merged_x)
-        merged_x = torch.ops.custom.npu_ai_infra_fused_causal_conv1d(
-            merged_x,
-            conv[state_indice].weight,
-            kv_cache[state_indice],
-            query_start_loc=sp_manager.cp_mome_query_start_loc,
-            cache_indices=mome_metadata.cache_indices,
-            num_computed_tokens=mome_metadata.num_computed_tokens,
-            pad_slot_id=mome_metadata.pad_slot_id,
-            max_query_len=-1,
-            residual_connection=1,
-            conv_mode=1,
-            inplace=False,
-        )
-        return sp_manager.mome_split_and_cat(merged_x)
-
     # ======================= attention =======================
 
     def _apply_sink_offset(self, topk_idx: torch.Tensor | None):
@@ -1179,13 +1142,9 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         q_lora = self.q_a_proj(sp_x)[0]  # TD, sp
 
         if self.use_mome:
-            if hasattr(sp_manager, "cp_mome_query_start_loc"):
-                q_lora = sp_manager.sp_to_cp(q_lora)  # TD, cp
-                q_lora = self._apply_mome_prefill_cp(q_lora, 0, sp_manager)
-            else:
-                q_lora = sp_manager.ag_tokens(q_lora)
-                q_lora = self._maybe_mome_q(q_lora, get_mome_args)  # TD
-                q_lora = sp_manager.cp_slice(q_lora)  # TD, cp
+            q_lora = sp_manager.ag_tokens(q_lora)
+            q_lora = self._maybe_mome_q(q_lora, get_mome_args)  # TD
+            q_lora = sp_manager.cp_slice(q_lora)  # TD, cp
         else:
             q_lora = sp_manager.sp_to_cp(q_lora)  # TD, cp
 
@@ -1262,16 +1221,13 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         cp_out = self._post_attn_absorb(cp_out)
 
         if self.use_mome:
-            if hasattr(sp_manager, "cp_mome_query_start_loc"):
-                cp_out = self._apply_mome_prefill_cp(cp_out, 2, sp_manager)
-            else:
-                cp_out = sp_manager.cp_to_sp(cp_out)  # sp
-                cp_out = sp_manager.ag_tokens(cp_out)  # TD
-                cp_out = self._maybe_mome_out(cp_out, get_mome_args)  # TD
-                cp_out = self.o_proj(cp_out)[0]
-                if cp_out.size(0) != sp_x.size(0):
-                    cp_out = sp_manager.slice_tokens(cp_out)
-                return cp_out
+            cp_out = sp_manager.cp_to_sp(cp_out)  # sp
+            cp_out = sp_manager.ag_tokens(cp_out)  # TD
+            cp_out = self._maybe_mome_out(cp_out, get_mome_args)  # TD
+            cp_out = self.o_proj(cp_out)[0]
+            if cp_out.size(0) != sp_x.size(0):
+                cp_out = sp_manager.slice_tokens(cp_out)
+            return cp_out
 
         if self.o_proj.requires_input_partition():
             cp_out = sp_manager.sp_to_tp(cp_out)

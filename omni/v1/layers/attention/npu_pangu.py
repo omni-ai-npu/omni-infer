@@ -1728,53 +1728,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         return attn_output
 
-    @attn_decorator(type="mome")
-    def _apply_MOME_prefill_cp(
-        self,
-        x: torch.Tensor,
-        layer: ColumnParallelMOME,
-        mome_metadata: Optional[NPUMomeAttentionMetadata] = None,
-        sp_manager: Optional[SPManager] = None,
-    ) -> torch.Tensor:
-        kv_index = layer.mome_cache_index
-        merged_x = sp_manager.mome_suffix_exchange(x)
-        merged_x = sp_manager.append_mome_req_global_tails(merged_x, cache_key=f'mome_tail_{kv_index}')
-        kv_cache = self.mome_attn.kv_cache
-        bsz = mome_metadata.cache_indices.size(0)
-        if not self.on_ascend950:
-            merged_x = torch.ops.custom.npu_ai_infra_fused_causal_conv1d(
-                merged_x, 
-                layer.weight, 
-                kv_cache[kv_index], 
-                query_start_loc=sp_manager.cp_mome_query_start_loc, 
-                cache_indices=mome_metadata.cache_indices, 
-                num_computed_tokens=self.num_computed_for_cp[:bsz], 
-                pad_slot_id=mome_metadata.pad_slot_id, 
-                max_query_len=-1, 
-                residual_connection=1, 
-                conv_mode=1, 
-                inplace=False, 
-            )
-        else:
-            merged_x = torch_npu.npu_fused_causal_conv1d(
-                merged_x,
-                layer.weight,
-                kv_cache[kv_index],
-                query_start_loc=sp_manager.cp_mome_query_start_loc,
-                cache_indices=mome_metadata.cache_indices,
-                initial_state_mode=None,
-                bias=None,
-                num_accepted_tokens=None,
-                num_computed_tokens=self.num_computed_for_cp[:bsz],
-                activation="None",
-                run_mode=0,
-                residual_connection=1,
-                pad_slot_id=mome_metadata.pad_slot_id,
-                max_query_len=-1,
-                conv_mode="pangu",
-            )
-        return sp_manager.mome_split_and_cat(merged_x)
-
     def _forward_prefill_cp(
         self,
         hidden_states: torch.Tensor,

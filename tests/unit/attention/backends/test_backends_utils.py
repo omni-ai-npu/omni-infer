@@ -41,7 +41,6 @@ get_available_backends = _utils.get_available_backends
 _load_plugin_backends_map = _utils._load_plugin_backends_map
 _is_plugin_disabled = _utils._is_plugin_disabled
 apply_plugin_overrides = _utils.apply_plugin_overrides
-SPManager = _utils.SPManager
 
 
 class TestGetAttentionBackend:
@@ -548,18 +547,6 @@ class TestApplyPluginOverrides:
         utils_module._PLUGIN_BACKEND_CACHE = None
 
 
-def _sp_manager_for_mome(monkeypatch, sp_size: int, sp_rank: int) -> SPManager:
-    monkeypatch.setattr(
-        _utils,
-        "current_platform",
-        SimpleNamespace(device_type="cpu"),
-    )
-    mock_group = Mock()
-    mock_group.world_size = sp_size
-    mock_group.rank_in_group = sp_rank
-    mock_group.device_group = Mock()
-    return SPManager(mock_group)
-
 def test_init_cp_with_computed_lens_prefill_all_zero(monkeypatch):
     """init_cp 要求显式传入 computed_lens（全 prefill 时可为每请求 0 长度缓存前缀）。"""
     monkeypatch.setattr(
@@ -585,131 +572,6 @@ def test_init_cp_with_computed_lens_prefill_all_zero(monkeypatch):
     )
     cl1, _, _, _ = m.cp_attn_meta_2()
     assert cl1 is not None
-
-
-class TestSPManagerMomeSchemeCpMome:
-    """Tests for SPManager._scheme_cp_mome."""
-
-    def test_rank0_single_request(self, monkeypatch):
-        """Rank 0: one request, verify split sizes and tail metadata."""
-        mgr = _sp_manager_for_mome(monkeypatch, sp_size=2, sp_rank=0)
-        seq_lens = np.array([8], dtype=np.int32)
-        mgr._scheme_cp_mome(seq_lens, mome_kernel_width=3)
-
-        assert mgr.mome_prefix_size == 2
-        assert mgr.cp_mome_phase_split_sizes == (2,)
-        assert mgr.cp_mome_req_split_sizes == (4,)
-        # core = 2 * cdiv(8,4) + 1 * 2 = 6
-        # tail = kernel(3) + prefix(2) = 5
-        assert mgr.cp_mome_merged_core_split_sizes == (6,)
-        assert mgr.cp_mome_req_tail_append_lens == (5,)
-        assert mgr.cp_mome_merged_split_sizes == (11,)
-        assert mgr.cp_mome_seq_lens == (8,)
-        assert mgr.cp_mome_suffix_block_len == 2
-        assert mgr.cp_mome_local_suffix_len == 4
-        assert mgr.cp_mome_query_start_loc.tolist() == [0, 11]
-
-    def test_rank1_single_request(self, monkeypatch):
-        """Non-zero rank uses factor=2 in core length."""
-        mgr = _sp_manager_for_mome(monkeypatch, sp_size=2, sp_rank=1)
-        seq_lens = np.array([8], dtype=np.int32)
-        mgr._scheme_cp_mome(seq_lens, mome_kernel_width=3)
-
-        assert mgr.cp_mome_merged_core_split_sizes == (8,)
-        assert mgr.cp_mome_merged_split_sizes == (13,)
-
-    def test_two_requests_start_loc_cumsum(self, monkeypatch):
-        """Two requests: cdiv(seq_len, 4) phase splits; cumsum of merged per-req lengths."""
-        mgr = _sp_manager_for_mome(monkeypatch, sp_size=2, sp_rank=0)
-        seq_lens = np.array([8, 16], dtype=np.int32)
-        mgr._scheme_cp_mome(seq_lens, mome_kernel_width=3)
-
-        # frag_num=4, cp_query_split_lens = cdiv([8,16],4) = [2,4]
-        assert mgr.cp_mome_phase_split_sizes == (2, 4)
-        # rank0 factor=1: core = [2*2+2, 2*4+2] = [6,10], tail = min(seq_len, 5) each -> merged [11,15]
-        assert mgr.cp_mome_query_start_loc.tolist() == [0, 11, 26]
-
-
-class TestSPManagerMomeSuffixExchange:
-    """Tests for SPManager.mome_suffix_exchange (all_gather mocked)."""
-
-    def test_rank0_phase1_suffix_from_gather(self, monkeypatch):
-        mgr = _sp_manager_for_mome(monkeypatch, sp_size=2, sp_rank=0)
-        mgr._scheme_cp_mome(np.array([8], dtype=np.int32), mome_kernel_width=3)
-
-        # x: one req, 4 rows — phase0 [1,2], phase1 [3,4]
-        x = torch.tensor([[1.0], [2.0], [3.0], [4.0]])
-
-        def fake_all_gather(t: torch.Tensor, dim: int = 0):
-            assert dim == 0
-            assert t.shape[0] == mgr.cp_mome_local_suffix_len
-            out = torch.zeros(8, 1, dtype=t.dtype)
-            out[6:8] = torch.tensor([[200.0], [201.0]])
-            return out
-
-        mgr.sp_group.all_gather = Mock(side_effect=fake_all_gather)
-        y = mgr.mome_suffix_exchange(x)
-
-        expected = torch.tensor([[1.0], [2.0], [200.0], [201.0], [3.0], [4.0]])
-        assert torch.allclose(y, expected)
-
-
-class TestSPManagerAppendMomeReqGlobalTails:
-    """Tests for SPManager.append_mome_req_global_tails (all_reduce mocked)."""
-
-    def test_tail_appended_matches_phase1_tokens(self, monkeypatch):
-        mgr = _sp_manager_for_mome(monkeypatch, sp_size=1, sp_rank=0)
-        mgr._scheme_cp_mome(np.array([8], dtype=np.int32), mome_kernel_width=3)
-
-        monkeypatch.setattr(
-            torch.distributed,
-            "all_reduce",
-            lambda tensor, op=None, group=None: None,
-        )
-
-        # core layout len 10: phase0 [0:4], pad [4:6], phase1 [6:10]
-        x = torch.zeros(10, 1)
-        x[0:4, 0] = torch.tensor([1.0, 2.0, 3.0, 4.0])
-        x[6:10, 0] = torch.tensor([100.0, 101.0, 102.0, 103.0])
-
-        out = mgr.append_mome_req_global_tails(x)
-        assert out.shape[0] == 15
-        assert torch.allclose(out[10:15, 0], torch.tensor([4.0, 100.0, 101.0, 102.0, 103.0]))
-
-    def test_no_tail_append_when_tail_len_zero(self, monkeypatch):
-        """Branch req_tail_len==0: output equals input (no extra tail rows)."""
-        mgr = _sp_manager_for_mome(monkeypatch, sp_size=1, sp_rank=0)
-        mgr._scheme_cp_mome(np.array([8], dtype=np.int32), mome_kernel_width=3)
-        mgr.cp_mome_req_tail_append_lens = (0,)
-        monkeypatch.setattr(
-            torch.distributed,
-            "all_reduce",
-            lambda tensor, op=None, group=None: None,
-        )
-        # sp_size=1 -> frag_num=2, cdiv(8,2)=4, core = 2*4+2 = 10 rows per request
-        x = torch.randn(10, 4)
-        out = mgr.append_mome_req_global_tails(x)
-        assert torch.equal(out, x)
-
-
-class TestSPManagerMomeSplitAndCat:
-    """Tests for SPManager.mome_split_and_cat."""
-
-    def test_restores_zigzag_chunks(self, monkeypatch):
-        mgr = _sp_manager_for_mome(monkeypatch, sp_size=1, sp_rank=0)
-        mgr._scheme_cp_mome(np.array([8], dtype=np.int32), mome_kernel_width=3)
-
-        # merged per req: 15 rows — core regions [0:4], [4:6] pad, [6:10] phase1, [10:15] tail
-        merged = torch.zeros(15, 1)
-        merged[0:4, 0] = torch.tensor([1.0, 2.0, 3.0, 4.0])
-        merged[6:10, 0] = torch.tensor([5.0, 6.0, 7.0, 8.0])
-        merged[10:15, 0] = torch.tensor([9.0, 10.0, 11.0, 12.0, 13.0])
-
-        out = mgr.mome_split_and_cat(merged)
-        assert out.shape[0] == 8
-        assert torch.allclose(
-            out[:, 0], torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
-        )
 
 
 if __name__ == "__main__":

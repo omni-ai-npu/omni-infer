@@ -27,6 +27,26 @@ def _cdiv(a, b):
     return (a + b - 1) // b
 
 
+def _init_cp_manager(
+    cumlens: list[int],
+    computed: list[int],
+    page_size: int,
+    table_size: int,
+    cumlens_np: np.ndarray | None = None,
+) -> Any:
+    utils = importlib.import_module(MODULE)
+    if cumlens_np is None:
+        cumlens_np = np.asarray(cumlens, dtype=np.int32)
+    return utils.SPManager.init_cp(
+        cumlens=torch.tensor(cumlens, **cfg_i32),
+        computed_lens=torch.tensor(computed, **cfg_i32),
+        cumlens_np=cumlens_np,
+        page_size=page_size,
+        table_size=table_size,
+        block_table_ref=torch.zeros(len(computed), table_size, **cfg_i32),
+    )
+
+
 # =========================
 # 0. SeqGolden — canonical full -> sp | cp | tp
 # 0b. KVSPGolden — full -> local_blocks (block interleave)
@@ -615,18 +635,7 @@ class TestCPReorg:
         cp_to_sp_out: dict[int, torch.Tensor] = {}
 
         def task():
-            utils = importlib.import_module(MODULE)
-            mgr = utils.SPManager.init_cp(
-                cumlens=torch.tensor(cumlens, **cfg_i32),
-                computed_lens=torch.tensor(computed, **cfg_i32),
-                cumlens_np=np.array(cumlens, dtype=np.int32),
-                page_size=page_size,
-                table_size=table_size,
-                block_table_ref=torch.zeros(len(computed), table_size, **cfg_i32),
-                mome_kernel_width=1,
-                has_chunked_context=False,
-                num_spec=0,
-            )
+            mgr = _init_cp_manager(cumlens, computed, page_size, table_size)
             rank = sp.thread_local.rank
             sp_to_cp_out[rank] = mgr.sp_to_cp(g.sp(rank)).clone()
             cp_to_sp_out[rank] = mgr.cp_to_sp(g.cp(rank)).clone()
@@ -651,18 +660,7 @@ class TestCPReorg:
         results: dict[int, torch.Tensor] = {}
 
         def task():
-            utils = importlib.import_module(MODULE)
-            mgr = utils.SPManager.init_cp(
-                cumlens=torch.tensor(cumlens, **cfg_i32),
-                computed_lens=torch.tensor(computed, **cfg_i32),
-                cumlens_np=np.array(cumlens, dtype=np.int32),
-                page_size=page_size,
-                table_size=table_size,
-                block_table_ref=torch.zeros(len(computed), table_size, **cfg_i32),
-                mome_kernel_width=1,
-                has_chunked_context=False,
-                num_spec=0,
-            )
+            mgr = _init_cp_manager(cumlens, computed, page_size, table_size)
             cp_local = mgr.sp_to_cp(g.sp(sp.thread_local.rank))
             results[sp.thread_local.rank] = mgr.cp_to_sp(cp_local).clone()
 
@@ -757,35 +755,29 @@ class TestCPSlice:
 
     def _run_cp_slice_case(
         self,
-        cumlens: list[int],
-        computed: list[int],
-        ranks: int = 4,
-        page_size: int = _PAGE_SIZE,
-        table_size: int = _TABLE_SIZE,
+        query_start_locs: list[int],
+        computed_token_lens: list[int],
+        rank_count: int = 4,
+        kv_page_size: int = _PAGE_SIZE,
+        block_table_width: int = _TABLE_SIZE,
     ) -> None:
-        g = SeqGolden(cumlens=cumlens, ranks=ranks)
-        sp = TaskDist(ranks=ranks)
+        g = SeqGolden(cumlens=query_start_locs, ranks=rank_count)
+        sp = TaskDist(ranks=rank_count)
         results: dict[int, torch.Tensor] = {}
 
         def task():
-            utils = importlib.import_module(MODULE)
-            mgr = utils.SPManager.init_cp(
-                cumlens=torch.tensor(cumlens, **cfg_i32),
-                computed_lens=torch.tensor(computed, **cfg_i32),
-                cumlens_np=np.array(cumlens, dtype=np.int32),
-                page_size=page_size,
-                table_size=table_size,
-                block_table_ref=torch.zeros(len(computed), table_size, **cfg_i32),
-                mome_kernel_width=1,
-                has_chunked_context=False,
-                num_spec=0,
+            mgr = _init_cp_manager(
+                query_start_locs,
+                computed_token_lens,
+                kv_page_size,
+                block_table_width,
             )
             results[sp.thread_local.rank] = mgr.cp_slice(g.full).clone()
 
         with _utils_env():
             sp.run(task)
 
-        for rank in range(ranks):
+        for rank in range(rank_count):
             assert torch.equal(results[rank], g.cp(rank))
 
     def test_cp_slice_single_exact(self):
@@ -861,18 +853,7 @@ class TestCPAttn:
         results: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
 
         def task():
-            utils = importlib.import_module(MODULE)
-            mgr = utils.SPManager.init_cp(
-                cumlens=torch.tensor(cumlens, **cfg_i32),
-                computed_lens=torch.tensor(computed, **cfg_i32),
-                cumlens_np=cn,
-                page_size=page_size,
-                table_size=table_size,
-                block_table_ref=torch.zeros(len(computed), table_size, **cfg_i32),
-                mome_kernel_width=1,
-                has_chunked_context=False,
-                num_spec=0,
-            )
+            mgr = _init_cp_manager(cumlens, computed, page_size, table_size, cn)
             q_cumlens, kv_lens, _, _ = mgr.cp_attn_meta()
             results[sp.thread_local.rank] = (q_cumlens.clone(), kv_lens.clone())
 
@@ -900,18 +881,7 @@ class TestCPAttn:
         results: dict[int, torch.Tensor] = {}
 
         def task():
-            utils = importlib.import_module(MODULE)
-            mgr = utils.SPManager.init_cp(
-                cumlens=torch.tensor(cumlens, **cfg_i32),
-                computed_lens=torch.tensor(computed, **cfg_i32),
-                cumlens_np=cn,
-                page_size=page_size,
-                table_size=table_size,
-                block_table_ref=torch.zeros(len(computed), table_size, **cfg_i32),
-                mome_kernel_width=1,
-                has_chunked_context=False,
-                num_spec=0,
-            )
+            mgr = _init_cp_manager(cumlens, computed, page_size, table_size, cn)
             results[sp.thread_local.rank] = mgr.page_align(X).clone()
 
         with _utils_env():

@@ -296,18 +296,13 @@ class NPUDSAMetadataBuilder(MLACommonMetadataBuilder[NPUDSAMetadata]):
                 prefill = metadata.prefill
                 mome_kernel_width = getattr(self.vllm_config.model_config.hf_config, "router_sliding_window", 0)
                 computed_lens = prefill.seq_lens - (prefill.query_start_loc[1:] - prefill.query_start_loc[:-1])
-                has_chunked_context = (
-                    getattr(prefill, "chunked_context", None) is not None
-                    or self.force_first_chunk_context
-                )
 
                 prefill.sp_manager = SPManager.init_cp(
                     cumlens=prefill.query_start_loc,  # [B + 1]
                     computed_lens=computed_lens,
+                    cumlens_np=common_attn_metadata.query_start_loc_cpu.numpy(),
                     block_table_ref=prefill.block_table,
                     table_size=prefill.block_table.size(1),
-                    mome_kernel_width=mome_kernel_width,
-                    has_chunked_context=has_chunked_context,
                 )
                 if mome_kernel_width == 0:
                     prefill.cache_fn = paged_cache(

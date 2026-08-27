@@ -1424,11 +1424,10 @@ class TestNPUDeepseekSparseAttention:
             param_sink_number=128,
         )
 
-    def test_prefill_mome_cp_short_seq_no_mome_query_start_o_proj_tp1(self):
+    def test_prefill_mome_cp_fallback_o_proj_tp1(self):
         """
-        _forward_prefill_cp: use_mome but SPManager.init_cp skips _scheme_cp_mome when
-        any seq len < 4*sp_size (e.g. [8,8] on sp_size=4), so hasattr cp_mome_query_start_loc
-        is false. With o_proj.tp_size==1, the early return after _maybe_mome_out is taken.
+        _forward_prefill_cp uses the standard MoME path with context parallelism.
+        With o_proj.tp_size==1, it returns after _maybe_mome_out and o_proj.
         """
         self._test_with_cfg(
             mode="prefill",
