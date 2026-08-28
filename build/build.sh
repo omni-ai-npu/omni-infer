@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
 set -e
 
 # 颜色输出函数
@@ -12,10 +14,10 @@ SKIP_INSTALL=0
 
 # 定义各模块所用的git仓库及分支
 declare -A GIT_PATH_OF_MODULE
-GIT_PATH_OF_MODULE["omni-npu"]="-b master https://gitee.com/omniai/omni-npu.git"
-GIT_PATH_OF_MODULE["omni-cache"]="-b master https://gitee.com/omniai/omni-cache.git"
-GIT_PATH_OF_MODULE["omni-eplb"]="-b master https://gitee.com/omniai/omni-eplb.git"
-GIT_PATH_OF_MODULE["omni-proxy"]="-b master https://gitee.com/omniai/omni-proxy.git"
+GIT_PATH_OF_MODULE["omni-npu"]="-b release_1.1.0.post1 https://gitee.com/omniai/omni-npu.git"
+GIT_PATH_OF_MODULE["omni-proxy"]="-b release_1.1.0.post1 https://gitee.com/omniai/omni-proxy.git"
+GIT_PATH_OF_MODULE["omni-models"]="-b release_1.1.0.post1 https://gitee.com/omniai/omni-models.git"
+GIT_PATH_OF_MODULE["omni-cache"]="-b release_1.1.0.post1 https://gitee.com/omniai/omni-cache.git"
 
 declare -A COMMIT_OF_MODULE
 
