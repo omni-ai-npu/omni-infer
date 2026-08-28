@@ -27,6 +27,36 @@ def _make_parallel_config(
     )
 
 
+def _patch_dp_sync_group(monkeypatch, captured, ranks, use_local_synchronization=False):
+    """Install the common distributed-group mocks used by DP sync tests."""
+    def fake_new_group(*args, **kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    dp_group = SimpleNamespace(
+        ranks=ranks,
+        device_group=MagicMock(),
+        device=torch.device("cpu"),
+        unique_name="dp",
+    )
+    monkeypatch.setattr(patch_dp_utils, "get_dp_group", lambda: dp_group)
+    monkeypatch.setattr("torch.npu.Stream", MagicMock)
+    monkeypatch.setattr("torch.Event", MagicMock)
+    monkeypatch.setattr(patch_dp_utils.dist, "new_group", fake_new_group)
+    monkeypatch.setattr(patch_dp_utils.dist, "get_backend", lambda g: "hccl")
+    monkeypatch.setattr(
+        "torch_npu._C._distributed_c10d.ProcessGroupHCCL.Options",
+        lambda: SimpleNamespace(hccl_config={}),
+    )
+    if use_local_synchronization:
+        monkeypatch.setattr(
+            patch_dp_utils.GroupCoordinator,
+            "use_local_synchronization",
+            True,
+            raising=False,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _reset_globals():
     """Reset lazy-initialized globals before each test."""
@@ -34,11 +64,15 @@ def _reset_globals():
     patch_dp_utils._dp_sync_event = None
     patch_dp_utils._dp_sync_device_group = None
     patch_dp_utils._dp_sync_device = None
+    patch_dp_utils._dp_sync_group_key = None
+    patch_dp_utils._aicpu_dp_sync_init_failed = False
     yield
     patch_dp_utils._dp_sync_copy_stream = None
     patch_dp_utils._dp_sync_event = None
     patch_dp_utils._dp_sync_device_group = None
     patch_dp_utils._dp_sync_device = None
+    patch_dp_utils._dp_sync_group_key = None
+    patch_dp_utils._aicpu_dp_sync_init_failed = False
 
 
 @pytest.mark.unit
@@ -223,26 +257,7 @@ def test_get_dp_sync_primitives_is_lazy(monkeypatch):
 def test_get_dp_sync_primitives_creates_aicpu_group(monkeypatch):
     """Device group should be created with AICPU expansion mode."""
     captured_options = {}
-
-    def fake_new_group(*args, **kwargs):
-        captured_options.update(kwargs)
-        return MagicMock()
-
-    dp_group = SimpleNamespace(
-        ranks=[0, 1, 2, 3],
-        device_group=MagicMock(),
-        device=torch.device("cpu"),
-        unique_name="dp",
-    )
-    monkeypatch.setattr(patch_dp_utils, "get_dp_group", lambda: dp_group)
-    monkeypatch.setattr("torch.npu.Stream", MagicMock)
-    monkeypatch.setattr("torch.Event", MagicMock)
-    monkeypatch.setattr(patch_dp_utils.dist, "new_group", fake_new_group)
-    monkeypatch.setattr(patch_dp_utils.dist, "get_backend", lambda g: "hccl")
-    monkeypatch.setattr(
-        "torch_npu._C._distributed_c10d.ProcessGroupHCCL.Options",
-        lambda: SimpleNamespace(hccl_config={}),
-    )
+    _patch_dp_sync_group(monkeypatch, captured_options, [0, 1, 2, 3])
 
     patch_dp_utils._get_dp_sync_primitives()
 
@@ -330,3 +345,14 @@ def test_patch_registers_dp_sync_functions():
     patch_cls = patch_dp_utils.DpUtilsEagerEpPadPatch
     assert patch_cls._attr_names_to_apply == ["_synchronize_dp_ranks"]
     assert patch_cls._synchronize_dp_ranks is patch_dp_utils._synchronize_dp_ranks
+
+
+@pytest.mark.unit
+def test_get_dp_sync_primitives_follows_local_synchronization(monkeypatch):
+    """new_group must follow GroupCoordinator.use_local_synchronization for local rendezvous."""
+    captured = {}
+    _patch_dp_sync_group(monkeypatch, captured, [0, 1], use_local_synchronization=True)
+
+    patch_dp_utils._get_dp_sync_primitives()
+
+    assert captured.get("use_local_synchronization") is True

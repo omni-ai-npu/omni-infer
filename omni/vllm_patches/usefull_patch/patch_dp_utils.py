@@ -15,7 +15,7 @@ import torch_npu
 
 import vllm.v1.worker.dp_utils as dp_utils
 from vllm.config import ParallelConfig
-from vllm.distributed.parallel_state import get_dp_group
+from vllm.distributed.parallel_state import GroupCoordinator, get_dp_group
 from vllm.logger import init_logger
 from vllm.v1.worker.dp_utils import (
     _post_process_cudagraph_mode,
@@ -72,6 +72,13 @@ def _get_dp_sync_primitives() -> (
             dp_group.ranks,
             backend=dist.get_backend(dp_group.device_group),
             pg_options=options,
+            # Follow the GroupCoordinator-wide setting: in RL/ray deployments
+            # the vllm ranks are a subset of the default world, and group
+            # creation must rendezvous locally (group members only) instead of
+            # doing a default-world-wide handshake.
+            use_local_synchronization=getattr(
+                GroupCoordinator, "use_local_synchronization", False
+            ),
         )
         copy_stream = torch.npu.Stream()
         event = torch.Event()

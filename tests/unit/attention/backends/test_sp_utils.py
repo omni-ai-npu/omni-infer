@@ -800,7 +800,7 @@ class TestCPSlice:
 
 @pytest.mark.unit
 class TestCPAttn:
-    """cp_attn：cp_attn_meta 可观测契约与 page_align（对应 utils.py §cp_attn）。"""
+    """cp_attn：cp_attn_meta 可观测契约（对应 utils.py §cp_attn）。"""
 
     def _cp_len(
         self,
@@ -810,34 +810,6 @@ class TestCPAttn:
         frag_num = ranks * 2
         frag_lens = _cdiv(np.diff(cumlens_np), frag_num)
         return int(frag_lens.sum() * 2)
-
-    def _assert_page_align(
-        self,
-        actual: torch.Tensor,
-        X: torch.Tensor,
-        cumlens_np: np.ndarray,
-        page_size: int,
-    ) -> None:
-        """page_align 块内 padding 为 empty 未初始化，只比对各页已写入 token。"""
-        seq_lens = [int(s) for s in np.diff(cumlens_np)]
-        pg = page_size
-        total_pages = sum(_cdiv(sl, pg) for sl in seq_lens)
-        assert actual.shape == (total_pages, pg, 1, X.size(-1))
-        pages = actual.view(-1, pg, 1, X.size(-1))
-        page_idx = 0
-        tok_off = 0
-        for sl in seq_lens:
-            pos = 0
-            while pos < sl:
-                take = min(sl - pos, pg)
-                got = pages[page_idx, :take, 0]
-                exp = X[tok_off + pos : tok_off + pos + take]
-                if exp.dim() == 1:
-                    exp = exp.unsqueeze(-1)
-                assert torch.equal(got, exp)
-                pos += take
-                page_idx += 1
-            tok_off += sl
 
     def _run_cp_attn_meta_case(
         self,
@@ -866,30 +838,6 @@ class TestCPAttn:
             assert kv_lens.numel() == 2 * len(computed)
             assert kv_lens.ge(torch.tensor(computed, **cfg_i32).repeat_interleave(2)).all()
 
-    def _run_page_align_case(
-        self,
-        cumlens: list[int],
-        computed: list[int],
-        ranks: int = 4,
-        page_size: int = _PAGE_SIZE,
-        table_size: int = _TABLE_SIZE,
-    ) -> None:
-        cn = np.array(cumlens, dtype=np.int32)
-        tok = int(cn[-1])
-        X = torch.arange(tok, **cfg_f32).unsqueeze(1)
-        sp = TaskDist(ranks=ranks)
-        results: dict[int, torch.Tensor] = {}
-
-        def task():
-            mgr = _init_cp_manager(cumlens, computed, page_size, table_size, cn)
-            results[sp.thread_local.rank] = mgr.page_align(X).clone()
-
-        with _utils_env():
-            sp.run(task)
-
-        for rank in range(ranks):
-            self._assert_page_align(results[rank], X, cn, page_size)
-
     def test_cp_attn_meta_single_exact(self):
         self._run_cp_attn_meta_case([0, 16], [0])
 
@@ -898,12 +846,6 @@ class TestCPAttn:
 
     def test_cp_attn_meta_prefix_computed(self):
         self._run_cp_attn_meta_case([0, 64], [2])
-
-    def test_page_align_single_exact(self):
-        self._run_page_align_case([0, 16], [0])
-
-    def test_page_align_multi_req(self):
-        self._run_page_align_case([0, 8, 20], [0, 0])
 
 
 # =========================

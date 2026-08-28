@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -40,6 +40,8 @@ def _build_sparse_attention(
     indexer_types=None,
     rope_interleave=None,
     rope_interleaved=None,
+    enable_attn_sp=False,
+    tp_size=1,
 ):
     if swa_layers is None:
         swa_layers = [0, 1]
@@ -84,7 +86,7 @@ def _build_sparse_attention(
         patch.object(
             pangu_mod,
             "get_tp_group",
-            return_value=SimpleNamespace(world_size=1),
+            return_value=SimpleNamespace(world_size=tp_size),
         ),
         patch.object(pangu_mod, "on_ascend950", return_value=False),
         patch.object(
@@ -96,6 +98,11 @@ def _build_sparse_attention(
             pangu_mod.model_extra_config.operator_opt_config,
             "use_noncontiguous_kv",
             True,
+        ),
+        patch.object(
+            pangu_mod.model_extra_config.parall_config,
+            "ena_swa_attn_seq_parallel",
+            enable_attn_sp,
         ),
         patch.object(torch, "zeros", side_effect=cpu_zeros),
     ]
@@ -541,7 +548,7 @@ class TestPanguFAMetadataIsolation(unittest.TestCase):
                 patch.object(
                     pangu_mod, "npu_ai_infra_attention_pioneer_metadata", None
                 ), \
-                patch.object(pangu_mod.torch.ops, "custom", fake_ops, raising=False):
+                patch.object(pangu_mod.torch.ops, "custom", fake_ops, create=True):
             attention._init_cross_layer_shared_ops()
 
         self.assertEqual(len(created), 2)
@@ -631,7 +638,9 @@ class TestOpenPanguV2DecoderAndMoE(unittest.TestCase):
         layer = model_mod.OpenPanguV2DecoderLayer.__new__(
             model_mod.OpenPanguV2DecoderLayer
         )
+        torch.nn.Module.__init__(layer)
         moe = model_mod.OpenPanguV2MOE.__new__(model_mod.OpenPanguV2MOE)
+        torch.nn.Module.__init__(moe)
         layer.mlp = moe
         layer.self_attn = SimpleNamespace()
         side = object()
@@ -678,6 +687,259 @@ class TestOpenPanguV2DecoderAndMoE(unittest.TestCase):
 
         self.assertEqual(chunks, [2, 2])
         self.assertEqual(tuple(out.shape), (4, 3))
+
+
+def _bare_swa_attention(**attrs):
+    """Build an uninitialized NPUPanguSparseAttention with SWA SP defaults."""
+    attention = NPUPanguSparseAttention.__new__(NPUPanguSparseAttention)
+    defaults = dict(
+        on_ascend950=False,
+        use_mome=False,
+        enable_mome_sp=False,
+        use_mome_inplace_update=False,
+        sharded_o_proj=False,
+        is_cp_layer=False,
+        is_attn_sp_layer=True,
+        is_dsa_layer=False,
+        enable_flashcomm2=False,
+        tp_size=1,
+        moe_comm_strategy="agrs",
+        prefix="model.layers.0.self_attn",
+        num_heads=2,
+        num_local_heads=2,
+        v_head_dim=4,
+        qk_head_dim=8,
+        qk_nope_head_dim=4,
+        qk_rope_head_dim=4,
+        kv_lora_rank=8,
+        sliding_window=512,
+        block_size=16,
+        scaling=1.0,
+        use_aicpu_fa_tiling=False,
+        sink_k_nope=None,
+        sink_k_pe=None,
+        W_UV=torch.zeros(2, 8, 4),
+        attn=SimpleNamespace(
+            kv_cache=[(torch.zeros(1), torch.zeros(1))],
+            impl=SimpleNamespace(SHARE_MASK_TRIL_SPARSE=None),
+        ),
+    )
+    defaults.update(attrs)
+    for name, value in defaults.items():
+        setattr(attention, name, value)
+    return attention
+
+
+def _fwctx_patch():
+    """Stub vLLM forward context for SWA SP unit tests."""
+    return patch.object(
+        pangu_mod,
+        "get_forward_context",
+        return_value=SimpleNamespace(virtual_engine=0),
+    )
+
+
+def _prefill_sp_forward_ctx(attention, tokens=4):
+    """Forward context used by npu_pangu_forward SWA SP dispatch tests."""
+    meta = SimpleNamespace(
+        num_actual_tokens=tokens,
+        num_decode_tokens=0,
+        num_decodes=0,
+        num_prefills=1,
+        prefill=SimpleNamespace(),
+        decode=None,
+    )
+    return SimpleNamespace(
+        no_compile_layers={"layer": attention}, attn_metadata=meta
+    )
+
+
+def _stub_prefill_sp_projections(attention):
+    """CPU stubs for Q/KV projections used by _forward_prefill_sp tests."""
+    attention.q_a_proj = MagicMock(
+        side_effect=lambda value: torch.zeros(value.size(0), 8)
+    )
+    attention.q_a_layernorm = MagicMock(side_effect=lambda value: value)
+    attention.q_b_proj = MagicMock(
+        side_effect=lambda value: torch.zeros(value.size(0), 16)
+    )
+    attention._q_rope = MagicMock(side_effect=lambda value, *_a: value)
+    attention._w_uk_t_absorb = MagicMock(
+        side_effect=lambda value: torch.zeros(value.size(0), 2, 8)
+    )
+    attention.kv_a_proj_with_mqa = MagicMock(
+        side_effect=lambda value: torch.zeros(value.size(0), 12)
+    )
+
+
+def _stub_prefill_sp_kernels(attention, absorb_tokens):
+    """Stub kv-cache, absorb, and o_proj used by _forward_prefill_sp tests."""
+    attention._npu_kvrmsnorm_rope_cache = MagicMock(
+        return_value=((torch.zeros(4, 1, 8), torch.zeros(4, 1, 4)),)
+    )
+    attention._apply_SWA_attention_prefill_absorb = MagicMock(
+        return_value=torch.ones(absorb_tokens, 8)
+    )
+    attention._apply_o_proj = MagicMock(side_effect=lambda value: value)
+
+
+def _prefill_sp_manager(local, valid):
+    """SP manager that keeps the first `local` tokens."""
+    return SimpleNamespace(
+        sp_len=local,
+        valid_token_count=valid,
+        slice_tokens=lambda tensor, cached=None: tensor[:local],
+        ag_tokens=lambda tensor: tensor,
+    )
+
+
+def _call_npu_pangu_forward_sp(attention, hidden, topk):
+    """Invoke npu_pangu_forward under a stubbed prefill-SP context."""
+    ctx = _prefill_sp_forward_ctx(attention)
+    with patch.object(pangu_mod, "get_forward_context", return_value=ctx):
+        return pangu_mod.npu_pangu_forward(
+            hidden, torch.zeros(4, 2), torch.zeros(4, 2), "layer", topk
+        )
+
+
+class TestPanguSWASeqParallel(unittest.TestCase):
+    def test_constructor_replicates_heads_on_swa_sp_layer(self):
+        """SWA SP layers keep full head counts instead of TP-sharding Q/KV."""
+        sharded = _build_sparse_attention(layer_idx=0, tp_size=2)
+        self.assertFalse(sharded.is_attn_sp_layer)
+        self.assertEqual(sharded.num_local_heads, 1)
+        sp_attn = _build_sparse_attention(layer_idx=0, enable_attn_sp=True, tp_size=2)
+        self.assertTrue(sp_attn.is_attn_sp_layer)
+        self.assertEqual(sp_attn.num_local_heads, sp_attn.num_heads)
+        self.assertTrue(sp_attn.disable_o_conv_tp)
+
+    def test_npu_pangu_forward_dispatches_prefill_sp(self):
+        """Pure prefill on an SP layer must call _forward_prefill_sp."""
+        attention = _bare_swa_attention()
+        hidden = torch.zeros(4, 8)
+        topk = torch.zeros(4, 1, 2, dtype=torch.int32)
+        attention._forward_prefill_sp = MagicMock(return_value=(hidden, topk))
+        out_h, out_t = _call_npu_pangu_forward_sp(attention, hidden, topk)
+        attention._forward_prefill_sp.assert_called_once()
+        self.assertIs(out_h, hidden)
+        self.assertIs(out_t, topk)
+
+    def test_npu_pangu_forward_sp_rejects_allreduce_moe(self):
+        """SWA SP cannot run with the allreduce MoE communication strategy."""
+        attention = _bare_swa_attention(moe_comm_strategy="allreduce")
+        hidden = torch.zeros(4, 8)
+        topk = torch.zeros(4, 1, 2, dtype=torch.int32)
+        with self.assertRaises(AssertionError):
+            _call_npu_pangu_forward_sp(attention, hidden, topk)
+
+    def test_absorb_returns_empty_on_zero_sp_shard(self):
+        """Empty SP shards skip the FA kernel but still return a 2D tensor."""
+        attention = _bare_swa_attention()
+        q_nope = torch.zeros(3, 2, 8)
+        q_pe = torch.zeros(3, 2, 4)
+        kv = (torch.zeros(4, 1, 8), torch.zeros(4, 1, 4))
+        sp_manager = SimpleNamespace(
+            valid_token_count=0,
+            sp_attn_meta=lambda: (None, None, None),
+        )
+        meta = SimpleNamespace(prefill=SimpleNamespace())
+        out = attention._apply_SWA_attention_prefill_absorb(
+            q_nope, q_pe, kv, attn_metadata=meta, sp_manager=sp_manager
+        )
+        self.assertEqual(tuple(out.shape), (0, 8))
+
+    def test_forward_prefill_sp_pads_short_shards(self):
+        """_forward_prefill_sp pads FA output back to the local SP length."""
+        attention = _bare_swa_attention()
+        local = 4
+        valid = 2
+        hidden = torch.ones(local, 8)
+        _stub_prefill_sp_projections(attention)
+        _stub_prefill_sp_kernels(attention, absorb_tokens=valid)
+        meta = SimpleNamespace(
+            num_actual_tokens=8,
+            prefill=SimpleNamespace(sp_manager=_prefill_sp_manager(local, valid)),
+        )
+        with _fwctx_patch():
+            out, topk = attention._forward_prefill_sp(
+                hidden, torch.zeros(8, 4), torch.zeros(8, 4), meta, None, None
+            )
+        self.assertEqual(tuple(out.shape), (local, 8))
+        self.assertIsNone(topk)
+        self.assertTrue(torch.equal(out[valid:], torch.zeros(local - valid, 8)))
+
+    def test_forward_prefill_sp_rejects_ascend950(self):
+        """SWA SP is A3-only."""
+        attention = _bare_swa_attention(on_ascend950=True)
+        meta = SimpleNamespace(
+            num_actual_tokens=4, prefill=SimpleNamespace(sp_manager=object())
+        )
+        with self.assertRaises(AssertionError):
+            attention._forward_prefill_sp(
+                torch.zeros(4, 8), torch.zeros(4, 2), torch.zeros(4, 2), meta
+            )
+
+    def test_forward_prefill_sp_mome_inplace_and_prefetch(self):
+        """MoME SP + sharded o_proj prefetch still returns local-token output."""
+        attention = _bare_swa_attention(
+            use_mome=True, enable_mome_sp=True,
+            use_mome_inplace_update=True, sharded_o_proj=True,
+        )
+        local = 3
+        hidden = torch.ones(local, 8)
+        _stub_prefill_sp_projections(attention)
+        _stub_prefill_sp_kernels(attention, absorb_tokens=local)
+        attention._apply_MOME = MagicMock()
+        attention.o_proj = SimpleNamespace(prefetch=MagicMock())
+        attention.qa_conv = object()
+        attention.compresskv_conv = object()
+        attention.o_conv = object()
+        meta = SimpleNamespace(
+            num_actual_tokens=6,
+            prefill=SimpleNamespace(sp_manager=_prefill_sp_manager(local, local)),
+        )
+        prefetch = SimpleNamespace(wait_stream=MagicMock())
+        with _fwctx_patch(), patch.object(
+            pangu_mod.torch.npu, "current_stream", return_value=object()
+        ), patch.object(
+            pangu_mod, "named_stream", return_value=prefetch
+        ), patch.object(
+            pangu_mod.torch.npu, "stream", return_value=nullcontext()
+        ):
+            out, _topk = attention._forward_prefill_sp(
+                hidden, torch.zeros(6, 4), torch.zeros(6, 4), meta, object(), None
+            )
+        self.assertEqual(tuple(out.shape), (local, 8))
+        attention.o_proj.prefetch.assert_called_once()
+        attention._apply_MOME.assert_called()
+
+    def test_absorb_uses_sp_metadata_and_runs_sink_kernel(self):
+        """Non-empty SP shards pass sp_attn_meta lengths into the sink kernel."""
+        attention = _bare_swa_attention()
+        q_nope = torch.zeros(2, 2, 8)
+        q_pe = torch.zeros(2, 2, 4)
+        kv = (torch.zeros(4, 1, 8), torch.zeros(4, 1, 4))
+        query_cumlens = torch.tensor([2], dtype=torch.int32)
+        seq_lens = torch.tensor([4], dtype=torch.int32)
+        block_table = torch.zeros(1, 2, dtype=torch.int32)
+        sp_manager = SimpleNamespace(
+            valid_token_count=2,
+            sp_attn_meta=lambda: (query_cumlens, seq_lens, block_table),
+        )
+        meta = SimpleNamespace(prefill=SimpleNamespace())
+        sink_out = torch.zeros(2, 2, 8)
+        bmm_out = torch.zeros(2, 2, 4)
+        with patch(
+            "torch.ops.custom.npu_fused_infer_attention_sink",
+            return_value=(sink_out,),
+            create=True,
+        ), patch.object(
+            pangu_mod.torch_npu, "npu_transpose_batchmatmul", return_value=bmm_out
+        ):
+            out = attention._apply_SWA_attention_prefill_absorb(
+                q_nope, q_pe, kv, attn_metadata=meta, sp_manager=sp_manager
+            )
+        self.assertEqual(tuple(out.shape), (2, 8))
 
 
 if __name__ == "__main__":

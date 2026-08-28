@@ -649,6 +649,163 @@ class TestOpenPanguModelMHCWiring(unittest.TestCase):
         self.assertTrue(second_call.kwargs["h_res_from_fused_split"])
 
 
+def _fused_decoder_layer(tail_refs, *, gate_in_fp32=False, has_block_norm=False):
+    """Bare decoder layer with mocked MHC modules for fused-path unit tests."""
+    layer = ultra_mod.OpenPanguDecoderLayer.__new__(ultra_mod.OpenPanguDecoderLayer)
+    nn.Module.__init__(layer)
+    layer.self_attn = MagicMock(return_value=object())
+    layer.mlp = MagicMock(return_value=object())
+    if gate_in_fp32:
+        moe = ultra_mod.OpenPanguMoE.__new__(ultra_mod.OpenPanguMoE)
+        nn.Module.__init__(moe)
+        moe.gate_in_fp32 = True
+        moe.forward = MagicMock(return_value=object())
+        layer.mlp = moe
+    layer.post_attention_layernorm = object()
+    layer.pre_mlp_layernorm = object()
+    layer.post_mlp_layernorm = object()
+    layer.block_post_layernorm = object()
+    layer.has_block_post_layernorm = has_block_norm
+    layer.attn_mhc_task_key = "attn_key"
+    layer.mlp_mhc_task_key = "mlp_key"
+    layer.attn_mhc_module = MagicMock()
+    layer.attn_mhc_module.resolve_sinkhorn.return_value = object()
+    layer.attn_mhc_module.mhc_sandwich_norm_post_preonly.return_value = (
+        object(), object()
+    )
+    layer.mlp_mhc_module = MagicMock()
+    layer.mlp_mhc_module.launch_fused_split_sinkhorn.return_value = (
+        object(), object()
+    )
+    layer.mlp_mhc_module.resolve_fused_split_sinkhorn.return_value = (
+        object(), object()
+    )
+    layer.mlp_mhc_module.mhc_sandwich_norm_post_preonly.return_value = (
+        object(), object()
+    )
+    layer._mhc_tail_refs = tail_refs
+    return layer
+
+
+class TestPanguUltraMoeFusedMhcBranches(unittest.TestCase):
+    def test_deferred_split_without_fused_state_raises(self):
+        """Deferred MHC split is invalid unless the previous layer fused-split."""
+        layer = _fused_decoder_layer(None)
+        with self.assertRaisesRegex(ValueError, "fused-split"):
+            layer.forward_mhc_fused(
+                object(), object(), None, None, object(), object()
+            )
+
+    def test_fused_path_finishes_partition_tail_without_next_layer(self):
+        """A PP partition with no next MHC module runs the local tail epilog."""
+        layer = _fused_decoder_layer(None)
+        finished = (object(), None, None, None)
+        layer._finish_mhc_partition_tail = MagicMock(return_value=finished)
+        result = layer.forward_mhc_fused(
+            object(), object(), object(), object(), object(), object()
+        )
+        self.assertEqual(result, finished)
+        layer._finish_mhc_partition_tail.assert_called_once()
+
+    def test_fused_path_returns_none_state_on_model_tail(self):
+        """The last layer drops residual/h_post/h_res after the sandwich."""
+        next_mhc = MagicMock()
+        layer = _fused_decoder_layer((next_mhc, object(), None, True))
+        hidden, residual, h_post, h_res = layer.forward_mhc_fused(
+            object(), object(), object(), object(), object(), object()
+        )
+        self.assertIsNone(residual)
+        self.assertIsNone(h_post)
+        self.assertIsNone(h_res)
+        next_mhc.launch_fused_split_sinkhorn.assert_not_called()
+
+    def test_fused_path_defers_when_next_layer_uses_multistream(self):
+        """Multistream next-attn launches fused-split from the pre-epilog hook."""
+        next_mhc = MagicMock()
+        next_mhc.enable_mhc_multistream = True
+        layer = _fused_decoder_layer((next_mhc, object(), "next_key", False))
+        hidden, residual, h_post, h_res = layer.forward_mhc_fused(
+            object(), object(), object(), object(), object(), object()
+        )
+        self.assertIsNone(h_post)
+        self.assertIsNone(h_res)
+        self.assertIsNotNone(residual)
+        next_mhc.launch_fused_split_sinkhorn.assert_not_called()
+
+    def test_fused_path_requests_fp32_gate_input_for_moe(self):
+        """OpenPanguMoE with fp32 gate asks the sandwich for fp32 hidden states."""
+        layer = _fused_decoder_layer(None, gate_in_fp32=True)
+        layer._finish_mhc_partition_tail = MagicMock(
+            return_value=(object(), None, None, None)
+        )
+        layer.forward_mhc_fused(
+            object(), object(), object(), object(), object(), object()
+        )
+        kwargs = layer.attn_mhc_module.mhc_sandwich_norm_post_preonly.call_args.kwargs
+        self.assertTrue(kwargs["return_h_in_f32"])
+
+    def test_finish_mhc_partition_tail_applies_block_norm(self):
+        """Partition tail runs post-MLP MHC then optional block post-layernorm."""
+        layer = ultra_mod.OpenPanguDecoderLayer.__new__(
+            ultra_mod.OpenPanguDecoderLayer
+        )
+        nn.Module.__init__(layer)
+        hidden = object()
+        residual = object()
+        h_post = object()
+        h_res = object()
+        normed = object()
+        merged = object()
+        blocked = object()
+        layer.post_mlp_layernorm = MagicMock(return_value=normed)
+        layer.mlp_mhc_module = MagicMock()
+        layer.mlp_mhc_module.mhc_post.return_value = merged
+        layer.has_block_post_layernorm = True
+        layer.block_post_layernorm = MagicMock(return_value=blocked)
+        result = layer._finish_mhc_partition_tail(hidden, residual, h_post, h_res)
+        self.assertEqual(result, (blocked, None, None, None))
+        layer.mlp_mhc_module.mhc_post.assert_called_once_with(
+            normed, h_post, residual, h_res
+        )
+
+    def test_model_forward_non_fused_mhc_merges_on_last_rank(self):
+        """When fusion is unavailable, the model still runs merge_mhc + norm."""
+        model = ultra_mod.OpenPanguModel.__new__(ultra_mod.OpenPanguModel)
+        nn.Module.__init__(model)
+        layer = nn.Module()
+        rotary = MagicMock()
+        rotary.get_cos_sin.return_value = (object(), object())
+        layer.self_attn = SimpleNamespace(rotary_emb=rotary)
+        layer.attn_mhc_module = SimpleNamespace(
+            can_use_fusion=MagicMock(return_value=False)
+        )
+        layer.forward = MagicMock(return_value=(object(), object()))
+        model.layers = nn.ModuleList([layer])
+        model.start_layer = 0
+        model.end_layer = 1
+        model.use_mhc = True
+        model.use_mhc_fusion_op = True
+        model.num_stream = 2
+        merged = object()
+        model.merge_mhc_module = MagicMock()
+        model.merge_mhc_module.mhc_pre.return_value = (merged, None, None)
+        model.norm = MagicMock(return_value=object())
+        pp_group = SimpleNamespace(is_first_rank=True, is_last_rank=True)
+        with patch.object(
+            ultra_mod, "get_pp_group", return_value=pp_group
+        ), patch.object(
+            ultra_mod.model_extra_config.parall_config, "ena_seq_parallel", False
+        ):
+            result = model.forward(
+                input_ids=object(),
+                positions=object(),
+                intermediate_tensors=None,
+                inputs_embeds=object(),
+            )
+        model.merge_mhc_module.mhc_pre.assert_called_once()
+        self.assertIs(result, model.norm.return_value)
+
+
 class TestOpenPanguMHCWeightPostProcessing(unittest.TestCase):
     def test_process_mhc_weights_initializes_mhc_modules(self):
         model = ultra_mod.OpenPanguModelBase.__new__(

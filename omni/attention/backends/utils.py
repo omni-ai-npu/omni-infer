@@ -387,6 +387,11 @@ class SPManager:
 
     CP refers to zigzag-form SP splitting, aimed at adjusting query distribution to
     balance attention computation across ranks.
+
+    Construction:
+      init_sp(tok)              — ctrl only (slice / ag). sp_len is eager.
+      init_sp(tok) + init_sp_attn — contiguous-token FA metadata
+      init_cp(...)              — zigzag CP (ctrl + cp_attn / slice / reorg)
     """
 
     def __init__(self, sp_group: GroupCoordinator):
@@ -394,6 +399,8 @@ class SPManager:
         self.sp_size = sp_group.world_size
         self.sp_rank = sp_group.rank_in_group
         self.sp_comm = sp_group.device_group
+        self.valid_token_count = 0
+        self.sp_attn_metadata = None
         assert self.sp_size > 0
 
     @staticmethod
@@ -447,7 +454,6 @@ class SPManager:
         self._buffers[key] = buf
         return buf
 
-    @lazy_init
     def _scheme_sp_ctrl(self, tok: int):
         self.tok = int(tok)
         self.sp_len = cdiv(self.tok, self.sp_size)
@@ -481,6 +487,40 @@ class SPManager:
     def ag_tokens(self, x: torch.Tensor) -> torch.Tensor:
         assert x.size(0) == self.sp_len, f"x.size(0): {x.size(0)}, self.sp_len: {self.sp_len}"
         return self.sp_group.all_gather(x, dim=0)[: self.tok]
+
+    # ===================== sp_attn =====================
+
+    def init_sp_attn(
+        self,
+        query_cumlens: torch.Tensor | list[int] | tuple[int, ...] | np.ndarray,
+        computed_lens: torch.Tensor | list[int] | tuple[int, ...] | np.ndarray,
+        block_table_ref: torch.Tensor,
+    ) -> None:
+        """Build contiguous-token SP attention metadata (local Q × full KV).
+        """
+        query_cumlens_np = np.asarray(query_cumlens, dtype=np.int32)
+        computed_lens_np = np.asarray(computed_lens, dtype=np.int32)
+        assert query_cumlens_np.ndim == 1 and query_cumlens_np.size > 1
+        assert computed_lens_np.shape == (query_cumlens_np.size - 1,)
+        assert block_table_ref.size(0) == computed_lens_np.size
+        shard_start, shard_end = self.slice_domain
+        req_start = query_cumlens_np[:-1]
+        inter_start = np.maximum(req_start, shard_start)
+        inter_end = np.minimum(query_cumlens_np[1:], shard_end)
+        keep = inter_start < inter_end
+        q_lens_np = (inter_end - inter_start)[keep]
+        kv_lens_np = (computed_lens_np + (inter_end - req_start))[keep]
+
+        device = block_table_ref.device
+        q_lens = torch.tensor(q_lens_np, dtype=torch.int32, device=device)
+        kv_lens = torch.tensor(kv_lens_np, dtype=torch.int32, device=device)
+        self.valid_token_count = int(q_lens_np.sum())
+        q_cumlens = q_lens.cumsum(dim=0, dtype=torch.int32)
+        blk_table = block_table_ref[torch.as_tensor(keep, device=device)]
+        self.sp_attn_metadata = (q_cumlens, kv_lens, blk_table)
+
+    def sp_attn_meta(self) -> tuple:  # FA once:
+        return self.sp_attn_metadata  # q_cumlens, kv_lens, blk_table
 
     # ===================== cp_reorg =====================
     @lazy_init
@@ -665,7 +705,6 @@ class SPManager:
         cp_block_table = blk_table_ref.repeat_interleave(2, dim=0)
         self.cp_attn_metadata = (q_cumlens, kv_lens, blk_table, cp_block_table)
 
-
     @depends_on(_scheme_cp_attn)
     def cp_attn_meta(self) -> tuple:  # FA once:
         return self.cp_attn_metadata  # q_cumlens, kv_lens, blk_table
@@ -689,7 +728,6 @@ class DummySPManager:
 
     def align_tokens(self, x: torch.Tensor):
         return x
-
 
     def slice_tokens(self, x: torch.Tensor, cached=None):
         return x[: x.size(0) // self.sp_size].clone()

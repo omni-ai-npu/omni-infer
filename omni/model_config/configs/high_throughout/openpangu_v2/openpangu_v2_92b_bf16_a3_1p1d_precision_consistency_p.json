@@ -55,7 +55,7 @@
         "enable_prefill_mla_absorb_pa": true,
         "enable_precision_strong_consistency": true,
         "enable_multi_stream": true,
-        "split_q_up_in_multistream": true,
+        "split_q_up_in_multistream": false,
         "enable_mhc_multistream": true,
         "use_mhc_fusion_op": false,
         "use_rope_fusion_op": false,

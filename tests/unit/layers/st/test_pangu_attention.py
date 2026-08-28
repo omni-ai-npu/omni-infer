@@ -63,7 +63,11 @@ MOME_MISSING = pytest.mark.skipif(
 )
 
 from . import pangu_attention_st_common as H  # noqa: E402
-from .distributed_test_common import distributed_worker_pool  # noqa: E402,F401
+
+# Register the worker fixture as a pytest plugin instead of importing it into
+# this module. Keeping the fixture name out of module scope avoids the
+# huawei-redefined-outer-name CodeCheck finding on every test below.
+pytest_plugins = (f"{__package__}.distributed_test_common",)
 
 BLOCK = H.BLOCK_SIZE
 CHUNK = H.CHUNK_SIZE  # 256 = 2 * block_size
@@ -133,7 +137,7 @@ def test_pd_producer_high_performance_invariants(
     a full prefill for both DSA and sliding-window MLA."""
     distributed_worker_pool(
         H.mc_invariants_worker, layer_idx, CASES,
-        NUM_BLOCKS, "kv_producer", False, False, "high_performance",
+        NUM_BLOCKS, "kv_producer", False, False, False, "high_performance",
         config={}, runtime_config=TP2,
     )
 
@@ -165,7 +169,7 @@ def test_pd_producer_high_performance_cp_invariants(
     chunked/APC invariant equals full prefill on _forward_prefill_cp."""
     distributed_worker_pool(
         H.mc_invariants_worker, layer_idx, CASES,
-        NUM_BLOCKS, "kv_producer", True, False, "high_performance",
+        NUM_BLOCKS, "kv_producer", True, False, False, "high_performance",
         config={}, runtime_config=TP2,
     )
 
@@ -187,4 +191,26 @@ def test_pd_producer_fc2_invariants(distributed_worker_pool, layer_idx):
     distributed_worker_pool(
         H.mc_invariants_worker, layer_idx, CASES,
         NUM_BLOCKS, "kv_producer", False, True, config={}, runtime_config=TP2,
+    )
+
+
+# SWA standard sequence parallelism (_forward_prefill_sp): contiguous token SP
+# with replicated Q/KV/O projection weights. Same SP-sharded contract as FC2.
+@pytest.mark.parametrize("layer_idx", SWA_ONLY)
+def test_pd_producer_swa_sp_invariants(distributed_worker_pool, layer_idx):
+    """TP=2 prefill (kv_producer) node, SWA SP: chunked/APC invariants equal full prefill."""
+    distributed_worker_pool(
+        H.mc_invariants_worker, layer_idx, CASES,
+        NUM_BLOCKS, "kv_producer", False, False, True,
+        config={}, runtime_config=TP2,
+    )
+
+
+def test_pd_producer_swa_sp_multi_request_tp2(distributed_worker_pool):
+    """Batched multi-request SWA SP matches independent single-request runs."""
+    distributed_worker_pool(
+        H.multi_request_swa_sp_worker,
+        NUM_BLOCKS,
+        config={},
+        runtime_config=TP2,
     )

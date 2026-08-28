@@ -115,6 +115,18 @@ class UnquantizedFlashCommLinearMethod(FlashCommLinearMethodBase):
         set_weight_attrs(weight, extra_weight_attrs)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        # q_b split loading keeps q_b_nope_proj/q_b_pe_proj as the compute
+        # weights and deliberately releases the redundant source q_b_proj
+        # storage afterwards. Do not run the generic transpose/NZ conversion
+        # on that intentional empty placeholder. Check numel as well so a
+        # future reload that re-materializes the source weight is still
+        # processed normally even if the release marker has not been cleared.
+        if (
+            getattr(layer.weight, "_q_b_storage_released", False)
+            and layer.weight.numel() == 0
+        ):
+            return
+
         super().process_weights_after_loading(layer)
         weight_nz = (
             model_extra_config.operator_opt_config.unquant_bmm_nz 

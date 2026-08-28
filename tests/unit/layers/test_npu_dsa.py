@@ -1288,6 +1288,16 @@ class TestNPUDeepseekSparseAttention:
     def test_prefill(self):
         self._test_with_cfg(mode="prefill")
 
+    def test_prefill_multistream_split_q(self):
+        # Prefill routes through _q_absorb; with split q-up the full
+        # q_b_proj storage is released at post_weight_load, so the split
+        # projections must be used instead.
+        self._test_with_cfg(
+            mode="prefill",
+            enable_multi_stream=True,
+            split_q_up_in_multistream=True,
+        )
+
     def test_decode(self):
         self._test_with_cfg(mode="decode")
 
@@ -1397,6 +1407,7 @@ class TestNPUDeepseekSparseAttention:
         )
 
     def test_prefill_mome_cp(self):
+        # Token count must divide TP so mocked ReduceScatter (T % tp == 0) matches CP MoME.
         self._test_with_cfg(
             mode="prefill",
             ena_seq_parallel=True,
@@ -1404,6 +1415,7 @@ class TestNPUDeepseekSparseAttention:
             use_mome=True,
             use_noncontiguous_kv=True,
             param_sink_number=128,
+            seq_lens=[32, 48],
         )
 
     def test_prefill_mome_cp_fallback_o_proj_tp1(self):

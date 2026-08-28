@@ -267,6 +267,27 @@ def test_unquantized_linear_applies_dp2tp_all2all_before_matmul(monkeypatch):
 
 
 @pytest.mark.unit
+def test_unquantized_linear_skips_intentionally_released_q_b_weight(monkeypatch):
+    module = _import_linear_module(monkeypatch)
+    weight = torch.nn.Parameter(torch.empty(0), requires_grad=False)
+    weight._q_b_storage_released = True
+    layer = SimpleNamespace(
+        prefix="model.layers.0.self_attn.q_b_proj",
+        weight=weight,
+    )
+
+    def fail_format_cast(*_args, **_kwargs):
+        raise AssertionError("released q_b weight must not be format-cast")
+
+    monkeypatch.setattr(module.torch_npu, "npu_format_cast", fail_format_cast)
+
+    module.UnquantizedFlashCommLinearMethod().process_weights_after_loading(layer)
+
+    assert layer.weight.numel() == 0
+    assert layer.weight._q_b_storage_released is True
+
+
+@pytest.mark.unit
 def test_row_parallel_linear_keeps_dp2tp_all2all_input_unsharded(monkeypatch):
     module = _import_linear_module(monkeypatch)
     layer = module.RowParallelFlashCommLinear.__new__(module.RowParallelFlashCommLinear)

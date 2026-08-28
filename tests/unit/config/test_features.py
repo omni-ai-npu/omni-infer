@@ -4,7 +4,10 @@
 import pytest
 from types import SimpleNamespace
 
-from omni_npu.model_config.config_loader.features import apply_eager_mode_config
+from omni_npu.model_config.config_loader.features import (
+    apply_eager_mode_config,
+    apply_seq_parallel,
+)
 
 
 pytestmark = pytest.mark.unit
@@ -69,3 +72,40 @@ def test_non_eager_mode_does_not_touch_config():
     assert cfg.operator_opt_config.use_mhc_fusion_op is True
     assert cfg.operator_opt_config.split_q_up_in_multistream is True
     assert cfg.operator_opt_config.li_prolog_multi_stream is True
+
+
+def _parall_cfg(ena_sp=True, ena_cp=False, ena_attn_sp=False):
+    """Build a parall_config namespace for apply_seq_parallel tests."""
+    return SimpleNamespace(
+        parall_config=SimpleNamespace(
+            ena_seq_parallel=ena_sp,
+            ena_context_parallel=ena_cp,
+            ena_swa_attn_seq_parallel=ena_attn_sp,
+        )
+    )
+
+
+def test_apply_seq_parallel_disables_flags_without_model_plugins(monkeypatch):
+    """Missing omni model plugins force-disable seq/context/SWA SP flags."""
+    monkeypatch.setenv("VLLM_PLUGINS", "other_plugin")
+    cfg = _parall_cfg(ena_sp=True, ena_cp=True, ena_attn_sp=True)
+    apply_seq_parallel(cfg)
+    assert cfg.parall_config.ena_seq_parallel is False
+    assert cfg.parall_config.ena_context_parallel is False
+    assert cfg.parall_config.ena_swa_attn_seq_parallel is False
+
+
+def test_apply_seq_parallel_keeps_swa_sp_when_pangu_plugin_present(monkeypatch):
+    """omni_pangu_models in VLLM_PLUGINS keeps SWA SP enabled."""
+    monkeypatch.setenv("VLLM_PLUGINS", "omni_pangu_models")
+    cfg = _parall_cfg(ena_sp=True, ena_attn_sp=True)
+    apply_seq_parallel(cfg)
+    assert cfg.parall_config.ena_swa_attn_seq_parallel is True
+
+
+def test_apply_seq_parallel_requires_ena_seq_parallel_for_swa(monkeypatch):
+    """ena_swa_attn_seq_parallel cannot be enabled without ena_seq_parallel."""
+    monkeypatch.setenv("VLLM_PLUGINS", "omni_custom_models")
+    cfg = _parall_cfg(ena_sp=False, ena_attn_sp=True)
+    with pytest.raises(AssertionError, match="ena_swa_attn_seq_parallel"):
+        apply_seq_parallel(cfg)

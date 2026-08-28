@@ -574,5 +574,87 @@ def test_init_cp_with_computed_lens_prefill_all_zero(monkeypatch):
     assert cl1 is not None
 
 
+class TestSPManagerSWA:
+    def _manager(
+        self,
+        monkeypatch,
+        rank: int,
+        query_cumlens: list[int],
+        computed_lens: list[int],
+        block_table: torch.Tensor,
+        world_size: int = 2,
+    ) -> _utils.SPManager:
+        monkeypatch.setattr(
+            _utils,
+            "current_platform",
+            SimpleNamespace(device_type="cpu"),
+        )
+        group = Mock()
+        group.world_size = world_size
+        group.rank_in_group = rank
+        group.device_group = Mock()
+        manager = _utils.SPManager.init_sp(tok=query_cumlens[-1], sp_group=group)
+        manager.init_sp_attn(
+            query_cumlens=query_cumlens,
+            computed_lens=computed_lens,
+            block_table_ref=block_table,
+        )
+        return manager
+
+    def test_single_request_uses_local_query_and_prefix_kv(self, monkeypatch):
+        block_table = torch.tensor([[4, 5]], dtype=torch.int32)
+
+        rank0 = self._manager(monkeypatch, 0, [0, 5], [3], block_table)
+        assert rank0.sp_len == 3
+        q_cumlens, kv_lens, local_table = rank0.sp_attn_meta()
+        assert rank0.valid_token_count == 3
+        assert q_cumlens.tolist() == [3]
+        assert kv_lens.tolist() == [6]
+        assert torch.equal(local_table, block_table)
+
+        rank1 = self._manager(monkeypatch, 1, [0, 5], [3], block_table)
+        q_cumlens, kv_lens, local_table = rank1.sp_attn_meta()
+        assert rank1.valid_token_count == 2
+        assert rank1.sp_len == 3
+        assert q_cumlens.tolist() == [2]
+        assert kv_lens.tolist() == [8]
+        assert torch.equal(local_table, block_table)
+
+    def test_multi_request_shard_builds_fragment_metadata(self, monkeypatch):
+        block_table = torch.tensor([[10, 11], [20, 21]], dtype=torch.int32)
+
+        rank0 = self._manager(monkeypatch, 0, [0, 3, 7], [10, 20], block_table)
+        q_cumlens, kv_lens, local_table = rank0.sp_attn_meta()
+        assert q_cumlens.tolist() == [3, 4]
+        assert kv_lens.tolist() == [13, 21]
+        assert torch.equal(local_table, block_table)
+
+        rank1 = self._manager(monkeypatch, 1, [0, 3, 7], [10, 20], block_table)
+        q_cumlens, kv_lens, local_table = rank1.sp_attn_meta()
+        assert rank1.valid_token_count == 3
+        assert rank1.sp_len == 4
+        assert q_cumlens.tolist() == [3]
+        assert kv_lens.tolist() == [24]
+        assert torch.equal(local_table, block_table[1:2])
+
+    def test_rank_without_tokens_has_empty_metadata(self, monkeypatch):
+        block_table = torch.tensor([[4]], dtype=torch.int32)
+        manager = self._manager(
+            monkeypatch,
+            rank=3,
+            query_cumlens=[0, 2],
+            computed_lens=[0],
+            block_table=block_table,
+            world_size=4,
+        )
+
+        q_cumlens, kv_lens, local_table = manager.sp_attn_meta()
+        assert manager.valid_token_count == 0
+        assert manager.sp_len == 1
+        assert q_cumlens.numel() == 0
+        assert kv_lens.numel() == 0
+        assert local_table.shape == (0, 1)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

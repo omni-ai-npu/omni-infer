@@ -10,7 +10,7 @@ import and use it. We can iterate later with true MLA specialization.
 
 import math
 from dataclasses import dataclass
-from typing import ClassVar, Tuple, TYPE_CHECKING
+from typing import ClassVar, Optional, Tuple, TYPE_CHECKING
 
 import torch
 
@@ -41,7 +41,11 @@ from vllm.v1.attention.backends.mla.prefill.base import MLAPrefillBackend
 from vllm.v1.kv_cache_interface import AttentionSpec
 
 from omni_npu.connector.utils import TP_Convertor
-from omni_npu.attention.backends.utils import register_attention_backend, _maybe_padded_raw_tensor_to_strided_caches
+from omni_npu.attention.backends.utils import (
+    SPManager,
+    register_attention_backend,
+    _maybe_padded_raw_tensor_to_strided_caches,
+)
 from omni_npu.model_config.config_loader.loader import model_extra_config
 
 logger = init_logger(__name__)
@@ -133,6 +137,7 @@ class NPUMLAPrefillMetadata(MLACommonPrefillMetadata):
     slot_mapping: torch.Tensor = None
     slot_mapping_2d: torch.Tensor = None
     num_tokens: int | None = None
+    sp_manager: Optional[SPManager] = None
 
 
 @dataclass
@@ -516,6 +521,20 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
             metadata.prefill.query_cumlens = query_cumlens
             metadata.prefill.seq_lens = seq_lens
             metadata.prefill.num_tokens = query_cumlens[-1]
+
+            if model_extra_config.parall_config.ena_swa_attn_seq_parallel:
+                assert model_extra_config.parall_config.ena_seq_parallel, (
+                    "ena_swa_attn_seq_parallel requires ena_seq_parallel"
+                )
+                # Reuse CPU query_start_loc (already synced) — same [B+1] layout
+                qsl_cpu = common_attn_metadata.query_start_loc_cpu[reqs_start:]
+                query_cumlens = qsl_cpu - qsl_cpu[0]
+                metadata.prefill.sp_manager = SPManager.init_sp(tok=int(query_cumlens[-1]))
+                metadata.prefill.sp_manager.init_sp_attn(
+                    query_cumlens=query_cumlens,
+                    computed_lens=context_lens_cpu,
+                    block_table_ref=metadata.prefill.block_table,
+                )
 
             if hasattr(self, "sink_len") and self.sink_len > 0:
                 metadata.prefill.sink_len = self.sink_len

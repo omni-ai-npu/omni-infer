@@ -60,7 +60,10 @@ from omni_npu.layers.utils import SIDE_STREAM_NAME, named_stream
 from omni_npu.model_config.config_loader.loader import model_extra_config
 from omni_npu.plugin_decorators import attn_decorator
 from omni_npu.v1.layers.attention.npu_mla import MomeAttentionMixin
-from omni_npu.v1.layers.attention.weight_utils import install_q_b_split_loaders
+from omni_npu.v1.layers.attention.weight_utils import (
+    install_q_b_split_loaders,
+    release_q_b_proj_storage,
+)
 from omni_npu.v1.layers.linear import (
     ColumnParallelFlashCommLinear,
     ReplicatedFlashCommLinear,
@@ -663,6 +666,17 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
             param_sink_compressed_kv = self.kv_a_layernorm(self.param_sink_compressed_kv)
             self.attn.update_sink_kv(self.param_sink_k_pe, param_sink_compressed_kv)
 
+        # With the split q-up projections populated, decode takes
+        # _forward_decode_multistream, so the full q_b_proj storage is
+        # redundant; release it (reload-safe, see release_q_b_proj_storage).
+        # Skip when the fused mla_prolog path can run: it consumes
+        # q_b_proj.weight directly.
+        use_fused_mla_prolog = (
+            self.use_mlaprolog and not self.use_mome and self.param_sink_number == 0
+        )
+        if self.split_q_up_in_multistream and not use_fused_mla_prolog:
+            release_q_b_proj_storage(self.q_b_proj)
+
     def sink_kv_weight_loader(
         self,
         param: nn.Parameter,
@@ -728,8 +742,14 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         R = self.qk_rope_head_dim
         N = self.num_heads // self.q_b_proj.tp_size
 
-        q = self.q_b_proj(q_lora)[0].view(-1, N, Q + R)  # TND
-        q_nope, q_pe = torch.split(q, [Q, R], dim=-1)  # TND
+        if self.split_q_up_in_multistream:
+            # The full q_b_proj storage is released after loading in this
+            # mode; the split projections are numerically identical per row.
+            q_nope = self.q_b_nope_proj(q_lora)[0].view(-1, N, Q)  # TND
+            q_pe = self.q_b_pe_proj(q_lora)[0].view(-1, N, R)  # TND
+        else:
+            q = self.q_b_proj(q_lora)[0].view(-1, N, Q + R)  # TND
+            q_nope, q_pe = torch.split(q, [Q, R], dim=-1)  # TND
         q_pe = self._apply_rope(q_pe, cos, sin)  # TND
         q_nope = self._q_nope_absorb(q_nope)
 

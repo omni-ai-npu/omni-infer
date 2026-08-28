@@ -43,18 +43,22 @@ def apply_seq_parallel(model_extra_config):
     cfg = model_extra_config.parall_config
     ena_sp = cfg.ena_seq_parallel
     ena_cp = cfg.ena_context_parallel
+    ena_attn_sp = cfg.ena_swa_attn_seq_parallel
 
     plugins = os.environ.get("VLLM_PLUGINS", "").split(',')
     if "omni_custom_models" not in plugins and "omni_pangu_models" not in plugins:
         cfg.ena_seq_parallel = False
         cfg.ena_context_parallel = False
+        cfg.ena_swa_attn_seq_parallel = False
         logger.warning(
             f"[WARNING] omni_custom_models and omni_pangu_models both not in VLLM_PLUGINS, "
-            f"disabled ena_seq_parallel and ena_context_parallel"
+            f"disabled ena_seq_parallel, ena_context_parallel and ena_swa_attn_seq_parallel"
         )
 
     if ena_cp:
         assert ena_sp, "ena_context_parallel requires ena_seq_parallel"
+    if ena_attn_sp:
+        assert ena_sp, "ena_swa_attn_seq_parallel requires ena_seq_parallel"
 
 
 def apply_omni_cache(additional_config):

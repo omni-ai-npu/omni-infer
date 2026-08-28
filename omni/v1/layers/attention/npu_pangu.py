@@ -723,8 +723,12 @@ class NPUPanguSparseAttention(torch.nn.Module):
         assert num_heads % self.tp_size == 0
         self.ena_dsa_cp = model_extra_config.parall_config.ena_context_parallel
         self.is_cp_layer = self.is_dsa_layer and self.ena_dsa_cp
+        self.ena_swa_attn_seq_parallel = model_extra_config.parall_config.ena_swa_attn_seq_parallel
+        self.is_attn_sp_layer = self.ena_swa_attn_seq_parallel and not self.is_dsa_layer
         self.num_local_heads = (
-            num_heads if self.is_cp_layer else num_heads // self.tp_size
+            num_heads
+            if self.is_cp_layer or self.is_attn_sp_layer
+            else num_heads // self.tp_size
         )
         self.scaling = self.qk_head_dim**-0.5
         self.max_position_embeddings = max_position_embeddings
@@ -746,7 +750,9 @@ class NPUPanguSparseAttention(torch.nn.Module):
             vllm_config.kv_transfer_config.kv_role == "kv_producer")
         # o_conv cache is transferred as-is in PD disaggregation; TP-sharded
         # cache/layout would mismatch between prefill and decode nodes.
-        self.disable_o_conv_tp = self.ena_dsa_cp or self.is_pd_disagg
+        self.disable_o_conv_tp = (
+            self.ena_dsa_cp or self.is_attn_sp_layer or self.is_pd_disagg
+        )
         assert model_extra_config.operator_opt_config.use_noncontiguous_kv
         self.use_aicpu_fa_tiling = model_extra_config.operator_opt_config.use_aicpu_fa_tiling
         self.enable_flashcomm2 = model_extra_config.parall_config.enable_flashcomm2
@@ -826,6 +832,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             self.side_stream = None
 
     def _init_MLA_weights(self):
+        replicate_attention_weights = self.is_cp_layer or self.is_attn_sp_layer
         self.q_a_proj = ReplicatedLinear(
             self.hidden_size,
             self.q_lora_rank,
@@ -853,7 +860,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             quant_config=self.quant_config,
             prefix=f"{self.layer_name}.q_b_proj",
             return_bias=False,
-            disable_tp=self.is_cp_layer,
+            disable_tp=replicate_attention_weights,
         )
         if self.split_q_up_in_multistream:
             # Per-half projections used by the MLA multi-stream split path.
@@ -869,7 +876,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 quant_config=self.quant_config,
                 prefix=f"{self.layer_name}.q_b_nope_proj",
                 return_bias=False,
-                disable_tp=self.is_cp_layer,
+                disable_tp=replicate_attention_weights,
             )
             self.q_b_pe_proj = ColumnParallelFlashCommLinear(
                 self.q_lora_rank,
@@ -878,7 +885,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 quant_config=self.quant_config,
                 prefix=f"{self.layer_name}.q_b_pe_proj",
                 return_bias=False,
-                disable_tp=self.is_cp_layer,
+                disable_tp=replicate_attention_weights,
             )
             self._install_q_b_split_loaders()
         self.kv_a_layernorm = RMSNorm(
@@ -892,7 +899,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             quant_config=self.quant_config,
             prefix=f"{self.layer_name}.kv_b_proj",
             return_bias=False,
-            disable_tp=self.is_cp_layer,
+            disable_tp=replicate_attention_weights,
         )
         if self.sharded_o_proj:
             self.o_proj = ShardedLinear(
@@ -912,7 +919,10 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 quant_config=self.quant_config,
                 reduce_results=False,
                 prefix=f"{self.layer_name}.o_proj",
-                disable_tp=True if (self.is_cp_layer) or (self.enable_flashcomm2 and not self.is_dsa_layer) else False,
+                disable_tp=True if (
+                    replicate_attention_weights
+                    or (self.enable_flashcomm2 and not self.is_dsa_layer)
+                ) else False,
             )
 
     def _apply_o_proj(self, attn_output: torch.Tensor) -> torch.Tensor:
@@ -1777,23 +1787,11 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         if self.use_mome:
             if self.enable_mome_sp:
-                self._apply_MOME(
-                    q_lora,
-                    self.qa_conv,
-                    attn_metadata=attn_metadata,
-                    mome_metadata=mome_metadata,
-                    inplace=True,
-                    ena_sp=True,
-                )
+                self._apply_MOME(q_lora, self.qa_conv, attn_metadata, mome_metadata, True, True)
                 q_lora = sp_manager.sp_to_cp(q_lora)
             else:
                 q_lora = sp_manager.ag_tokens(q_lora)
-                q_lora = self._apply_MOME(
-                    q_lora,
-                    self.qa_conv,
-                    attn_metadata=attn_metadata,
-                    mome_metadata=mome_metadata,
-                )
+                q_lora = self._apply_MOME(q_lora, self.qa_conv, attn_metadata, mome_metadata)
                 q_lora = sp_manager.cp_slice(q_lora)
         else:
             q_lora = sp_manager.sp_to_cp(q_lora)
@@ -2002,6 +2000,135 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 self.o_proj.prefetch(prefetch_stream)
 
         return self._mla_epilog(attn_output, attn_metadata, mome_metadata), topk_indices
+
+    def _forward_prefill_sp(
+        self,
+        hidden_states: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        attn_metadata: Optional[MLACommonMetadata] = None,
+        mome_metadata: Optional[NPUMomeAttentionMetadata] = None,
+        topk_indices_buffer: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """SWA prefill with contiguous token SP and replicated head weights."""
+        assert not self.on_ascend950, "ena_swa_attn_seq_parallel is supported on A3 only"
+        assert attn_metadata is not None and attn_metadata.prefill is not None
+        sp_manager = attn_metadata.prefill.sp_manager
+        assert sp_manager is not None, "SWA SP metadata is missing SPManager"
+        assert hidden_states.size(0) == sp_manager.sp_len
+
+        num_actual_tokens = attn_metadata.num_actual_tokens
+        full_cos = cos[:num_actual_tokens]
+        full_sin = sin[:num_actual_tokens]
+        local_cos = sp_manager.slice_tokens(full_cos, cached="swa_cos")
+        local_sin = sp_manager.slice_tokens(full_sin, cached="swa_sin")
+
+        # Q remains token-sharded and uses all replicated heads.
+        q_lora = self.q_a_proj(hidden_states)
+        if self.use_mome:
+            if self.enable_mome_sp:
+                self._apply_MOME(q_lora, self.qa_conv, attn_metadata, mome_metadata, True, True)
+            else:
+                q_lora = sp_manager.ag_tokens(q_lora)
+                q_lora = self._apply_MOME(q_lora, self.qa_conv, attn_metadata, mome_metadata)
+                q_lora = sp_manager.slice_tokens(q_lora)
+        q_lora = self.q_a_layernorm(q_lora)
+        q = self.q_b_proj(q_lora)
+        q = q.view(-1, self.num_local_heads, self.qk_head_dim)
+        q_nope, q_pe = torch.split(
+            q,
+            [self.qk_nope_head_dim, self.qk_rope_head_dim],
+            dim=-1,
+        )
+        q_pe = self._q_rope(q_pe, local_cos, local_sin)
+        q_nope = self._w_uk_t_absorb(q_nope)
+
+        # KV is projected locally, then gathered so every rank writes the same
+        # full-token cache with the global slot mapping.
+        kv = self.kv_a_proj_with_mqa(hidden_states)
+        gather_before_mome = self.use_mome and not self.enable_mome_sp
+        if gather_before_mome:
+            kv = sp_manager.ag_tokens(kv)
+        if self.use_mome:
+            if self.use_mome_inplace_update:
+                self._apply_MOME(
+                    kv[:, :self.kv_lora_rank],
+                    self.compresskv_conv,
+                    attn_metadata=attn_metadata,
+                    mome_metadata=mome_metadata,
+                    inplace=True,
+                    ena_sp=self.enable_mome_sp,
+                )
+            else:
+                k_nope, k_pe = torch.split(
+                    kv,
+                    [self.kv_lora_rank, self.qk_rope_head_dim],
+                    dim=-1,
+                )
+                k_nope = self._apply_MOME(
+                    k_nope,
+                    self.compresskv_conv,
+                    attn_metadata=attn_metadata,
+                    mome_metadata=mome_metadata,
+                    ena_sp=self.enable_mome_sp,
+                )
+                kv = torch.cat([k_nope, k_pe], dim=-1)
+        if not gather_before_mome:
+            kv = sp_manager.ag_tokens(kv)
+
+        kv_cache = self.attn.kv_cache
+        kv_result = self._npu_kvrmsnorm_rope_cache(
+            kv,
+            kv_cache,
+            full_cos,
+            full_sin,
+            attn_metadata,
+            None,
+        )
+
+        if self.sharded_o_proj:
+            cur_stream = torch.npu.current_stream()
+            prefetch_stream = named_stream("pangu_o_proj_prefetch")
+            prefetch_stream.wait_stream(cur_stream)
+            with torch.npu.stream(prefetch_stream):
+                self.o_proj.prefetch(prefetch_stream)
+
+        attn_output = self._apply_SWA_attention_prefill_absorb(
+            q_nope,
+            q_pe,
+            kv_result[0],
+            attn_metadata=attn_metadata,
+            sp_manager=sp_manager,
+        )
+
+        if sp_manager.valid_token_count < sp_manager.sp_len:
+            padded_output = hidden_states.new_zeros(
+                sp_manager.sp_len, self.num_heads * self.v_head_dim
+            )
+            padded_output[:sp_manager.valid_token_count] = attn_output
+            attn_output = padded_output
+
+        if self.use_mome:
+            if self.enable_mome_sp:
+                self._apply_MOME(
+                    attn_output,
+                    self.o_conv,
+                    attn_metadata=attn_metadata,
+                    mome_metadata=mome_metadata,
+                    inplace=True,
+                    ena_sp=True,
+                )
+            else:
+                attn_output = sp_manager.ag_tokens(attn_output)
+                attn_output = self._apply_MOME(
+                    attn_output,
+                    self.o_conv,
+                    attn_metadata=attn_metadata,
+                    mome_metadata=mome_metadata,
+                )
+                attn_output = sp_manager.slice_tokens(attn_output)
+
+        return self._apply_o_proj(attn_output), topk_indices_buffer
 
     def _forward_prefill_FC2(
         self,
@@ -2224,18 +2351,32 @@ class NPUPanguSparseAttention(torch.nn.Module):
         q_pe: torch.Tensor,
         kv_cache: tuple[torch.Tensor, torch.Tensor],
         attn_metadata: Optional[MLACommonMetadata] = None,
+        sp_manager: Optional[SPManager] = None,
     ) -> torch.Tensor:
         assert attn_metadata is not None and attn_metadata.prefill is not None
 
-        query_cumlens = attn_metadata.prefill.query_cumlens
-        seq_lens = attn_metadata.prefill.seq_lens
-        num_actual_tokens = attn_metadata.num_actual_tokens
+        if sp_manager is not None:
+            assert not self.on_ascend950, "ena_swa_attn_seq_parallel is supported on A3 only"
+            query_cumlens, seq_lens, block_table = sp_manager.sp_attn_meta()
+            num_tokens = sp_manager.valid_token_count
+            if num_tokens == 0:
+                # Empty SP shard: no tokens to attend. Return early WITHOUT
+                # launching kernels — but this function must still be CALLED on
+                # every rank so the @attn_decorator plugin hooks (D2H offload /
+                # H2D prefetch, the latter containing a TP-group AllGather) fire
+                # uniformly and the TP communicator stays in lockstep.
+                return q_nope.new_empty((0, self.num_heads * self.v_head_dim))
+        else:
+            query_cumlens = attn_metadata.prefill.query_cumlens
+            seq_lens = attn_metadata.prefill.seq_lens
+            block_table = attn_metadata.prefill.block_table
+            num_tokens = attn_metadata.num_actual_tokens
 
         kwargs = {
-            "query": q_nope[:num_actual_tokens],
+            "query": q_nope[:num_tokens],
             "key": kv_cache[0],
             "value": kv_cache[0],
-            "query_rope": q_pe[:num_actual_tokens],
+            "query_rope": q_pe[:num_tokens],
             "key_rope": kv_cache[1],
             "num_key_value_heads": 1,
             "input_layout": "TND_NTD",
@@ -2243,7 +2384,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             "sparse_mode": 4,
             "pre_tokens": self.sliding_window - 1,
             "next_tokens": 0,
-            "block_table": attn_metadata.prefill.block_table,
+            "block_table": block_table,
             "block_size": self.block_size,
             "key_sink": self.sink_k_nope,
             "value_sink": self.sink_k_nope,
@@ -3524,12 +3665,13 @@ def npu_pangu_forward(
             and num_actual_tokens > attn_metadata.num_prefills * self.tp_size * 2
         # Need to make sure there are at least 8 tokens (or else no tokens) on each rank
         # so that there are enough tokens to communicate
+        enable_attn_sp = self.is_attn_sp_layer and not has_decode
         enable_flashcomm2 = self.enable_flashcomm2 and not self.is_dsa_layer and not has_decode
 
-        # Only skip the global all_gather when the FC2 path will actually run
+        # Only skip the global all_gather when the CP/SP/FC2 path will actually run
         # (pure prefill, no decode). Mixed batch and decode paths still need it.
         if self.tp_size > 1 and self.moe_comm_strategy != "allreduce":
-            is_prefill_cp = enable_cp or enable_flashcomm2
+            is_prefill_cp = enable_cp or enable_attn_sp or enable_flashcomm2
             if not is_prefill_cp or (has_decode and has_prefill):
                 hidden_states = get_tp_group().all_gather(hidden_states, dim=0)
                 topk_indices_buffer = get_tp_group().all_gather(
@@ -3589,6 +3731,21 @@ def npu_pangu_forward(
                     self.moe_comm_strategy != "allreduce"
                 ), "Context parallel is not supported with allreduce MoE communication strategy"
                 return self._forward_prefill_cp(
+                    hidden_states,
+                    cos,
+                    sin,
+                    attn_metadata,
+                    mome_metadata,
+                    topk_indices_buffer,
+                )
+            elif enable_attn_sp:
+                assert (
+                    self.moe_comm_strategy != "allreduce"
+                ), (
+                    "Attention sequence parallelism is not supported with the "
+                    "allreduce MoE communication strategy"
+                )
+                return self._forward_prefill_sp(
                     hidden_states,
                     cos,
                     sin,

@@ -145,6 +145,25 @@ def test_register_returns_h_res_when_layer_has_no_mhc_module(cube_side_task_ops)
     assert module.MHC_HOLDER_KEY not in fwctx.additional_kwargs
 
 
+def test_register_uses_layer_as_mhc_when_module_missing(cube_side_task_ops):
+    """NPUmHCRL layers expose mhc_sinkhorn directly instead of mhc_module."""
+    module, fwctx = cube_side_task_ops
+    post_value = torch.tensor([3.0])
+
+    class _DirectMhc:
+        def mhc_sinkhorn(self, value):
+            return post_value
+
+    layer = _DirectMhc()
+    fwctx.no_compile_layers["direct.mhc"] = layer
+    h_res = torch.zeros(2)
+    returned = module.mhc_register("direct.mhc", "direct.key", h_res)
+    assert returned is h_res
+    fwctx.additional_kwargs[module.CUBE_SIDE_TASKS_KEY]["direct.key"].fn()
+    fetched = module.mhc_fetch("direct.key", torch.tensor([0.0]))
+    assert fetched is post_value
+
+
 def test_fetch_returns_fallback_when_not_registered(cube_side_task_ops):
     module, fwctx = cube_side_task_ops
     fallback = torch.tensor([99.0])

@@ -73,6 +73,7 @@ _CURRENT_CFG_CM = None
 
 def _set_model_extra_config(enable_cp: bool = False,
                             enable_fc2: bool = False,
+                            enable_attn_sp: bool = False,
                             implementation: str = "low_latency") -> None:
     from omni_npu.model_config.config_loader.loader import model_extra_config
     op = model_extra_config.operator_opt_config
@@ -83,24 +84,32 @@ def _set_model_extra_config(enable_cp: bool = False,
     # the attention/APC invariants guarded here, so use the regular HP kernel;
     # retain the production low-latency setting for the existing suite.
     op.use_aicpu_fa_tiling = implementation == "low_latency"
+    # SWA SP is absorb-PA only (including first chunk). Keep first_chunk_pa=True
+    # for non-SP paths that still exercise dense first-chunk attention.
     op.optimize_first_chunk = False  # -> first_chunk_pa = True (PA path)
     pc.ena_context_parallel = enable_cp
     pc.enable_flashcomm2 = enable_fc2
-    # Only CP needs ena_seq_parallel: the DSA builder attaches a real SPManager to
-    # prefill metadata under this flag. The FC2 SWA path does not read it.
-    pc.ena_seq_parallel = enable_cp
+    pc.ena_swa_attn_seq_parallel = enable_attn_sp
+    # CP and SWA SP need ena_seq_parallel so builders attach SPManager metadata.
+    # The FC2 SWA path does not read it.
+    pc.ena_seq_parallel = enable_cp or enable_attn_sp
     # HP DSA CP may produce uneven per-rank token counts for tail chunks.
     # Production uses the sharded o_proj variant for this contract; unlike a
     # token-dimension ReduceScatter it also supports non-TP-divisible tails.
-    pc.sharded_o_proj = enable_cp and implementation == "high_performance"
+    # SWA SP keeps Q/KV replicated; o_proj uses ShardedLinear so resident
+    # weight storage is 1/TP (same P-node memory path as production).
+    pc.sharded_o_proj = (
+        (enable_cp and implementation == "high_performance") or enable_attn_sp
+    )
 
 
 def bootstrap_worker(kv_role: Optional[str] = None,
                      enable_cp: bool = False, enable_fc2: bool = False,
+                     enable_attn_sp: bool = False,
                      implementation: str = "low_latency"):
     """Bootstrap inside a distributed_worker_pool worker (distributed already
     initialized by the worker loop): apply patches, set the model extra config
-    (optionally enabling CP / FC2) and a persistent current VllmConfig.
+    (optionally enabling CP / FC2 / SWA SP) and a persistent current VllmConfig.
 
     Returns a VllmConfig whose TP matches the live tensor-parallel group.
     """
@@ -133,6 +142,7 @@ def bootstrap_worker(kv_role: Optional[str] = None,
     torch.set_default_dtype(torch.bfloat16)
     _set_model_extra_config(
         enable_cp=enable_cp, enable_fc2=enable_fc2,
+        enable_attn_sp=enable_attn_sp,
         implementation=implementation,
     )
     tp_size = get_tp_group().world_size
@@ -287,6 +297,7 @@ def build_layer(vllm_config, layer_idx: int, seed: int = 0,
     _transpose_flashcomm_weights(layer)
     if implementation == "low_latency":
         layer.process_weights_after_loading()
+        _prepare_sharded_o_proj_weights(layer)
     else:
         _prepare_high_performance_weights(layer)
     layer._test_implementation = implementation
@@ -314,6 +325,26 @@ def _transpose_flashcomm_weights(layer) -> None:
                 m.weight.is_weight_transposed = True
 
 
+def _prepare_sharded_o_proj_weights(layer) -> None:
+    """Install ShardedLinear's gather_fn the same way the model loader does."""
+    if not getattr(layer, "sharded_o_proj", False):
+        return
+    dtype = (
+        layer.default_cfg["dtype"]
+        if hasattr(layer, "default_cfg")
+        else layer.o_proj.weight.dtype
+    )
+    with torch.no_grad():
+        loaded = torch.empty(
+            layer.hidden_size,
+            layer.num_heads * layer.v_head_dim,
+            dtype=dtype,
+            device=layer.o_proj.weight.device,
+        )
+        loaded.normal_(0, 0.02)
+        layer.o_proj.weight.weight_loader(layer.o_proj.weight, loaded)
+
+
 def _prepare_high_performance_weights(layer) -> None:
     """Complete the model-loader-only setup for a standalone HP layer.
 
@@ -322,19 +353,7 @@ def _prepare_high_performance_weights(layer) -> None:
     directly, so reproduce that deterministic derivation here.
     """
     with torch.no_grad():
-        if getattr(layer, "sharded_o_proj", False):
-            # ShardedLinear's loader stores one byte shard per rank and installs
-            # the gather callback used by prefetch().  The normal model loader
-            # invokes it with the full checkpoint tensor; this standalone test
-            # initialises parameters directly, so reproduce that step here.
-            loaded = torch.empty(
-                layer.hidden_size,
-                layer.num_heads * layer.v_head_dim,
-                dtype=layer.default_cfg["dtype"],
-                device=layer.o_proj.weight.device,
-            )
-            loaded.normal_(0, 0.02)
-            layer.o_proj.weight.weight_loader(layer.o_proj.weight, loaded)
+        _prepare_sharded_o_proj_weights(layer)
 
         kv_weight = layer.kv_b_proj.weight.view(
             layer.kv_lora_rank,
@@ -470,11 +489,14 @@ def build_metadata(layer, vllm_config, reqs, num_blocks: int,
     attn_spec = layer.attn.get_kv_cache_spec(vllm_config)
     builder_cls = NPUDSAMetadataBuilder if layer.is_dsa_layer else NPUMLAMetadataBuilder
     abuilder = builder_cls(attn_spec, [f"{prefix}.attn"], vllm_config, device)
-    if (getattr(layer, "_test_implementation", "low_latency") ==
-            "high_performance" and getattr(layer, "ena_cp", False)):
-        # CP is a prefill-only path. The generic MLA metadata builder normally
+    if (
+        (getattr(layer, "_test_implementation", "low_latency") ==
+            "high_performance" and getattr(layer, "ena_cp", False))
+        or getattr(layer, "is_attn_sp_layer", False)
+    ):
+        # CP / SWA SP are prefill-only. The generic MLA metadata builder
         # classifies query_len=1 as decode, including a one-token chunked-
-        # prefill tail. Keep every CASE on _forward_prefill_cp instead.
+        # prefill tail. Keep every CASE on the prefill SP/CP path instead.
         abuilder.reorder_batch_threshold = 0
     attn_meta = abuilder.build(0, common)
     if getattr(layer, "_test_implementation", "low_latency") == "high_performance":
@@ -672,10 +694,12 @@ def _apc_real_suffix_tp(layer, vllm_config, hidden, context_len, suffix_chunks,
 
 def _worker_layer(device, layer_idx, kv_role=None,
                   enable_cp=False, enable_fc2=False,
+                  enable_attn_sp=False,
                   implementation="low_latency"):
     torch.npu.set_device(device)
     cfg = bootstrap_worker(kv_role=kv_role, enable_cp=enable_cp,
                            enable_fc2=enable_fc2,
+                           enable_attn_sp=enable_attn_sp,
                            implementation=implementation)
     layer = build_layer(cfg, layer_idx, implementation=implementation)
     return cfg, layer
@@ -730,15 +754,112 @@ def _run_case(layer, cfg, case: PrefillCase, num_blocks):
 # every rank.
 def mc_invariants_worker(device, rank, world_size, layer_idx, cases, num_blocks,
                          kv_role=None, enable_cp=False, enable_fc2=False,
+                         enable_attn_sp=False,
                          implementation="low_latency"):
     """Run each PrefillCase in `cases` on the live (TP) layer, asserting its
     chunked / apc / chunk+apc invariant against a full prefill (see PrefillCase
-    and _run_case). kv_role / enable_cp / enable_fc2 select the layer variant."""
+    and _run_case). kv_role / enable_cp / enable_fc2 / enable_attn_sp select the
+    layer variant."""
     cfg, layer = _worker_layer(device, layer_idx, kv_role=kv_role,
                                enable_cp=enable_cp, enable_fc2=enable_fc2,
+                               enable_attn_sp=enable_attn_sp,
                                implementation=implementation)
     for case in cases:
         _run_case(layer, cfg, case, num_blocks)
+
+
+def _assert_rank_replicated(tp, tensor: torch.Tensor, name: str) -> None:
+    gathered = tp.all_gather(tensor.contiguous(), dim=0)
+    per_rank = gathered.view(tp.world_size, *tensor.shape)
+    reference = per_rank[0]
+    for rank_tensor in per_rank[1:]:
+        if not torch.equal(rank_tensor, reference):
+            raise AssertionError(f"{name} differs across TP ranks")
+
+
+def multi_request_swa_sp_worker(
+    device,
+    rank,
+    world_size,
+    num_blocks,
+):
+    """Compare batched SWA SP with independent requests and cache replicas."""
+    cfg, layer = _worker_layer(
+        device,
+        SWA_LAYER_IDX,
+        kv_role="kv_producer",
+        enable_attn_sp=True,
+    )
+    from vllm.distributed import get_tp_group
+
+    tp = get_tp_group()
+    request_lens = (BLOCK_SIZE + 1, 2 * BLOCK_SIZE + 1)
+    hidden_parts = [
+        make_hidden(length, _hidden_size(), seed=123 + req_idx)
+        for req_idx, length in enumerate(request_lens)
+    ]
+    hidden = torch.cat(hidden_parts, dim=0)
+    positions = torch.cat([
+        torch.arange(length, dtype=torch.long, device=NPU)
+        for length in request_lens
+    ])
+    cos, sin = cos_sin_for_positions(layer, positions)
+
+    alloc_caches(layer, cfg, num_blocks)
+    attn_meta, mome_meta = build_metadata(
+        layer,
+        cfg,
+        [(0, length) for length in request_lens],
+        num_blocks,
+    )
+    batched = _sp_shard_forward(
+        layer,
+        hidden,
+        cos,
+        sin,
+        attn_meta,
+        mome_meta,
+    )
+
+    valid_slots = attn_meta.slot_mapping
+    valid_slots = valid_slots[valid_slots >= 0].to(torch.long)
+    for cache_idx, cache in enumerate(layer.attn.kv_cache[0]):
+        cached_tokens = cache.reshape(-1, cache.shape[-1]).index_select(
+            0, valid_slots
+        )
+        _assert_rank_replicated(
+            tp,
+            cached_tokens,
+            f"kv_cache[{cache_idx}]",
+        )
+
+    for proj_name in ("q_b_proj", "kv_b_proj", "o_proj"):
+        proj = getattr(layer, proj_name)
+        assert proj.tp_size == 1
+        weight_sample = proj.weight.reshape(-1)[:256]
+        _assert_rank_replicated(tp, weight_sample, f"{proj_name}.weight")
+
+    reference_parts = []
+    for hidden_part, length in zip(hidden_parts, request_lens):
+        alloc_caches(layer, cfg, num_blocks)
+        single_meta = build_metadata(
+            layer,
+            cfg,
+            [(0, length)],
+            num_blocks,
+        )
+        single_cos, single_sin = cos_sin_for(layer, 0, length)
+        reference_parts.append(
+            _sp_shard_forward(
+                layer,
+                hidden_part,
+                single_cos,
+                single_sin,
+                *single_meta,
+            )
+        )
+    reference = torch.cat(reference_parts, dim=0)
+    assert_close(batched, reference, f"swa_sp_multi_request_tp{world_size}")
 
 
 def assert_close(actual, expected, name, atol=3e-2, rtol=3e-2):

@@ -77,6 +77,17 @@ from omni_npu.v1.layers.logits_processor import NPULogitsProcessor
 from omni_npu.v1.layers.vocab_parallel_embedding import NPUParallelLMHead, NPUVocabParallelEmbedding
 from omni_npu.v1.utils import on_ascend910b, on_ascend950
 
+from .utils import (
+    no_aiv,
+    record_event,
+    named_stream,
+    all_to_all,
+    gather_routing,
+    rerouting,
+    quant_ffn,
+    finalize_routing,
+)
+
 
 logger = init_logger(__name__)
 
@@ -283,6 +294,7 @@ class OpenPanguV2MOE(nn.Module):
 
         self.is_sequence_parallel = parallel_config.use_sequence_parallel_moe
         self.moe_comm_strategy = model_extra_config.operator_opt_config.moe_comm_strategy
+        self.moe_tbo_threshold = getattr(model_extra_config.operator_opt_config, "moe_tbo_threshold", -1)
         check_ffn_act_fn(config.hidden_act)
 
         self.gate = ReplicatedLinear(
@@ -388,6 +400,10 @@ class OpenPanguV2MOE(nn.Module):
             total_len = next(iter(hidden_states.values())).shape[0]
         else:
             raise TypeError(f"Unsupported type: {type(hidden_states)}")
+
+        if self.moe_tbo_threshold > 0:
+            if total_len * get_tp_group().world_size > self.moe_tbo_threshold:
+                return self._forward_tbo(hidden_states)
 
         # 2. 长度不超过拆分阈值，直接单步计算
         if total_len <= self.moe_seq_split_length:
@@ -1338,6 +1354,148 @@ class OpenPanguV2MOE(nn.Module):
         final_output = moe_output + shared_output
 
         return final_output
+
+    def _parse_input(self, x: torch.Tensor | dict) -> tuple[torch.Tensor, ...]:
+        if isinstance(x, dict):
+            fp32 = x["hidden_states_fp32"]
+            x = x["hidden_states_bf16"]
+        else:
+            assert isinstance(x, torch.Tensor)
+            fp32 = x.to(torch.float32)
+
+        router_logits, _ = self.gate(fp32)
+        router_logits = router_logits.to(torch.float32)
+        topk_w, topk_ids, _ = torch_npu.npu_moe_gating_top_k(
+            router_logits,
+            k=self.experts.top_k,
+            bias=self.e_score_correction_bias,
+            k_group=self.experts.topk_group,
+            group_count=self.experts.num_expert_group,
+            group_select_mode=1,
+            renorm=0,
+            norm_type=1,  # softmax=0, sigmoid=1
+            routed_scaling_factor=self.routed_scaling_factor,
+        )
+        return x, topk_w, topk_ids
+
+    def _forward_tbo(self, sp_x: torch.Tensor | dict, quant_combine=True):
+        # TBO (Two Batch Overlap) forward path with three-stream pipeline:
+        #   cur_stream: gating + gather_routing + avg/rest FFN + finalize_routing
+        #   com_stream: dynamic_quant + all_gather(x_i8) + avg/rest all_to_all
+        #   sub_stream: shared_experts (overlaps with com_stream all_to_all)
+        #
+        # avg / rest two-batch strategy:
+        #   avg = T * K * 1.1 — a fixed lower bound that does NOT depend on D2H sync,
+        #   so the avg FFN (quant_ffn on hist1) can be dispatched immediately on cur_stream.
+        #   rest = the dynamic remainder beyond avg; its exact count requires D2H sync
+        #   (stat_cpu = parse(data.clone().cpu())), so it is dispatched as a second batch.
+        #   This splits the FFN work into two waves, hiding the D2H latency behind
+        #   the first wave's computation.
+        cur_stream = torch.npu.current_stream()
+        com_stream = named_stream("com_stream")
+        sub_stream = named_stream("sub_stream")
+        sp = get_tp_group()
+        ep = no_aiv(get_ep_group())
+
+        # === Phase 1: input parsing + gating + launch async quant/all_gather on com_stream ===
+        e1 = record_event()  # mark parse start; com_stream will wait on e1
+        sp_x, topk_w, sp_topk = self._parse_input(sp_x)
+        N = self.n_routed_experts   # 256
+        K: int = self.experts.top_k # 8
+        T = sp_x.size(0)
+        avg = int(T * K * 1.1)      # fixed lower bound (no D2H needed)
+        maxn = int(T * K * 3.0)
+
+        with torch.npu.stream(com_stream):
+            e1.wait(com_stream)
+            x_i8, x_sc = torch_npu.npu_dynamic_quant(sp_x)
+            e2 = record_event()  # dynamic_quant done, all_gather starts
+            x_i8 = sp.all_gather(x_i8, dim=0)
+            e3 = record_event()  # all_gather done on com_stream; x_i8 ready
+
+        # cur_stream: gather_routing (overlaps with com_stream's all_gather above)
+        e2.wait(cur_stream)
+        index, order_sp, data, parse, done, x_sc = gather_routing(
+            get_ep_group(), sp_topk, N, avg, x_sc)
+        stat = parse(data)
+        idx1 = index[:avg]
+        sc = torch.index_select(x_sc, 0, idx1)
+
+        e3.wait(cur_stream)
+        i8 = torch.index_select(x_i8, 0, idx1)
+
+        # avg FFN on cur_stream: fixed portion, dispatched immediately (no D2H wait)
+        y1 = quant_ffn(self.experts, i8, sc, stat.hist1)
+        if quant_combine:
+            y1, sc1 = torch_npu.npu_dynamic_quant(y1)
+        recv = y1.new_empty(T * K, y1.size(1))
+
+        with torch.npu.stream(sub_stream):
+            done.wait(sub_stream)
+            stat_cpu = parse(data.clone().cpu())
+            recv_n1 = int(stat_cpu.avg_recvs.sum())
+            total = int(stat_cpu.map.sum())
+
+        send1 = rerouting(y1[:min(total, avg)], stat.avg_map)
+        e4 = record_event()  # avg send1 ready; com_stream can start avg all_to_all
+
+        if total > avg:
+            idx2 = index[avg:total]
+            cnt = max(maxn, total - avg)
+            sc = x_sc.new_empty(cnt)
+            i8 = x_i8.new_empty(cnt, x_i8.size(1))
+            torch.index_select(x_sc, 0, idx2, out=sc[:total - avg])
+            torch.index_select(x_i8, 0, idx2, out=i8[:total - avg])
+            y2 = quant_ffn(self.experts, i8, sc, stat.hist2)[:total - avg]
+            if quant_combine:
+                y2, sc2 = torch_npu.npu_dynamic_quant(y2)
+            send2 = rerouting(y2, stat.rest_map)
+        else:
+            send2 = y1[:0]
+        e5 = record_event()  # rest send2 ready; com_stream can start rest all_to_all
+        e7 = record_event()  # sub_stream can start shared expert (overlaps with com all_to_all)
+
+        # === Phase 2: com_stream does avg+rest all_to_all; sub_stream does shared expert in parallel ===
+        with torch.npu.stream(com_stream):
+            e4.wait(com_stream)
+            all_to_all(ep, send1,
+                stat_cpu.avg_sends.tolist(),
+                stat_cpu.avg_recvs.tolist(),
+                out=recv[:recv_n1],
+            )
+            e5.wait(com_stream)
+            all_to_all(ep, send2,
+                stat_cpu.rest_sends.tolist(),
+                stat_cpu.rest_recvs.tolist(),
+                out=recv[recv_n1:],
+            )
+            e6 = record_event()  # both all_to_all done; recv buffer complete
+
+        with torch.npu.stream(sub_stream):
+            e7.wait(sub_stream)
+            shared = self.shared_experts(sp_x)
+            e8 = record_event()  # shared expert done
+
+        # === Phase 3: finalize routing on cur_stream — merge avg+rest, apply scales, add shared ===
+        inverse_sp = order_sp.float().argsort().int()
+        map_ = torch.stack([stat.avg_recvs, stat.rest_recvs])
+        reorg_idx_ = rerouting(order_sp.numel(), map_)
+        reorg_idx = reorg_idx_[inverse_sp]
+
+        if quant_combine:
+            y_sc = torch.cat([sc1, sc2]) if total > avg else sc1[:total]
+            recv_sc = all_to_all(sp,
+                rerouting(y_sc, stat.map),
+                stat_cpu.full_sends.tolist(),
+                stat_cpu.full_recvs.tolist(),
+            )[inverse_sp].view(-1, K)
+            topk_w *= recv_sc
+
+        e6.wait(cur_stream)
+        routed = finalize_routing(recv.to(torch.bfloat16), topk_w, reorg_idx)
+
+        e8.wait(cur_stream)  # wait shared expert before adding to routed output
+        return routed + shared
 
 
 class OpenPanguV2DecoderLayerOutput(NamedTuple):

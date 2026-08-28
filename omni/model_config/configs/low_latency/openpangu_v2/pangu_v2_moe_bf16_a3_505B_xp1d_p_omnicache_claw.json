@@ -2,12 +2,14 @@
     "model_parallel_config": {
         "ena_seq_parallel": true,
         "ena_context_parallel": true,
-        "enable_flashcomm2": true,
-        "layer_parallel_config": {
-        }
+        "ena_swa_attn_seq_parallel": true,
+        "sharded_o_proj": false,
+        "enable_flashcomm2": false,
+        "layer_parallel_config": {}
     },
     "operator_optimization_config": {
         "moe_comm_strategy": "allgather_reducescatter",
+        "moe_tbo_threshold": 16384,
         "enable_mome_sp": true,
         "use_aicpu_fa_tiling": true,
         "use_noncontiguous_kv": true,
@@ -17,6 +19,6 @@
         "split_q_up_in_multistream": false,
         "num_extra_reserved_blocks": 0,
         "disable_npu_top_k_top_p_sample": false,
-        "optimize_first_chunk": true
+        "optimize_first_chunk": false
     }
 }

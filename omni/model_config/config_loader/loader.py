@@ -111,6 +111,7 @@ class ModelParallelConfig:
     input_split: bool = False
     ena_seq_parallel: bool = False # 模型内，全局序列并行（tp切分token，对齐到tp_size，从vocab_embbeding到最后一个layernorm之间）
     ena_context_parallel: bool = False # DSA的序列并行，依赖ena_seq_parallel开启
+    ena_swa_attn_seq_parallel: bool = False # SWA attention 标准序列并行：token切分，Q/KV投影权重复制；o_proj 可配合 sharded_o_proj 按字节切存储
     enable_flashcomm2: bool = False
     sharded_o_proj: bool = False # prefill侧o_proj采用sharded linear
     ena_dp_lmhead_parallel: bool = False  # lm_head 按 DP 维度切 vocab，显存降到 1/dp_size
@@ -193,6 +194,7 @@ class ModelOperatorOptConfig:
     use_mhc_fusion_op: bool = False # 是否使用mhc大融合算子，默认不开启
     use_mome_inplace_update: bool = False
     moe_comm_strategy: MoECommStrategyType = "dispatch_combine" # MoE通信策略，默认为dispatch_combine
+    moe_tbo_threshold: int = -1 # MoE: two batch overlap batch threshold, -1 for disable
     moe_dispatch_combine_max_batch_size: int = 128
     fix_multi_mtp_kvcache: bool = False # Whether or not to fix kvcache in multi-mtp
     use_topk_topp_stream: bool = False # 是否开启采样topk_topp多流

@@ -1063,6 +1063,22 @@ class TestNPUDeepseekMLAAttention:
     def test_prefill_absorb(self):
         self._test_with_cfg(prefill_absorb=True)
 
+    def test_prefill_standard_multistream_split_q(self):
+        # Prefill must route through the split q-up projections: the full
+        # q_b_proj storage is released at post_weight_load when
+        # split_q_up_in_multistream is on.
+        self._test_with_cfg(
+            enable_multi_stream=True,
+            split_q_up_in_multistream=True,
+        )
+
+    def test_prefill_absorb_multistream_split_q(self):
+        self._test_with_cfg(
+            prefill_absorb=True,
+            enable_multi_stream=True,
+            split_q_up_in_multistream=True,
+        )
+
     def test_prefill_sp(self):
         self._test_with_cfg(ena_seq_parallel=True)
 
@@ -1967,6 +1983,7 @@ def test_forward_prefill_standard_passes_metadata_to_chunked_context(monkeypatch
     fake.ena_sp = False
     fake.use_mome = False
     fake.param_sink_number = 0
+    fake.split_q_up_in_multistream = False
     fake.attn = SimpleNamespace(kv_cache=[("nope_cache", "rope_cache")])
 
     T, N, R, QK, L, V = 3, 2, 1, 4, 5, 3
@@ -2390,6 +2407,7 @@ def test_forward_prefill_standard_noncontiguous_sink_calls_kv_b_proj(monkeypatch
     fake.ena_sp = False
     fake.use_mome = False
     fake.param_sink_number = S
+    fake.split_q_up_in_multistream = False
     fake.noncontiguous_kv = True
     fake.attn = SimpleNamespace(
         kv_cache=[("nope_cache", "rope_cache")],
@@ -2510,6 +2528,7 @@ def test_import_guard_both_custom_ops_importable():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("invoke_epilog", [True, False])
 @pytest.mark.parametrize(
     ("module_name", "forward_name", "deferred_name"),
     [
@@ -2526,8 +2545,9 @@ def test_import_guard_both_custom_ops_importable():
     ],
 )
 def test_attention_mhc_deferred_launches_before_epilog(
-    monkeypatch, module_name, forward_name, deferred_name
+    monkeypatch, module_name, forward_name, deferred_name, invoke_epilog
 ):
+    """Launch MHC on the attention epilog, or fall back if the callback is skipped."""
     module = importlib.import_module(module_name)
     attention = SimpleNamespace(pre_epilog_callback=None)
     h_post = torch.randn(2, 2)
@@ -2537,8 +2557,6 @@ def test_attention_mhc_deferred_launches_before_epilog(
             return_value=(h_post, h_res)
         )
     )
-    # Deferred MHC looks up the forward context from mhc_deferred, not
-    # from the attention module that registers the custom op.
     monkeypatch.setattr(
         "omni_npu.layers.mhc.mhc_deferred.get_forward_context",
         lambda: SimpleNamespace(
@@ -2548,9 +2566,10 @@ def test_attention_mhc_deferred_launches_before_epilog(
     output = torch.randn(2, 3)
 
     def forward(*_args):
-        callback = attention.pre_epilog_callback
-        attention.pre_epilog_callback = None
-        callback()
+        if invoke_epilog:
+            callback = attention.pre_epilog_callback
+            attention.pre_epilog_callback = None
+            callback()
         return output
 
     monkeypatch.setattr(module, forward_name, forward)
@@ -2572,6 +2591,35 @@ def test_attention_mhc_deferred_launches_before_epilog(
         residual, "task"
     )
     assert attention.pre_epilog_callback is None
+
+
+@pytest.mark.unit
+def test_attention_mhc_deferred_fake_matches_mhc_layout(monkeypatch):
+    """Fake impl uses (T, num_stream, hidden_size) residual slices for h_post/h_res."""
+    from omni_npu.layers.mhc import mhc_deferred as deferred_mod
+
+    mhc = SimpleNamespace(num_stream=2, hidden_size=3)
+    monkeypatch.setattr(
+        deferred_mod,
+        "get_forward_context",
+        lambda: SimpleNamespace(no_compile_layers={"mhc": mhc}),
+    )
+    hidden = torch.randn(4, 5)
+    residual = torch.randn(4, 6)
+    out, h_post, h_res = deferred_mod.attention_mhc_deferred_fake(
+        hidden,
+        torch.zeros(1),
+        torch.zeros(1),
+        residual,
+        "attention",
+        "mhc",
+        "task",
+    )
+    assert out.shape == hidden.shape
+    assert h_post.shape == (4, 2)
+    assert h_res.shape == (4, 2, 2)
+    assert h_post.dtype == torch.float32
+    assert h_res.dtype == torch.float32
 
 
 # Allow running directly

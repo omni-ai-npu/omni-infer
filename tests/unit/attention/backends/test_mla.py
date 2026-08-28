@@ -368,6 +368,42 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         self.assertEqual(result.prefill.query_cumlens, [3])
         self.assertEqual(result.prefill.seq_lens, [128])
 
+    def test_builder_attaches_sp_manager_when_swa_seq_parallel_enabled(self):
+        """Prefill metadata stores SPManager when ena_swa_attn_seq_parallel is on."""
+        builder, mla_mod = self._new_builder_for_current_build()
+        common_attn_metadata = self._make_common_for_current_build(
+            seq_lens=[3],
+            query_start_loc=[0, 3],
+        )
+        fake_sp = MagicMock()
+        with (
+            patch.object(
+                mla_mod,
+                "split_decodes_and_prefills",
+                return_value=(0, 1, 0, 3),
+            ),
+            patch.object(
+                mla_mod.model_extra_config.parall_config,
+                "ena_swa_attn_seq_parallel",
+                True,
+            ),
+            patch.object(
+                mla_mod.model_extra_config.parall_config,
+                "ena_seq_parallel",
+                True,
+            ),
+            patch.object(mla_mod.SPManager, "init_sp", return_value=fake_sp) as init_sp,
+        ):
+            result = builder.build(
+                common_prefix_len=0,
+                common_attn_metadata=common_attn_metadata,
+                fast_build=False,
+            )
+
+        init_sp.assert_called_once()
+        fake_sp.init_sp_attn.assert_called_once()
+        self.assertIs(result.prefill.sp_manager, fake_sp)
+
     def test_builder_uses_seq_lens_cpu_upper_bound_without_legacy_shadow(self):
         with torch.device("cpu"):
             builder, mla_mod = self._new_builder_for_current_build()

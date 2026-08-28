@@ -65,7 +65,10 @@ from omni_npu.layers.mhc.mhc_deferred import (
 )
 from omni_npu.layers.utils import SIDE_STREAM_NAME, named_stream
 from omni_npu.plugin_decorators import attn_decorator
-from omni_npu.v1.layers.attention.weight_utils import install_q_b_split_loaders
+from omni_npu.v1.layers.attention.weight_utils import (
+    install_q_b_split_loaders,
+    release_q_b_proj_storage,
+)
 from omni_npu.v1.layers.linear import (
     ColumnParallelFlashCommLinear,
     RowParallelFlashCommLinear,
@@ -562,6 +565,12 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
                     self.merge_conv.merge_conv.weight.data.squeeze(1).transpose(0, 1).contiguous()
                 )
 
+        # With the split q-up projections populated, decode always takes
+        # _forward_decode_multistream, so the full q_b_proj storage is
+        # redundant; release it (reload-safe, see release_q_b_proj_storage).
+        if self.split_q_up_in_multistream:
+            release_q_b_proj_storage(self.q_b_proj)
+
     # ========================= linear =========================
 
     def _maybe_quant(self, x: torch.Tensor):
@@ -594,8 +603,14 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         Q, R = self.qk_nope_head_dim, self.qk_rope_head_dim
         tok = q_lora.size(0)
-        q = self.q_b_proj(q_lora)[0].view(tok, -1, Q + R)  # TND
-        q_nope, q_pe = torch.split(q, [Q, R], dim=-1)  # TND
+        if self.split_q_up_in_multistream:
+            # The full q_b_proj storage is released after loading in this
+            # mode; the split projections are numerically identical per row.
+            q_nope = self.q_b_nope_proj(q_lora)[0].view(tok, -1, Q)  # TND
+            q_pe = self.q_b_pe_proj(q_lora)[0].view(tok, -1, R)  # TND
+        else:
+            q = self.q_b_proj(q_lora)[0].view(tok, -1, Q + R)  # TND
+            q_nope, q_pe = torch.split(q, [Q, R], dim=-1)  # TND
         q_pe = self._apply_rope(q_pe, cos, sin)  # TND
         if q_nope.size(1) * q_nope.size(2) < 65536:
             args = {"input": q_nope, "perm_x1": (1, 0, 2)}
@@ -1781,8 +1796,14 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         if self.ena_sp and not self.use_mome:
             q = sp_manager.ag_tokens(q)  # TD
 
-        q = self.q_b_proj(q)[0].view(-1, N, QK + R)  # TND
-        q_nope, q_pe = torch.split(q, [QK, R], dim=-1)  # TND
+        if self.split_q_up_in_multistream:
+            # The full q_b_proj storage is released after loading in this
+            # mode; the split projections are numerically identical per row.
+            q_nope = self.q_b_nope_proj(q)[0].view(-1, N, QK)  # TND
+            q_pe = self.q_b_pe_proj(q)[0].view(-1, N, R)  # TND
+        else:
+            q = self.q_b_proj(q)[0].view(-1, N, QK + R)  # TND
+            q_nope, q_pe = torch.split(q, [QK, R], dim=-1)  # TND
         q_pe = self._apply_rope(q_pe, cos, sin)  # TND
 
         kv = self.kv_a_proj_with_mqa(x)[0]  # TD

@@ -50,6 +50,28 @@ def _store_post_pwal(param: torch.Tensor, plain: torch.Tensor) -> None:
         set_aclgraph_recapture(True)
 
 
+def release_q_b_proj_storage(q_b_proj: nn.Module) -> None:
+    """Release the redundant full q_b_proj weight storage.
+
+    When the split q-up projections (q_b_nope_proj / q_b_pe_proj) carry the
+    compute, keeping the full q_b_proj as well doubles the q-up weight HBM
+    footprint. Call this once the split projections have been populated
+    (after loading). The wrapped split loader re-materializes the storage on
+    the next load (RL weight sync), so the release is reload-safe.
+
+    No-op unless the wrapped split loader has recorded the plain-layout
+    shape, i.e. unless the weight has actually been loaded.
+    """
+    weight = getattr(q_b_proj, "weight", None)
+    if weight is None or getattr(weight, "_q_b_storage_released", False):
+        return
+    if not hasattr(weight, "_q_b_plain_shape"):
+        # Weights not loaded yet (e.g. the init-time post_weight_load).
+        return
+    weight._q_b_storage_released = True
+    weight.data = torch.empty(0, dtype=weight.dtype, device=weight.device)
+
+
 def install_q_b_split_loaders(
     q_b_proj: nn.Module,
     q_b_nope_proj: nn.Module,
@@ -61,10 +83,27 @@ def install_q_b_split_loaders(
 
     def make_split_loader(orig_loader, nope_param, pe_param):
         def split_loader(param, loaded_weight, *args, **kwargs):
+            released = getattr(param, "_q_b_storage_released", False)
+            if released:
+                # Storage was released after the first load to save HBM;
+                # re-materialize it so the wrapped loader can populate it
+                # again. Treat this as a fresh plain-layout load: PWAL does
+                # not re-run for the source projection on reload.
+                param.data = torch.empty(
+                    param._q_b_plain_shape,
+                    dtype=loaded_weight.dtype,
+                    device=loaded_weight.device,
+                )
+                for layout_attr in ("is_weight_nz", "is_weight_transposed"):
+                    if getattr(param, layout_attr, False):
+                        setattr(param, layout_attr, False)
             loader_result = orig_loader(param, loaded_weight, *args, **kwargs)
             # After a reload the wrapped loader has already re-applied the
             # post-PWAL layout; slice on the restored plain layout instead.
             data = _plain_layout(param)
+            # Record the plain (out, in) loader-facing shape so that a later
+            # reload can re-materialize the released storage with it.
+            param._q_b_plain_shape = tuple(data.shape)
             if data.dim() not in (1, 2):
                 raise ValueError(
                     f"Unsupported q_b_proj layout: shape={tuple(data.shape)}"
@@ -114,6 +153,12 @@ def install_q_b_split_loaders(
             with torch.no_grad():
                 _store_post_pwal(nope_param, nope)
                 _store_post_pwal(pe_param, pe)
+            if released:
+                # Keep the HBM saving across reloads: the split projections
+                # are the only compute consumers of the q-up weights.
+                param.data = torch.empty(
+                    0, dtype=loaded_weight.dtype, device=loaded_weight.device
+                )
             return loader_result
 
         return split_loader

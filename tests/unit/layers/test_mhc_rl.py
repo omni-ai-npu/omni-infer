@@ -201,6 +201,12 @@ def _init_mhc_params(mhc):
             mhc.branch_beta_pre.fill_(0.1)
 
 
+def _freeze_mhc(mhc):
+    """Disable grad so fusion slice views can be copy_-updated after load."""
+    for parameter in mhc.parameters():
+        parameter.requires_grad_(False)
+
+
 @pytest.mark.unit
 def test_named_side_stream_aliases_share_one_stream(monkeypatch):
     repo_root = Path(__file__).resolve().parents[3]
@@ -595,6 +601,7 @@ def test_process_weights_after_loading_prepares_fusion_slices(monkeypatch):
             torch.arange(mhc.branch_beta.numel(), dtype=torch.float32)
         )
 
+    _freeze_mhc(mhc)
     mhc.process_weights_after_loading()
 
     expected = mhc.phi.weight * mhc.norm_gamma
@@ -636,6 +643,8 @@ def test_mhc_fusion_ops_forward_expected_arguments(monkeypatch):
     module = _import_mhc_rl(monkeypatch)
     post_mhc = module.NPUmHCRL(_cfg(), pre_only=False, prefix="post")
     pre_mhc = module.NPUmHCRL(_cfg(), pre_only=False, prefix="pre")
+    _freeze_mhc(post_mhc)
+    _freeze_mhc(pre_mhc)
     pre_mhc.process_weights_after_loading()
 
     residual = torch.randn(4, 6)
