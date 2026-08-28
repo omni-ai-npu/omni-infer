@@ -60,12 +60,14 @@ class ProcessManager:
     def __init__(self, processes):
         self.processes = processes
 
+
 def process_space_split(arg_temp, out_list):
     if "--compilation-config" in arg_temp:
         out_list.extend(["--compilation-config", arg_temp[len("--compilation-config "):]])
     else:
         out_list.extend(arg_temp.split(" "))
     return out_list
+
 
 def process_extra_args(extra_args):
     out_list = []
@@ -79,6 +81,7 @@ def process_extra_args(extra_args):
         else:
             out_list.extend([arg_temp])
     return out_list
+
 
 def start_single_node_api_servers(
     num_servers,
@@ -125,13 +128,6 @@ def start_single_node_api_servers(
     api_port_start = base_api_port
     servers_api_ports = {}
 
-    # # Check if base api port is available. Raise error if it's unavailable.
-    # if not is_port_available(base_api_port):
-    #     raise RuntimeError(
-    #         f"Port {base_api_port} is not available. "
-    #         "Use --base_api_port to specify a different port, or terminate the process using this port."
-    #     )
-
     for rank in range(num_servers):
         # Set environment variables for each server
         env = os.environ.copy()
@@ -141,7 +137,7 @@ def start_single_node_api_servers(
         env["VLLM_DP_MASTER_IP"] = master_ip
         env["VLLM_DP_MASTER_PORT"] = str(master_port)
         if "ASCEND_RT_VISIBLE_DEVICES" not in os.environ:
-            env["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(map(str, range(rank*tp, (rank+1)*tp)))
+            env["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(map(str, range(rank * tp, (rank + 1) * tp)))
 
         # Find an available port
         try:
@@ -177,7 +173,8 @@ def start_single_node_api_servers(
                 "--data-parallel-rank", str(rank + server_offset // tp),
             ])
         if enable_mtp:
-            cmd.extend(["--speculative_config", '{"method": "mtp", "num_speculative_tokens": ' + str(num_speculative_tokens) + '}'])
+            cmd.extend(["--speculative_config", 
+                        '{"method": "mtp", "num_speculative_tokens": ' + str(num_speculative_tokens) + '}'])
         if kv_transfer_config:
             cmd.extend(["--kv-transfer-config", str(kv_transfer_config)])
         if extra_args:
@@ -289,7 +286,11 @@ if __name__ == "__main__":
     parser.add_argument("--no-enable-chunked-prefill", default=False, action="store_true")
     parser.add_argument("--num-speculative-tokens", type=int, default=1)
     parser.add_argument("--pp", type=int, default=1, help="Pipeline parallelism size")
-    parser.add_argument("--distributed-executor-backend", type=str, default=None, help="Distributed executor backend for vLLM (e.g., 'mp', 'ray')")
+    parser.add_argument(
+        "--distributed-executor-backend", 
+        type=str, 
+        default=None, 
+        help="Distributed executor backend for vLLM (e.g., 'mp', 'ray')")
 
     args = parser.parse_args()
     if not args.num_dp:
@@ -331,7 +332,7 @@ if __name__ == "__main__":
     # Keep the script running to allow servers to operate
     print(f"{args.num_servers} API servers are running. Press Ctrl+C to stop.")
     try:
-        server_down=False
+        server_down = False
         while True:
             time.sleep(1)  # Keep script alive, check processes periodically
             for i, (proc, _) in enumerate(processes):
@@ -340,7 +341,7 @@ if __name__ == "__main__":
                         f"API Server {i} (PID: {proc.pid}) stopped with exit code {proc.returncode}. "
                         f"Check {args.log_dir}/server_{i}.log for details."
                     )
-                    server_down=True
+                    server_down = True
             if server_down:
                 break
     except KeyboardInterrupt:
