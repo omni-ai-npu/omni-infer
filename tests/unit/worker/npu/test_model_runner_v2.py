@@ -198,6 +198,7 @@ requires_npu_sampling = pytest.mark.xfail(
 )
 
 
+
 @requires_npu_sampling
 @requires_npu
 def test_gumbel_sample_pure_greedy():
@@ -440,6 +441,97 @@ def test_gumbel_sample_with_top_k_top_p():
             f"token {tok} 采样到 {tid}，但该位置已被 top-k mask 成 -inf"
         )
         assert 0 <= tid < vocab
+
+
+@requires_npu_sampling
+@requires_npu
+def test_rejection_sample_greedy_no_draft_logits():
+    """Greedy one-hot draft path: accept prefix, then stop at first mismatch."""
+    import torch
+
+    from omni_npu.worker.npu.ops.rejection_sampler_utils import rejection_sample
+
+    dev = "npu"
+    vocab = 1024
+    target_logits = torch.full((3, vocab), -20.0, dtype=torch.float32, device=dev)
+    target_logits[0, 1] = 20.0
+    target_logits[1, 3] = 20.0
+    target_logits[2, 7] = 20.0
+    draft_sampled = torch.tensor([0, 1, 2], dtype=torch.int64, device=dev)
+    cu_num_logits = torch.tensor([0, 3], dtype=torch.int64, device=dev)
+    pos = torch.arange(3, dtype=torch.int32, device=dev)
+    idx_mapping = torch.tensor([0], dtype=torch.int64, device=dev)
+    expanded_idx_mapping = torch.zeros(3, dtype=torch.int64, device=dev)
+    expanded_local_pos = torch.tensor([0, 1, 2], dtype=torch.int64, device=dev)
+    temperature = torch.tensor([0.0], dtype=torch.float32, device=dev)
+    seed = torch.tensor([0], dtype=torch.int64, device=dev)
+
+    sampled, num_sampled = rejection_sample(
+        target_logits,
+        None,
+        draft_sampled,
+        cu_num_logits,
+        pos,
+        idx_mapping,
+        expanded_idx_mapping,
+        expanded_local_pos,
+        temperature,
+        seed,
+        num_speculative_steps=2,
+    )
+    torch.npu.synchronize()
+
+    assert num_sampled.cpu().tolist() == [2]
+    assert sampled.cpu()[0, :2].tolist() == [1, 3]
+
+
+@requires_npu_sampling
+@requires_npu
+def test_rejection_sample_block_verification_with_draft_logits():
+    """Block verification path accepts matching draft distributions."""
+    import torch
+
+    from omni_npu.worker.npu.ops.rejection_sampler_utils import rejection_sample
+
+    dev = "npu"
+    vocab = 1024
+    target_logits = torch.full((3, vocab), -20.0, dtype=torch.float32, device=dev)
+    target_logits[0, 5] = 20.0
+    target_logits[1, 9] = 20.0
+    target_logits[2, 13] = 20.0
+    draft_logits = torch.full((1, 2, vocab), -20.0, dtype=torch.float32, device=dev)
+    draft_logits[0, 0, 5] = 20.0
+    draft_logits[0, 1, 9] = 20.0
+    draft_sampled = torch.tensor([0, 5, 9], dtype=torch.int64, device=dev)
+    cu_num_logits = torch.tensor([0, 3], dtype=torch.int64, device=dev)
+    pos = torch.arange(3, dtype=torch.int32, device=dev)
+    idx_mapping = torch.tensor([0], dtype=torch.int64, device=dev)
+    expanded_idx_mapping = torch.zeros(3, dtype=torch.int64, device=dev)
+    expanded_local_pos = torch.tensor([0, 1, 2], dtype=torch.int64, device=dev)
+    temperature = torch.tensor([0.7], dtype=torch.float32, device=dev)
+    seed = torch.tensor([11], dtype=torch.int64, device=dev)
+
+    sampled, num_sampled = rejection_sample(
+        target_logits,
+        draft_logits,
+        draft_sampled,
+        cu_num_logits,
+        pos,
+        idx_mapping,
+        expanded_idx_mapping,
+        expanded_local_pos,
+        temperature,
+        seed,
+        num_speculative_steps=2,
+        use_block_verification=True,
+    )
+    torch.npu.synchronize()
+
+    sampled_cpu = sampled.cpu()
+    num_sampled_cpu = num_sampled.cpu()
+    assert num_sampled_cpu.tolist() == [3]
+    assert sampled_cpu[0, :2].tolist() == [5, 9]
+    assert 0 <= sampled_cpu[0, 2].item() < vocab
 
 
 def test_mrv1_path_does_not_import_upstream_gpu_package():

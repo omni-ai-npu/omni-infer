@@ -28,6 +28,8 @@ import torch
 
 from vllm.triton_utils import tl, triton
 
+from omni_npu.worker.npu.ops.gumbel import _npu_gumbel_block_argmax
+
 
 @triton.jit(
     do_not_specialize=[
@@ -38,7 +40,7 @@ from vllm.triton_utils import tl, triton
         "vocab_size",
     ]
 )
-def _gumbel_sample_kernel(
+def _gumbel_sample_kernel(  # pragma: no cover
     local_argmax_ptr,
     local_argmax_stride,
     local_max_ptr,
@@ -67,49 +69,13 @@ def _gumbel_sample_kernel(
     )
     logits = logits.to(tl.float32)
 
-    req_state_idx = tl.load(expanded_idx_mapping_ptr + token_idx)
-    temp = tl.load(temp_ptr + req_state_idx).to(tl.float32)
-
-    if temp != 0.0 and APPLY_TEMPERATURE:
-        # NOTE: Match the behavior of the upstream _temperature_kernel.
-        logits = logits / temp
-
-    if processed_logits_ptr is not None:
-        # Store the temperature-applied logits.
-        if processed_logits_col_ptr is not None:
-            col = tl.load(processed_logits_col_ptr)
-        else:
-            col = 0
-        tl.store(
-            processed_logits_ptr
-            + req_state_idx * processed_logits_stride
-            + col * vocab_size
-            + block,
-            logits,
-            mask=mask,
-        )
-
-    if temp != 0.0:
-        # Calculate the seed for gumbel noise.
-        seed = tl.load(seeds_ptr + req_state_idx)
-        # NOTE: change pos's dtype to tl.int32, because triton-ascend's
-        # compiler doesn't support uint64 of pos arg.
-        pos = tl.load(pos_ptr + token_idx).to(tl.int32)
-        gumbel_seed = tl.randint(seed, pos)
-
-        # NOTE: r is tl.float64 in upstream vllm, change it to tl.float32,
-        # because triton-ascend's compiler does not support float64.
-        r = tl.rand(gumbel_seed, block).to(tl.float32)
-        # epsilon form (not log1p): tldevice.log1p is a returning-None stub on
-        # triton-ascend 3.2.2; +1e-20 keeps the argument of both logs positive.
-        gumbel_noise = -tl.log(-tl.log(r + 1e-20) + 1e-20)
-
-        # Apply gumbel noise.
-        logits = tl.where(mask, logits + gumbel_noise, float("-inf"))
-
-    idx = tl.argmax(logits, axis=0)
+    value, idx = _npu_gumbel_block_argmax(
+        logits, block, mask, token_idx,
+        expanded_idx_mapping_ptr, temp_ptr, seeds_ptr, pos_ptr,
+        processed_logits_ptr, processed_logits_stride, processed_logits_col_ptr,
+        vocab_size, APPLY_TEMPERATURE=APPLY_TEMPERATURE, USE_FP64=False,
+    )
     token_id = block_idx * BLOCK_SIZE + idx
-    value = tl.max(logits, axis=0)
     tl.store(local_argmax_ptr + token_idx * local_argmax_stride + block_idx, token_id)
     tl.store(local_max_ptr + token_idx * local_max_stride + block_idx, value)
 

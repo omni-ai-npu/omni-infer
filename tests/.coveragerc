@@ -13,6 +13,7 @@ omit =
     */*/*/*.cpp
     */*/*/*/*.cpp
     */csrc/*
+    */omni/worker/npu/ops/*
 
 [paths]
 source =

@@ -81,3 +81,40 @@ else:
         _attr_names_to_apply = ["gumbel_sample"]
 
         gumbel_sample = gumbel_sample
+
+
+try:
+    from omni_npu.worker.npu.ops import rejection_sampler_utils as npu_rejection_sampler_utils
+    import vllm.v1.sample.rejection_sampler as up_v1_rejection_sampler
+    import vllm.v1.worker.gpu.spec_decode.rejection_sampler as up_rejection_sampler
+    import vllm.v1.worker.gpu.spec_decode.rejection_sampler_utils as up_rejection_sampler_utils
+except ImportError:
+    logger.error(
+        "[omni-npu/mrv2] rejection sampler patch targets unavailable; not registered",
+        exc_info=True,
+    )
+else:
+
+    @register_patch("MRv2RejectionSamplerPatch", up_rejection_sampler)
+    class MRv2RejectionSamplerPatch(VLLMPatch):
+        """Worker spec_decode consumer keeps a from-imported rejection_sample."""
+
+        _attr_names_to_apply = ["rejection_sample"]
+
+        rejection_sample = npu_rejection_sampler_utils.rejection_sample
+
+    @register_patch("MRv2RejectionSamplerUtilsPatch", up_rejection_sampler_utils)
+    class MRv2RejectionSamplerUtilsPatch(VLLMPatch):
+        """Definition module, useful for direct users and later imports."""
+
+        _attr_names_to_apply = ["rejection_sample"]
+
+        rejection_sample = npu_rejection_sampler_utils.rejection_sample
+
+    @register_patch("MRv2V1RejectionSamplerTopKTopPPatch", up_v1_rejection_sampler)
+    class MRv2V1RejectionSamplerTopKTopPPatch(VLLMPatch):
+        """RejectionSampler.compute_probs keeps a from-imported top-k/top-p binding."""
+
+        _attr_names_to_apply = ["apply_top_k_top_p"]
+
+        apply_top_k_top_p = apply_top_k_top_p

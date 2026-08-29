@@ -11,6 +11,7 @@ import pytest
 
 from omni_npu.vllm_patches.usefull_patch import patch_mrv2_sampler as patch_mod
 from omni_npu.worker.npu import sampler as npu_sample
+from omni_npu.worker.npu.ops import rejection_sampler_utils as npu_rejection_sampler_utils
 from unit.vllm_patch.useful_patch.patch_test_utils import applied_patches
 
 
@@ -22,6 +23,9 @@ def _patch_classes(mod):
         "MRv2SamplerStatesPatch",
         "MRv2SpeculatorGumbelPatch",
         "MRv2DsparkSpeculatorGumbelPatch",
+        "MRv2RejectionSamplerPatch",
+        "MRv2RejectionSamplerUtilsPatch",
+        "MRv2V1RejectionSamplerTopKTopPPatch",
     ):
         if hasattr(mod, name):
             classes.append(getattr(mod, name))
@@ -56,6 +60,23 @@ def test_top_k_top_p_definition_module_is_left_to_mrv1(applied):
         up_topk_topp.apply_top_k_top_p.__module__
         == "vllm.v1.sample.ops.topk_topp_sampler"
     )
+
+
+def test_rejection_sampler_bindings_are_patched(applied):
+    """MTP rejection sampling keeps from-imported bindings in several modules."""
+    import vllm.v1.sample.rejection_sampler as up_v1_rejection_sampler
+    import vllm.v1.worker.gpu.spec_decode.rejection_sampler as up_rejection_sampler
+    import vllm.v1.worker.gpu.spec_decode.rejection_sampler_utils as up_rejection_sampler_utils
+
+    assert (
+        up_rejection_sampler.rejection_sample
+        is npu_rejection_sampler_utils.rejection_sample
+    )
+    assert (
+        up_rejection_sampler_utils.rejection_sample
+        is npu_rejection_sampler_utils.rejection_sample
+    )
+    assert up_v1_rejection_sampler.apply_top_k_top_p is npu_sample.apply_top_k_top_p
 
 
 def test_missing_target_degrades_to_an_error_log():
