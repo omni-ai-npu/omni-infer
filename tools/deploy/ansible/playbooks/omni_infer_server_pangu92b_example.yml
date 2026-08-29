@@ -21,7 +21,7 @@
 
   vars:
     model: pangu-v2-92b
-    model_path: "/mnt/sfs_turbo/bucket-910c-6055/zhuqi/ckpt/pangu92b/0620_v21_new/output_ckpts/hf/global_step_26-iterative-int8-0626"
+    model_path: "/mnt/sfs_turbo/bucket-910c-6055/s00562949/models/openPangu_2.0_Flash_INT8/global_step_26-iterative-int8-0626/"
 
     run_docker_profile:
       envs:

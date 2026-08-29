@@ -74,6 +74,11 @@
       # Override only when runner is outside the default start_server directory.
       # workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
       docker_envs: {}
+      # Enable Prefill KV CPU offload and prepare HugePages before vLLM starts.
+      kv_offload:
+        enable: true
+        hugepage_enabled: true
+        cpu_bytes_to_use: 858993459200  # 800 GiB
       # Required by run_vllm_prefill.sh.j2. common calculates the right-hand
       # value from Inventory, but this export must remain in the Playbook.
       prepare_commands: |-
@@ -98,6 +103,12 @@
       # Override only when runner is outside the default start_server directory.
       # workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
       docker_envs: {}
+      # Decode offload stays disabled here. When enabled, the capacity is per
+      # Decode server and the HugePage reservation scales with NUM_SERVERS.
+      kv_offload:
+        enable: false
+        hugepage_enabled: true
+        cpu_bytes_to_use: 53687091200  # 50 GiB per Decode server
       # Required by run_vllm_decode.sh.j2. common calculates both right-hand
       # values from Inventory, but these exports must remain in the Playbook.
       prepare_commands: |-

@@ -66,6 +66,11 @@ run_server_prefill_profile_defaults:
   workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
   # 通过 docker exec -e 注入启动进程的环境变量字典。
   docker_envs: {}
+  # KV CPU offload 默认关闭；启用时使用 HugePage 和 800 GiB CPU 容量。
+  kv_offload:
+    enable: false
+    hugepage_enabled: true
+    cpu_bytes_to_use: 858993459200
   # 加载容器 .bashrc 后、调用 runner 前原样执行的 Bash 命令。
   prepare_commands: ""
   # 多节点 Prefill 使用的执行后端；null 表示不追加后端参数。
@@ -83,6 +88,11 @@ run_server_decode_profile_defaults:
   workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
   # 通过 docker exec -e 注入启动进程的环境变量字典。
   docker_envs: {}
+  # KV CPU offload 默认关闭；启用时使用 HugePage 和 50 GiB CPU 容量。
+  kv_offload:
+    enable: false
+    hugepage_enabled: true
+    cpu_bytes_to_use: 53687091200
   # 加载容器 .bashrc 后、调用 runner 前原样执行的 Bash 命令。
   prepare_commands: ""
   # 按列表顺序追加到 runner 的 CLI 参数。

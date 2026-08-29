@@ -1,5 +1,7 @@
 {% set profile = resolved_run_server_decode_profile -%}
 {% set common_profile = run_server_common_profile_defaults | combine(run_server_common_profile, recursive=true) -%}
+{% set kv_offload_config = profile.get('kv_offload', {}) -%}
+{% set kv_offload_enable = kv_offload_config.get('enable', false) | bool -%}
 #!/bin/bash
 
 . ~/.bashrc
@@ -11,6 +13,12 @@ unset http_proxy
 unset proxy
 
 {{ profile.prepare_commands }}
+{% if kv_offload_enable %}
+{% set kv_offload_role = 'kv_consumer' -%}
+{% set kv_offload_rank = OMNI_PD_PREFILL_POD_NUM | int -%}
+KV_OFFLOAD_MAP_SIZE_BYTES=$(({{ kv_offload_config.get('cpu_bytes_to_use', 0) | int }} * NUM_SERVERS))
+{% include '_kv_offload_runtime.sh.j2' %}
+{% endif %}
 
 dp=$(echo -n "$DECODE_DATA_PARALLEL_SIZE" | tr -cd ',' | wc -c)
 ((dp++))
@@ -33,15 +41,19 @@ bash {{ profile.workdir }}/{{ profile.runner }} \
   --model-path {{ model_path | quote }} \
   --master-ip ${HOST_IP} \
   --role "decode" \
-  --kv-role "kv_consumer" \
   --master-port ${MASTER_PORT} \
   --base-api-port ${API_PORT} \
   --ascend-rt-visible-devices {{ ascend_rt_visible_devices | quote }} \
   --use-inventory-devices 1 \
+{% if kv_offload_enable -%}
+{{ '  ' }}--kv-transfer-config "${KV_TRANSFER_CONFIG}" \
+{% else -%}
+{{ '  ' }}--kv-role "kv_consumer" \
   --kv-rank ${OMNI_PD_PREFILL_POD_NUM} \
   --kv-engine-id ${OMNI_PD_PREFILL_POD_NUM} \
   --kv-parallel-size ${KV_PARALLEL_SIZE} \
   --kv-connector {{ common_profile.kv_connector }} \
+{% endif -%}
 {% for argument in profile.args -%}
 {{ '  ' }}{{ argument }} \
 {% endfor -%}

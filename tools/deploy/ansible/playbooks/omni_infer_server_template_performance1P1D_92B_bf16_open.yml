@@ -11,7 +11,7 @@
     LOG_PATH: /data/log_path
     LOG_PATH_IN_EXECUTOR: /data/log_path_in_executor
     CODE_PATH: /data/local_code_path
-    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer_dev/ai-infra-infer-1.0.3-a3-arm-feature/vllm_0.25.1-202608211426-daily:0.0.2"
+    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer_dev/ai-infra-infer-1.0.3-a3-arm-feature/vllm_0.25.1-202608261410-daily:0.0.2"
     DOCKER_NAME_P: "docker_name_p"
     DOCKER_NAME_D: "docker_name_d"
     DOCKER_NAME_C: "docker_name_c"
@@ -19,9 +19,10 @@
 
   vars:
     model: pangu-v2-92b
-    model_path: "/mnt/sfs_turbo/bucket-910c-6055/zhuqi/ckpt/pangu92b/0620_v21_new/output_ckpts/hf/global_step_26/"
+    model_path: "/mnt/sfs_turbo/bucket-910c-6055/s00562949/models/openPangu_2.0_Flash_BF16/global_step_26/"
 
     run_docker_profile:
+      shm_size: 1600g
       envs:
         - PYTHONHASHSEED=1234
       extra_mounts:
@@ -52,6 +53,10 @@
           "${DOCKER_NAME_D}:{{ container_workspace }}/omniinfer/"
 
     run_server_prefill_profile:
+      kv_offload:
+        enable: true
+        hugepage_enabled: true
+        cpu_bytes_to_use: 858993459200
       prepare_commands: |-
         export SERVER_IP_LIST={{ DECODE_SERVER_IP_LIST_ALL | replace(' ', '') | trim | quote }}
         export VLLM_DISABLE_PYNCCL=1
@@ -86,6 +91,7 @@
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
       args:
         - --max-model-len 524288
+        - --served-model-name {{ model | quote }}
         - '--additional-config ''{"enable_low_latency": true}'''
         - --gpu-util 0.8
         - --extra-args "${EXTRA_ARGS}"
@@ -94,6 +100,10 @@
         - --num-speculative-tokens 3
 
     run_server_decode_profile:
+      kv_offload:
+        enable: false
+        hugepage_enabled: true
+        cpu_bytes_to_use: 53687091200
       prepare_commands: |-
         export DECODE_DATA_PARALLEL_SIZE={{ DECODE_SERVER_BY_GROUP | quote }}
         export SERVER_IP_LIST={{ DECODE_SERVER_IP_LIST_BY_GROUP | replace(' ', '') | trim | quote }}
@@ -138,6 +148,7 @@
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
       args:
         - --max-model-len 524288
+        - --served-model-name {{ model | quote }}
         - --tp 1
         - >-
           --additional-config

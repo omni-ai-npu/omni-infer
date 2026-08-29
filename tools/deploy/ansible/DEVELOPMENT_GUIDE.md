@@ -690,6 +690,7 @@ playbook 中声明空 profile。
 | `runner` | `pd_run.sh` | `workdir` 下的 Prefill 启动脚本文件名。 |
 | `workdir` | `{{ container_workspace }}/omniinfer/tools/deploy/start_server` | 容器内启动脚本目录。 |
 | `docker_envs` | `{}` | 通过 `docker exec -e` 传入启动进程的环境变量。 |
+| `kv_offload` | `enable: false` | Prefill 的 KV CPU offload 配置；启用时默认使用 HugePage，CPU 容量为 800 GiB。 |
 | `prepare_commands` | `""` | 加载 `.bashrc` 后、CLI 启动前执行的 Bash；环境变量使用显式 `export`。 |
 | `args` | `[]` | 追加到 PD runner 的有序 CLI 参数列表。 |
 | `multi_node_backend` | `ray` | 多节点执行后端；设为 `null` 时不追加该参数。单节点固定使用 `mp`。 |
@@ -701,8 +702,31 @@ playbook 中声明空 profile。
 | `runner` | `pd_run.sh` | `workdir` 下的 Decode 启动脚本文件名。 |
 | `workdir` | `{{ container_workspace }}/omniinfer/tools/deploy/start_server` | 容器内启动脚本目录。 |
 | `docker_envs` | `{}` | 通过 `docker exec -e` 传入启动进程的环境变量。 |
+| `kv_offload` | `enable: false` | Decode 的 KV CPU offload 配置；启用时默认使用 HugePage，CPU 容量为 50 GiB。 |
 | `prepare_commands` | `""` | 加载 `.bashrc` 后、CLI 启动前执行的 Bash；环境变量使用显式 `export`。 |
 | `args` | `[]` | 追加到 PD runner 的有序 CLI 参数列表。 |
+
+Prefill 和 Decode 的 `kv_offload` 会与各自默认值递归合并，common 和 elastic
+路径均支持只覆盖单个字段。例如仅设置 `enable: true` 时，仍会继承默认的
+`hugepage_enabled` 和 `cpu_bytes_to_use`。模板仅在 `enable` 为 `true` 时生成
+`MultiConnector` JSON、准备 KV offload 运行时环境并传入
+`--kv-transfer-config`；为 `false` 时继续传入原有的 `--kv-role`、`--kv-rank`、
+`--kv-parallel-size` 和 `--kv-connector` 等参数。
+Ansible 不负责为 KV offload 安装扩展。启用 HugePage 时，P/D 启动 J2 会在
+`pd_run.sh` 前于特权容器内执行 `tools/deploy/start_server/setup_hugetlbfs.sh`，并将
+Prefill 的 `cpu_bytes_to_use`，或 Decode 的 `cpu_bytes_to_use × NUM_SERVERS`，作为
+`MAP_SIZE_BYTES`。该脚本负责预留 HugePage、
+在 `/dev/hugepages` 挂载 `hugetlbfs` 并清理残留 mmap 文件，因此不要求通过 Docker
+额外挂载宿主机的 `/dev/hugepages`。setup 输出写入当前实例日志目录下的
+`kv_offload_setup.log`，失败时不会继续启动 vLLM。若代码同步目录不包含原生扩展
+`.so`，还必须确保镜像中的兼容扩展不会因同步代码而失效。服务通过 detached 命令
+启动，因此 setup 失败应从该日志确认，不保证回传为 Ansible 任务失败。使用
+`/dev/shm` fallback 时，还应相应增大 `run_docker_profile.shm_size`。
+
+KV transfer 配置中的基础 connector 取自
+`run_server_common_profile.kv_connector`。`kv_port` 在服务启动时读取
+外部已经导出的 `OMNI_LLMDATADIST_ZMQ_PORT`；Jinja 不会重新设置或导出该
+变量，变量未设置或为空时仅在 `kv_port` 中使用 `5568`。
 
 `docker_envs` 和 `prepare_commands` 不可互换：
 

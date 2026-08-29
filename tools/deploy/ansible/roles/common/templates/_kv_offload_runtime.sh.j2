@@ -1,0 +1,45 @@
+{% set hugepage_enabled = kv_offload_config.get('hugepage_enabled', false) | bool -%}
+{% set cpu_bytes_to_use = kv_offload_config.get('cpu_bytes_to_use', 0) | int -%}
+{% set connector = common_profile.kv_connector -%}
+{% set parallel_size_token = '__KV_PARALLEL_SIZE__' -%}
+{% set port_token = '__OMNI_LLMDATADIST_ZMQ_PORT__' -%}
+{% set primary_connector_config = {
+  'kv_connector': connector,
+  'kv_role': kv_offload_role,
+  'kv_rank': kv_offload_rank | int,
+  'kv_parallel_size': parallel_size_token,
+  'kv_buffer_device': 'npu',
+  'kv_port': port_token
+} -%}
+export OMNI_KV_OFFLOAD_HUGEPAGE={{ hugepage_enabled | ternary('1', '0') }}
+export OMNI_KV_OFFLOAD_HUGEPAGE_SIZE="${OMNI_KV_OFFLOAD_HUGEPAGE_SIZE:-2097152}"
+{% if hugepage_enabled %}
+SETUP_HUGETLBFS={{ (container_workspace ~ '/omniinfer/tools/deploy/start_server/setup_hugetlbfs.sh') | quote }}
+KV_OFFLOAD_SETUP_LOG="${LOG_PATH}/{{ inventory_hostname }}/kv_offload_setup.log"
+if ! MAP_SIZE_BYTES="${KV_OFFLOAD_MAP_SIZE_BYTES}" \
+  bash "${SETUP_HUGETLBFS}" > "${KV_OFFLOAD_SETUP_LOG}" 2>&1; then
+  echo "[ERROR] KV offload HugePage setup failed; see ${KV_OFFLOAD_SETUP_LOG}" >&2
+  exit 1
+fi
+{% else %}
+rm -f -- /dev/shm/vllm_offload_*.mmap
+{% endif %}
+{% set kv_transfer_config = {
+  'kv_connector': 'MultiConnector',
+  'kv_role': kv_offload_role,
+  'kv_connector_extra_config': {
+    'connectors': [
+      primary_connector_config,
+      {
+        'kv_connector': 'NPUOffloadingConnector',
+        'kv_role': 'kv_both',
+        'kv_connector_extra_config': {
+          'cpu_bytes_to_use': cpu_bytes_to_use
+        }
+      }
+    ]
+  }
+} -%}
+KV_TRANSFER_CONFIG={{ kv_transfer_config | to_json | quote }}
+KV_TRANSFER_CONFIG="${KV_TRANSFER_CONFIG//\"__KV_PARALLEL_SIZE__\"/${KV_PARALLEL_SIZE}}"
+KV_TRANSFER_CONFIG="${KV_TRANSFER_CONFIG//\"__OMNI_LLMDATADIST_ZMQ_PORT__\"/${OMNI_LLMDATADIST_ZMQ_PORT:-5568}}"

@@ -87,6 +87,7 @@
       - resolved_run_server_prefill_profile.workdir is string
       - resolved_run_server_prefill_profile.workdir | length > 0
       - resolved_run_server_prefill_profile.docker_envs is mapping
+      - resolved_run_server_prefill_profile.kv_offload is mapping
       - resolved_run_server_prefill_profile.prepare_commands is string
       - resolved_run_server_prefill_profile.args is sequence
       - resolved_run_server_prefill_profile.args is not string
@@ -109,6 +110,7 @@
       - resolved_run_server_decode_profile.workdir is string
       - resolved_run_server_decode_profile.workdir | length > 0
       - resolved_run_server_decode_profile.docker_envs is mapping
+      - resolved_run_server_decode_profile.kv_offload is mapping
       - resolved_run_server_decode_profile.prepare_commands is string
       - resolved_run_server_decode_profile.args is sequence
       - resolved_run_server_decode_profile.args is not string

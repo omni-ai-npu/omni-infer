@@ -40,6 +40,12 @@
       prepare_commands: >-
         {{ run_server_prefill_profile.prepare_commands
            | default(run_server_prefill_profile_defaults.prepare_commands) }}
+      kv_offload: >-
+        {{ run_server_prefill_profile_defaults.kv_offload
+           | combine(
+               run_server_prefill_profile.kv_offload | default({}),
+               recursive=true
+             ) }}
       multi_node_backend: >-
         {{ run_server_prefill_profile.multi_node_backend
            | default(run_server_prefill_profile_defaults.multi_node_backend) }}
@@ -65,6 +71,12 @@
       prepare_commands: >-
         {{ run_server_decode_profile.prepare_commands
            | default(run_server_decode_profile_defaults.prepare_commands) }}
+      kv_offload: >-
+        {{ run_server_decode_profile_defaults.kv_offload
+           | combine(
+               run_server_decode_profile.kv_offload | default({}),
+               recursive=true
+             ) }}
       args: >-
         {{ run_server_decode_profile.args
            | default(run_server_decode_profile_defaults.args) }}
