@@ -334,21 +334,6 @@ def test_npu_rotary_embedding_small_ops_matches_reference(npu_device):
 # --- NPUDeepseekScalingRotaryEmbedding ---
 
 
-@pytest.fixture(autouse=False)
-def _patch_yarn_ramp_for_npu(monkeypatch, npu_device):
-    """Patch yarn_linear_ramp_mask to return NPU tensors (vLLM base creates CPU tensors)."""
-    from vllm.model_executor.layers.rotary_embedding import common as rope_common
-    from vllm.model_executor.layers.rotary_embedding import deepseek_scaling_rope as ds_rope
-
-    _orig = rope_common.yarn_linear_ramp_mask
-
-    def _patched(low, high, dim, dtype):
-        return _orig(low, high, dim, dtype).to(npu_device)
-
-    monkeypatch.setattr(rope_common, "yarn_linear_ramp_mask", _patched)
-    monkeypatch.setattr(ds_rope, "yarn_linear_ramp_mask", _patched)
-
-
 def _expected_forward_deepseek(
     layer: NPUDeepseekScalingRotaryEmbedding,
     positions: torch.Tensor,
@@ -400,7 +385,7 @@ def _expected_forward_deepseek(
 
 @pytest.mark.parametrize("is_neox_style", [True, False])
 def test_npu_deepseek_rope_forward_full_dim_matches_reference(
-    npu_device, is_neox_style, _patch_yarn_ramp_for_npu
+    npu_device, is_neox_style
 ):
     """rotary_dim == head_size, neox/gptj styles."""
     torch.manual_seed(4)
@@ -426,7 +411,7 @@ def test_npu_deepseek_rope_forward_full_dim_matches_reference(
 
 
 def test_npu_deepseek_rope_forward_with_offsets_matches_reference(
-    npu_device, _patch_yarn_ramp_for_npu
+    npu_device
 ):
     """Forward with offsets."""
     torch.manual_seed(5)
@@ -454,7 +439,7 @@ def test_npu_deepseek_rope_forward_with_offsets_matches_reference(
 
 @pytest.mark.parametrize("is_neox_style", [True, False])
 def test_npu_deepseek_rope_partial_rotary_passthrough(
-    npu_device, is_neox_style, _patch_yarn_ramp_for_npu
+    npu_device, is_neox_style
 ):
     """rotary_dim < head_size: tail passthrough unchanged."""
     torch.manual_seed(6)

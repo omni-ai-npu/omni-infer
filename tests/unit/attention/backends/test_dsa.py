@@ -467,6 +467,10 @@ class TestNPUDSAMetadataBuilder(unittest.TestCase):
                 self.slot_mapping = torch.zeros(4, dtype=torch.int64)
                 self.seq_lens = torch.tensor([4], dtype=torch.int64)
                 self.slot_mapping_cache = None
+                # build() hands SPManager.init_cp a numpy copy of the CPU
+                # cumulative query lengths; CommonAttentionMetadata carries it
+                # alongside the device tensor.
+                self.query_start_loc_cpu = torch.tensor([0, 4], dtype=torch.int32)
 
         fake_meta = _Meta()
         fake_sp = object()
@@ -498,7 +502,9 @@ class TestNPUDSAMetadataBuilder(unittest.TestCase):
             cl.detach().cpu().view(-1).tolist(),
             [0],
         )
-        self.assertEqual(ckwargs["mome_kernel_width"], 0)
+        # mome_kernel_width is no longer passed to init_cp; a width of 0
+        # (router_sliding_window unset) is what installs the paged cache_fn.
+        self.assertIsNotNone(out.prefill.cache_fn)
 
     def test_build_decode_sets_mc2_mask_without_aligning_slot_mapping(self):
         b = self._new_builder_minimal()

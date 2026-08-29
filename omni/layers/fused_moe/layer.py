@@ -221,23 +221,24 @@ class NPUUnquantizedFusedMoEMethod(UnquantizedFusedMoEMethod, NPUFusedMoEMethodB
             )
 
         shared_output = None
-        if layer.shared_experts is not None:
+        shared_experts = layer.shared_experts
+        if shared_experts is not None:
             if shared_expert_multi_stream:
                 self.sub_stream.wait_stream(cur_stream)
                 with torch.npu.stream(self.sub_stream):
-                    if layer.shared_experts.gate_up_proj.tp_size > 1:
+                    if shared_experts.gate_up_proj.tp_size > 1:
                         # Shared experts with TP>1 require full hidden_states;
                         # output is all-reduced later.
-                        shared_output = layer.shared_experts(hidden_states)
+                        shared_output = shared_experts(hidden_states)
                     else:
-                        shared_output = layer.shared_experts(x_slice)
+                        shared_output = shared_experts(x_slice)
             else:
-                if layer.shared_experts.gate_up_proj.tp_size > 1:
+                if shared_experts.gate_up_proj.tp_size > 1:
                     # Shared experts with TP>1 require full hidden_states;
                     # output is all-reduced later.
-                    shared_output = layer.shared_experts(hidden_states)
+                    shared_output = shared_experts(hidden_states)
                 else:
-                    shared_output = layer.shared_experts(x_slice)
+                    shared_output = shared_experts(x_slice)
 
         if enable_prefetch:
             self.sub_stream.wait_stream(cur_stream)
@@ -260,8 +261,10 @@ class NPUUnquantizedFusedMoEMethod(UnquantizedFusedMoEMethod, NPUFusedMoEMethodB
             cur_stream.wait_stream(self.sub_stream)
 
         use_custom_model_add = "omni_custom_models" in os.environ.get("VLLM_PLUGINS", "")
-        share_expert_tp = layer.shared_experts.gate_up_proj.tp_size if layer.shared_experts is not None else 1
-        if layer.shared_experts is not None:
+        share_expert_tp = (
+            shared_experts.gate_up_proj.tp_size if shared_experts is not None else 1
+        )
+        if shared_experts is not None:
             if share_expert_tp > 1:
                 if not model_extra_config.operator_opt_config.enable_moe_allreduce:
                     shared_output = tensor_model_parallel_all_reduce(shared_output)
@@ -271,7 +274,7 @@ class NPUUnquantizedFusedMoEMethod(UnquantizedFusedMoEMethod, NPUFusedMoEMethodB
         if is_need_slice:
             routed_output = tensor_model_parallel_all_gather(routed_output, dim=0)[:orig_num_tokens]
 
-        if layer.shared_experts is not None and share_expert_tp > 1 and use_custom_model_add:
+        if shared_experts is not None and share_expert_tp > 1 and use_custom_model_add:
             routed_output = routed_output + shared_output
         if shared_output is not None:
             return shared_output, routed_output
@@ -330,6 +333,89 @@ class NPUFusedMoERunner(MoERunner):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.routed_experts.quant_method.make_communication_strategy_selector(self)
+
+    @property
+    def shared_experts(self):
+        """The model's own shared-experts module, not vLLM's container.
+
+        vLLM now wraps whatever the model passes as ``shared_experts`` in a
+        ``SharedExperts`` object that adds DBO bookkeeping and stream overlap,
+        and whose ``forward`` takes a second ``order`` argument. omni's MoE
+        path calls the module with one argument and reads its projections
+        (``gate_up_proj.tp_size``) to decide how to slice, so every omni caller
+        wants the wrapped module -- there are around forty such reads across
+        the quant methods. Unwrapping once here fixes them all, and leaves
+        ``_shared_experts`` holding the container so vLLM's own machinery
+        still works.
+
+        Sunset: remove once omni's MoE path drives the shared experts through
+        vLLM's ordering protocol instead of calling them directly.
+        """
+        shared = self._shared_experts
+        try:
+            from vllm.model_executor.layers.fused_moe.runner.shared_experts import (
+                SharedExperts,
+            )
+        except ImportError:
+            return shared
+        return shared._layer if isinstance(shared, SharedExperts) else shared
+
+    @shared_experts.setter
+    def shared_experts(self, value):
+        # The parent exposes a read-only property; keep assignment working for
+        # callers that set it directly, writing through to the attribute the
+        # getter reads.
+        self._shared_experts = value
+
+    def __getattr__(self, name: str):
+        """Answer for ``routed_experts`` anything the runner does not define.
+
+        vLLM split the MoE layer in two: this runner owns routing, the gate and
+        the shared experts, while ``routed_experts`` owns the expert weights,
+        the quant method and every routing parameter. omni's MoE kernels were
+        written against the single pre-split layer and reach for both halves
+        through one object -- ``layer.gate`` and ``layer.shared_experts`` next
+        to ``layer.w13_weight`` and ``layer.global_num_experts`` -- and the
+        runner is what ``register_layer_for_moe_forward_op`` puts in the
+        forward context, so it is the object they get. Delegating here keeps
+        that contract without threading ``.routed_experts`` through every
+        kernel, quant method and strategy implementation.
+
+        Sunset: remove once the omni kernels take the two modules separately,
+        the way vLLM's own ``RoutedExperts.forward_modular`` does.
+        """
+        parent_getattr = getattr(super(), "__getattr__", None)
+        if parent_getattr is not None:
+            try:
+                return parent_getattr(name)
+            except AttributeError:
+                pass
+        # Dunders are never delegated. torch, copy and pickle probe names like
+        # __getstate__ and __deepcopy__ on every module; answering those from
+        # routed_experts hands out the wrong object's protocol methods, which
+        # silently wedges the distributed worker pool.
+        if name.startswith("__"):
+            raise AttributeError(name)
+        # Reach into the instance dicts directly: going through
+        # self.routed_experts would re-enter this method and recurse when that
+        # is itself the missing name (during __init__, before it is assigned).
+        experts = self.__dict__.get("_modules", {}).get("routed_experts")
+        if experts is not None:
+            try:
+                return getattr(experts, name)
+            except AttributeError:
+                pass
+        # A few of the old layer attributes did not move to routed_experts but
+        # into the config object -- moe_parallel_config is the one the kernels
+        # ask for by name.
+        moe_config = getattr(experts, "moe_config", None) if experts is not None else None
+        if moe_config is None:
+            moe_config = self.__dict__.get("moe_config")
+        if moe_config is not None and hasattr(moe_config, name):
+            return getattr(moe_config, name)
+        raise AttributeError(
+            f"{type(self).__name__!r} object has no attribute {name!r}"
+        )
 
     def weight_loader(
         self,
@@ -510,6 +596,21 @@ class NPUSharedFusedMoE(_NPUFusedMoEFactory):
         )
 
 
+def _moe_enable_eplb(layer) -> bool:
+    """Whether expert-load balancing is on for this layer.
+
+    It used to be a layer attribute; after vLLM split the MoE layer it lives
+    in the parallel config inside ``moe_config``. Read whichever the object in
+    hand actually carries, so both shapes work.
+    """
+    value = getattr(layer, "enable_eplb", None)
+    if value is not None:
+        return bool(value)
+    moe_config = getattr(layer, "moe_config", None)
+    parallel = getattr(moe_config, "moe_parallel_config", None)
+    return bool(getattr(parallel, "enable_eplb", False))
+
+
 def _npu_moe_apply(self, hidden_states: torch.Tensor, router_logits: torch.Tensor):
     return self.quant_method.apply(
         layer=self,
@@ -528,7 +629,7 @@ def _npu_moe_apply(self, hidden_states: torch.Tensor, router_logits: torch.Tenso
         e_score_correction_bias=self.e_score_correction_bias,
         activation=self.activation,
         apply_router_weight_on_input=self.apply_router_weight_on_input,
-        enable_eplb=self.enable_eplb,
+        enable_eplb=_moe_enable_eplb(self),
         expert_load_view=getattr(self, "expert_load_view", None),
         logical_to_physical_map=getattr(self, "logical_to_physical_map", None),
         logical_replica_count=getattr(self, "logical_replica_count", None),

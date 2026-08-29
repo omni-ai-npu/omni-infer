@@ -82,6 +82,10 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
 
         # TODO: eplb need to be supported
         # self.init_eplb(layer)
+        # apply() reads self.enable_eplb on every call, so the attribute has to
+        # exist even while init_eplb is stubbed out; False is what "not yet
+        # supported" means here.
+        self.enable_eplb = False
 
         self.model_prefetch = PrefetchManager()
         self.tp_size = get_tensor_model_parallel_world_size()
@@ -106,7 +110,12 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
 
     def init_eplb(self, layer):
         self.prefix = layer.layer_name
-        self.enable_eplb = layer.enable_eplb and not self.prefix.startswith('mtp')
+        # enable_eplb moved off the layer and into the parallel config inside
+        # moe_config when vLLM split the MoE layer in two.
+        self.enable_eplb = (
+            layer.moe_config.moe_parallel_config.enable_eplb
+            and not self.prefix.startswith('mtp')
+        )
         self.n_routed_experts = layer.moe_config.num_experts
         self.vllm_config = get_current_vllm_config().model_config.hf_config
         self.num_of_redundant_experts = 0
@@ -253,6 +262,16 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
             layer.w2_weight_scale.to(torch.bfloat16).squeeze(-1), requires_grad=False
         )
 
+    def _prefetch_on_sub_stream(self, tag, tensor, layer, cur_stream):
+        """Queue one prefetch on the side stream.
+
+        The two call sites in ``apply`` differ only in what they prefetch, so
+        the stream hand-off lives here once rather than twice.
+        """
+        self.sub_stream.wait_stream(cur_stream)
+        with torch.npu.stream(self.sub_stream):
+            self.model_prefetch.prefetch(tag, tensor, layer=layer)
+
     def apply(
         self,
         layer: torch.nn.Module,
@@ -321,9 +340,7 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
         enable_prefetch = model_extra_config.operator_opt_config.enable_prefetch
         cur_stream = torch_npu.npu.current_stream()
         if enable_prefetch:
-            self.sub_stream.wait_stream(cur_stream)
-            with torch.npu.stream(self.sub_stream):
-                self.model_prefetch.prefetch("moe", router_logits, layer=layer)
+            self._prefetch_on_sub_stream("moe", router_logits, layer, cur_stream)
         if self.enable_round_pipeline_comm:
             for idx in range(self.num_nodes):
                 self.round_pipeline_streams[idx].wait_stream(cur_stream)
@@ -449,9 +466,7 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
                         shared_output = layer.shared_experts(x_slice)
 
         if enable_prefetch:
-            self.sub_stream.wait_stream(cur_stream)
-            with torch.npu.stream(self.sub_stream):
-                self.model_prefetch.prefetch("next_attn", shared_output, layer=layer)
+            self._prefetch_on_sub_stream("next_attn", shared_output, layer, cur_stream)
 
         if overlap_experts:
             cur_stream.wait_stream(self.agrs_overlap_stream)

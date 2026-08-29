@@ -274,7 +274,12 @@ def _load_local_expert_weights(
             layer.w2_weight.data[local_expert_idx].copy_(q_w2)
             layer.w13_weight_scale.data[local_expert_idx].copy_(w13_scale)
             layer.w2_weight_scale.data[local_expert_idx].copy_(w2_scale)
-        layer.quant_method.process_weights_after_loading(layer)
+        # Pass the module that owns the weights, the way vLLM does at load
+        # time: process_weights_after_loading rebinds w13_weight/w2_weight as
+        # new Parameters, and a rebind has to land on the module they are
+        # registered in rather than on the runner in front of it.
+        experts = getattr(layer, "routed_experts", layer)
+        experts.quant_method.process_weights_after_loading(experts)
 
 
 def _make_forward_context_for_strategy(expected_strategy: str) -> DummyForwardContext:

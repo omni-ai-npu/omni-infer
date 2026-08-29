@@ -68,8 +68,17 @@ class PanguV2MoeSpeculativeConfigPatch(VLLMPatch):
         is_pangu_v2_moe_vl = is_openpangu_vl and has_pangu_v2_moe_patch
         is_openpangu_mtp_vl = is_openpangu_vl and not has_pangu_v2_moe_patch
     
+        # Two MTP drafters sit behind model_type "openpangu_v2": the sink/SWA
+        # one that PanguUltraMoEForCausalLM carries, and the MoME/mHC one that
+        # OpenPanguV2ForCausalLM carries. Since the models were renamed to the
+        # OpenPanguV2 family the model_type alone no longer tells them apart,
+        # so the target's architecture does.
+        architectures = getattr(hf_config, "architectures", None) or []
         if hf_config.model_type == "openpangu_v2" or is_openpangu_mtp_vl:
-            hf_config.model_type = "openpangu_mtp"
+            if "OpenPanguV2ForCausalLM" in architectures:
+                hf_config.model_type = "mtp"
+            else:
+                hf_config.model_type = "openpangu_mtp"
 
         if hf_config.model_type == "openpangu_mtp":
             n_predict = getattr(hf_config, "num_nextn_predict_layers", None)
@@ -78,14 +87,17 @@ class PanguV2MoeSpeculativeConfigPatch(VLLMPatch):
             )
             return hf_config
 
-        # patch start: for pangu_v2_moe_mtp
-        if hf_config.model_type == "pangu_v2_moe" or is_pangu_v2_moe_vl:
+        # patch start: for the MoME/mHC MTP
+        if is_pangu_v2_moe_vl:
             hf_config.model_type = "mtp"
 
         if hf_config.model_type == "mtp":
             n_predict = getattr(hf_config, "num_nextn_predict_layers", None)
+            # OpenPanguV2MTPModel, not PanguV2MTPModel: the latter name was
+            # dropped from the registry with the OpenPanguV2 rename, so a
+            # config still carrying it fails the architecture lookup at load time.
             hf_config.update(
-                {"n_predict": n_predict, "architectures": ["PanguV2MTPModel"]}
+                {"n_predict": n_predict, "architectures": ["OpenPanguV2MTPModel"]}
             )
             return hf_config
 
