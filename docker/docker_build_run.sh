@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 set -exo pipefail
 
 # Default parameters (can be overridden via command-line --long-options)
@@ -30,11 +30,13 @@ BRANCH=master
 # - L2: only build Dockerfile.omniinfer
 # - both: build Dockerfile.base first, then Dockerfile.omniinfer (default)
 BUILD_TARGET="both"
-INSTALL_MODULES="omni-npu,omni-proxy"
-VLLM_VERSION="v0.12.0"
+OMNI_BUILD_NETWORK="green"
+INSTALL_MODULES="omni-proxy"
+SKIP_PULL="false"
+VLLM_VERSION="v0.14.0"
 BUILD_FOR_ROMA="false"
 ROMA_IMAGE="test-infer-ROMA:0.1"
-
+DEFAULT_USER="ma-user"
 
 # Print usage/help
 print_help() {
@@ -58,11 +60,13 @@ Options:
     --branch <tag>                    Omni code version/branch to include (default: ${BRANCH})
     --python-version <version>        Python version to use during build (default: ${PYTHON_VERSION})
     --build-target <L1|L2|both|skip> Select which builds to run (default: ${BUILD_TARGET})
+    --build-network <green|blue>      Network profile for Dockerfile.omniinfer Rust/Cargo setup (default: ${OMNI_BUILD_NETWORK})
     --start-server <True|False>     Whether to start the apiserver after build (default: ${START_SERVER})
     --vllm-version <version>        vLLM version to install (default: ${VLLM_VERSION})
     --build-for-roma <True|False>  Whether to build the Roma image (default: ${BUILD_FOR_ROMA})
     --roma-image <image>            Tag for the Roma image build (default: ${ROMA_IMAGE})
     --install-modules <modules>      Comma-separated list of omniinfer modules to install (default: ${INSTALL_MODULES})
+    --skip-pull <True|False>        Whether to pass --skip-pull to omniinfer build/build.sh (default: ${SKIP_PULL})
 
 Examples:
     $0 --arch aarch64 --L2-image my-image:latest --model-name "Qwen/Qwen2.5-0.5B"
@@ -127,6 +131,9 @@ parse_long_option() {
         --install-modules)
             INSTALL_MODULES="$2"
             ;;
+        --skip-pull)
+            SKIP_PULL="$2"
+            ;;
         --vllm-version)
             VLLM_VERSION="$2"
             ;;
@@ -138,6 +145,9 @@ parse_long_option() {
             ;;
         --build-target)
             BUILD_TARGET="$2"
+            ;;
+        --build-network)
+            OMNI_BUILD_NETWORK="$2"
             ;;
         --help)
             print_help
@@ -189,17 +199,26 @@ echo "L2_IMAGE: ${L2_IMAGE}"
 echo "BRANCH: ${BRANCH}"
 echo "CUSTOM_OPS: ${CUSTOM_OPS}"
 echo "BUILD_TARGET: ${BUILD_TARGET}"
+echo "OMNI_BUILD_NETWORK: ${OMNI_BUILD_NETWORK}"
 echo "START_SERVER: ${START_SERVER}"
 echo "PYTHON_VERSION: ${PYTHON_VERSION}"
 echo "INSTALL_MODULES: ${INSTALL_MODULES}"
+echo "SKIP_PULL: ${SKIP_PULL}"
 echo "VLLM_VERSION: ${VLLM_VERSION}"
 echo "BUILD_FOR_ROMA: ${BUILD_FOR_ROMA}"
 echo "ROMA_IMAGE: ${ROMA_IMAGE}"
+echo "DEFAULT_USER: ${DEFAULT_USER}"
 echo "=================="
 
 # Validate BUILD_TARGET
 if [[ ! "${BUILD_TARGET}" =~ ^(L1|L2|both|skip)$ ]]; then
     echo "Unknown build target: ${BUILD_TARGET}. Use one of: L1, L2, both, skip." >&2
+    exit 2
+fi
+
+# Validate Dockerfile.omniinfer network profile
+if [[ ! "${OMNI_BUILD_NETWORK}" =~ ^(green|blue)$ ]]; then
+    echo "Unknown OMNI_BUILD_NETWORK: ${OMNI_BUILD_NETWORK}. Use one of: green, blue." >&2
     exit 2
 fi
 
@@ -226,6 +245,7 @@ if [[ "${BUILD_TARGET}" == "L1" || "${BUILD_TARGET}" == "both" ]]; then
         --build-arg PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST}" \
         --build-arg PYTHON_VERSION="${PYTHON_VERSION}" \
         --build-arg BASE_IMAGE=${BASE_IMAGE} \
+        --build-arg DEFAULT_USER=${DEFAULT_USER} \
         -t ${L1_IMAGE} .
     # If the user only wanted to build the base image, stop here
     if [[ "${BUILD_TARGET}" == "L1" ]]; then
@@ -253,7 +273,10 @@ if [[ "${BUILD_TARGET}" == "L2" || "${BUILD_TARGET}" == "both" ]]; then
         --build-arg BASE_IMAGE=${L1_IMAGE} \
         --build-arg CUSTOM_OPS="${CUSTOM_OPS}" \
         --build-arg INSTALL_MODULES="${INSTALL_MODULES}" \
+        --build-arg SKIP_PULL="${SKIP_PULL}" \
         --build-arg VLLM_VERSION="${VLLM_VERSION}" \
+        --build-arg OMNI_BUILD_NETWORK="${OMNI_BUILD_NETWORK}" \
+        --build-arg DEFAULT_USER=${DEFAULT_USER} \
         --target omininfer_openai \
         -t ${L2_IMAGE} .
 else

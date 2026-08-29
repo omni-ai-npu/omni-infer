@@ -1,3 +1,4 @@
+setuptools_rust
 setuptools-scm
 numpy
 numba
@@ -13,3 +14,5 @@ pytest-metadata
 pytest-repeat
 pytest-xdist
 PyYAML
+ray==2.48.0
+scipy

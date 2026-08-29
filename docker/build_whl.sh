@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 set -exo pipefail
 
 BASE_DIR=$(
@@ -10,16 +10,22 @@ BASE_DIR=$(
 # 代码下载需要网络代理
 export http_proxy=${HTTP_PROXY}
 export https_proxy=${HTTP_PROXY}
+# 华为内源需要直连，避免 cargo 访问 mirrors.tools.huawei.com 时走 HIS Proxy。
+export no_proxy="${no_proxy:+${no_proxy},}mirrors.tools.huawei.com,rust.inhuawei.com"
+export NO_PROXY="${NO_PROXY:+${NO_PROXY},}mirrors.tools.huawei.com,rust.inhuawei.com"
 # The incoming value is a branch name (e.g. 'release_v0.6.0' or 'master').
 # Use it directly if provided, otherwise default to 'master'.
 branch="${BRANCH:-master}"
-install_modules="${INSTALL_MODULES:-omni-npu,omni-proxy}"
-# vllm_version="v0.12.0"
-vllm_version="${VLLM_VERSION:-v0.12.0}"
+install_modules="${INSTALL_MODULES:-omni-proxy}"
+skip_pull="${SKIP_PULL:-false}"
+vllm_version="${VLLM_VERSION:-v0.14.0}"
+
+# Load shared retry helper.
+. /usr/local/bin/retry.sh
 
 cd /opt/
 
-if [ -d "$/opt/vllm" ]; then
+if [ -d "/opt/vllm" ]; then
     echo "vllm already exists in infer_engines. Skipping clone."
 else
     # Check if vllm exists in codes directory, copy if exists, otherwise clone
@@ -47,11 +53,9 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 VLLM_TARGET_DEVICE=empty pip3 install --no-cache
 
 cd ${BASE_DIR}
 
-git config --global credential.helper store
+#git config --global credential.helper store
 git config --global http.sslverify false
 git config --global https.sslverify false
-# echo "https://gitee:password@gitee.com" > ~/.git-credentials
-# chmod 600 ~/.git-credentials
 
 # Check if omniinfer exists in dist/codes directory, copy if exists, otherwise clone
 if [ -d "${BASE_DIR}/dist/codes/omniinfer" ]; then
@@ -69,7 +73,33 @@ else
 fi
 
 
-cd ${BASE_DIR}/omniinfer && bash build/build.sh -m "${install_modules}"
+build_args=(-m "${install_modules}")
+if [[ "${skip_pull}" == "True" || "${skip_pull}" == "true" || "${skip_pull}" == "1" ]]; then
+    build_args+=(--skip-pull)
+fi
+cd ${BASE_DIR}/omniinfer && retry bash build/build.sh  --editable "${build_args[@]}"
 
-# rm -rf ~/.git-credentials
+if [[ ",${install_modules}," == *",omni-cache,"* ]]; then
+    ox_binary="${BASE_DIR}/omniinfer/components/omni-cache/omni_cache/connector/backends/ox/ox"
+    omni_cache_build_args=(-m omni-cache)
+    if [[ "${skip_pull}" == "True" || "${skip_pull}" == "true" || "${skip_pull}" == "1" ]]; then
+        omni_cache_build_args+=(--skip-pull)
+    fi
+
+    # build.sh may return success even when ox fails to compile; verify the
+    # binary after each attempt and rebuild up to 10 times if missing.
+    max_ox_retries=10
+    ox_attempt=0
+    while [ ! -f "${ox_binary}" ]; do
+        ox_attempt=$((ox_attempt + 1))
+        if [ "${ox_attempt}" -gt "${max_ox_retries}" ]; then
+            echo "ERROR: omni-cache ox binary still missing at ${ox_binary} after ${max_ox_retries} rebuild attempts."
+            exit 1
+        fi
+        echo "omni-cache ox binary not found at ${ox_binary}, rebuild attempt ${ox_attempt}/${max_ox_retries}..."
+        cd ${BASE_DIR}/omniinfer && bash build/build.sh "${omni_cache_build_args[@]}" || true
+    done
+    echo "omni-cache ox binary found at ${ox_binary}"
+fi
+
 

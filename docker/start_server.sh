@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 # 代理用于hugging face模型下载
 export http_proxy=${HTTP_PROXY}
@@ -9,8 +9,12 @@ export https_proxy=${HTTP_PROXY}
 # GLOO_SOCKET_IFNAME, VLLM_* options, HOST, PORT, TZ
 GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME:-lo}
 export GLOO_SOCKET_IFNAME
+VLLM_USE_V1=${VLLM_USE_V1:-1}
+export VLLM_USE_V1
 VLLM_WORKER_MULTIPROC_METHOD=${VLLM_WORKER_MULTIPROC_METHOD:-fork}
 export VLLM_WORKER_MULTIPROC_METHOD
+VLLM_ENABLE_MC2=${VLLM_ENABLE_MC2:-0}
+export VLLM_ENABLE_MC2
 USING_LCCL_COM=${USING_LCCL_COM:-0}
 export USING_LCCL_COM
 VLLM_LOGGING_LEVEL=${VLLM_LOGGING_LEVEL:-DEBUG}
