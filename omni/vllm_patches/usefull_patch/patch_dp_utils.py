@@ -15,7 +15,11 @@ import torch_npu
 
 import vllm.v1.worker.dp_utils as dp_utils
 from vllm.config import ParallelConfig
-from vllm.distributed.parallel_state import GroupCoordinator, get_dp_group
+from vllm.distributed.parallel_state import (
+    GroupCoordinator,
+    get_dp_group,
+    get_world_group,
+)
 from vllm.logger import init_logger
 from vllm.v1.worker.dp_utils import (
     _post_process_cudagraph_mode,
@@ -35,6 +39,18 @@ _dp_sync_device_group: dist.ProcessGroup | None = None
 _dp_sync_device: torch.device | None = None
 _dp_sync_group_key: tuple[tuple[int, ...], str] | None = None
 _aicpu_dp_sync_init_failed = False
+
+
+def _all_dp_group_ranks(dp_group) -> list[list[int]]:
+    """Collect every DP subgroup in a process-wide deterministic order."""
+    world_group = get_world_group()
+    gathered: list[list[int] | None] = [None] * world_group.world_size
+    dist.all_gather_object(
+        gathered,
+        list(dp_group.ranks),
+        group=world_group.cpu_group,
+    )
+    return [list(ranks) for ranks in sorted({tuple(r) for r in gathered})]
 
 
 def _get_dp_sync_primitives() -> (
@@ -62,24 +78,34 @@ def _get_dp_sync_primitives() -> (
         )
 
     try:
-        options = torch_npu._C._distributed_c10d.ProcessGroupHCCL.Options()
-        options.hccl_config = {
-            "hccl_op_expansion_mode": 2,
-            "hccl_buffer_size": 20,
-            "group_name": f"{dp_group.unique_name}_aicpu",
-        }
-        device_group = dist.new_group(
-            dp_group.ranks,
-            backend=dist.get_backend(dp_group.device_group),
-            pg_options=options,
-            # Follow the GroupCoordinator-wide setting: in RL/ray deployments
-            # the vllm ranks are a subset of the default world, and group
-            # creation must rendezvous locally (group members only) instead of
-            # doing a default-world-wide handshake.
-            use_local_synchronization=getattr(
-                GroupCoordinator, "use_local_synchronization", False
-            ),
+        use_local_sync = getattr(
+            GroupCoordinator,
+            "use_local_synchronization",
+            False,
         )
+        group_ranks = (
+            [list(dp_group.ranks)]
+            if use_local_sync
+            else _all_dp_group_ranks(dp_group)
+        )
+        backend = dist.get_backend(dp_group.device_group)
+        device_group = None
+        for ranks in group_ranks:
+            options = torch_npu._C._distributed_c10d.ProcessGroupHCCL.Options()
+            options.hccl_config = {
+                "hccl_op_expansion_mode": 2,
+                "hccl_buffer_size": 20,
+                "group_name": f"{dp_group.unique_name}_aicpu",
+            }
+            group = dist.new_group(
+                ranks,
+                backend=backend,
+                pg_options=options,
+                use_local_synchronization=use_local_sync,
+            )
+            if dp_group.rank in ranks:
+                device_group = group
+        assert device_group is not None
         copy_stream = torch.npu.Stream()
         event = torch.Event()
     except Exception:
