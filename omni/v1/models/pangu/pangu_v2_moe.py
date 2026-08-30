@@ -412,7 +412,7 @@ class OpenPanguV2MOE(nn.Module):
         else:
             raise TypeError(f"Unsupported type: {type(hidden_states)}")
 
-        # The TBO path calls quant_ffn and requires INT8 expert weights/scales.
+        # The TBO path dispatches quant_ffn to the W8A8 or W4A8 implementation.
         if self._is_quant and self.moe_tbo_threshold > 0:
             if total_len * get_tp_group().world_size > self.moe_tbo_threshold:
                 return self._forward_tbo(hidden_states)
