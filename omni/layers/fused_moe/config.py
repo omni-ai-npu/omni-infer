@@ -36,6 +36,8 @@ def int4_w4a8_moe_quant_config(
     w2_bias: torch.Tensor | None,
     a1_scale: torch.Tensor | None,
     a2_scale: torch.Tensor | None,
+    w1_offset: torch.Tensor | None = None,
+    w2_offset: torch.Tensor | None = None,
     per_act_token_quant: bool = False,
 ):
     """
@@ -47,8 +49,12 @@ def int4_w4a8_moe_quant_config(
     quant_config = FusedMoEQuantConfig(
         _a1=FusedMoEQuantDesc(quant_dtype, a_shape, a1_scale),
         _a2=FusedMoEQuantDesc(quant_dtype, a_shape, a2_scale),
-        _w1=FusedMoEQuantDesc(weight_dtype, w_shape, w1_scale, None, None, w1_bias),
-        _w2=FusedMoEQuantDesc(weight_dtype, w_shape, w2_scale, None, None, w2_bias),
+        _w1=FusedMoEQuantDesc(
+            weight_dtype, w_shape, w1_scale, None, w1_offset, w1_bias
+        ),
+        _w2=FusedMoEQuantDesc(
+            weight_dtype, w_shape, w2_scale, None, w2_offset, w2_bias
+        ),
     )
     assert quant_config.per_act_token_quant == per_act_token_quant
     return quant_config

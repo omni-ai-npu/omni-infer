@@ -624,6 +624,10 @@ class NPUCompressedTensorsW4A8Int4MoEMethod(NPUCompressedTensorsW8A8Int8MoEMetho
         self.n_total_experts = None
         self.pack_factor = STORAGE_BITS_NPU // WEIGHT_BITS
         self.smooth_scale = None
+        self.asymmetric_quant = (
+            not weight_quant.symmetric
+            and "mlp.experts" in getattr(weight_quant, "asymmetric_group", [])
+        )
 
     def create_weights(self, layer: torch.nn.Module, num_experts: int,
                        hidden_size: int, intermediate_size_per_partition: int,
@@ -691,7 +695,57 @@ class NPUCompressedTensorsW4A8Int4MoEMethod(NPUCompressedTensorsW8A8Int8MoEMetho
         set_weight_attrs(w2_weight_int4_scale, extra_weight_attrs)
         set_weight_attrs(w2_weight_bias, extra_weight_attrs)
 
+        if self.asymmetric_quant:
+            w13_weight_offset = torch.nn.Parameter(
+                torch.ones(
+                    num_experts,
+                    1,
+                    2 * intermediate_size_per_partition,
+                    dtype=torch.float32,
+                ),
+                requires_grad=False,
+            )
+            w2_weight_offset = torch.nn.Parameter(
+                torch.ones(
+                    num_experts,
+                    1,
+                    hidden_size,
+                    dtype=torch.float32,
+                ),
+                requires_grad=False,
+            )
+            layer.register_parameter("w13_weight_offset", w13_weight_offset)
+            layer.register_parameter("w2_weight_offset", w2_weight_offset)
+            set_weight_attrs(w13_weight_offset, extra_weight_attrs)
+            set_weight_attrs(w2_weight_offset, extra_weight_attrs)
+        else:
+            layer.register_parameter("w13_weight_offset", None)
+            layer.register_parameter("w2_weight_offset", None)
+
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        if self.asymmetric_quant:
+            for proj in ("w13", "w2"):
+                scale_i64 = getattr(layer, f"{proj}_weight_int4_scale").data
+                scale = ((scale_i64 << 32) >> 32).to(torch.int32).view(
+                    torch.float32
+                )
+
+                packed = getattr(layer, f"{proj}_weight").data
+                bias = getattr(layer, f"{proj}_weight_bias")
+                unpacked = packed.clone()
+                unpacked.bitwise_left_shift_(4).bitwise_right_shift_(4)
+                bias.data[..., 0::2].copy_(
+                    unpacked.sum(dim=-1, dtype=torch.int32)
+                )
+                unpacked.copy_(packed).bitwise_right_shift_(4)
+                bias.data[..., 1::2].copy_(
+                    unpacked.sum(dim=-1, dtype=torch.int32)
+                )
+                bias.data.mul_(scale.squeeze(-2)).mul_(8.0)
+
+                offset = getattr(layer, f"{proj}_weight_offset")
+                offset.data = (-scale * offset.data.float()).contiguous()
+
         layer.w13_weight = torch.nn.Parameter(layer.w13_weight.transpose(1, 2).contiguous(), requires_grad=False)
         layer.w2_weight = torch.nn.Parameter(layer.w2_weight.transpose(1, 2).contiguous(), requires_grad=False)
 
@@ -707,6 +761,8 @@ class NPUCompressedTensorsW4A8Int4MoEMethod(NPUCompressedTensorsW8A8Int8MoEMetho
         return int4_w4a8_moe_quant_config(
             w1_scale=layer.w13_weight_int4_scale,
             w2_scale=layer.w2_weight_int4_scale,
+            w1_offset=layer.w13_weight_offset,
+            w2_offset=layer.w2_weight_offset,
             w1_bias=layer.w13_weight_bias,
             w2_bias=layer.w2_weight_bias,
             a1_scale=layer.w13_input_scale,
