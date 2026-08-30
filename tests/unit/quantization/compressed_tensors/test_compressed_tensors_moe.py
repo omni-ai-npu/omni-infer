@@ -398,6 +398,17 @@ def _make_method(module, layer, has_bias=False):
     return method
 
 
+def _make_w4a8_method(module, layer, *, asymmetric):
+    weight_quant = SimpleNamespace(
+        symmetric=not asymmetric,
+        asymmetric_group=["mlp.experts"] if asymmetric else [],
+    )
+    parent = SimpleNamespace(moe_parallel_config=layer.moe_parallel_config, has_bias=False)
+    return module.NPUCompressedTensorsW4A8Int4MoEMethod(
+        weight_quant, parent, layer
+    )
+
+
 def _make_prepare_result(dynamic_scale=None, row_idx_type=0):
     return DummyPreparePermuteResult(
         hidden_states_sorted_by_experts=torch.ones(3, 4, dtype=torch.int8),
@@ -449,6 +460,117 @@ def test_create_weights_registers_bias_when_enabled(compressed_moe_module):
 
     assert layer.w13_bias.shape == (2, 6)
     assert layer.w2_bias.shape == (2, 4)
+
+
+@pytest.mark.parametrize("asymmetric", [False, True])
+def test_w4a8_create_weights_registers_offsets_only_for_asymmetric_quant(
+    compressed_moe_module, asymmetric
+):
+    layer = MockMoELayer(use_ep=True)
+    method = _make_w4a8_method(
+        compressed_moe_module, layer, asymmetric=asymmetric
+    )
+
+    method.create_weights(
+        layer=layer,
+        num_experts=2,
+        hidden_size=8,
+        intermediate_size_per_partition=4,
+        params_dtype=torch.float16,
+        weight_loader="mock_loader",
+    )
+
+    if asymmetric:
+        assert layer.w13_weight_offset.shape == (2, 1, 8)
+        assert layer.w2_weight_offset.shape == (2, 1, 8)
+        assert layer.w13_weight_offset.quant_method == "channel"
+        assert layer.w2_weight_offset.quant_method == "channel"
+    else:
+        assert layer.w13_weight_offset is None
+        assert layer.w2_weight_offset is None
+
+
+def test_w4a8_process_asymmetric_weights_builds_bias_and_scales_offset(
+    compressed_moe_module
+):
+    method_cls = compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod
+    method = method_cls.__new__(method_cls)
+    method.asymmetric_quant = True
+
+    packed = torch.tensor(
+        [
+            [
+                [0x21, -0x0D, 0x21, -0x0D],
+                [-0x7C, 0x75, -0x7C, 0x75],
+                [0x10, 0x32, 0x54, 0x76],
+                [-0x70, -0x5E, -0x3C, -0x1A],
+            ]
+        ],
+        dtype=torch.int8,
+    )
+    scales = torch.tensor(
+        [[[0.5, 1.0, 2.0, 0.25, 1.5, 0.75, 0.125, 4.0]]],
+        dtype=torch.float32,
+    )
+    scale_bits = scales.view(torch.int32).to(torch.int64)
+    offsets = torch.arange(1, 9, dtype=torch.float32).view(1, 1, 8)
+    layer = SimpleNamespace(
+        w13_weight=torch.nn.Parameter(packed.clone(), requires_grad=False),
+        w2_weight=torch.nn.Parameter(packed.clone(), requires_grad=False),
+        w13_weight_int4_scale=torch.nn.Parameter(
+            scale_bits.clone(), requires_grad=False
+        ),
+        w2_weight_int4_scale=torch.nn.Parameter(
+            scale_bits.clone(), requires_grad=False
+        ),
+        w13_weight_bias=torch.nn.Parameter(
+            torch.zeros(1, 8), requires_grad=False
+        ),
+        w2_weight_bias=torch.nn.Parameter(
+            torch.zeros(1, 8), requires_grad=False
+        ),
+        w13_weight_offset=torch.nn.Parameter(
+            offsets.clone(), requires_grad=False
+        ),
+        w2_weight_offset=torch.nn.Parameter(
+            offsets.clone(), requires_grad=False
+        ),
+    )
+
+    low_nibbles = packed.bitwise_left_shift(4).bitwise_right_shift(4)
+    high_nibbles = packed.bitwise_right_shift(4)
+    expected_sums = torch.empty(1, 8, dtype=torch.int32)
+    expected_sums[..., 0::2] = low_nibbles.sum(dim=-1, dtype=torch.int32)
+    expected_sums[..., 1::2] = high_nibbles.sum(dim=-1, dtype=torch.int32)
+    expected_bias = expected_sums.float() * scales.squeeze(1) * 8
+    expected_offset = -scales * offsets
+
+    method.process_weights_after_loading(layer)
+
+    assert torch.equal(layer.w13_weight_bias, expected_bias)
+    assert torch.equal(layer.w2_weight_bias, expected_bias)
+    assert torch.equal(layer.w13_weight_offset, expected_offset)
+    assert torch.equal(layer.w2_weight_offset, expected_offset)
+
+
+def test_w4a8_quant_config_forwards_weight_offsets(compressed_moe_module):
+    method_cls = compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod
+    method = method_cls.__new__(method_cls)
+    layer = SimpleNamespace(
+        w13_weight_int4_scale=object(),
+        w2_weight_int4_scale=object(),
+        w13_weight_offset=object(),
+        w2_weight_offset=object(),
+        w13_weight_bias=object(),
+        w2_weight_bias=object(),
+        w13_input_scale=None,
+        w2_input_scale=None,
+    )
+
+    quant_config = method.get_fused_moe_quant_config(layer)
+
+    assert quant_config.w1_offset is layer.w13_weight_offset
+    assert quant_config.w2_offset is layer.w2_weight_offset
 
 
 def test_process_weights_after_loading_transpose_and_cast(compressed_moe_module):

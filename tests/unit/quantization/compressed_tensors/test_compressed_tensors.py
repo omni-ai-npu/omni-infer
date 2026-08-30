@@ -23,11 +23,19 @@ def _make_module(monkeypatch: pytest.MonkeyPatch, name: str) -> types.ModuleType
 
 
 class DummyQuantizationArgs:
-    def __init__(self, num_bits, strategy, dynamic=False, symmetric=True):
+    def __init__(
+        self,
+        num_bits,
+        strategy,
+        dynamic=False,
+        symmetric=True,
+        asymmetric_group=None,
+    ):
         self.num_bits = num_bits
         self.strategy = strategy
         self.dynamic = dynamic
         self.symmetric = symmetric
+        self.asymmetric_group = asymmetric_group or []
 
     @classmethod
     def parse_obj(cls, obj):
@@ -36,6 +44,7 @@ class DummyQuantizationArgs:
             strategy=obj.get("strategy"),
             dynamic=obj.get("dynamic", False),
             symmetric=obj.get("symmetric", True),
+            asymmetric_group=obj.get("asymmetric_group", []),
         )
 
 
@@ -158,6 +167,9 @@ def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
         )
     if not hasattr(torch.npu, "is_available"):
         torch.npu.is_available = lambda: True
+
+    pydantic_module = _make_module(monkeypatch, "pydantic")
+    pydantic_module.Field = lambda *, default_factory: default_factory()
 
     compressed_tensors_module = _make_package(monkeypatch, "compressed_tensors")
     quant_module = _make_module(monkeypatch, "compressed_tensors.quantization")
@@ -344,7 +356,12 @@ class TestNPUCompressedTensorsConfig:
             "config_groups": {
                 "group": {
                     "targets": ["Linear"],
-                    "weights": {"num_bits": 8, "strategy": "tensor"},
+                    "weights": {
+                        "num_bits": 8,
+                        "strategy": "tensor",
+                        "symmetric": False,
+                        "asymmetric_group": ["mlp.experts"],
+                    },
                     "input_activations": {
                         "num_bits": 8,
                         "strategy": "token",
@@ -359,7 +376,9 @@ class TestNPUCompressedTensorsConfig:
         )
         assert "Linear" in target_map
         assert target_map["Linear"]["weights"].num_bits == 8
+        assert target_map["Linear"]["weights"].asymmetric_group == ["mlp.experts"]
         assert target_map["Linear"]["input_activations"].num_bits == 8
+        assert config["config_groups"]["group"]["weights"]["num_bits"] == 8
 
     def test_get_scheme_ignores_layer(self, compressed_tensors_module):
         config = _make_config_instance(compressed_tensors_module)
@@ -375,7 +394,7 @@ class TestNPUCompressedTensorsConfig:
 
     def test_get_scheme_from_parts_dynamic_w8a8(self, compressed_tensors_module):
         config = _make_config_instance(compressed_tensors_module)
-        weight_quant = _make_w8a8_quant(8, "tensor", False, True)
+        weight_quant = _make_w8a8_quant(8, "tensor", False, False)
         input_quant = _make_w8a8_quant(8, "token", True, True)
         scheme = config._get_scheme_from_parts(
             weight_quant=weight_quant,
@@ -438,16 +457,40 @@ class TestNPUCompressedTensorsConfig:
         method = config.get_quant_method(DummyFusedMoE(), "moe")
         assert isinstance(method, DummyNPUCompressedTensorsW8A8Int8MoEMethod)
 
+    def test_get_quant_method_moe_respects_ignore(self, compressed_tensors_module):
+        config = _make_config_instance(compressed_tensors_module)
+        config.ignore = ["model.layers.46.mlp.experts"]
+        config.target_scheme_map = {
+            "Linear": {
+                "weights": _make_w8a8_quant(8, "tensor", False, True),
+                "input_activations": _make_w8a8_quant(8, "token", True, True),
+            }
+        }
+
+        method = config.get_quant_method(
+            DummyFusedMoE(), "model.layers.46.mlp.experts"
+        )
+
+        assert method is None
+
     def test_get_quant_method_moe_returns_w4a8_method(self, compressed_tensors_module):
         config = _make_config_instance(compressed_tensors_module)
         config.target_scheme_map = {
             "Linear": {
-                "weights": _make_w4a8_quant({"mlp.experts": 4}, "tensor", False, True),
+                "weights": DummyQuantizationArgs(
+                    num_bits={"mlp.experts": 4},
+                    strategy="tensor",
+                    dynamic=False,
+                    symmetric=False,
+                    asymmetric_group=["mlp.experts"],
+                ),
                 "input_activations": _make_w8a8_quant(8, "token", True, True),
             }
         }
         method = config.get_quant_method(DummyFusedMoE(), "moe")
         assert isinstance(method, DummyNPUCompressedTensorsW4A8Int4MoEMethod)
+        assert method.weight_quant.symmetric is False
+        assert method.weight_quant.asymmetric_group == ["mlp.experts"]
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -168,262 +168,6 @@ class TestGetSlotMapping2d(unittest.TestCase):
         self.assertIsNone(_get_slot_mapping_2d(meta))
 
 
-class TestPanguIndexShare(unittest.TestCase):
-    def test_forward_fake_preserves_hidden_and_topk_shapes(self):
-        hidden_states = torch.zeros(3, 16)
-        topk_buffer = torch.zeros(3, 1, 8, dtype=torch.int32)
-
-        output, output_topk = npu_pangu_forward_fake(
-            hidden_states,
-            torch.zeros(3, 1, 64),
-            torch.zeros(3, 1, 64),
-            "model.layers.0.self_attn",
-            topk_buffer,
-        )
-
-        self.assertEqual(output.shape, hidden_states.shape)
-        self.assertEqual(output.dtype, hidden_states.dtype)
-        self.assertEqual(output_topk.shape, topk_buffer.shape)
-        self.assertEqual(output_topk.dtype, topk_buffer.dtype)
-
-    def test_constructor_marks_shared_indexer_layer(self):
-        attention = _build_sparse_attention(
-            layer_idx=1,
-            num_hidden_layers=2,
-            swa_layers=[0],
-            sliding_window_list=[128],
-            index_topk=4,
-            indexer_types=["unique", "shared"],
-            rope_interleaved=True,
-        )
-
-        self.assertTrue(attention.is_dsa_layer)
-        self.assertTrue(attention.skip_topk)
-
-    def test_prepare_phase_inputs_slices_shared_topk_buffer(self):
-        attention = NPUPanguSparseAttention.__new__(NPUPanguSparseAttention)
-
-        def _no_slot_mapping():
-            return None
-
-        metadata = SimpleNamespace(
-            num_decode_tokens=2,
-            num_actual_tokens=5,
-            slot_mapping=torch.arange(5),
-            slot_mapping_2d=None,
-            get_slot_mapping_2d=_no_slot_mapping,
-            prefill=SimpleNamespace(),
-            decode=SimpleNamespace(),
-        )
-        hidden_states = torch.arange(15).view(5, 3)
-        cos = torch.arange(10).view(5, 2)
-        sin = cos + 100
-        topk_buffer = torch.arange(20, dtype=torch.int32).view(5, 1, 4)
-
-        prefill_inputs = attention._prepare_phase_inputs(
-            hidden_states, cos, sin, metadata, "prefill", topk_buffer
-        )
-        self.assertTrue(torch.equal(prefill_inputs[0], hidden_states[2:]))
-        self.assertTrue(torch.equal(prefill_inputs[3], topk_buffer[2:]))
-
-        decode_inputs = attention._prepare_phase_inputs(
-            hidden_states, cos, sin, metadata, "decode", topk_buffer
-        )
-        self.assertTrue(torch.equal(decode_inputs[0], hidden_states[:2]))
-        self.assertTrue(torch.equal(decode_inputs[3], topk_buffer[:2]))
-
-    def test_sequential_prolog_shared_layer_skips_indexer(self):
-        attention = NPUPanguSparseAttention.__new__(NPUPanguSparseAttention)
-        attention.first_chunk_pa = False
-        attention.use_mome = False
-        attention.is_dsa_layer = True
-        attention.skip_topk = True
-        attention.num_local_heads = 1
-        attention.qk_head_dim = 4
-        attention.qk_nope_head_dim = 2
-        attention.qk_rope_head_dim = 2
-        attention.prefix = "model.layers.1.self_attn"
-        attention.q_a_proj = MagicMock(side_effect=lambda value: value)
-        attention.q_a_layernorm = MagicMock(side_effect=lambda value: value)
-        attention.q_b_proj = MagicMock(
-            side_effect=lambda value: torch.cat([value, value], dim=-1)
-        )
-        attention._w_uk_t_absorb = MagicMock(side_effect=lambda value: value)
-        attention._q_rope = MagicMock(side_effect=lambda value, *_: value)
-        attention._kv_down_mome = MagicMock(
-            return_value=torch.zeros(2, 4, dtype=torch.float32)
-        )
-        attention.indexer = MagicMock(
-            side_effect=AssertionError("shared layer must not execute indexer")
-        )
-
-        hidden_states = torch.ones(2, 2)
-        cos = torch.ones(2, 2)
-        sin = torch.ones(2, 2)
-        kv_cache = (torch.zeros(1), torch.zeros(1))
-        metadata = SimpleNamespace(
-            decode=SimpleNamespace(), prefill=SimpleNamespace(chunked_context=None)
-        )
-        topk_buffer = torch.arange(8, dtype=torch.int32).view(2, 1, 4)
-        updated_cache = (torch.ones(1), torch.ones(1))
-
-        with patch(
-            "torch.ops.vllm.npu_pangu_kv_cache_update",
-            return_value=updated_cache,
-            create=True,
-        ):
-            result = attention._mla_prolog_sequential(
-                hidden_states,
-                cos,
-                sin,
-                kv_cache,
-                metadata,
-                None,
-                topk_buffer,
-            )
-
-        attention.indexer.assert_not_called()
-        self.assertIs(result[2], updated_cache)
-        self.assertIs(result[3], topk_buffer)
-
-
-def _pp_group():
-    return SimpleNamespace(is_first_rank=True, is_last_rank=True)
-
-
-class TestPanguModelTopkBuffer(unittest.TestCase):
-    def test_resolve_decode_mc2_mask_supports_metadata_dict(self):
-        mask = torch.tensor([True, False, True, False])
-        metadata = SimpleNamespace(
-            decode=SimpleNamespace(mc2_mask=mask),
-            num_decode_tokens=3,
-            num_actual_tokens=3,
-        )
-        context = SimpleNamespace(
-            attn_metadata={"mla": SimpleNamespace(), "mome": metadata}
-        )
-
-        with patch.object(model_mod, "get_forward_context", return_value=context):
-            resolved = model_mod._resolve_decode_mc2_mask(3)
-
-        self.assertTrue(torch.equal(resolved, mask[:3]))
-
-    def test_get_mc2_mask_returns_empty_tensor_for_mixed_batch(self):
-        metadata = SimpleNamespace(
-            decode=SimpleNamespace(mc2_mask=torch.ones(4, dtype=torch.bool)),
-            num_decode_tokens=2,
-            num_actual_tokens=3,
-        )
-        context = SimpleNamespace(attn_metadata=metadata)
-
-        with patch.object(model_mod, "get_forward_context", return_value=context):
-            result = model_mod.npu_get_mc2_mask(torch.zeros(3, 8))
-
-        self.assertEqual(result.dtype, torch.bool)
-        self.assertEqual(result.numel(), 0)
-
-    def test_main_model_threads_topk_buffer_between_layers(self):
-        class FakeLayer:
-            def __init__(self, replacement_buffer=None):
-                self.replacement_buffer = replacement_buffer
-                self.seen_buffers = []
-
-            def mhc_head(self, hidden_states):
-                return hidden_states, None, None, None, None
-
-            def __call__(self, hidden_states, residual, h_post, h_res,
-                         cos, sin, sk_event, topk_indices_buffer):
-                self.seen_buffers.append(topk_indices_buffer)
-                output_buffer = (
-                    self.replacement_buffer
-                    if self.replacement_buffer is not None
-                    else topk_indices_buffer
-                )
-                return model_mod.OpenPanguV2DecoderLayerOutput(
-                    hidden_states, residual, h_post, h_res, sk_event,
-                    output_buffer,
-                )
-
-        model = model_mod.OpenPanguV2Model.__new__(model_mod.OpenPanguV2Model)
-        torch.nn.Module.__init__(model)
-        replacement = torch.full((3, 1, 4), 7, dtype=torch.int32)
-        first_layer = FakeLayer(replacement)
-        second_layer = FakeLayer()
-        model.layers = [first_layer, second_layer]
-        model.start_layer = 0
-        model.end_layer = 2
-        model.need_tp_padding = False
-        model.use_mhc = False
-        model.config = SimpleNamespace(index_topk=4)
-
-        def embed_tokens(input_ids, **_kwargs):
-            return input_ids.float().unsqueeze(-1)
-
-        model.embed_tokens = embed_tokens
-        model.cos_cached = torch.zeros(8, 2)
-        model.sin_cached = torch.zeros(8, 2)
-
-        with patch.object(model_mod, "get_pp_group", return_value=_pp_group()):
-            model.forward(
-                input_ids=torch.tensor([1, 2, 3]),
-                positions=torch.tensor([0, 1, 2]),
-                intermediate_tensors=None,
-            )
-
-        initial_buffer = first_layer.seen_buffers[0]
-        self.assertEqual(initial_buffer.shape, (3, 1, 4))
-        self.assertEqual(initial_buffer.dtype, torch.int32)
-        self.assertIs(second_layer.seen_buffers[0], replacement)
-
-    def test_mtp_layer_allocates_and_passes_topk_buffer(self):
-        class FakeMTPBlock:
-            def __init__(self):
-                def _get_cos_sin(positions):
-                    zeros = torch.zeros(positions.shape[0], 2)
-                    return zeros, zeros
-
-                self.self_attn = SimpleNamespace(
-                    rotary_emb=SimpleNamespace(get_cos_sin=_get_cos_sin)
-                )
-                self.seen_buffer = None
-
-            def mhc_head(self, hidden_states):
-                return hidden_states, None, None, None, None
-
-            def __call__(self, hidden_states, residual, *args):
-                self.seen_buffer = args[-1]
-                return model_mod.OpenPanguV2DecoderLayerOutput(
-                    hidden_states, residual, None, None, None,
-                    self.seen_buffer,
-                )
-
-        layer = mtp_mod.OpenPanguV2MultiTokenPredictorLayer.__new__(
-            mtp_mod.OpenPanguV2MultiTokenPredictorLayer
-        )
-        torch.nn.Module.__init__(layer)
-        layer.enorm = torch.nn.Identity()
-        layer.hnorm = torch.nn.Identity()
-
-        def eh_proj(value):
-            return value[:, :2], None
-
-        layer.eh_proj = eh_proj
-        layer.need_tp_padding = False
-        layer.config = SimpleNamespace(index_topk=5)
-        layer.mtp_block = FakeMTPBlock()
-
-        hidden = layer.forward(
-            input_ids=torch.tensor([1, 2, 3]),
-            positions=torch.tensor([0, 1, 2]),
-            previous_hidden_states=torch.ones(3, 2),
-            inputs_embeds=torch.ones(3, 2),
-        )
-
-        self.assertEqual(hidden.shape, (3, 2))
-        self.assertEqual(layer.mtp_block.seen_buffer.shape, (3, 1, 5))
-        self.assertEqual(layer.mtp_block.seen_buffer.dtype, torch.int32)
-
-
 class TestDSALazySlotMapping2d(unittest.TestCase):
     """Direct coverage for NPUDSAMetadataBuilder._lazy_slot_mapping_2d."""
 
@@ -474,6 +218,71 @@ class TestDSALazySlotMapping2d(unittest.TestCase):
         seeded = meta.slot_mapping_cache
         out = inner(3)
         self.assertIs(out, seeded)
+
+
+class TestPanguIndexShare(unittest.TestCase):
+    def test_shared_indexer_skips_topk(self):
+        attention = NPUPanguSparseAttention.__new__(NPUPanguSparseAttention)
+        config = SimpleNamespace(indexer_types=["none", "full", "shared"])
+
+        attention.layer_idx = 1
+        self.assertFalse(attention._skip_topk(config))
+        attention.layer_idx = 2
+        self.assertTrue(attention._skip_topk(config))
+
+    def test_full_and_shared_layers_use_same_metadata_topk(self):
+        attention = NPUPanguSparseAttention.__new__(NPUPanguSparseAttention)
+        torch.nn.Module.__init__(attention)
+        attention.is_dsa_layer = True
+        attention.skip_topk = False
+        attention.use_mome = False
+        attention.prefix = "model.layers.0.self_attn"
+        attention.qk_head_dim = 4
+        attention.qk_nope_head_dim = 2
+        attention.qk_rope_head_dim = 2
+        attention.num_local_heads = 1
+        attention.first_chunk_pa = False
+        attention.q_a_proj = MagicMock(side_effect=lambda value: value)
+        attention.q_a_layernorm = MagicMock(side_effect=lambda value: value)
+        attention.q_b_proj = MagicMock(
+            side_effect=lambda value: torch.zeros(value.shape[0], 4)
+        )
+        attention._w_uk_t_absorb = MagicMock(side_effect=lambda value: value)
+        attention._q_rope = MagicMock(side_effect=lambda value, *_args: value)
+        attention._kv_down_mome = MagicMock(side_effect=lambda value, *_args: value)
+        topk_indices = torch.arange(12).view(4, 1, 3)
+        attention.indexer = MagicMock(return_value=topk_indices)
+        metadata = SimpleNamespace(
+            prefill=SimpleNamespace(topk_indices_buffer=None),
+            decode=None,
+        )
+        hidden_states = torch.randn(4, 4)
+        cos = torch.randn(4, 2)
+        kv_cache = (torch.empty(0), torch.empty(0))
+
+        with patch(
+            "torch.ops.vllm.npu_pangu_kv_cache_update",
+            return_value=kv_cache,
+        ):
+            full_output = attention._mla_prolog_sequential(
+                hidden_states, cos, cos, kv_cache, metadata, None
+            )
+
+        self.assertIs(metadata.prefill.topk_indices_buffer, topk_indices)
+        self.assertIs(full_output[-1], topk_indices)
+
+        attention.skip_topk = True
+        attention.indexer.reset_mock()
+        with patch(
+            "torch.ops.vllm.npu_pangu_kv_cache_update",
+            return_value=kv_cache,
+        ):
+            shared_output = attention._mla_prolog_sequential(
+                hidden_states, cos, cos, kv_cache, metadata, None
+            )
+
+        attention.indexer.assert_not_called()
+        self.assertIs(shared_output[-1], topk_indices)
 
 
 class TestPanguFAMetadataIsolation(unittest.TestCase):

@@ -35,6 +35,7 @@ def _patch_dp_sync_group(monkeypatch, captured, ranks, use_local_synchronization
 
     dp_group = SimpleNamespace(
         ranks=ranks,
+        rank=ranks[0],
         device_group=MagicMock(),
         device=torch.device("cpu"),
         unique_name="dp",
@@ -55,6 +56,29 @@ def _patch_dp_sync_group(monkeypatch, captured, ranks, use_local_synchronization
             True,
             raising=False,
         )
+    else:
+        _mock_world_rendezvous(monkeypatch, [ranks])
+
+
+def _mock_world_rendezvous(monkeypatch, all_dp_ranks):
+    """Stub the world rendezvous used to enumerate all DP subgroups."""
+    world_size = sum(len(ranks) for ranks in all_dp_ranks)
+    monkeypatch.setattr(
+        patch_dp_utils,
+        "get_world_group",
+        lambda: SimpleNamespace(world_size=world_size, cpu_group=MagicMock()),
+    )
+
+    def fake_all_gather_object(out_list, obj, group=None):
+        by_rank = [ranks for ranks in all_dp_ranks for _ in ranks]
+        for index, ranks in enumerate(by_rank):
+            out_list[index] = list(ranks)
+
+    monkeypatch.setattr(
+        patch_dp_utils.dist,
+        "all_gather_object",
+        fake_all_gather_object,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -229,11 +253,13 @@ def test_get_dp_sync_primitives_is_lazy(monkeypatch):
 
     dp_group = SimpleNamespace(
         ranks=[0, 1],
+        rank=0,
         device_group=MagicMock(),
         device=mock_device,
         unique_name="dp",
     )
     monkeypatch.setattr(patch_dp_utils, "get_dp_group", lambda: dp_group)
+    _mock_world_rendezvous(monkeypatch, [[0, 1]])
     monkeypatch.setattr("torch.npu.Stream", fake_stream_ctor)
     monkeypatch.setattr("torch.Event", lambda: mock_event)
     monkeypatch.setattr(patch_dp_utils.dist, "new_group", lambda *a, **kw: mock_group)
@@ -352,6 +378,62 @@ def test_get_dp_sync_primitives_follows_local_synchronization(monkeypatch):
     """new_group must follow GroupCoordinator.use_local_synchronization for local rendezvous."""
     captured = {}
     _patch_dp_sync_group(monkeypatch, captured, [0, 1], use_local_synchronization=True)
+
+    patch_dp_utils._get_dp_sync_primitives()
+
+    assert captured.get("use_local_synchronization") is True
+
+
+@pytest.mark.unit
+def test_get_dp_sync_primitives_creates_every_dp_subgroup(monkeypatch):
+    calls = []
+
+    def fake_new_group(ranks, **kwargs):
+        calls.append(list(ranks))
+        return MagicMock(name=f"pg_{ranks}")
+
+    dp_group = SimpleNamespace(
+        ranks=[1, 3],
+        rank=3,
+        device_group=MagicMock(),
+        device=torch.device("cpu"),
+        unique_name="dp",
+    )
+    monkeypatch.setattr(patch_dp_utils, "get_dp_group", lambda: dp_group)
+    _mock_world_rendezvous(monkeypatch, [[0, 2], [1, 3]])
+    monkeypatch.setattr("torch.npu.Stream", MagicMock)
+    monkeypatch.setattr("torch.Event", MagicMock)
+    monkeypatch.setattr(patch_dp_utils.dist, "new_group", fake_new_group)
+    monkeypatch.setattr(patch_dp_utils.dist, "get_backend", lambda group: "hccl")
+    monkeypatch.setattr(
+        "torch_npu._C._distributed_c10d.ProcessGroupHCCL.Options",
+        lambda: SimpleNamespace(hccl_config={}),
+    )
+
+    _, _, device_group, _ = patch_dp_utils._get_dp_sync_primitives()
+
+    assert calls == [[0, 2], [1, 3]]
+    assert device_group._mock_name == "pg_[1, 3]"
+
+
+@pytest.mark.unit
+def test_get_dp_sync_primitives_skips_world_rendezvous_for_local_sync(
+    monkeypatch,
+):
+    captured = {}
+    _patch_dp_sync_group(
+        monkeypatch,
+        captured,
+        [1, 3],
+        use_local_synchronization=True,
+    )
+    monkeypatch.setattr(
+        patch_dp_utils,
+        "get_world_group",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("must not rendezvous with non-members")
+        ),
+    )
 
     patch_dp_utils._get_dp_sync_primitives()
 
