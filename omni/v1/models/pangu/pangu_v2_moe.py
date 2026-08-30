@@ -1705,7 +1705,7 @@ class OpenPanguV2DecoderLayer(nn.Module):
         torch.npu.Event | None,
     ]:
         use_side_stream = self.side_stream is not None
-        residual = hidden_states.clone()
+        residual = hidden_states
         sk_event: torch.npu.Event | None = None
         if self.use_mhc:
             hidden_states, h_post, h_res = self.attn_mhc_module.mhc_pre(
@@ -2078,7 +2078,7 @@ class OpenPanguV2DecoderLayer(nn.Module):
         """Original (pre-refactor) forward kept as a reference / fallback.
         """
         ###### Attention Block with MHC & SandwichNorm ######
-        residual = hidden_states.clone()
+        residual = hidden_states
         if self.use_mhc:
             hidden_states, h_post, h_res = self.attn_mhc_module.mhc_pre(
                 hidden_states,
@@ -2110,7 +2110,7 @@ class OpenPanguV2DecoderLayer(nn.Module):
 
 
         ###### FFN Block with MHC & SandwichNorm ######
-        residual = hidden_states.clone()
+        residual = hidden_states
         if self.use_mhc:
             hidden_states, h_post, h_res = self.mlp_mhc_module.mhc_pre(
                 hidden_states,
