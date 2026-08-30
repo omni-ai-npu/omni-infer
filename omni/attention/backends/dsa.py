@@ -160,6 +160,7 @@ class NPUDSABackend(AttentionBackend):
 class NPUDSAPrefillMetadata(MLACommonPrefillMetadata):
     query_cumlens: torch.Tensor = None
     seq_lens: torch.Tensor = None
+    topk_indices_buffer: torch.Tensor | None = None
 
     prefix_meta: Optional[Any] = None
     slot_mapping: torch.Tensor = None
@@ -169,6 +170,7 @@ class NPUDSAPrefillMetadata(MLACommonPrefillMetadata):
 @dataclass
 class NPUDSADecodeMetadata(MLACommonDecodeMetadata):
     query_cumlens: torch.Tensor
+    topk_indices_buffer: torch.Tensor | None = None
     mc2_mask: torch.Tensor = None
     slot_mapping: torch.Tensor = None
     slot_mapping_2d: torch.Tensor = None

@@ -4,7 +4,7 @@
 import os
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext
-from typing import NamedTuple, Optional, cast
+from typing import Optional, cast
 
 import torch
 import torch.distributed as dist
@@ -408,7 +408,8 @@ class OpenPanguV2MOE(nn.Module):
         else:
             raise TypeError(f"Unsupported type: {type(hidden_states)}")
 
-        if self.moe_tbo_threshold > 0:
+        # The TBO path calls quant_ffn and requires INT8 expert weights/scales.
+        if self._is_quant and self.moe_tbo_threshold > 0:
             if total_len * get_tp_group().world_size > self.moe_tbo_threshold:
                 return self._forward_tbo(hidden_states)
 
@@ -1505,17 +1506,6 @@ class OpenPanguV2MOE(nn.Module):
         return routed + shared
 
 
-class OpenPanguV2DecoderLayerOutput(NamedTuple):
-    """Named outputs threaded between Pangu decoder layers."""
-
-    hidden_states: torch.Tensor
-    residual: torch.Tensor | None
-    h_post: torch.Tensor | None
-    h_res: torch.Tensor | None
-    sk_event: Optional[torch.npu.Event]
-    topk_indices_buffer: Optional[torch.Tensor]
-
-
 class OpenPanguV2DecoderLayer(nn.Module):
     def __init__(
         self,
@@ -1932,8 +1922,13 @@ class OpenPanguV2DecoderLayer(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         sk_event: Optional[torch.npu.Event] = None,
-        topk_indices_buffer: Optional[torch.Tensor] = None,
-    ) -> OpenPanguV2DecoderLayerOutput:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.npu.Event | None,
+    ]:
 
         # Clear any stale callback from a previous forward (e.g. installed but
         # never fired because that step was prefill instead of decode).
@@ -1995,10 +1990,9 @@ class OpenPanguV2DecoderLayer(nn.Module):
 
             self.self_attn.pre_epilog_callback = _pre_epilog_sinkhorn_hook
 
-        hidden_states, topk_indices_buffer = self.self_attn(
+        hidden_states = self.self_attn(
             hidden_states,
             cos, sin,
-            topk_indices_buffer,
         )
 
         if deferred:
@@ -2059,22 +2053,14 @@ class OpenPanguV2DecoderLayer(nn.Module):
             defer_side_launch=not is_model_tail,
         )
 
-        return OpenPanguV2DecoderLayerOutput(
-            hidden_states,
-            residual,
-            h_post,
-            h_res,
-            sk_event,
-            topk_indices_buffer,
-        )
+        return hidden_states, residual, h_post, h_res, sk_event
 
     def _forward_naive(
         self,
         hidden_states: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
-        topk_indices_buffer: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """Original (pre-refactor) forward kept as a reference / fallback.
         """
         ###### Attention Block with MHC & SandwichNorm ######
@@ -2088,10 +2074,9 @@ class OpenPanguV2DecoderLayer(nn.Module):
             )
 
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states, topk_indices_buffer = self.self_attn(
+        hidden_states = self.self_attn(
             hidden_states,
-            cos, sin,
-            topk_indices_buffer,
+            cos, sin
         )
         hidden_states = self.post_attention_layernorm(hidden_states)
 
@@ -2149,7 +2134,7 @@ class OpenPanguV2DecoderLayer(nn.Module):
         elif not self.use_mhc and hidden_states.dim() == 3:
             hidden_states = hidden_states.view(-1, self.hidden_size)
 
-        return hidden_states, topk_indices_buffer
+        return hidden_states
 
 
 def _maybe_padding_and_slice(
@@ -2373,28 +2358,16 @@ class OpenPanguV2Model(nn.Module):
         cos = self.cos_cached.index_select(dim=0, index=positions)
         sin = self.sin_cached.index_select(dim=0, index=positions)
 
-        topk_indices_buffer = torch.zeros(
-            (hidden_states.shape[0], 1, self.config.index_topk),
-            dtype=torch.int32,
-            device=hidden_states.device,
-        )
         hidden_states, residual, h_post, h_res, sk_event = self.layers[0].mhc_head(hidden_states)
         for i in range(self.start_layer, self.end_layer):
-            layer_out = self.layers[i](
+            hidden_states, residual, h_post, h_res, sk_event = self.layers[i](
                 hidden_states,
                 residual,
                 h_post,
                 h_res,
                 cos, sin,
                 sk_event,
-                topk_indices_buffer,
             )
-            hidden_states = layer_out.hidden_states
-            residual = layer_out.residual
-            h_post = layer_out.h_post
-            h_res = layer_out.h_res
-            sk_event = layer_out.sk_event
-            topk_indices_buffer = layer_out.topk_indices_buffer
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors(

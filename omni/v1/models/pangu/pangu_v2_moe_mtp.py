@@ -129,18 +129,10 @@ class OpenPanguV2MultiTokenPredictorLayer(nn.Module):
             original_num_tokens = hidden_states.shape[0]
 
         cos, sin = self.mtp_block.self_attn.rotary_emb.get_cos_sin(positions)
-
-        topk_indices_buffer = torch.zeros(
-            (hidden_states.shape[0], 1, self.config.index_topk),
-            dtype=torch.int32,
-            device=hidden_states.device,
-        )
         hidden_states, residual, _, _, sk_event = self.mtp_block.mhc_head(hidden_states)
-        layer_out = self.mtp_block(
+        hidden_states, _, _, _, _ = self.mtp_block(
             hidden_states, residual, None, None, cos, sin, sk_event,
-            topk_indices_buffer,
         )
-        hidden_states = layer_out.hidden_states
 
         # Unpad hidden_states: after all layers, gather and remove any padding that was added
         # for sequence parallelism to restore the original number of tokens
