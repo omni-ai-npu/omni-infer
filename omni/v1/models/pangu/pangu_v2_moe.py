@@ -118,15 +118,22 @@ def _resolve_decode_mc2_mask(num_tokens: int) -> Optional[torch.Tensor]:
 
 
 def npu_get_mc2_mask(tokens: torch.Tensor) -> torch.Tensor:
-    """Keep the runtime-dependent MC2 mask slice opaque to Dynamo."""
+    """Resolve the runtime-dependent MC2 mask outside the shared FX graph.
+
+    Decode with a valid mask returns the sliced mask. Other paths return an
+    all-True mask with the same shape as the fake implementation, which is
+    equivalent to no masking while keeping the custom-op output contract
+    stable during graph capture.
+    """
     mask = _resolve_decode_mc2_mask(tokens.shape[0])
     if mask is not None:
         return mask
-    # Custom ops cannot return Optional[Tensor], so an empty tensor encodes None.
-    return tokens.new_empty(0, dtype=torch.bool)
+    return tokens.new_ones((tokens.shape[0],), dtype=torch.bool)
 
 
 def npu_get_mc2_mask_fake(tokens: torch.Tensor) -> torch.Tensor:
+    # FakeTensor values are irrelevant, but shape, dtype and device must match
+    # the runtime output contract.
     return tokens.new_empty(tokens.shape[0], dtype=torch.bool)
 
 
