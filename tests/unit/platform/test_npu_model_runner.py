@@ -3011,3 +3011,106 @@ class TestDPLMHeadHelpers:
         runner.model.compute_logits.assert_called_once()
         (arg,), _ = runner.model.compute_logits.call_args
         torch.testing.assert_close(arg, hidden)
+
+
+class TestSlotMappingReqIndices:
+
+    def _make_runner(self):
+        from omni_npu.worker.npu_model_runner import NPUModelRunner
+        runner = object.__new__(NPUModelRunner)
+        runner._req_indices_valid_tokens = None
+        return runner
+
+    def test_bind_calls_block_table_hook(self):
+        runner = self._make_runner()
+        bound = []
+
+        def bind_source(src):
+            bound.append(src)
+
+        runner.input_batch = SimpleNamespace(
+            block_table=SimpleNamespace(_omni_bind_req_indices_source=bind_source)
+        )
+
+        runner._bind_slot_mapping_req_indices()
+
+        assert bound == [runner._slot_mapping_req_indices]
+
+    def test_bind_is_noop_without_hook(self):
+        runner = self._make_runner()
+        runner.input_batch = SimpleNamespace(block_table=SimpleNamespace())
+
+        runner._bind_slot_mapping_req_indices()
+
+    def test_req_indices_returns_exact_prefix(self):
+        runner = self._make_runner()
+        runner._req_indices_valid_tokens = 3
+        gpu = torch.arange(8, dtype=torch.int32)
+        runner.req_indices = SimpleNamespace(gpu=gpu)
+
+        out = runner._slot_mapping_req_indices(3)
+
+        assert torch.equal(out, gpu[:3])
+
+    def test_req_indices_rejects_stale_or_missing(self):
+        runner = self._make_runner()
+        runner.req_indices = SimpleNamespace(gpu=torch.arange(8, dtype=torch.int32))
+
+        # not inside _prepare_inputs
+        assert runner._slot_mapping_req_indices(3) is None
+
+        runner._req_indices_valid_tokens = 3
+        # length mismatch and non-positive length
+        assert runner._slot_mapping_req_indices(4) is None
+        assert runner._slot_mapping_req_indices(0) is None
+
+        # buffer absent
+        del runner.req_indices
+        assert runner._slot_mapping_req_indices(3) is None
+
+    def test_prepare_inputs_scopes_valid_tokens(self, monkeypatch):
+        runner = self._make_runner()
+        seen = {}
+        bound = []
+
+        def bind_source(src):
+            bound.append(src)
+
+        def refresh_mome():
+            return None
+
+        runner.input_batch = SimpleNamespace(
+            block_table=SimpleNamespace(_omni_bind_req_indices_source=bind_source)
+        )
+        runner._refresh_mome_num_prompt_tokens = refresh_mome
+
+        def fake_super(self_, scheduler_output, num_scheduled_tokens):
+            seen["inside"] = self_._req_indices_valid_tokens
+            return ("logits", "spec")
+
+        monkeypatch.setattr(
+            runner_module.GPUModelRunner, "_prepare_inputs", fake_super, raising=False
+        )
+
+        result = NPUModelRunner._prepare_inputs(runner, object(), np.array([2, 3]))
+
+        assert result == ("logits", "spec")
+        assert seen["inside"] == 5
+        assert runner._req_indices_valid_tokens is None
+        assert bound == [runner._slot_mapping_req_indices]
+
+    def test_prepare_inputs_clears_valid_tokens_on_error(self, monkeypatch):
+        runner = self._make_runner()
+        runner.input_batch = SimpleNamespace(block_table=SimpleNamespace())
+
+        def boom(self_, scheduler_output, num_scheduled_tokens):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(
+            runner_module.GPUModelRunner, "_prepare_inputs", boom, raising=False
+        )
+
+        with pytest.raises(RuntimeError):
+            NPUModelRunner._prepare_inputs(runner, object(), np.array([1]))
+
+        assert runner._req_indices_valid_tokens is None

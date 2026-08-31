@@ -185,8 +185,38 @@ class NPUModelRunner(GPUModelRunner):
         self.is_debugging_mode = envs.VLLM_LOGGING_LEVEL == "DEBUG"
         self.exec_count = 0
 
-        # TODO: penalty cache feature need to adapt vllm 0.25.1
-        # self._init_npu_input_batch()
+        # Number of valid entries in req_indices for the in-flight
+        # _prepare_inputs; None outside it (dummy runs, capture).
+        self._req_indices_valid_tokens: int | None = None
+
+    def _bind_slot_mapping_req_indices(self) -> None:
+        """Let this runner's block table reuse the request ids we upload.
+
+        Bound per call rather than once in __init__: initialize_kv_cache
+        rebuilds input_batch, which would drop a source attached earlier.
+        """
+        block_table = self.input_batch.block_table
+        bind_source = getattr(
+            block_table, "_omni_bind_req_indices_source", None
+        )
+        if bind_source is not None:
+            bind_source(self._slot_mapping_req_indices)
+
+    def _slot_mapping_req_indices(self, num_tokens: int) -> torch.Tensor | None:
+        """Per-token request ids for this step, or None if unusable.
+
+        The buffer is max_num_tokens long, so its size proves nothing about
+        freshness. _prepare_inputs records how many entries it just filled;
+        only that exact length is safe to reuse. Dummy runs never set it, so
+        they fall through to the searchsorted path.
+        """
+        valid = self._req_indices_valid_tokens
+        if valid is None or num_tokens <= 0 or num_tokens != valid:
+            return None
+        req_indices = getattr(self, "req_indices", None)
+        if req_indices is None:
+            return None
+        return req_indices.gpu[:num_tokens]
 
     def _init_npu_input_batch(
         self,
@@ -1239,7 +1269,21 @@ class NPUModelRunner(GPUModelRunner):
         torch.Tensor,
         SpecDecodeMetadata | None,
     ]:
-        (logits_indices, spec_decode_metadata) = super()._prepare_inputs(scheduler_output, num_scheduled_tokens)
+        # compute_slot_mapping runs inside super()._prepare_inputs(), and by
+        # then req_indices holds exactly this many valid entries. Callers may
+        # pass either the per-request array or an already-summed total.
+        self._req_indices_valid_tokens = int(
+            num_scheduled_tokens.sum()
+            if hasattr(num_scheduled_tokens, "sum")
+            else num_scheduled_tokens
+        )
+        self._bind_slot_mapping_req_indices()
+        try:
+            (logits_indices, spec_decode_metadata) = super()._prepare_inputs(
+                scheduler_output, num_scheduled_tokens
+            )
+        finally:
+            self._req_indices_valid_tokens = None
 
         self._refresh_mome_num_prompt_tokens()
 

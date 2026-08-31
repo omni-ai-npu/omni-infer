@@ -137,8 +137,9 @@ class EagleProposerPatch(VLLMPatch):
                 valid_sampled_token_ids_gpu < gpu_input_batch.vocab_size
         )
 
-        # Count the number of valid tokens in each request
-        valid_sampled_tokens_count = valid_mask.sum(dim=1)
+        # int32 to match the pinned valid_sampled_token_count_cpu buffer;
+        # a dtype mismatch makes the non_blocking D2H copy synchronous.
+        valid_sampled_tokens_count = valid_mask.sum(dim=1, dtype=torch.int32)
 
         # Get the rightmost valid index per row
         last_valid_indices = valid_sampled_tokens_count - 1
@@ -821,8 +822,6 @@ class EagleProposerPatch(VLLMPatch):
                 sampling_metadata=sampling_metadata,
                 spec_step_idx=first_spec_step_idx,
             )
-            if use_multi_mtp:
-                draft_token_ids = draft_token_ids.int()
             if draft_probs is not None:
                 self._last_draft_probs = draft_probs.view(
                     -1, self.num_speculative_tokens, draft_probs.shape[-1]
@@ -1021,8 +1020,8 @@ class EagleProposerPatch(VLLMPatch):
                 sampling_metadata=sampling_metadata,
                 spec_step_idx=spec_step_idx,
             )
-            if use_multi_mtp:
-                draft_token_ids = draft_token_ids.int()
+            # Keep int64: an int32 stack breaks the async D2H into the
+            # pinned draft_token_ids_cpu; input_ids consumers cast at use.
             if draft_probs is not None:
                 assert draft_probs_list is not None
                 draft_probs_list.append(draft_probs)
