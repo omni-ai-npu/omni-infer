@@ -9,14 +9,15 @@
 #include <torch_npu/csrc/core/npu/NPUStream.h>
 
 #include <algorithm>
-#include <cstdint>
+#include <pybind11/pybind11.h>
 #include <sstream>
 #include <string>
 #include <vector>
 
-// Host attrs must be HOST. rtsMemcpyBatchAsync rejects numBatches > 4096
-// with 107000 SIZE_MAX (see tests/memcpybatch --batch 4231).
-static constexpr const char kBuildTag[] = "host-attr-chunk4096-v4";
+namespace py = pybind11;
+
+// rtsMemcpyBatchAsync rejects numBatches > 4096 with 107000 SIZE_MAX
+// (see tests/memcpybatch --batch 4231).
 static constexpr size_t kMaxMemcpyBatch = 4096;
 
 namespace {
@@ -149,22 +150,25 @@ void swap_blocks_batch(
         size_t chunk_offset = 0;
         aclError result = ACL_SUCCESS;
         const size_t total = static_cast<size_t>(n);
-        for (size_t offset = 0; offset < total; offset += kMaxMemcpyBatch) {
-            const size_t chunk = std::min(kMaxMemcpyBatch, total - offset);
-            size_t attrs_index = 0;
-            fail_index = 0;
-            result = aclrtMemcpyBatchAsync(
-                dst_vec.data() + offset, size_vec.data() + offset,
-                src_vec.data() + offset, size_vec.data() + offset, chunk,
-                &attr, &attrs_index, 1, &fail_index, stream);
-            if (result != ACL_SUCCESS) {
-                chunk_offset = offset;
-                break;
+        {
+            py::gil_scoped_release release;
+            for (size_t offset = 0; offset < total; offset += kMaxMemcpyBatch) {
+                const size_t chunk = std::min(kMaxMemcpyBatch, total - offset);
+                size_t attrs_index = 0;
+                fail_index = 0;
+                result = aclrtMemcpyBatchAsync(
+                    dst_vec.data() + offset, size_vec.data() + offset,
+                    src_vec.data() + offset, size_vec.data() + offset, chunk,
+                    &attr, &attrs_index, 1, &fail_index, stream);
+                if (result != ACL_SUCCESS) {
+                    chunk_offset = offset;
+                    break;
+                }
             }
         }
         if (result != ACL_SUCCESS) {
             std::ostringstream oss;
-            oss << "KV_OFFLOAD_BATCH tag=" << kBuildTag
+            oss << "KV_OFFLOAD_BATCH"
                 << " aclrtMemcpyBatchAsync failed error=" << result
                 << " fail_index=" << (chunk_offset + fail_index)
                 << " chunk_offset=" << chunk_offset
@@ -185,20 +189,29 @@ void swap_blocks_batch(
     }
 #endif
 
-    for (int64_t i = 0; i < n; i++) {
-        void* dst = reinterpret_cast<void*>(dst_data[i]);
-        const void* src = reinterpret_cast<const void*>(src_data[i]);
-        size_t copy_size = static_cast<size_t>(size_data[i]);
-        aclError ret = aclrtMemcpyAsync(
-            dst, copy_size, src, copy_size, memcpy_kind, stream);
-        TORCH_CHECK(ret == ACL_SUCCESS,
-                    "aclrtMemcpyAsync failed at index ", i,
-                    " with error code ", ret);
+    int64_t fail_i = -1;
+    aclError fail_ret = ACL_SUCCESS;
+    {
+        py::gil_scoped_release release;
+        for (int64_t i = 0; i < n; i++) {
+            void* dst = reinterpret_cast<void*>(dst_data[i]);
+            const void* src = reinterpret_cast<const void*>(src_data[i]);
+            size_t copy_size = static_cast<size_t>(size_data[i]);
+            aclError ret = aclrtMemcpyAsync(
+                dst, copy_size, src, copy_size, memcpy_kind, stream);
+            if (ret != ACL_SUCCESS) {
+                fail_i = i;
+                fail_ret = ret;
+                break;
+            }
+        }
     }
+    TORCH_CHECK(fail_ret == ACL_SUCCESS,
+                "aclrtMemcpyAsync failed at index ", fail_i,
+                " with error code ", fail_ret);
 }
 
 PYBIND11_MODULE(_swap_blocks_batch, m) {
-    m.attr("build_tag") = kBuildTag;
 #if defined(CANN_MEMCPY_BATCH_ASYNC)
     m.attr("cann_memcpy_batch") = true;
     m.attr("host_location") = "HOST";

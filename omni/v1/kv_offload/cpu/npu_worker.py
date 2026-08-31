@@ -47,7 +47,6 @@ def _get_swap_blocks_batch():
         from omni_npu.v1.kv_offload.cpu import _swap_blocks_batch as _ext
 
         fn = _ext.swap_blocks_batch
-        build_tag = getattr(_ext, "build_tag", "MISSING")
         host_location = getattr(_ext, "host_location", "MISSING")
         cann_batch = getattr(_ext, "cann_memcpy_batch", "MISSING")
     except Exception:
@@ -60,17 +59,10 @@ def _get_swap_blocks_batch():
     _SWAP_BLOCKS_BATCH = fn
     logger.info(
         "KV offload indexed copy via omni_npu.v1.kv_offload.cpu._swap_blocks_batch "
-        "build_tag=%s host_location=%s cann_batch=%s",
-        build_tag,
+        "host_location=%s cann_batch=%s",
         host_location,
         cann_batch,
     )
-    if build_tag != "host-attr-chunk4096-v4":
-        logger.error(
-            "stale _swap_blocks_batch.so (build_tag=%s); expected "
-            "host-attr-chunk4096-v4. Re-run omni/v1/kv_offload/cpu/build.sh",
-            build_tag,
-        )
     return fn
 
 

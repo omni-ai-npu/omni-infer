@@ -179,37 +179,3 @@ class NPUOffloadingConnector(OffloadingConnector):
             self._kv_cache_config,
         )
         super().register_kv_caches(prepared)
-
-    @override
-    def get_num_new_matched_tokens(self, request, num_computed_tokens):
-        toks, load_async = super().get_num_new_matched_tokens(
-            request, num_computed_tokens
-        )
-        if toks is None:
-            self._omni_offload_defer_none = (
-                getattr(self, "_omni_offload_defer_none", 0) + 1
-            )
-        elif load_async:
-            self._omni_offload_async_load = (
-                getattr(self, "_omni_offload_async_load", 0) + 1
-            )
-        return toks, load_async
-
-    @override
-    def build_connector_meta(self, scheduler_output):
-        defer_none = getattr(self, "_omni_offload_defer_none", 0)
-        async_load = getattr(self, "_omni_offload_async_load", 0)
-        self._omni_offload_defer_none = 0
-        self._omni_offload_async_load = 0
-        scheduled = int(
-            getattr(scheduler_output, "total_num_scheduled_tokens", 0) or 0
-        )
-        if defer_none or (scheduled == 0 and async_load):
-            logger.info(
-                "kv_offload_schedule scheduled_tokens=%s defer_none=%s "
-                "async_load=%s",
-                scheduled,
-                defer_none,
-                async_load,
-            )
-        return super().build_connector_meta(scheduler_output)

@@ -93,7 +93,6 @@ def test_get_swap_blocks_batch_cache_and_import_paths(monkeypatch):
     monkeypatch.setattr(worker_mod, "_SWAP_BLOCKS_BATCH", None)
     fake_ext = SimpleNamespace(
         swap_blocks_batch=lambda *a, **k: None,
-        build_tag="host-attr-chunk4096-v4",
         host_location="host",
         cann_memcpy_batch=True,
     )
@@ -106,7 +105,6 @@ def test_get_swap_blocks_batch_cache_and_import_paths(monkeypatch):
     monkeypatch.setattr(worker_mod, "_SWAP_BLOCKS_BATCH", None)
     stale = SimpleNamespace(
         swap_blocks_batch=lambda *a, **k: "fn",
-        build_tag="old",
         host_location="x",
         cann_memcpy_batch=False,
     )
