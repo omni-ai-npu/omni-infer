@@ -105,20 +105,46 @@ class NPUModelRunnerV2(GPUModelRunner):
         self._omni_separate_kv_update = cached
         return cached
 
-    def _dummy_run(self, num_tokens, *args, **kwargs):
-        """Keep idle DP ranks in step with the LM head collectives.
+    def _sync_dummy_main_compute_logits(self, is_profile: bool) -> None:
+        """Mirror MRv1's dummy target lm_head sync point.
 
-        ``NPULogitsProcessor._get_logits`` runs DP collectives inside
-        ``compute_logits``, which a dummy run never reaches, so the
-        busy rank waits in ``all_gather`` while its peers wait on the
-        next step's ``all_reduce`` and the DP group deadlocks. MRv1
-        uses ``_dp_sync_main_compute_logits``; V2's dummy run returns
-        the hidden states, so the call can simply be issued here.
+        Active MRv2 ranks run target ``compute_logits`` after target forward
+        and before speculative drafter/propose. Upstream dummy ranks run the
+        same target forward through ``execute_model(dummy_run=True)``, then
+        continue into the drafter without sampling. When lm_head is sharded
+        over DP/local ranks, ``compute_logits`` contains collectives, so idle
+        ranks must join them at this exact boundary.
         """
-        hidden_states, sample_hidden_states = super()._dummy_run(
-            num_tokens, *args, **kwargs)
-        if (not kwargs.get("is_profile", False)
-                and sample_hidden_states is not None
-                and _dp_lmhead_enabled()):
-            self.model.compute_logits(sample_hidden_states)
-        return hidden_states, sample_hidden_states
+        if is_profile or not _dp_lmhead_enabled():
+            return
+
+        state = getattr(self, "execute_model_state", None)
+        if state is None:
+            return
+
+        hidden_states = getattr(state, "hidden_states", None)
+        if hidden_states is None:
+            return
+
+        input_batch = state.input_batch
+        sample_hidden_states = hidden_states[input_batch.logits_indices]
+        self.model.compute_logits(sample_hidden_states)
+
+    def execute_model(
+        self,
+        scheduler_output,
+        intermediate_tensors=None,
+        dummy_run: bool = False,
+        skip_attn_for_dummy_run: bool = False,
+        is_profile: bool = False,
+    ):
+        output = super().execute_model(
+            scheduler_output,
+            intermediate_tensors=intermediate_tensors,
+            dummy_run=dummy_run,
+            skip_attn_for_dummy_run=skip_attn_for_dummy_run,
+            is_profile=is_profile,
+        )
+        if dummy_run:
+            self._sync_dummy_main_compute_logits(is_profile)
+        return output

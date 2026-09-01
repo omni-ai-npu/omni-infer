@@ -73,39 +73,61 @@ def test_runner_installs_cuda_aliases_and_pins_override_surface(
         "prepare_inputs",            # 为 prepare_attn 暂存本步 cudagraph 模式
         "prepare_attn",              # MRv1 的 pad_attn 开关：非 FULL 不 pad slot
         "_omni_has_separate_kv_update",
-        "_dummy_run",                # 空闲 DP rank 陪跑 LM head 集合通信
+        "_sync_dummy_main_compute_logits",
+        "execute_model",             # 在 dummy target forward 后补 lm_head logits
     }, f"NPUModelRunnerV2 覆写面变化，实际定义了: {own}"
 
 
-def test_dummy_run_joins_dp_lmhead_collectives(monkeypatch):
-    """An idle DP rank must enter the LM-head collectives after its dummy run."""
+def test_dummy_run_joins_dp_lmhead_before_speculator(monkeypatch):
+    """Idle ranks must join target lm_head collectives before drafter sync."""
+    import torch
     from vllm.v1.worker.gpu.model_runner import GPUModelRunner
 
     from omni_npu.worker.npu import model_runner as npu_model_runner
 
-    hidden_states = object()
-    sample_hidden_states = object()
-    computed = []
+    calls = []
+    hidden_states = torch.arange(12).reshape(4, 3)
+    logits_indices = torch.tensor([1, 3])
+
+    monkeypatch.setattr(npu_model_runner, "_dp_lmhead_enabled", lambda: True)
+
+    def fake_super_execute_model(self, *args, **kwargs):
+        calls.append("execute_model")
+        self.execute_model_state = SimpleNamespace(
+            input_batch=SimpleNamespace(logits_indices=logits_indices),
+            hidden_states=hidden_states,
+        )
+        return "forward-output"
 
     monkeypatch.setattr(
-        GPUModelRunner,
-        "_dummy_run",
-        lambda self, num_tokens, *args, **kwargs: (
-            hidden_states,
-            sample_hidden_states,
-        ),
-    )
-    monkeypatch.setattr(npu_model_runner, "_dp_lmhead_enabled", lambda: True)
+        GPUModelRunner, "execute_model", fake_super_execute_model)
+
+    def fake_super_dummy(self, num_tokens, *args, **kwargs):
+        assert self.execute_model(
+            "scheduler", dummy_run=True, is_profile=False) == "forward-output"
+        calls.append("speculator")
+        return hidden_states, hidden_states[logits_indices]
+
+    monkeypatch.setattr(GPUModelRunner, "_dummy_run", fake_super_dummy)
 
     runner = npu_model_runner.NPUModelRunnerV2.__new__(
         npu_model_runner.NPUModelRunnerV2
     )
-    runner.model = SimpleNamespace(compute_logits=computed.append)
+    runner.model = SimpleNamespace(
+        compute_logits=lambda sample_hs: calls.append(
+            ("compute_logits", sample_hs.tolist())
+        )
+    )
 
     result = runner._dummy_run(4)
 
-    assert result == (hidden_states, sample_hidden_states)
-    assert computed == [sample_hidden_states]
+    assert torch.equal(result[0], hidden_states)
+    assert torch.equal(result[1], hidden_states[logits_indices])
+    assert calls == [
+        "execute_model",
+        ("compute_logits", hidden_states[logits_indices].tolist()),
+        "speculator",
+    ]
 
 
 def test_dp_lmhead_enabled_reads_model_parallel_config(monkeypatch):
