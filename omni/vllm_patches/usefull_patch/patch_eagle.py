@@ -33,6 +33,7 @@ from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.spec_decode.eagle import EagleProposer
 from vllm.v1.spec_decode.utils import PADDING_SLOT_ID
+from vllm.v1.attention.backends.utils import NULL_BLOCK_ID
 from omni_npu.attention.backends.mome import NPUMomeAttentionMetadataBuilder
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from omni_npu.model_config.config_loader.loader import model_extra_config
@@ -230,13 +231,18 @@ class EagleProposerPatch(VLLMPatch):
     @torch.inference_mode()
     def dummy_run(
             self,
-            attn_metadata,
-            num_tokens: int,
-            use_cudagraphs=True,
-            is_graph_capturing=False,
-            slot_mappings: dict[str, torch.Tensor] | None = None,
+            attn_metadata=None,
+            num_tokens: int | None = None,
+            use_cudagraphs: bool = True,
+            is_graph_capturing: bool = False,
             is_profile: bool = False,
     ) -> None:
+        # Skip-propose dummy_run has no attn_metadata. Reuse the stashed
+        # CommonAttentionMetadata for shapes / graph replay, but pad every
+        # slot and block id so leftover input_ids cannot write draft KV of
+        # requests that will keep running after this step.
+        if attn_metadata is None:
+            attn_metadata = getattr(self.runner, "_omni_spec_decode_common_attn_metadata", None)
 
         if self.runner.batch_execution_and_padding_state is None:
             raise ValueError(
@@ -246,12 +252,26 @@ class EagleProposerPatch(VLLMPatch):
         cudagraph_mode, batch_descriptor, num_tokens_across_dp = self.runner.batch_execution_and_padding_state
         self.runner.batch_execution_and_padding_state = None
         num_input_tokens = batch_descriptor.num_tokens
-        if attn_metadata is not None:
+        if attn_metadata is None:
+            per_layer_attn_metadata = None
+        elif isinstance(attn_metadata, dict):
             per_layer_attn_metadata = {}
             for layer_name in self.attn_layer_names:
                 per_layer_attn_metadata[layer_name] = attn_metadata[layer_name]
         else:
-            per_layer_attn_metadata = None
+            # Replace with new all-padding tensors. Do not fill_ in place:
+            # slot_mapping is a view of slot_mapping.gpu, block_table_tensor
+            # is the live page table.
+            attn_metadata.slot_mapping = torch.full_like(
+                attn_metadata.slot_mapping, PADDING_SLOT_ID
+            )
+            attn_metadata.block_table_tensor = torch.full_like(
+                attn_metadata.block_table_tensor, NULL_BLOCK_ID
+            )
+            _, per_layer_attn_metadata = self.build_per_group_and_layer_attn_metadata(
+                common_attn_metadata=attn_metadata,
+                draft_index=0,
+            )
         # NOTE: when using tree-based specdec, adjust number of forward-passes
         # according to the depth of the tree.
         for fwd_idx in range(

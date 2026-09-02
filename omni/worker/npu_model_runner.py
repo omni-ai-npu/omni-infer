@@ -772,6 +772,15 @@ class NPUModelRunner(GPUModelRunner):
     @model_output_decorator
     def sample_tokens(self, grammar_output):
         with switch_torch_device():
+            # Upstream sample_tokens calls drafter.dummy_run(num_tokens=1)
+            # when a DP rank skips propose. Stash CommonAttentionMetadata so
+            # EagleProposerPatch.dummy_run can build per-layer metadata.
+            state = self.execute_model_state
+            if state is not None:
+                self._omni_spec_decode_common_attn_metadata = (
+                    state.spec_decode_common_attn_metadata
+                )
+
             return super().sample_tokens(grammar_output)
 
     # Override to also propagate num_accepted_tokens_cpu from the async-copied
@@ -1232,7 +1241,6 @@ class NPUModelRunner(GPUModelRunner):
                     num_tokens,
                     use_cudagraphs=use_cudagraphs,
                     is_graph_capturing=is_graph_capturing,
-                    slot_mappings=slot_mappings,
                     is_profile=is_profile,
                 )
                 # Adapt end: to pass attn_metadata

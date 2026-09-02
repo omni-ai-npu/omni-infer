@@ -1260,6 +1260,30 @@ class TestNPUModelRunner:
         assert enter_flag.get("entered") is True
         assert out is expected_output
 
+    def test_sample_tokens_stashes_spec_decode_common_attn_metadata(self, monkeypatch):
+        sentinel = object()
+        self.runner.execute_model_state = SimpleNamespace(
+            spec_decode_common_attn_metadata=sentinel
+        )
+
+        @contextmanager
+        def fake_switch():
+            yield
+
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_model_runner.switch_torch_device",
+            fake_switch,
+        )
+        monkeypatch.setattr(
+            GPUModelRunner,
+            "sample_tokens",
+            lambda self, grammar_output: "ok",
+        )
+
+        out = self.runner.sample_tokens("grammar")
+        assert out == "ok"
+        assert self.runner._omni_spec_decode_common_attn_metadata is sentinel
+
     def test_get_model_unwrap(self):
 
         class DummyWrapper:
