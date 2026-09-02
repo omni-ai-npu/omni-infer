@@ -12,8 +12,8 @@ from vllm.config import CUDAGraphMode
 from vllm.v1.attention.backends.utils import NULL_BLOCK_ID
 from vllm.v1.spec_decode.utils import PADDING_SLOT_ID
 
-from omni_npu.vllm_patches.usefull_patch import patch_eagle as eagle_mod
-from omni_npu.vllm_patches.usefull_patch.patch_eagle import EagleProposerPatch
+from omni_npu.vllm_patches.usefull_patch.common import patch_eagle as eagle_mod
+from omni_npu.vllm_patches.usefull_patch.common.patch_eagle import EagleProposerPatch
 
 
 def _fake_proposer(attn_metadata):

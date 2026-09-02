@@ -2487,6 +2487,13 @@ class OpenPanguV2ForCausalLM(
     }
 
     @classmethod
+    def get_model_state_cls(cls):
+        """MRv2 hook: MoME needs this step's prompt lengths on the builders."""
+        from omni_npu.worker.npu.mome_model_state import MomeModelState
+
+        return MomeModelState
+
+    @classmethod
     def get_mamba_state_shape_from_config(
         cls,
         vllm_config: VllmConfig,

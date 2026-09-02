@@ -38,6 +38,7 @@ def test_runner_installs_cuda_aliases_and_pins_override_surface(
     import torch
     from vllm.v1.worker.gpu.model_runner import GPUModelRunner
 
+    from omni_npu.compilation import npugraph_ex_config
     from omni_npu.worker.npu.model_runner import NPUModelRunnerV2
     from omni_npu.worker.npu import utils as npu_utils
 
@@ -48,6 +49,7 @@ def test_runner_installs_cuda_aliases_and_pins_override_surface(
         created.update(vllm_config=vllm_config, device=device)
 
     monkeypatch.setattr(GPUModelRunner, "__init__", fake_init)
+    monkeypatch.setattr(npugraph_ex_config, "init_aclgraph_config", lambda cfg: None)
     monkeypatch.setattr(
         npu_utils.logger,
         "info_once",
@@ -70,12 +72,27 @@ def test_runner_installs_cuda_aliases_and_pins_override_surface(
     own = set(vars(type(runner))) - _CLASS_NOISE
     assert own == {
         "__init__",                  # torch.cuda 别名，必须早于上游 __init__ 建 Stream
+        "capture_model",             # 裁剪守卫（内存 API 已由 !2496 接管）
         "prepare_inputs",            # 为 prepare_attn 暂存本步 cudagraph 模式
         "prepare_attn",              # MRv1 的 pad_attn 开关：非 FULL 不 pad slot
+        "prepare_dummy_attn",        # dummy forward 清零 block table，别写脏已交接的块
         "_omni_has_separate_kv_update",
         "_sync_dummy_main_compute_logits",
         "execute_model",             # 在 dummy target forward 后补 lm_head logits
     }, f"NPUModelRunnerV2 覆写面变化，实际定义了: {own}"
+
+
+def test_runner_is_the_only_mrv2_entry_class():
+    """MRv2 只暴露显式顶层 NPUModelRunnerV2，不保留旧别名或类工厂。"""
+    from omni_npu.worker.npu import model_runner
+    from vllm.v1.worker.gpu.model_runner import GPUModelRunner
+
+    assert issubclass(model_runner.NPUModelRunnerV2, GPUModelRunner)
+    assert model_runner.NPUModelRunnerV2.__qualname__ == "NPUModelRunnerV2"
+    # 没有类工厂，也不额外暴露 NPUModelRunner —— 那个名字属于 MRv1
+    # 的 omni_npu.worker.npu_model_runner，同名会让 import 来源变得含糊。
+    assert not hasattr(model_runner, "_get_runner_cls")
+    assert not hasattr(model_runner, "NPUModelRunner")
 
 
 def test_dummy_run_joins_dp_lmhead_before_speculator(monkeypatch):
@@ -586,3 +603,197 @@ def test_mrv1_path_does_not_import_upstream_gpu_package():
     assert proc.returncode == 0, (
         f"反向用例失败：\nstdout: {proc.stdout[-2000:]}\nstderr: {proc.stderr[-2000:]}"
     )
+
+
+def _make_kv_cache_runner(monkeypatch, produced):
+    """给拷贝体搭最小可跑环境：只桩掉重的，纯函数留真的。"""
+    from types import SimpleNamespace as NS
+
+    import vllm.v1.worker.gpu.model_runner as up
+
+    from omni_npu.worker.npu.model_runner import NPUModelRunnerV2
+
+    seen = {}
+    monkeypatch.setattr(up, "init_attn_backend", lambda *a: (
+        [["group"]], NS(min_cg_support="s", min_cg_attn_backend="b"), [128]))
+    monkeypatch.setattr(up, "BlockTables", lambda **kw: "block-tables")
+    monkeypatch.setattr(up, "initialize_mamba_ssu_backend", lambda *a: None)
+    monkeypatch.setattr(up, "ModelCudaGraphManager", lambda *a, **kw: "cg-manager")
+    monkeypatch.setattr(up, "check_attention_cp_compatibility", lambda cfg: None)
+    monkeypatch.setattr(up, "init_kv_cache", lambda *a: produced)
+    monkeypatch.setattr(up, "get_kv_connector", lambda cfg, d: seen.setdefault(
+        "connector_arg", d))
+
+    runner = object.__new__(NPUModelRunnerV2)
+    runner.max_model_len = 1024
+    runner.is_encoder_decoder = False
+    runner.dcp_size, runner.dcp_rank, runner.cp_interleave = 1, 0, False
+    runner.max_num_reqs, runner.max_num_tokens = 4, 64
+    runner.decode_query_len, runner.lora_capture_cases = 1, None
+    runner.speculator, runner.model_state = None, None
+    runner.device = "npu"
+    runner.cache_config = NS(enable_prefix_caching=False, cache_dtype="auto")
+    runner.parallel_config = NS(tensor_parallel_size=1)
+    runner.vllm_config = NS(mamba_config=None)
+    runner.compilation_config = NS(
+        static_forward_context={},
+        resolve_cudagraph_mode_and_sizes=lambda *a, **kw: "cg-mode",
+    )
+    kv_cache_config = NS(kv_cache_groups=[NS(kv_cache_spec=NS(block_size=128))])
+    return runner, kv_cache_config, seen
+
+
+def test_capture_model_leaves_accelerator_apis_to_the_process_patch(monkeypatch):
+    """capture_model 不再包 torch.accelerator —— !2496 已在进程级重定向。
+
+    MRv1 在同一个变更里也删掉了自己那对 mock.patch。这里钉的是"不再有作用域"：
+    捕获期间看到的对象与外面完全一致，说明没有人再临时换进换出。
+    """
+    import torch
+    from vllm.v1.worker.gpu.model_runner import GPUModelRunner
+
+    from omni_npu.worker.npu import aclgraph_utils
+    from omni_npu.worker.npu.model_runner import NPUModelRunnerV2
+
+    # 进程级补丁的效果：这就是 TorchAcceleratorMemoryPatch 装上后的样子
+    def redirected_empty_cache():
+        return None
+
+    def redirected_get_memory_info():
+        return (3, 4)
+
+    monkeypatch.setattr(torch.accelerator, "empty_cache", redirected_empty_cache)
+    monkeypatch.setattr(
+        torch.accelerator, "get_memory_info", redirected_get_memory_info,
+        raising=False,
+    )
+
+    seen = {}
+
+    def upstream_capture(self):
+        seen["empty_cache"] = torch.accelerator.empty_cache
+        seen["get_memory_info"] = torch.accelerator.get_memory_info
+        return 17
+
+    monkeypatch.setattr(GPUModelRunner, "capture_model", upstream_capture)
+    monkeypatch.setattr(aclgraph_utils, "ensure_graph_params", lambda cfg: None)
+    monkeypatch.setattr(aclgraph_utils, "assert_no_acl_tasks_registered", lambda: None)
+
+    runner = object.__new__(NPUModelRunnerV2)
+    runner.vllm_config = SimpleNamespace(compilation_config=object())
+    runner.cudagraph_manager = None
+    runner.speculator = None
+
+    assert runner.capture_model() == 17
+    # 捕获期间与捕获之外是同一个对象：没有临时替换
+    assert seen["empty_cache"] is redirected_empty_cache
+    assert seen["get_memory_info"] is redirected_get_memory_info
+    assert torch.accelerator.empty_cache is redirected_empty_cache
+    assert torch.accelerator.get_memory_info is redirected_get_memory_info
+
+
+def test_capture_model_does_not_reference_accelerator_itself():
+    """源码级复核：capture_model 里不该再出现 torch.accelerator 或 mock.patch。"""
+    import ast
+    import inspect
+    import textwrap
+
+    from omni_npu.worker.npu.model_runner import NPUModelRunnerV2
+
+    src = textwrap.dedent(inspect.getsource(NPUModelRunnerV2.capture_model))
+    fn = ast.parse(src).body[0]
+    # docstring 里就写着 torch.accelerator（解释为什么不再包），只查代码
+    if (fn.body and isinstance(fn.body[0], ast.Expr)
+            and isinstance(fn.body[0].value, ast.Constant)):
+        fn.body.pop(0)
+    code = ast.unparse(fn)
+    assert "torch.accelerator" not in code
+    assert "unittest.mock" not in code
+
+    # 仍然只调一次上游实现
+    calls = []
+    for node in ast.walk(fn):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "capture_model"):
+            calls.append(node)
+    assert len(calls) == 1
+
+
+def test_constructor_installs_graph_hooks_after_cuda_aliases(monkeypatch):
+    from vllm.v1.worker.gpu.model_runner import GPUModelRunner
+
+    from omni_npu.worker.npu import model_runner as runner_module
+    from omni_npu.worker.npu.model_runner import NPUModelRunnerV2
+
+    events = []
+    monkeypatch.setattr(
+        runner_module,
+        "install_torch_cuda_aliases",
+        lambda: events.append("aliases"),
+    )
+    from omni_npu.compilation import npugraph_ex_config
+    monkeypatch.setattr(
+        npugraph_ex_config,
+        "init_aclgraph_config",
+        lambda config: events.append("acl-config"),
+    )
+    monkeypatch.setattr(
+        GPUModelRunner,
+        "__init__",
+        lambda self, config, device: events.append("upstream-init"),
+    )
+
+    NPUModelRunnerV2(object(), object())
+
+    # The aliases must precede init_aclgraph_config and the upstream __init__,
+    # which touch torch.cuda. Nothing else is installed here any more: both
+    # capture-time signals ship as plugin patches (patch_mrv2_capture_mode.py).
+    assert events == ["aliases", "acl-config", "upstream-init"]
+
+
+def test_constructor_initializes_aclgraph_config_without_additional_config(
+    clean_cuda_aliases, monkeypatch
+):
+    from vllm.v1.worker.gpu.model_runner import GPUModelRunner
+    from omni_npu.compilation import npugraph_ex_config
+    from omni_npu.worker.npu import model_runner as runner_module
+
+    seen = []
+    monkeypatch.setattr(runner_module, "install_torch_cuda_aliases", lambda: None)
+    monkeypatch.setattr(npugraph_ex_config, "init_aclgraph_config", seen.append)
+    monkeypatch.setattr(GPUModelRunner, "__init__", lambda self, cfg, dev: None)
+
+    config = SimpleNamespace(additional_config=None)
+    runner_module.NPUModelRunnerV2(config, object())
+
+    assert seen == [config]
+
+
+def test_prepare_dummy_attn_zeroes_block_tables(monkeypatch):
+    """dummy forward 必须落到 null block —— MoME 按 block table 寻址，不吃 slot 中和。
+
+    同时钉住"张量对象本身不变"：cudagraph 捕获依赖这些 tensor 的地址。
+    """
+    import torch
+    from vllm.v1.worker.gpu.model_runner import GPUModelRunner
+
+    from omni_npu.worker.npu.model_runner import NPUModelRunnerV2
+
+    tables = [
+        torch.tensor([[6, 5], [4, 3]], dtype=torch.int32),
+        torch.tensor([[2, 1]], dtype=torch.int32),
+    ]
+    slots = object()
+    monkeypatch.setattr(
+        GPUModelRunner,
+        "prepare_dummy_attn",
+        lambda self, input_batch: (tables, slots),
+    )
+    runner = object.__new__(NPUModelRunnerV2)
+
+    got_tables, got_slots = runner.prepare_dummy_attn(object())
+
+    assert got_slots is slots
+    assert [t is orig for t, orig in zip(got_tables, tables)] == [True, True]
+    assert all(int(t.sum()) == 0 for t in got_tables)

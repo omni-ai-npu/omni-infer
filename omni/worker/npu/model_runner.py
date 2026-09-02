@@ -39,8 +39,29 @@ class NPUModelRunnerV2(GPUModelRunner):
         omni/vllm_patches/usefull_patch/common/patch_mrv2_*.py).
         """
         install_torch_cuda_aliases()
+        from omni_npu.compilation.npugraph_ex_config import init_aclgraph_config
+
+        init_aclgraph_config(vllm_config)
         logger.info("[omni-npu/mrv2] building NPUModelRunnerV2")
         super().__init__(vllm_config, device)
+
+    def capture_model(self) -> int:
+        """Guard the aicpu-tiling assumption around the upstream capture.
+
+        The torch.accelerator memory APIs that upstream capture_model calls
+        are redirected process-wide by TorchAcceleratorMemoryPatch (!2496),
+        so this no longer wraps them -- MRv1 dropped its own mock.patch pair
+        in the same change.
+        """
+        from omni_npu.worker.npu.aclgraph_utils import (
+            assert_no_acl_tasks_registered,
+            ensure_graph_params,
+        )
+
+        ensure_graph_params(self.vllm_config.compilation_config)
+        captured = super().capture_model()
+        assert_no_acl_tasks_registered()
+        return captured
 
     def prepare_inputs(self, scheduler_output, batch_desc):
         """Stash the step's cudagraph mode for prepare_attn.
@@ -80,6 +101,29 @@ class NPUModelRunnerV2(GPUModelRunner):
         num_tokens = input_batch.num_tokens
         if slot_mappings.shape[-1] > num_tokens:
             slot_mappings = slot_mappings[..., :num_tokens]
+        return block_tables, slot_mappings
+
+    def prepare_dummy_attn(self, input_batch):
+        """Point a dummy forward's block tables at the null block.
+
+        Upstream neutralises dummy writes through the slot mappings --
+        get_dummy_slot_mappings fills PAD_SLOT_ID -- which covers every
+        backend that addresses the KV cache by slot. MoME addresses its
+        state cache by block table instead (cache_indices =
+        block_table_tensor[:, 0]), so that neutralisation misses it and a
+        dummy forward writes state into whatever blocks the previous real
+        request left in the persistent table. On a decode node those blocks
+        have already been handed to the next request and filled by the KV
+        pull, so the dummy overwrites transferred KV and the first generated
+        token is wrong.
+
+        gather_block_tables repopulates these tensors on every real forward,
+        so clearing them here cannot leak into one, and the tensor addresses
+        are unchanged, which cudagraph capture requires.
+        """
+        block_tables, slot_mappings = super().prepare_dummy_attn(input_batch)
+        for block_table in block_tables:
+            block_table.fill_(0)
         return block_tables, slot_mappings
 
     def _omni_has_separate_kv_update(self) -> bool:
