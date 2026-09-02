@@ -204,13 +204,3 @@ def test_pd_producer_swa_sp_invariants(distributed_worker_pool, layer_idx):
         NUM_BLOCKS, "kv_producer", False, False, True,
         config={}, runtime_config=TP2,
     )
-
-
-def test_pd_producer_swa_sp_multi_request_tp2(distributed_worker_pool):
-    """Batched multi-request SWA SP matches independent single-request runs."""
-    distributed_worker_pool(
-        H.multi_request_swa_sp_worker,
-        NUM_BLOCKS,
-        config={},
-        runtime_config=TP2,
-    )

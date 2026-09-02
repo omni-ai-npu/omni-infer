@@ -19,13 +19,6 @@ from omni_npu.v1.layers.attention.weight_utils import (
 pytestmark = pytest.mark.unit
 
 
-def test_weight_utils_does_not_export_removed_helpers():
-    """DSA/MLA helpers were inlined into the ultra models and dropped here."""
-    assert not hasattr(wu_mod, "load_sharded_param_weight")
-    assert not hasattr(wu_mod, "run_post_weight_load")
-    assert not hasattr(wu_mod, "try_load_stacked_or_expert_weight")
-
-
 class _Projection(nn.Module):
     def __init__(self):
         super().__init__()

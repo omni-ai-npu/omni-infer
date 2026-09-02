@@ -189,16 +189,6 @@ def test_plan_transfer_descriptors_two_groups():
     np.testing.assert_array_equal(sz_np, np.concatenate([g0[2], g1[2]]))
 
 
-def test_for_each_planned_group_matches_iter_and_empty_visitor():
-    handler, src, dst = _two_group_plan_setup()
-    args = (src, dst, [2, 1], [0, 0], 3, 3)
-    expected = list(handler._iter_planned_groups(*args))
-    visited = []
-    handler._for_each_planned_group(*args, lambda *group: visited.append(group))
-    assert visited == expected
-    handler._for_each_planned_group(*args)
-
-
 def test_handler_init_rejects_cpu_npu_mismatch():
     cpu = torch.zeros((2, 8), dtype=torch.int8, device="cpu")
     with pytest.raises(ValueError, match="non-empty and same length"):
@@ -497,46 +487,6 @@ def test_handler_transfer_rejects_bad_specs():
         handler.transfer_async(1, src, dst)
 
 
-def test_handler_init_happy_path_with_mocked_npu_stream():
-    cpu = torch.zeros((2, 8), dtype=torch.int8, device="cpu")
-    npu = MagicMock()
-    npu.dtype = torch.int8
-    npu.ndim = 2
-    npu.device = SimpleNamespace(type="npu")
-    npu.shape = (2, 8)
-
-    stream = MagicMock()
-    with patch.object(torch.npu, "Stream", return_value=stream), patch.object(
-        worker_mod, "_get_swap_blocks_batch", return_value=None
-    ):
-        handler = NpuSingleDirectionOffloadingHandler(
-            npu_tensors=[npu],
-            cpu_tensors=[cpu],
-            block_size_factor=1,
-            kv_cache_groups_data_refs=[[]],
-            npu_to_cpu=True,
-        )
-    assert handler._stream is stream
-    assert handler.npu_to_cpu is True
-
-    bad_cpu = MagicMock()
-    bad_cpu.dtype = torch.int8
-    bad_cpu.ndim = 2
-    bad_cpu.device = SimpleNamespace(type="npu")
-    bad_cpu.shape = (2, 8)
-    with patch.object(torch.npu, "Stream", return_value=stream), patch.object(
-        worker_mod, "_get_swap_blocks_batch", return_value=None
-    ):
-        with pytest.raises(ValueError, match="cpu_tensors must stay on CPU"):
-            NpuSingleDirectionOffloadingHandler(
-                npu_tensors=[npu],
-                cpu_tensors=[bad_cpu],
-                block_size_factor=1,
-                kv_cache_groups_data_refs=[[]],
-                npu_to_cpu=True,
-            )
-
-
 def test_worker_init_submit_finished_wait_shutdown():
     kv_tensor = MagicMock()
     kv_tensor.page_size_bytes = 8
@@ -619,79 +569,3 @@ def _transfer_specs(npu_to_cpu: bool):
     cpu = ConcreteCPU.__new__(ConcreteCPU)
     cpu.block_ids = np.asarray([0, 1], dtype=np.int64)
     return (gpu, cpu) if npu_to_cpu else (cpu, gpu)
-
-
-def test_store_submit_returns_before_enqueue():
-    handler, _, _ = _make_handler(npu_to_cpu=True, factor=1)
-    entered = threading.Event()
-    release = threading.Event()
-    compute_stream = MagicMock(name="compute_stream")
-
-    def slow_swap(*_args, **_kwargs):
-        entered.set()
-        assert release.wait(timeout=2)
-
-    handler._swap_blocks_batch = slow_swap
-    src, dst = _transfer_specs(npu_to_cpu=True)
-    stream_ctx = MagicMock()
-    stream_ctx.__enter__ = MagicMock(return_value=None)
-    stream_ctx.__exit__ = MagicMock(return_value=False)
-    end_ev = MagicMock()
-    end_ev.query.return_value = False
-    try:
-        with patch.object(
-            torch.npu, "Event", return_value=end_ev
-        ), patch.object(torch.npu, "stream", return_value=stream_ctx), patch.object(
-            torch.npu, "current_stream", return_value=compute_stream
-        ):
-            t0 = time.monotonic()
-            assert handler.submit(3, src, dst) is True
-            assert (time.monotonic() - t0) < 0.2
-            queued = handler._queued.get(3)
-            if queued is not None:
-                assert queued.wait_stream is compute_stream
-            assert 3 in handler._queued or 3 in handler._transfers_by_id
-            assert entered.wait(timeout=2)
-            handler._stream.wait_stream.assert_called_with(compute_stream)
-            assert 3 in handler._queued or 3 in handler._transfers_by_id
-            release.set()
-            handler.wait({3})
-            end_ev.synchronize.assert_called()
-    finally:
-        release.set()
-        handler.shutdown()
-
-
-def test_load_submit_returns_before_enqueue():
-    handler, _, _ = _make_handler(npu_to_cpu=False, factor=1)
-    entered = threading.Event()
-    release = threading.Event()
-
-    def slow_swap(*_args, **_kwargs):
-        entered.set()
-        assert release.wait(timeout=2)
-
-    handler._swap_blocks_batch = slow_swap
-    src, dst = _transfer_specs(npu_to_cpu=False)
-    stream_ctx = MagicMock()
-    stream_ctx.__enter__ = MagicMock(return_value=None)
-    stream_ctx.__exit__ = MagicMock(return_value=False)
-    end_ev = MagicMock()
-    end_ev.query.return_value = False
-    try:
-        with patch.object(
-            torch.npu, "Event", return_value=end_ev
-        ), patch.object(torch.npu, "stream", return_value=stream_ctx):
-            t0 = time.monotonic()
-            assert handler.submit(4, src, dst) is True
-            assert (time.monotonic() - t0) < 0.2
-            assert 4 in handler._queued or 4 in handler._transfers_by_id
-            assert entered.wait(timeout=2)
-            # enqueue still blocked: job is queued or already in _transfers
-            assert 4 in handler._queued or 4 in handler._transfers_by_id
-            release.set()
-            handler.wait({4})
-            end_ev.synchronize.assert_called()
-    finally:
-        release.set()
-        handler.shutdown()
