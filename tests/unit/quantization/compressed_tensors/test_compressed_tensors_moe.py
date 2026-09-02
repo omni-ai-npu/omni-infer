@@ -168,13 +168,31 @@ class MockMoELayer(torch.nn.Module):
     def __init__(self, use_ep=True, num_experts=2):
         super().__init__()
         self.layer_name = "test_layer"
-        self.moe_config = SimpleNamespace(num_experts=num_experts)
+        self.moe_config = SimpleNamespace(
+            num_experts=num_experts,
+            moe_parallel_config=SimpleNamespace(use_ep=use_ep),
+            is_sequence_parallel=False,
+        )
         self.local_num_experts = num_experts
         self.enable_eplb = False
         self.moe_parallel_config = SimpleNamespace(use_ep=use_ep)
         self.quant_config = object()
         self.gate = None
+        self.routed_experts = self
+        self._shared_experts = None
         self.shared_experts = None
+
+    @property
+    def shared_experts(self):
+        if self._shared_experts is None:
+            return None
+        return self._shared_experts._layer
+
+    @shared_experts.setter
+    def shared_experts(self, value):
+        self._shared_experts = (
+            None if value is None else SimpleNamespace(_layer=value)
+        )
 
 
 def _operator_opt_config(**overrides):
@@ -1052,6 +1070,31 @@ def _npu_to_cpu(monkeypatch):
     monkeypatch.setattr(torch, "zeros", _zeros)
 
 
+def _w4a8_layer_and_prepare(*, with_w2=True):
+    layer = SimpleNamespace(
+        moe_parallel_config=SimpleNamespace(use_ep=True),
+        w13_weight=torch.randn(2, 4, 4),
+        w13_weight_bias=torch.zeros(2, 8),
+        w13_weight_int4_scale=torch.ones(2, 1, 8, dtype=torch.int64),
+    )
+    if with_w2:
+        layer.w2_weight = torch.randn(2, 4, 4)
+        layer.w2_weight_bias = torch.zeros(2, 4)
+        layer.w2_weight_int4_scale = torch.ones(2, 1, 4, dtype=torch.int64)
+    layer.routed_experts = layer
+    layer._shared_experts = None
+    layer.moe_config = SimpleNamespace(
+        moe_parallel_config=SimpleNamespace(use_ep=True),
+        is_sequence_parallel=False,
+    )
+    prepare_result = SimpleNamespace(
+        hidden_states_sorted_by_experts=torch.randn(3, 4),
+        expert_tokens=torch.tensor([2, 1], dtype=torch.int64),
+        dynamic_scale=torch.ones(3),
+    )
+    return layer, prepare_result
+
+
 @pytest.mark.unit
 def test_w4a8_apply_experts_calls_grouped_matmul_and_swiglu(compressed_moe_module, monkeypatch):
     """Test that W4A8 apply_experts calls gate_up matmul, dequant_swiglu_quant, and down matmul."""
@@ -1069,22 +1112,7 @@ def test_w4a8_apply_experts_calls_grouped_matmul_and_swiglu(compressed_moe_modul
 
     W4A8 = module.NPUCompressedTensorsW4A8Int4MoEMethod
     method = W4A8.__new__(W4A8)
-
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
-        w13_weight=torch.randn(2, 4, 4),
-        w13_weight_bias=torch.zeros(2, 8),
-        w13_weight_int4_scale=torch.ones(2, 1, 8, dtype=torch.int64),
-        w2_weight=torch.randn(2, 4, 4),
-        w2_weight_bias=torch.zeros(2, 4),
-        w2_weight_int4_scale=torch.ones(2, 1, 4, dtype=torch.int64),
-    )
-
-    prepare_result = SimpleNamespace(
-        hidden_states_sorted_by_experts=torch.randn(3, 4),
-        expert_tokens=torch.tensor([2, 1], dtype=torch.int64),
-        dynamic_scale=torch.ones(3),
-    )
+    layer, prepare_result = _w4a8_layer_and_prepare()
 
     result = method.apply_experts(layer, prepare_result)
 
@@ -1109,19 +1137,7 @@ def test_w4a8_apply_experts_finalize_routing_returns_intermediate(compressed_moe
 
     W4A8 = module.NPUCompressedTensorsW4A8Int4MoEMethod
     method = W4A8.__new__(W4A8)
-
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
-        w13_weight=torch.randn(2, 4, 4),
-        w13_weight_bias=torch.zeros(2, 8),
-        w13_weight_int4_scale=torch.ones(2, 1, 8, dtype=torch.int64),
-    )
-
-    prepare_result = SimpleNamespace(
-        hidden_states_sorted_by_experts=torch.randn(3, 4),
-        expert_tokens=torch.tensor([2, 1], dtype=torch.int64),
-        dynamic_scale=torch.ones(3),
-    )
+    layer, prepare_result = _w4a8_layer_and_prepare(with_w2=False)
 
     result = method.apply_experts(layer, prepare_result, use_grouped_matmul_finalize_routing=True)
 

@@ -18,5 +18,13 @@ def test_register_models_uses_openpangu_v2_architectures():
         "OpenPanguV2MTPModel",
         "omni_npu.v1.models.pangu.pangu_v2_moe_mtp:OpenPanguV2MTP",
     )
-    assert registry.register_model.call_count == 2
+    registry.register_model.assert_any_call(
+        "PanguUltraMoEForCausalLM",
+        "omni_npu.v1.models.pangu.pangu_ultra_moe:PanguUltraMoEForCausalLM",
+    )
+    registry.register_model.assert_any_call(
+        "OpenPanguMTPModel",
+        "omni_npu.v1.models.pangu.pangu_ultra_moe_mtp:OpenPanguMTP",
+    )
+    assert registry.register_model.call_count == 4
 

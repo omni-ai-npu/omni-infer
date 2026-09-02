@@ -29,5 +29,5 @@ def activate_shared_expert_on_side_stream(
     side_stream.wait_stream(torch.npu.current_stream())
     with torch.npu.stream(side_stream):
         shared_expert_gate_up = prepare_permute_result.shared_expert_gate_up
-        shared_expert_act = layer.shared_experts.act_fn(shared_expert_gate_up)
+        shared_expert_act = layer._shared_experts._layer.act_fn(shared_expert_gate_up)
         return quant_fn(shared_expert_act)

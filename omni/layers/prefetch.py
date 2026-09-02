@@ -105,11 +105,14 @@ class PrefetchManager:
 
     def _prefetch_moe(self, layer: Any, trigger: torch.Tensor) -> None:
         operator_opt = model_extra_config.operator_opt_config
-        if hasattr(layer, "w13_weight") and layer.w13_weight.numel() > 0:
-            self.prefetch_weight(layer.w13_weight, trigger, operator_opt.expert_gate_up_prefetch)
-        if hasattr(layer, "w2_weight") and layer.w2_weight.numel() > 0:
-            self.prefetch_weight(layer.w2_weight, trigger, operator_opt.expert_down_prefetch)
-        shared_experts = getattr(layer, "shared_experts", None)
+        experts = layer.routed_experts
+        if experts.w13_weight.numel() > 0:
+            self.prefetch_weight(experts.w13_weight, trigger, operator_opt.expert_gate_up_prefetch)
+        if experts.w2_weight.numel() > 0:
+            self.prefetch_weight(experts.w2_weight, trigger, operator_opt.expert_down_prefetch)
+        shared_experts = (
+            layer._shared_experts._layer if layer._shared_experts is not None else None
+        )
         if shared_experts is not None:
             if getattr(shared_experts, "gate_up_proj", None):
                 self.prefetch_weight(

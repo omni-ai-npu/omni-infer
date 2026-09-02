@@ -34,6 +34,7 @@ from omni_npu.layers.fused_moe.layer import NPUFusedMoE
 from omni_npu.layers.fused_moe.fused_moe import fused_experts_tp
 from omni_npu.layers.fused_moe.config import int4_w4a8_moe_quant_config
 from omni_npu.layers.fused_moe.fused_moe_method_base import NPUFusedMoEMethodBase
+from omni_npu.layers.quantization.moe_apply import unpack_apply_experts_state
 from omni_npu.layers.fused_moe.prepare_permute_unpermute_finalize import (
     PreparePermuteOptions,
     PreparePermuteResult,
@@ -296,7 +297,12 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
         logical_replica_count: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         # TODO: Support TP-only mode
-        if not layer.moe_parallel_config.use_ep:
+        experts = layer.routed_experts
+        shared_experts = (
+            layer._shared_experts._layer if layer._shared_experts is not None else None
+        )
+        moe_parallel_config = layer.moe_config.moe_parallel_config
+        if not moe_parallel_config.use_ep:
             return fused_experts_tp(
                 layer=layer,
                 x=x_slice,
@@ -306,7 +312,7 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
 
         orig_num_tokens = hidden_states.shape[0]
         strategy, strategy_impl = self.select_communication_strategy(orig_num_tokens)
-        is_sequence_parallel = getattr(layer, "is_sequence_parallel", False)
+        is_sequence_parallel = layer.moe_config.is_sequence_parallel
         is_need_slice = (
             not model_extra_config.parall_config.ena_seq_parallel
             and self.tp_size > 1 and not is_sequence_parallel
@@ -447,7 +453,7 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
             cur_stream.wait_stream(self.moe_final_stream)
 
         shared_output = None
-        if layer.shared_experts is not None:
+        if shared_experts is not None:
             self.sub_stream.wait_stream(cur_stream)
             if (
                 strategy == "agrs" and
@@ -460,10 +466,10 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
                 shared_output = prepare_permute_result.shared_output
             else:
                 with torch.npu.stream(self.sub_stream):
-                    if layer.shared_experts.gate_up_proj.tp_size > 1:
-                        shared_output = layer.shared_experts(hidden_states)
+                    if shared_experts.gate_up_proj.tp_size > 1:
+                        shared_output = shared_experts(hidden_states)
                     else:
-                        shared_output = layer.shared_experts(x_slice)
+                        shared_output = shared_experts(x_slice)
 
         if enable_prefetch:
             self._prefetch_on_sub_stream("next_attn", shared_output, layer, cur_stream)
@@ -481,24 +487,30 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
             finalize_metadata=finalize_metadata,
         )
 
-        if layer.shared_experts is not None or enable_prefetch:
+        if shared_experts is not None or enable_prefetch:
             cur_stream.wait_stream(self.sub_stream)
 
         use_custom_model_add = "omni_custom_models" in os.environ.get("VLLM_PLUGINS", "")
         share_expert_tp = (
-            layer.shared_experts.gate_up_proj.tp_size
-            if layer.shared_experts is not None else 1
+            shared_experts.gate_up_proj.tp_size
+            if shared_experts is not None else 1
         )
-        if layer.shared_experts is not None:
+        if shared_experts is not None:
             if share_expert_tp > 1:
                 shared_output = tensor_model_parallel_all_reduce(shared_output)
             elif use_custom_model_add:
                 routed_output = routed_output + shared_output
 
         if is_need_slice:
-            routed_output = tensor_model_parallel_all_gather(routed_output, dim=0)[:orig_num_tokens]
+            routed_output = tensor_model_parallel_all_gather(
+                routed_output, dim=0
+            )[:orig_num_tokens]
 
-        if layer.shared_experts is not None and share_expert_tp > 1 and use_custom_model_add:
+        if (
+            shared_experts is not None
+            and share_expert_tp > 1
+            and use_custom_model_add
+        ):
             routed_output = routed_output + shared_output
 
         if shared_output is not None:
@@ -512,15 +524,15 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
         activation: str = "silu",
         use_grouped_matmul_finalize_routing: bool = False
     ) -> torch.Tensor:
-        hidden_states = prepare_permute_result.hidden_states_sorted_by_experts
-        expert_tokens = prepare_permute_result.expert_tokens
-        avg_tokens_per_expert = prepare_permute_result.avg_tokens_per_expert or [0]
-        pertoken_scale = prepare_permute_result.dynamic_scale
+        (
+            experts, shared_experts, moe_parallel_config, hidden_states,
+            expert_tokens, avg_tokens_per_expert, pertoken_scale,
+        ) = unpack_apply_experts_state(layer, prepare_permute_result)
 
-        if layer.quant_config is None:
+        if experts.quant_config is None:
             gate_up_proj = torch_npu.npu_grouped_matmul(
                 [hidden_states],
-                [layer.w13_weight],
+                [experts.w13_weight],
                 bias=None,
                 group_list=expert_tokens,
                 split_item=3,
@@ -531,7 +543,7 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
             intermediate_hidden_states = torch_npu.npu_swiglu(gate_up_proj)
             return torch_npu.npu_grouped_matmul(
                 [intermediate_hidden_states],
-                [layer.w2_weight],
+                [experts.w2_weight],
                 bias=None,
                 group_list=expert_tokens,
                 split_item=3,
@@ -548,7 +560,7 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
 
         gate_up_proj = torch_npu.npu_grouped_matmul(
             [hidden_states],
-            [layer.w13_weight],
+            [experts.w13_weight],
             bias=None,
             scale=None,
             per_token_scale=None,
@@ -560,14 +572,14 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
             act_type=0,
         )[0]
         quant_scale = torch.ones(
-            (expert_tokens.shape[0], layer.w13_weight_scale.shape[-1] // 2),
+            (expert_tokens.shape[0], experts.w13_weight_scale.shape[-1] // 2),
             dtype=torch.float32,
             device=current_platform.device_type,
         )
         has_bias = getattr(getattr(self, "moe", None), "has_bias", False)
         dequant_swiglu_quant_kwargs: Dict[str, object] = {
             "x": gate_up_proj,
-            "weight_scale": layer.w13_weight_scale,
+            "weight_scale": experts.w13_weight_scale,
             "activation_scale": pertoken_scale,
             "bias": getattr(layer, "w13_bias", None) if has_bias else None,
             "quant_offset": None,
@@ -590,9 +602,9 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
             return intermediate_h, pertoken_scale
         return torch_npu.npu_grouped_matmul(
             [intermediate_h],
-            [layer.w2_weight],
-            bias=[layer.w2_bias] if has_bias and hasattr(layer, "w2_bias") else None,
-            scale=[layer.w2_weight_scale.to(torch.bfloat16)],
+            [experts.w2_weight],
+            bias=[experts.w2_bias] if has_bias and hasattr(experts, "w2_bias") else None,
+            scale=[experts.w2_weight_scale.to(torch.bfloat16)],
             per_token_scale=[pertoken_scale],
             group_list=expert_tokens,
             split_item=3,
@@ -721,22 +733,23 @@ class NPUCompressedTensorsW4A8Int4MoEMethod(NPUCompressedTensorsW8A8Int8MoEMetho
         activation: str = "silu",
         use_grouped_matmul_finalize_routing: bool = False
     ) -> torch.Tensor:
-        hidden_states = prepare_permute_result.hidden_states_sorted_by_experts
-        expert_tokens = prepare_permute_result.expert_tokens
-        pertoken_scale = prepare_permute_result.dynamic_scale
+        (
+            experts, shared_experts, moe_parallel_config, hidden_states,
+            expert_tokens, _, pertoken_scale,
+        ) = unpack_apply_experts_state(layer, prepare_permute_result)
         if pertoken_scale.dim() > 1:
             pertoken_scale = pertoken_scale.reshape(-1)
             hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
 
-        assert layer.moe_parallel_config.use_ep, "W4A8 only support ep"
+        assert moe_parallel_config.use_ep, "W4A8 only support ep"
 
         tuning_config = None
 
         gate_up_proj = torch_npu.npu_grouped_matmul(
             [hidden_states],
-            [layer.w13_weight],
-            bias=[layer.w13_weight_bias],
-            scale=[layer.w13_weight_int4_scale],
+            [experts.w13_weight],
+            bias=[experts.w13_weight_bias],
+            scale=[experts.w13_weight_int4_scale],
             offset=None,
             antiquant_scale=None,
             antiquant_offset=None,
@@ -753,8 +766,8 @@ class NPUCompressedTensorsW4A8Int4MoEMethod(NPUCompressedTensorsW8A8Int8MoEMetho
             output_dtype=torch.bfloat16)[0]
 
         fake_scale = torch.ones(
-            layer.w13_weight_int4_scale.shape, dtype=torch.float32, device="npu"
-        ).view(-1, layer.w13_weight_int4_scale.shape[-1])
+            experts.w13_weight_int4_scale.shape, dtype=torch.float32, device="npu"
+        ).view(-1, experts.w13_weight_int4_scale.shape[-1])
         pertoken_scale = torch.ones(
             pertoken_scale.shape, dtype=torch.float32, device="npu"
         )
@@ -774,10 +787,10 @@ class NPUCompressedTensorsW4A8Int4MoEMethod(NPUCompressedTensorsW8A8Int8MoEMetho
 
         return torch_npu.npu_grouped_matmul(
             [gate_up_proj],
-            [layer.w2_weight],
-            scale=[layer.w2_weight_int4_scale],
+            [experts.w2_weight],
+            scale=[experts.w2_weight_int4_scale],
             per_token_scale=[pertoken_scale],
-            bias=[layer.w2_weight_bias],
+            bias=[experts.w2_weight_bias],
             group_list=expert_tokens,
             split_item=3,
             output_dtype=torch.bfloat16,

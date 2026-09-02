@@ -636,6 +636,7 @@ def test_moe_apply_experts_with_routed_experts_cv_returns_tuple(
         w2_weight=torch.zeros(2, 4, 4, dtype=torch.uint8),
         w2_weight_scale=torch.ones(2, 4, dtype=torch.float32),
         shared_experts=shared_experts,
+        _shared_experts=SimpleNamespace(_layer=shared_experts),
     )
 
     shared_event = torch.npu.Event()
@@ -692,6 +693,7 @@ def test_moe_apply_experts_with_routed_experts_cv_grouped_finalize_routing(
         w2_weight=torch.zeros(2, 4, 4, dtype=torch.uint8),
         w2_weight_scale=torch.ones(2, 4, dtype=torch.float32),
         shared_experts=shared_experts,
+        _shared_experts=SimpleNamespace(_layer=shared_experts),
     )
 
     prepare_result = SimpleNamespace(

@@ -10,6 +10,15 @@ import pytest
 import torch
 
 
+def _moe_layer(**kwargs):
+    layer = SimpleNamespace(**kwargs)
+    if getattr(layer, "routed_experts", None) is None:
+        layer.routed_experts = layer
+    if getattr(layer, "activation", None) is None:
+        layer.activation = SimpleNamespace(value="silu")
+    return layer
+
+
 @pytest.fixture
 def fused_module(monkeypatch):
     torch_npu = MagicMock()
@@ -145,7 +154,7 @@ def test_grouped_topk_invalid_scoring_func_raises(fused_module):
 @pytest.mark.unit
 def test_fused_experts_tp_no_quant(fused_module):
     module, stubs = fused_module
-    layer = SimpleNamespace(
+    layer = _moe_layer(
         global_num_experts=4,
         quant_config=None,
         quant_method=MagicMock(),
@@ -177,7 +186,7 @@ def test_fused_experts_tp_no_quant(fused_module):
 @pytest.mark.unit
 def test_fused_experts_tp_with_quant(fused_module):
     module, stubs = fused_module
-    layer = SimpleNamespace(
+    layer = _moe_layer(
         global_num_experts=4,
         quant_config=object(),
         quant_method=MagicMock(),

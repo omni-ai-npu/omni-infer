@@ -9,3 +9,9 @@ def register_models():
     ModelRegistry.register_model(
         "OpenPanguV2MTPModel",
         "omni_npu.v1.models.pangu.pangu_v2_moe_mtp:OpenPanguV2MTP")
+    ModelRegistry.register_model(
+        "PanguUltraMoEForCausalLM",
+        "omni_npu.v1.models.pangu.pangu_ultra_moe:PanguUltraMoEForCausalLM")
+    ModelRegistry.register_model(
+        "OpenPanguMTPModel",
+        "omni_npu.v1.models.pangu.pangu_ultra_moe_mtp:OpenPanguMTP")

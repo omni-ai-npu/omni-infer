@@ -31,7 +31,7 @@ def _make_minimal_mtp():
     m.config = SimpleNamespace(
         num_hidden_layers=2,
         num_nextn_predict_layers=2,
-        n_routed_experts=2,       # must be int for FusedMoE.make_expert_params_mapping
+        n_routed_experts=2,       # must be int for fused_moe_make_expert_params_mapping
         n_shared_experts=0,
         hidden_size=64,
         num_attention_heads=4,
@@ -46,6 +46,15 @@ def _make_minimal_mtp():
         layers={"2": SimpleNamespace(shared_head=SimpleNamespace(head=nn.Linear(64, 256)))},
     )
     return m, mtp_mod
+
+
+def test_mtp_module_does_not_import_weight_utils_helpers():
+    import omni_npu.v1.models.pangu.pangu_ultra_moe_mtp as mtp_mod
+
+    assert not hasattr(mtp_mod, "run_post_weight_load")
+    assert not hasattr(mtp_mod, "try_load_stacked_or_expert_weight")
+    assert not hasattr(mtp_mod, "load_sharded_param_weight")
+    assert hasattr(mtp_mod, "mark_split_q_up_params_loaded")
 
 
 # ==============================================================================
@@ -199,7 +208,7 @@ class TestLoadWeights:
         m.model.mtp_start_layer_idx = 2
         m.named_parameters = lambda: []
         with patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n), \
-             patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True):
+             patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=[], create=True):
             loaded = m.load_weights([("model.layers.2.rotary_emb.inv_freq", torch.ones(1))])
         assert len(loaded) == 0
 
@@ -207,7 +216,7 @@ class TestLoadWeights:
         m, mtp_mod = _make_minimal_mtp()
         m.model.mtp_start_layer_idx = 2
         m.named_parameters = lambda: []
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
+        with patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             # get_spec_layer returns None for non-MTP layers
             loaded = m.load_weights([("model.layers.1.self_attn.weight", torch.ones(1))])
@@ -220,7 +229,7 @@ class TestLoadWeights:
         param = nn.Parameter(torch.zeros(4, 4))
         m.named_parameters = lambda: [("model.layers.2.mtp_block.self_attn.q_proj.weight", param)]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
+        with patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n), \
              patch.object(mtp_mod, "default_weight_loader") as mock_loader:
             loaded = m.load_weights([("model.layers.2.self_attn.q_proj.weight", torch.ones(4, 4))])
@@ -237,8 +246,8 @@ class TestLoadWeights:
         m.named_parameters = _empty_named_parameters
 
         with patch.object(
-            mtp_mod.FusedMoE,
-            "make_expert_params_mapping",
+            mtp_mod,
+            "fused_moe_make_expert_params_mapping",
             return_value=[],
             create=True,
         ), patch.object(
@@ -257,7 +266,7 @@ class TestLoadWeights:
         param.weight_loader = lambda p, w, shard_id: p.data.copy_(w)
         m.named_parameters = lambda: [("model.layers.2.mtp_block.mlp.gate_up_proj.weight", param)]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
+        with patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([("model.layers.2.mlp.gate_proj.weight", torch.ones(4, 4))])
         assert "model.layers.2.mtp_block.mlp.gate_up_proj.weight" in loaded
@@ -270,7 +279,7 @@ class TestLoadWeights:
         param.weight_loader = lambda p, w: p.data.copy_(w)
         m.named_parameters = lambda: [("model.embed_tokens.weight", param)]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
+        with patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([
                 ("model.layers.2.embed_tokens.weight", torch.ones(8, 8)),
@@ -287,7 +296,7 @@ class TestLoadWeights:
         param = nn.Parameter(torch.zeros(4, 4))
         m.named_parameters = lambda: [("model.layers.2.mtp_block.mlp.down_proj.weight", param)]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
+        with patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([("model.layers.2.mlp.down_proj.weight", torch.ones(4, 4))])
         assert "model.layers.2.mtp_block.mlp.down_proj.weight" in loaded
@@ -303,7 +312,7 @@ class TestLoadWeights:
             ("model.layers.2.mtp_block.conv.compresskv_conv.weight", param),
         ]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
+        with patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n), \
              patch.object(mtp_mod.model_extra_config.operator_opt_config, "use_noncontiguous_kv", True), \
              patch.object(mtp_mod.model_extra_config.operator_opt_config, "merge_q_kv_conv", False):
@@ -320,7 +329,7 @@ class TestLoadWeights:
             ("model.layers.2.mtp_block.self_attn.qa_conv.merge_conv.weight", param),
         ]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
+        with patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n), \
              patch.object(mtp_mod.model_extra_config.operator_opt_config, "use_noncontiguous_kv", False), \
              patch.object(mtp_mod.model_extra_config.operator_opt_config, "merge_q_kv_conv", True):
@@ -334,7 +343,7 @@ class TestLoadWeights:
         param = nn.Parameter(torch.zeros(4, 4))
         m.named_parameters = lambda: [("model.layers.2.mtp_block.mlp.down_proj.weight", param)]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
+        with patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([("model.layers.2.mlp.down_proj.bias", torch.ones(4))])
         # bias not in params_dict → falls through to else → name.endswith('.bias') → skip
@@ -353,7 +362,7 @@ class TestLoadWeights:
         ]
 
         expert_map = [("gate_up_proj", "gate_proj", 0, 0)]
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=expert_map, create=True), \
+        with patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=expert_map, create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([("model.layers.2.mlp.experts.0.gate_proj.weight", torch.ones(4, 4))])
         assert "model.layers.2.mtp_block.mlp.experts.0.gate_up_proj.weight" in loaded
@@ -365,7 +374,7 @@ class TestLoadWeights:
         param = nn.Parameter(torch.zeros(4))
         m.named_parameters = lambda: [("model.layers.2.mtp_block.self_attn.q_proj.weight", param)]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
+        with patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([("model.layers.2.self_attn.q_proj.bias", torch.ones(4))])
         # .bias not in params → skip
@@ -382,7 +391,7 @@ class TestLoadWeights:
             ("model.layers.2.mtp_block.mlp.gate.e_score_correction_bias", param),
         ]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
+        with patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n):
             loaded = m.load_weights([("model.layers.2.mlp.e_score_correction_bias", torch.ones(2))])
         assert "model.layers.2.mtp_block.mlp.gate.e_score_correction_bias" in loaded
@@ -401,7 +410,7 @@ class TestLoadWeights:
             ("model.layers.2.mtp_block.compresskv_conv.merge_conv.weight", param),
         ]
 
-        with patch.object(mtp_mod.FusedMoE, "make_expert_params_mapping", return_value=[], create=True), \
+        with patch.object(mtp_mod, "fused_moe_make_expert_params_mapping", return_value=[], create=True), \
              patch.object(mtp_mod, "maybe_remap_kv_scale_name", side_effect=lambda n, _: n), \
              patch.object(mtp_mod.model_extra_config.operator_opt_config, "use_noncontiguous_kv", False), \
              patch.object(mtp_mod.model_extra_config.operator_opt_config, "merge_q_kv_conv", False):
@@ -482,3 +491,47 @@ class TestWrappedLayers:
 
         # Clean up
         pred.wrapped_layers = None
+
+
+class TestOpenPanguMtpTopkBuffer:
+    def test_layer_allocates_topk_buffer_when_index_topk(self):
+        import omni_npu.v1.models.pangu.pangu_ultra_moe_mtp as mtp_mod
+
+        layer = mtp_mod.OpenPanguMultiTokenPredictorLayer.__new__(
+            mtp_mod.OpenPanguMultiTokenPredictorLayer
+        )
+        nn.Module.__init__(layer)
+        hidden = torch.zeros(2, 8)
+        layer.config = SimpleNamespace(index_topk=4)
+
+        def _identity(x):
+            return x
+
+        layer.enorm = _identity
+        layer.hnorm = _identity
+        layer.eh_proj = MagicMock(return_value=hidden)
+        rotary = MagicMock()
+        rotary.get_cos_sin.return_value = (object(), object())
+        captured = {}
+
+        def _mtp_block(hidden_states, cos, sin, residual=None, topk_indices_buffer=None):
+            captured["topk"] = topk_indices_buffer
+            return hidden_states, hidden_states, topk_indices_buffer
+
+        layer.mtp_block = _mtp_block
+        layer.mtp_block.self_attn = SimpleNamespace(rotary_emb=rotary)
+
+        with patch.object(
+            mtp_mod.model_extra_config.parall_config, "ena_seq_parallel", False
+        ):
+            out = layer.forward(
+                input_ids=None,
+                positions=torch.tensor([0, 1]),
+                previous_hidden_states=hidden,
+                inputs_embeds=hidden,
+            )
+
+        assert out.shape == hidden.shape
+        assert captured["topk"] is not None
+        assert tuple(captured["topk"].shape) == (2, 1, 4)
+        assert captured["topk"].dtype == torch.int32
