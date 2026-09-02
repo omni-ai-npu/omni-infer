@@ -2,7 +2,7 @@
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 """DP adaptations for the NPU V2 model runner.
 
-Injected by omni/vllm_patches/usefull_patch/patch_mrv2_dp_utils.py.
+Injected by omni/vllm_patches/usefull_patch/common/patch_mrv2_dp_utils.py.
 """
 
 from __future__ import annotations

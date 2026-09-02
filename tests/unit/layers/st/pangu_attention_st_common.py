@@ -777,6 +777,29 @@ def _assert_rank_replicated(tp, tensor: torch.Tensor, name: str) -> None:
             raise AssertionError(f"{name} differs across TP ranks")
 
 
+def _cache_tensors(kv_cache):
+    """Yield the reshape-tuple cache tensors, unwrapping a vLLM [engine] list."""
+    if torch.is_tensor(kv_cache):
+        return (kv_cache,)
+    nested_engine_list = (
+        isinstance(kv_cache, (list, tuple))
+        and bool(kv_cache)
+        and isinstance(kv_cache[0], (list, tuple))
+        and not torch.is_tensor(kv_cache[0])
+    )
+    if nested_engine_list:
+        kv_cache = kv_cache[0]
+    return tuple(t for t in kv_cache if torch.is_tensor(t))
+
+
+def _linear_slot_mapping(slot_mapping: torch.Tensor) -> torch.Tensor:
+    """Normalize builder slot_mapping to 1D linear page slots."""
+    slots = slot_mapping
+    if slots.ndim == 2:
+        slots = slots[:, 0] * BLOCK_SIZE + slots[:, 1]
+    return slots.reshape(-1)
+
+
 def multi_request_swa_sp_worker(
     device,
     rank,
@@ -812,6 +835,11 @@ def multi_request_swa_sp_worker(
         [(0, length) for length in request_lens],
         num_blocks,
     )
+    # Snapshot the global 1D slots before the layer can slice metadata for SP.
+    slot_src = attn_meta.slot_mapping
+    if slot_src is None and getattr(attn_meta, "prefill", None) is not None:
+        slot_src = attn_meta.prefill.slot_mapping
+    global_slots = _linear_slot_mapping(slot_src)
     batched = _sp_shard_forward(
         layer,
         hidden,
@@ -821,9 +849,9 @@ def multi_request_swa_sp_worker(
         mome_meta,
     )
 
-    valid_slots = attn_meta.slot_mapping
-    valid_slots = valid_slots[valid_slots >= 0].to(torch.long)
-    for cache_idx, cache in enumerate(layer.attn.kv_cache[0]):
+    valid_slots = global_slots[global_slots >= 0].to(torch.long)
+    # Walk the reshape-tuple tensors (ckv, k_pe, ...), not dim0 of ckv.
+    for cache_idx, cache in enumerate(_cache_tensors(layer.attn.kv_cache)):
         cached_tokens = cache.reshape(-1, cache.shape[-1]).index_select(
             0, valid_slots
         )

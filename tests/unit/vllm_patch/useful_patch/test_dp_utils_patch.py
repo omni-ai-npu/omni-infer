@@ -9,7 +9,7 @@ import torch
 
 from vllm.config import CUDAGraphMode
 
-from omni_npu.vllm_patches.usefull_patch import patch_dp_utils
+from omni_npu.vllm_patches.usefull_patch.common import patch_dp_utils
 
 
 def _make_parallel_config(

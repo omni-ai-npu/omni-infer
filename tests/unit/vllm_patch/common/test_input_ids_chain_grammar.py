@@ -268,7 +268,7 @@ def _install_chat_stubs(monkeypatch):
 def _load_input_ids_module(monkeypatch):
     _install_chat_stubs(monkeypatch)
     module_name = (
-        "omni_npu.vllm_patches.usefull_patch.patch_input_ids_piggyback")
+        "omni_npu.vllm_patches.usefull_patch.common.patch_input_ids_piggyback")
     sys.modules.pop(module_name, None)
     return importlib.import_module(module_name)
 
@@ -420,7 +420,7 @@ def test_grammar_bitmask_backend_forces_native_on_npu(monkeypatch):
         lambda logits, bitmask, *args, **kwargs: calls.append(kwargs))
 
     module_name = (
-        "omni_npu.vllm_patches.usefull_patch.patch_vllm_structured_output")
+        "omni_npu.vllm_patches.usefull_patch.common.patch_vllm_structured_output")
     sys.modules.pop(module_name, None)
     mod = importlib.import_module(module_name)
 
@@ -439,7 +439,7 @@ def test_grammar_bitmask_backend_forces_native_on_npu(monkeypatch):
 @pytest.mark.unit
 def test_split_stream_patch_splits_and_passthrough(monkeypatch):
     _install_chat_stubs(monkeypatch)
-    apc_name = "omni_npu.vllm_patches.usefull_patch.patch_serving_apc"
+    apc_name = "omni_npu.vllm_patches.usefull_patch.common.patch_serving_apc"
     apc = types.ModuleType(apc_name)
 
     async def raw_stream(self):

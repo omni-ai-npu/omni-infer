@@ -25,12 +25,10 @@ class PanguParserManagerPatch(VLLMPatch):
         model_name: str | None = None,
         is_harmony: bool = False,
     ):
-        if (
-            not is_harmony
-            and enable_auto_tools
-            and tool_parser_name == "pangu"
-            and reasoning_parser_name == "pangu"
-        ):
+        both_pangu = (
+            tool_parser_name == "pangu" and reasoning_parser_name == "pangu"
+        )
+        if not is_harmony and enable_auto_tools and both_pangu:
             return PanguParserEngine
         return _original_get_parser(
             cls,

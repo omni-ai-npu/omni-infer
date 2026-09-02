@@ -2919,7 +2919,7 @@ def _load_apc_module(monkeypatch):
 
     # Now load APC
     apc_name = (
-        "omni_npu.vllm_patches.usefull_patch.patch_serving_apc"
+        "omni_npu.vllm_patches.usefull_patch.common.patch_serving_apc"
     )
     sys.modules.pop(apc_name, None)
     return importlib.import_module(apc_name)

@@ -1,10 +1,13 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for hybrid APC hit reconciliation on vLLM 0.25.1.
+"""Regression tests for the hybrid APC coordinator patch on vLLM 0.25.1.
 
-The file can run directly on a development machine without installing
-``omni_npu``::
+The stock simple-hybrid loop lets Mome revive a length past the EAGLE-dropped
+Full Attention prefix. The patch caps FA to the blocks it holds and keeps
+iterating; ``per_group`` repeats that one length.
+
+The file can run without installing ``omni_npu``::
 
     python tests/unit/vllm_patch/useful_patch/\
         test_patch_hybrid_kv_cache_coordinator.py
@@ -14,19 +17,27 @@ import importlib.util
 import sys
 import types
 import unittest
+from collections import namedtuple
 from pathlib import Path
+
+_SpecGroup = namedtuple(
+    "SpecGroup", ("spec", "group_ids", "manager_cls", "use_eagle")
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 PATCH_PATH = (
     REPO_ROOT
-    / "omni/vllm_patches/usefull_patch/patch_hybrid_kv_cache_coordinator.py"
+    / "omni/vllm_patches/usefull_patch/models/pangu_v2_hybrid/patch_hybrid_kv_cache_coordinator.py"
 )
+
+NULL_BLOCK = "NULL"
+BLOCK_SIZE = 16
 
 
 def _load_patch_module():
     try:
-        from omni_npu.vllm_patches.usefull_patch import (
+        from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_hybrid import (
             patch_hybrid_kv_cache_coordinator as mod,
         )
 
@@ -46,10 +57,25 @@ def _load_patch_module():
         sys.modules[name] = module
         return module
 
+    class _StubFullAttentionSpec:
+        pass
+
+    class KVCacheSpec:
+        pass
+
     class HybridKVCacheCoordinator:
-        @staticmethod
-        def find_longest_cache_hit_per_group(*_args, **_kwargs):
-            raise NotImplementedError
+        pass
+
+    class BlockHashListWithBlockSize:
+        def __init__(self, block_hashes, hash_block_size, block_size):
+            self.block_hashes = block_hashes
+            self.scale = block_size // hash_block_size
+
+        def __len__(self):
+            return len(self.block_hashes) // self.scale
+
+        def __getitem__(self, index):
+            return self.block_hashes[(index + 1) * self.scale - 1]
 
     put("vllm", is_package=True)
     put("vllm.v1", is_package=True)
@@ -57,6 +83,15 @@ def _load_patch_module():
     put(
         "vllm.v1.core.kv_cache_coordinator",
         HybridKVCacheCoordinator=HybridKVCacheCoordinator,
+    )
+    put(
+        "vllm.v1.core.kv_cache_utils",
+        BlockHashListWithBlockSize=BlockHashListWithBlockSize,
+    )
+    put(
+        "vllm.v1.kv_cache_interface",
+        FullAttentionSpec=_StubFullAttentionSpec,
+        KVCacheSpec=KVCacheSpec,
     )
 
     core = types.ModuleType("omni_npu.vllm_patches.core")
@@ -94,73 +129,202 @@ def _load_patch_module():
 
 
 patch_mod = _load_patch_module()
+FullAttentionSpec = patch_mod.FullAttentionSpec
+
+
+class FakeBlockPool:
+    def __init__(self, cached_per_group):
+        self.cached_per_group = cached_per_group
+        self.null_block = NULL_BLOCK
+
+    def get_cached_block(self, block_hash, kv_cache_group_ids):
+        index = int(block_hash[1:])
+        blocks = []
+        for gid in kv_cache_group_ids:
+            if index not in self.cached_per_group[gid]:
+                return None
+            blocks.append(f"g{gid}b{index}")
+        return blocks
+
+
+class _CacheHitManager:
+    _scan_reverse = False
+
+    @classmethod
+    def find_longest_cache_hit(
+        cls,
+        block_hashes,
+        max_length,
+        kv_cache_group_ids,
+        block_pool,
+        kv_cache_spec,
+        drop_eagle_block,
+        alignment_tokens,
+    ):
+        computed = tuple([] for _ in kv_cache_group_ids)
+        return cls._scan_hits(
+            computed,
+            block_hashes,
+            max_length,
+            kv_cache_group_ids,
+            block_pool,
+            kv_cache_spec,
+            drop_eagle_block,
+        )
+
+    @classmethod
+    def _scan_hits(
+        cls,
+        computed,
+        block_hashes,
+        max_length,
+        kv_cache_group_ids,
+        block_pool,
+        kv_cache_spec,
+        drop_eagle_block,
+    ):
+        block_count = max_length // kv_cache_spec.block_size
+        indices = (
+            range(block_count - 1, -1, -1) if cls._scan_reverse else range(block_count)
+        )
+        for index in indices:
+            cached = block_pool.get_cached_block(
+                block_hashes[index], kv_cache_group_ids
+            )
+            if cached is None:
+                if cls._scan_reverse:
+                    continue
+                break
+            for blocks, block in zip(computed, cached):
+                if cls._scan_reverse:
+                    blocks.extend([block_pool.null_block] * index)
+                blocks.append(block)
+            if cls._scan_reverse:
+                break
+        if drop_eagle_block and computed[0] and not cls._scan_reverse:
+            for blocks in computed:
+                blocks.pop()
+        return computed
+
+
+class FullManager(_CacheHitManager):
+    pass
+
+
+class MomeManager(_CacheHitManager):
+    _scan_reverse = True
+
+
+class _FASpec(FullAttentionSpec):
+    """Avoid the frozen dataclass ``__init__`` when the real vLLM spec is loaded."""
+
+    def __init__(self, block_size=BLOCK_SIZE):
+        object.__setattr__(self, "block_size", block_size)
+
+
+class _OtherSpec:
+    def __init__(self, block_size=BLOCK_SIZE):
+        self.block_size = block_size
 
 
 class FakeCoordinator:
-    def __init__(self, common_blocks=None, common_hit=128):
-        if common_blocks is None:
-            common_blocks = (["fa-common"], ["mome-common"])
-        self.common_blocks = common_blocks
-        self.common_hit = common_hit
-        self.common_calls = 0
-        self.common_args = None
-        self.num_uncached_common_prefix_tokens = 0
+    """``groups`` is ``(spec, manager_cls, cached_indices, use_eagle)``."""
 
-    def find_longest_cache_hit(self, block_hashes, max_cache_hit_length):
-        self.common_calls += 1
-        self.common_args = (block_hashes, max_cache_hit_length)
-        self.num_uncached_common_prefix_tokens = 64
-        return self.common_blocks, self.common_hit
+    def __init__(self, groups, block_size=BLOCK_SIZE, num_hashes=16):
+        self.hash_block_size = block_size
+        self.scheduler_block_size = block_size
+        self.num_uncached_common_prefix_tokens = 0
+        self.block_hashes = [f"h{i}" for i in range(num_hashes)]
+        self.block_pool = FakeBlockPool(
+            [set(cached) for _spec, _manager, cached, _eagle in groups]
+        )
+        self.kv_cache_config = types.SimpleNamespace(
+            kv_cache_groups=[object() for _ in groups]
+        )
+        self.attention_groups = [
+            _SpecGroup(spec, [gid], manager, use_eagle)
+            for gid, (spec, manager, _cached, use_eagle) in enumerate(groups)
+        ]
 
 
 class HybridAPCConnectorHitPatchTest(unittest.TestCase):
     @staticmethod
-    def _call(coordinator, block_hashes=None, max_cache_hit_length=256):
-        if block_hashes is None:
-            block_hashes = ["h0", "h1"]
+    def _call_per_group(coordinator, max_cache_hit_length=256):
         return patch_mod.find_longest_cache_hit_per_group(
-            coordinator, block_hashes, max_cache_hit_length
+            coordinator, coordinator.block_hashes, max_cache_hit_length
         )
 
-    def test_uses_common_lookup_directly(self):
-        coordinator = FakeCoordinator()
+    def test_simple_hybrid_mtp_caps_to_the_fa_prefix(self):
+        """FA+Mome, EAGLE on FA: Mome revives 144, the patch must report 128."""
+        coordinator = FakeCoordinator(
+            [
+                (_FASpec(), FullManager, range(9), True),
+                # Pangu MTP flags every group; Mome still does not pop.
+                (_OtherSpec(), MomeManager, [7, 8], True),
+            ]
+        )
 
-        blocks, hit_lengths = self._call(coordinator)
+        blocks, hit_lengths = self._call_per_group(coordinator)
 
-        self.assertEqual(blocks, coordinator.common_blocks)
         self.assertEqual(hit_lengths, (128, 128))
-        self.assertEqual(coordinator.common_calls, 1)
+        self.assertEqual(blocks[0], [f"g0b{i}" for i in range(8)])
+        self.assertEqual(blocks[1], [NULL_BLOCK] * 7 + ["g1b7"])
+        self.assertEqual(coordinator.num_uncached_common_prefix_tokens, 16)
 
-    def test_repeats_common_hit_for_every_group(self):
-        common_blocks = (["g0"], ["g1"], ["g2"])
-        coordinator = FakeCoordinator(common_blocks=common_blocks, common_hit=64)
+    def test_agreed_prefix_is_kept_without_mtp(self):
+        coordinator = FakeCoordinator(
+            [
+                (_FASpec(), FullManager, range(8), False),
+                (_OtherSpec(), MomeManager, [7], False),
+            ]
+        )
 
-        blocks, hit_lengths = self._call(coordinator)
+        blocks, hit_lengths = self._call_per_group(coordinator)
 
-        self.assertEqual(blocks, common_blocks)
-        self.assertEqual(hit_lengths, (64, 64, 64))
+        self.assertEqual(hit_lengths, (128, 128))
+        self.assertEqual(blocks[0], [f"g0b{i}" for i in range(8)])
+        self.assertEqual(blocks[1], [NULL_BLOCK] * 7 + ["g1b7"])
 
-    def test_zero_common_hit_is_preserved(self):
-        coordinator = FakeCoordinator(common_blocks=([], []), common_hit=0)
+    def test_zero_hit_is_preserved(self):
+        coordinator = FakeCoordinator(
+            [
+                (_FASpec(), FullManager, [], False),
+                (_OtherSpec(), MomeManager, [], False),
+            ]
+        )
 
-        blocks, hit_lengths = self._call(coordinator)
+        blocks, hit_lengths = self._call_per_group(coordinator)
 
         self.assertEqual(blocks, ([], []))
         self.assertEqual(hit_lengths, (0, 0))
 
-    def test_forwards_lookup_arguments(self):
-        coordinator = FakeCoordinator()
-
-        self._call(
-            coordinator,
-            block_hashes=["hash0", "hash1", "hash2"],
-            max_cache_hit_length=384,
+    def test_repeats_the_common_length_for_every_group(self):
+        coordinator = FakeCoordinator(
+            [
+                (_FASpec(), FullManager, range(4), False),
+                (_OtherSpec(), MomeManager, [3], False),
+                (_OtherSpec(), MomeManager, [3], False),
+            ]
         )
 
-        self.assertEqual(
-            coordinator.common_args,
-            (["hash0", "hash1", "hash2"], 384),
+        _blocks, hit_lengths = self._call_per_group(coordinator)
+
+        self.assertEqual(hit_lengths, (64, 64, 64))
+
+    def test_direct_entry_point_returns_one_length(self):
+        coordinator = FakeCoordinator(
+            [
+                (_FASpec(), FullManager, range(8), False),
+                (_OtherSpec(), MomeManager, [7], False),
+            ]
         )
+
+        blocks, hit_length = patch_mod.find_longest_cache_hit(
+            coordinator, coordinator.block_hashes, 256
+        )
+
+        self.assertEqual(hit_length, 128)
+        self.assertEqual(len(blocks), 2)
 
     def test_patch_targets_active_hybrid_coordinator(self):
         self.assertIs(

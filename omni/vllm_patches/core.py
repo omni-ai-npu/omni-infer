@@ -62,6 +62,37 @@ class VLLMPatch:
 
             logger.info(f"patch applied: {cls.__name__} => {target.__name__}.{name}")
 
+    @staticmethod
+    def _upstream_attr_name(name: str) -> str:
+        if name.startswith("_"):
+            return f"_upstream{name}"
+        return f"_upstream_{name}"
+
+    @classmethod
+    def apply_bypass_conflict(cls, *upstream: str):
+        """Overlay attrs without the already-patched conflict check.
+
+        Each name in ``upstream`` is saved as ``_upstream_<name>`` first so
+        later patches can still call through the previous chain.
+        A leading underscore on ``name`` is kept as a single separator
+        (``_tokenize_prompt`` -> ``_upstream_tokenize_prompt``).
+        ``from_cli_args`` is unwrapped to the raw function.
+        """
+        target = cls._target
+        for name in upstream:
+            attr = getattr(target, name)
+            if name == "from_cli_args":
+                attr = attr.__func__
+            setattr(cls, cls._upstream_attr_name(name), attr)
+        for name in cls._attr_names_to_apply:
+            if name in cls.__dict__:
+                setattr(target, name, cls.__dict__[name])
+        logger.info(
+            "patch applied: %s => %s (bypass-conflict)",
+            cls.__name__,
+            target.__name__,
+        )
+
 
 def register_patch(name: str, target: Union[Type, ModuleType]):
     if not isinstance(target, (type, ModuleType)):

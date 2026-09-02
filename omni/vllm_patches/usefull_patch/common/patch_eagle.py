@@ -1025,15 +1025,21 @@ class EagleProposerPatch(VLLMPatch):
                     slot_mapping=self._get_slot_mapping(num_tokens=input_batch_size),
                     batch_descriptor=batch_descriptor,
             ):
-                forward_context = get_forward_context()
+                forward_context = (
+                    get_forward_context()
+                )
                 forward_context.capturing = False
-                ret_hidden_states = self.model(**model_kwargs)
+                ret_hidden_states = self.model(
+                    **model_kwargs
+                )
 
             if not self.model_returns_tuple():
                 last_hidden_states = ret_hidden_states
                 hidden_states = last_hidden_states
             else:
-                last_hidden_states, hidden_states = ret_hidden_states
+                last_hidden_states, hidden_states = (
+                    ret_hidden_states
+                )
 
             draft_token_ids, draft_probs = self._sample_draft_tokens(
                 hidden_states=last_hidden_states[sample_indices],
@@ -1081,7 +1087,7 @@ class EagleProposerPatch(VLLMPatch):
                 1 + self.num_speculative_tokens,
                 device=device, dtype=common_attn_metadata.query_start_loc.dtype
             )
-            # FIXME: this assumes every request contributes >= (num_speculative_tokens + 1)
+            # Assumption: every request contributes >= (num_speculative_tokens + 1)
             # query tokens (always true for a decode step: 1 token + num_speculative_tokens
             # drafts). In PD-mixed batches a prefilling request whose prompt is shorter than
             # (num_speculative_tokens + 1) makes final_n_token_indices underflow past its own

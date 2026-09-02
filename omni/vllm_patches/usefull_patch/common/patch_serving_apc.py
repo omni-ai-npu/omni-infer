@@ -68,10 +68,9 @@ logger = init_logger(__name__)
 # No patch is needed to put cached_rate on PromptTokenUsageInfo: OpenAIBaseModel
 # declares ConfigDict(extra="allow"), so pydantic accepts and serialises the key
 # on both paths we use -- construction and assignment onto an existing instance.
-# Verified against the 0.25.1 container image:
-#   PromptTokenUsageInfo(cached_tokens=800, cached_rate=0.8).model_dump_json()
-#   d = PromptTokenUsageInfo(cached_tokens=800); d.cached_rate = 0.8
-# both emit {"cached_tokens":800,"multimodal_tokens":null,"cached_rate":0.8}.
+# Verified against the 0.25.1 container image: constructing with cached_rate or
+# assigning it onto an existing PromptTokenUsageInfo both serialize the extra
+# field in model_dump_json.
 
 
 def _prompt_cache_hit_rate(cached_tokens: int, prompt_tokens: int) -> float:

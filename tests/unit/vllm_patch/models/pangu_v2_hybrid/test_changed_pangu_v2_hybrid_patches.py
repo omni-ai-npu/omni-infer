@@ -450,11 +450,11 @@ def test_pangu_model_arch_convertor_and_speculative_mapping(monkeypatch):
     assert openpangu.model_type == "openpangu_mtp"
     assert openpangu.architectures == ["OpenPanguMTPModel"]
 
-    # openpangu_v2 + OpenPanguV2ForCausalLM -> the MoME/mHC MTP
+    # Current patches/ mapping sends every openpangu_v2 draft to openpangu_mtp.
     pangu_moe = spec_mod.PanguV2MoeSpeculativeConfigPatch.hf_config_override(
         HFConfig("openpangu_v2", ["OpenPanguV2ForCausalLM"]))
-    assert pangu_moe.model_type == "mtp"
-    assert pangu_moe.architectures == ["OpenPanguV2MTPModel"]
+    assert pangu_moe.model_type == "openpangu_mtp"
+    assert pangu_moe.architectures == ["OpenPanguMTPModel"]
 
     # pangu_v2_moe is no longer handled here and must fall through
     dropped = spec_mod.PanguV2MoeSpeculativeConfigPatch.hf_config_override(

@@ -1,6 +1,6 @@
 import torch
 
-from omni_npu.vllm_patches.usefull_patch import patch_mamba_utils as patch_mod
+from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_moe import patch_mamba_utils as patch_mod
 
 
 def test_mome_state_dtype_reuses_resolved_cache_dtype(monkeypatch):

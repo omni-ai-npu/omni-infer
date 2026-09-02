@@ -128,7 +128,7 @@ def test_forward_oot_sparse_indexer_uses_context(
     wrapper.is_sparse = True
     wrapper.indexer_rope_emb = object()
     wrapper.mla_attn.layer_name = "layer0"
-    wrapper.mla_attn.kv_cache = ["kv_cache_0"]
+    wrapper.mla_attn.kv_cache = "kv_cache_0"
 
     monkeypatch.setattr(
         npu_mla_wrapper_module,

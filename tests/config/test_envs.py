@@ -201,7 +201,8 @@ def test_dir_lists_all_registered():
                  "OMNI_VLLM_PATCHES", "OMNI_CONFIG_SUMMARY",
                  "OMNI_DUMP_ENABLE", "OMNI_HEALTH_HANG_SEC",
                  "OMNI_METRICS_WORKER_MEM_EVERY",
-                 "OMNI_TRACE_OUTPUT_DIRECTORY"}:
+                 "OMNI_TRACE_OUTPUT_DIRECTORY",
+                 "OMNI_PANGU_V2_HIGH_THROUGHOUT"}:
         assert must in names
 
 
@@ -363,3 +364,17 @@ def test_invalid_benchmark_threshold_preserves_default(
     with caplog.at_level(logging.WARNING, logger="omni_npu.envs"):
         assert getattr(envs, name) == default
     assert any(name in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize("raw, expected", [("1", True), ("true", True), ("0", False)])
+def test_pangu_v2_high_throughout_is_bool(monkeypatch, raw, expected):
+    monkeypatch.setenv("OMNI_PANGU_V2_HIGH_THROUGHOUT", raw)
+    import omni_npu.envs as envs
+
+    assert envs.OMNI_PANGU_V2_HIGH_THROUGHOUT is expected
+
+
+def test_pangu_v2_high_throughout_defaults_false():
+    import omni_npu.envs as envs
+
+    assert envs.OMNI_PANGU_V2_HIGH_THROUGHOUT is False

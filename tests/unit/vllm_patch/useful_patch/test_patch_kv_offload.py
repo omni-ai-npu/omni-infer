@@ -6,11 +6,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from omni_npu.vllm_patches.usefull_patch.patch_kv_output_aggregator import (
+from omni_npu.vllm_patches.usefull_patch.common.patch_kv_output_aggregator import (
     KVOutputAggregatorSendRecvSplitPatch,
     _finished_count,
 )
-from omni_npu.vllm_patches.usefull_patch.patch_multi_connector import (
+from omni_npu.vllm_patches.usefull_patch.common.patch_multi_connector import (
     MultiConnectorGetFinishedCountPatch,
     _aggregate_child_counts,
 )

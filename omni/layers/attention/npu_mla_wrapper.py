@@ -107,7 +107,7 @@ class NPUMultiHeadLatentAttentionWrapper(MultiHeadLatentAttentionWrapper):
             attn_metadata = forward_context.attn_metadata
             if isinstance(attn_metadata, dict):
                 attn_metadata = attn_metadata[self.mla_attn.layer_name]
-            self_kv_cache = self.mla_attn.kv_cache[forward_context.virtual_engine]
+            self_kv_cache = self.mla_attn.kv_cache
             _topk_indices = self.indexer(
                 hidden_states, q_c, positions, self.indexer_rope_emb, self_kv_cache, attn_metadata
             )

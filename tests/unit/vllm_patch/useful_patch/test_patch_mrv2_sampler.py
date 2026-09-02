@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from omni_npu.vllm_patches.usefull_patch import patch_mrv2_sampler as patch_mod
+from omni_npu.vllm_patches.usefull_patch.common import patch_mrv2_sampler as patch_mod
 from omni_npu.worker.npu import sampler as npu_sample
 from omni_npu.worker.npu.ops import rejection_sampler_utils as npu_rejection_sampler_utils
 from unit.vllm_patch.useful_patch.patch_test_utils import applied_patches
@@ -90,7 +90,7 @@ def test_missing_target_degrades_to_an_error_log():
     """
     code = (
         "import importlib.util, sys\n"
-        "import omni_npu.vllm_patches.usefull_patch.patch_mrv2_sampler as m\n"
+        "import omni_npu.vllm_patches.usefull_patch.common.patch_mrv2_sampler as m\n"
         "sys.modules['vllm.v1.worker.gpu.sample.states'] = None\n"
         "spec = importlib.util.spec_from_file_location('probe', m.__file__)\n"
         "probe = importlib.util.module_from_spec(spec)\n"

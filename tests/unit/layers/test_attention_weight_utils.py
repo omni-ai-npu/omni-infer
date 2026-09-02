@@ -10,6 +10,7 @@ from torch import nn
 from omni_npu.v1.layers.attention import weight_utils as wu_mod
 from omni_npu.v1.layers.attention.weight_utils import (
     install_q_b_split_loaders,
+    load_sharded_param_weight,
     mark_split_q_up_params_loaded,
     release_q_b_proj_storage,
 )
@@ -325,3 +326,80 @@ def test_install_skips_missing_scale_or_loader():
     src.weight_scale.weight_loader = _copy_loader
     install_q_b_split_loaders(src, nope, pe, 3, 2)
     assert src.weight_scale.weight_loader is _copy_loader
+
+
+def test_load_sharded_param_weight_copies_matching_tensor():
+    param = nn.Parameter(torch.zeros(2, 3))
+    loaded = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    load_sharded_param_weight(SimpleNamespace(), param, loaded)
+    torch.testing.assert_close(param.data, loaded)
+
+
+def test_load_sharded_param_weight_sets_gguf_weight_type():
+    param = nn.Parameter(torch.zeros(1))
+    param.is_gguf_weight_type = True
+    load_sharded_param_weight(SimpleNamespace(), param, torch.tensor(7))
+    assert param.weight_type == 7
+    torch.testing.assert_close(param.data, torch.tensor([7.0]))
+
+
+def test_load_sharded_param_weight_narrows_tp_shard():
+    param = nn.Parameter(torch.zeros(2, 3))
+    param.output_dim = 0
+    loaded = torch.arange(12, dtype=torch.float32).reshape(4, 3)
+    load_sharded_param_weight(SimpleNamespace(tp_rank=1), param, loaded)
+    torch.testing.assert_close(param.data, loaded[2:4])
+
+
+def test_load_sharded_param_weight_skips_narrow_when_already_sharded():
+    param = nn.Parameter(torch.zeros(4, 3))
+    param.output_dim = 0
+    param.use_bitsandbytes_4bit = True
+    loaded = torch.ones(4, 3)
+    load_sharded_param_weight(SimpleNamespace(tp_rank=1), param, loaded)
+    torch.testing.assert_close(param.data, loaded)
+
+
+def test_load_sharded_param_weight_reshapes_scalar():
+    param = nn.Parameter(torch.zeros(1))
+    load_sharded_param_weight(SimpleNamespace(), param, torch.tensor(5.0))
+    torch.testing.assert_close(param.data, torch.tensor([5.0]))
+
+
+def test_load_sharded_param_weight_rejects_shape_mismatch():
+    param = nn.Parameter(torch.zeros(2, 3))
+    with pytest.raises(ValueError, match="does not match"):
+        load_sharded_param_weight(
+            SimpleNamespace(), param, torch.ones(3, 3)
+        )
+
+
+def test_load_sharded_param_weight_materializes_gguf_uninitialized():
+    param = nn.UninitializedParameter()
+    param.is_gguf_weight = True
+    loaded = torch.ones(2, 3)
+    load_sharded_param_weight(SimpleNamespace(), param, loaded)
+    assert tuple(param.shape) == (2, 3)
+    torch.testing.assert_close(param.data, loaded)
+
+
+def test_load_sharded_param_weight_materializes_gguf_tp_shard():
+    param = nn.UninitializedParameter()
+    param.is_gguf_weight = True
+    param.output_dim = 0
+    loaded = torch.arange(12, dtype=torch.float32).reshape(4, 3)
+    load_sharded_param_weight(SimpleNamespace(tp_size=2, tp_rank=0), param, loaded)
+    assert tuple(param.shape) == (2, 3)
+    torch.testing.assert_close(param.data, loaded[:2])
+
+
+def test_load_sharded_param_weight_rejects_gguf_tp_not_divisible():
+    param = nn.UninitializedParameter()
+    param.is_gguf_weight = True
+    param.output_dim = 0
+    with pytest.raises(ValueError, match="cannot be sharded"):
+        load_sharded_param_weight(
+            SimpleNamespace(tp_size=3),
+            param,
+            torch.ones(4, 3),
+        )

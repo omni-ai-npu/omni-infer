@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import torch
 
-from omni_npu.vllm_patches.usefull_patch import patch_block_table
-from omni_npu.vllm_patches.usefull_patch import patch_kv_cache_utils as patch_mod
+from omni_npu.vllm_patches.usefull_patch.common import patch_block_table
+from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_hybrid import patch_kv_cache_utils as patch_mod
 
 
 class Spec:

@@ -41,7 +41,7 @@ from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
 from vllm.logger import logger
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
-from omni_npu.vllm_patches.usefull_patch.patch_serving_apc import (
+from omni_npu.vllm_patches.usefull_patch.common.patch_serving_apc import (
     OpenAIServingChatStreamAPCPatch,
 )
 

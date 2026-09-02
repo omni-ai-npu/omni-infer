@@ -200,3 +200,49 @@ def mark_split_q_up_params_loaded(
             break
     loaded_params.update(derived_names)
     return loaded_params
+
+
+def load_sharded_param_weight(
+    module: nn.Module,
+    param: nn.Parameter,
+    loaded_weight: torch.Tensor,
+) -> None:
+    """Shard and copy a checkpoint tensor into a parameter (GGUF / TP aware)."""
+    output_dim = getattr(param, "output_dim", None)
+    is_sharded_weight = getattr(param, "is_sharded_weight", False)
+    use_bitsandbytes_4bit = getattr(param, "use_bitsandbytes_4bit", False)
+    is_sharded_weight = is_sharded_weight or use_bitsandbytes_4bit
+    is_gguf_weight = getattr(param, "is_gguf_weight", False)
+    is_gguf_weight_type = getattr(param, "is_gguf_weight_type", False)
+    if is_gguf_weight_type:
+        param.weight_type = loaded_weight.item()
+    if is_gguf_weight and isinstance(param, nn.UninitializedParameter):
+        final_shape = list(loaded_weight.shape)
+        if output_dim is not None:
+            tp_size = getattr(module, "tp_size", 1)
+            if final_shape[output_dim] % tp_size != 0:
+                raise ValueError("loaded weight cannot be sharded across tp_size")
+            final_shape[output_dim] = final_shape[output_dim] // tp_size
+        param.materialize(final_shape, dtype=loaded_weight.dtype)
+    param_data = param.data
+    if output_dim is not None and not is_sharded_weight:
+        shard_size = param_data.shape[output_dim]
+        tp_rank = getattr(module, "tp_rank", 0)
+        start_idx = tp_rank * shard_size
+        loaded_weight = loaded_weight.narrow(output_dim, start_idx, shard_size)
+    if len(loaded_weight.shape) == 0:
+        loaded_weight = loaded_weight.reshape(1)
+    if param_data.shape != loaded_weight.shape:
+        raise ValueError("loaded weight shape does not match parameter shape")
+    param_data.copy_(loaded_weight)
+
+
+def run_post_weight_load(model: nn.Module) -> None:
+    """Drive DSA/MLA second-phase weight processing (absorb / sink / conv merge)."""
+    for _, module in model.named_modules():
+        if module is model:
+            continue
+        if hasattr(module, "post_weight_load"):
+            module.post_weight_load()
+        if hasattr(module, "absorb_kv_b_weights"):
+            module.absorb_kv_b_weights()

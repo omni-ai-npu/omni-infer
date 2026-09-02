@@ -196,6 +196,53 @@ class NPUPlatform(Platform):
             vllm_config.compilation_config.splitting_ops = []
 
     @classmethod
+    def _align_hybrid_block_size(
+        cls, vllm_config: "VllmConfig", backend_cls
+    ) -> None:
+        # Run the base alignment (pads the mamba page to the MLA attention page).
+        super()._align_hybrid_block_size(vllm_config, backend_cls)
+        # The base per-token attention page uses MLAAttentionSpec, which omits
+        # the top-k indexer (index_head_dim) stored in the DSA KV block. Re-pad
+        # the mamba page to the DSA page so the MOME spec and the DSA/MLA
+        # attention pages unify. DSA uses different packed layouts for the
+        # quantized KV-cache dtypes, so the page size cannot be derived from
+        # model_config.dtype alone.
+
+        cache_config = vllm_config.cache_config
+        model_config = vllm_config.model_config
+        hf_config = model_config.hf_config
+        index_topk = getattr(hf_config, "index_topk", 0)
+        if not (model_config.use_mla and index_topk > 0):
+            return
+        # The base returns without setting a padding when the model has no
+        # mamba layers, and such a model has nothing to align - correct only a
+        # padding it actually established, so a sparse model without mamba
+        # (DeepSeek V3.2) is left alone.
+        if cache_config.mamba_page_size_padded is None:
+            return
+        index_head_dim = getattr(hf_config, "index_head_dim", 0)
+        block_size = cache_config.block_size
+        cache_dtype = cache_config.cache_dtype
+        if cache_dtype in ("fp8_ds_mla", "hif8_ds_mla"):
+            # 2 * block_size * (656 + 128 + 4): FP8/HIF8 DSA layout.
+            dsa_page = 2 * block_size * (656 + 128 + 4)
+        elif cache_dtype == "int8_ds_mla":
+            # 2 * block_size * (656 + 128 + 2): INT8 DSA layout.
+            dsa_page = 2 * block_size * (656 + 128 + 2)
+        elif cache_dtype == "li_int8_ds_mla":
+            # block_size * (576 * 2 + 128 + 2): Li-INT8 DSA layout.
+            dsa_page = block_size * (576 * 2 + 128 + 2)
+        else:
+            # auto/non-quantized DSA layout (BF16 KV cache).
+            dsa_page = block_size * (576 + index_head_dim) * 2
+        if dsa_page > cache_config.mamba_page_size_padded:
+            cache_config.mamba_page_size_padded = dsa_page
+            logger.info(
+                "DSA-aware mamba page size padding: mamba_page_size_padded=%d",
+                dsa_page,
+            )
+
+    @classmethod
     def get_punica_wrapper(cls) -> str:
         # Use CPU punica wrapper by default
         return "vllm.lora.punica_wrapper.punica_cpu.PunicaWrapperCPU"

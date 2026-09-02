@@ -21,24 +21,27 @@ from vllm.distributed import get_dp_group, get_tp_group
 from vllm.model_executor.layers.fused_moe import fused_moe_make_expert_params_mapping
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import ReplicatedLinear
-from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
-from vllm.model_executor.layers.vocab_parallel_embedding import (
-    ParallelLMHead,
-    VocabParallelEmbedding,
-)
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.models.interfaces import SupportsPP
 from vllm.model_executor.models.utils import maybe_prefix
 from vllm.sequence import IntermediateTensors
 
 from omni_npu.attention.backends.utils import SPManager
+from omni_npu.v1.layers.attention.weight_utils import run_post_weight_load
 from omni_npu.model_config.config_loader.loader import model_extra_config
 from omni_npu.v1.distributed.parallel_state_ext import get_local_world_group
 from omni_npu.v1.layers.logits_processor import NPULogitsProcessor
 from omni_npu.v1.layers.vocab_parallel_embedding import NPUParallelLMHead, NPUVocabParallelEmbedding
 
-from .pangu_v2_moe import OpenPanguV2DecoderLayer, _maybe_gather_and_unpadding, _maybe_padding_and_slice
+from .pangu_v2_moe import (
+    OpenPanguV2DecoderLayer,
+    _maybe_gather_and_unpadding,
+    _maybe_padding_and_slice,
+    rewrite_mome_conv_name,
+    high_throughout,
+)
+
 
 class SharedHead(nn.Module):
     def __init__(
@@ -306,36 +309,24 @@ class OpenPanguV2MTP(nn.Module, SupportsPP):
                 continue
 
             name = self._rewrite_spec_layer_name(spec_layer, name)
+            if high_throughout():
+                name = rewrite_mome_conv_name(name)
             for param_name, weight_name, shard_id in stacked_params_mapping:
-                # Skip non-stacked layers and experts (experts handled below).
                 if weight_name not in name:
                     continue
-                # We have mlp.experts[0].gate_proj in the checkpoint.
-                # Since we handle the experts below in expert_params_mapping,
-                # we need to skip here BEFORE we update the name, otherwise
-                # name will be updated to mlp.experts[0].gate_up_proj, which
-                # will then be updated below in expert_params_mapping
-                # for mlp.experts[0].gate_gate_up_proj, which breaks load.
                 if ("mlp.experts." in name) and name not in params_dict:
                     continue
                 name_mapped = name.replace(weight_name, param_name)
-
-                # QKV fusion is optional, fall back to normal
-                # weight loading if it's not enabled
                 if (
                     param_name == "fused_qkv_a_proj"
-                ) and name_mapped not in params_dict:
+                    and name_mapped not in params_dict
+                ):
                     continue
-                else:
-                    name = name_mapped
-
-                # Skip loading extra bias for GPTQ models.
+                name = name_mapped
                 if name.endswith(".bias") and name not in params_dict:
                     continue
-
                 param = params_dict[name]
-                weight_loader = param.weight_loader
-                weight_loader(param, loaded_weight, shard_id)
+                param.weight_loader(param, loaded_weight, shard_id)
                 break
             else:
                 for mapping in expert_params_mapping:
@@ -343,10 +334,8 @@ class OpenPanguV2MTP(nn.Module, SupportsPP):
                     if weight_name not in name:
                         continue
                     name = name.replace(weight_name, param_name)
-
                     param = params_dict[name]
-                    weight_loader = param.weight_loader
-                    weight_loader(
+                    param.weight_loader(
                         param,
                         loaded_weight,
                         name,
@@ -363,6 +352,9 @@ class OpenPanguV2MTP(nn.Module, SupportsPP):
                         spec_layer != self.model.mtp_start_layer_idx
                         and ".layers" not in name
                     ):
+                        continue
+
+                    if name not in params_dict:
                         continue
 
                     param = params_dict[name]
@@ -386,7 +378,13 @@ class OpenPanguV2MTP(nn.Module, SupportsPP):
                         loaded_params.add(synthetic)
 
             loaded_params.add(name)
+
+        if high_throughout():
+            self.post_weight_load()
         return loaded_params
+
+    def post_weight_load(self) -> None:
+        run_post_weight_load(self)
 
     def _rewrite_spec_layer_name(self, spec_layer: int, name: str) -> str:
         """

@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     OMNI_REASONING_CONFIG: Optional[str]
     OMNI_STRUCTURED_OUTPUT_CONFIG: Optional[str]
     OMNI_PANGU_TOOL_CALL_ENDS_THINKING: bool
+    OMNI_PANGU_V2_HIGH_THROUGHOUT: bool
     OMNI_ENABLE_MAX_TOKENS_EXCLUDE_REASONING: bool
     # MoE / sampling
     OMNI_MAX_DISPATCH_COMBINE_THRESHOLD: int
@@ -233,8 +234,6 @@ env_variables: Dict[str, Callable[[], Any]] = {
     # disabled. Consumers capture the value when patch_trace.py and
     # omni_trace.utils are imported, so later process-environment changes are
     # not observed by those consumers.
-    # Consumers: vllm_patches/usefull_patch/patch_trace.py;
-    # tools/omni_trace/utils.py.
     "OMNI_TRACE_OUTPUT_DIRECTORY":
     lambda: get_env_with_fallback(
         "OMNI_TRACE_OUTPUT_DIRECTORY", None, None),
@@ -302,7 +301,7 @@ env_variables: Dict[str, Callable[[], Any]] = {
     # place, or leaves the feature disabled when no CLI value was supplied (no
     # raise -- a bad env var must not take down a node that was otherwise
     # launched correctly, whereas a bad CLI value does fail the launch).
-    # Consumers: usefull_patch/patch_repetition_detection_config.py,
+    # Consumers: usefull_patch/common/patch_repetition_detection_config.py,
     # patches/common/patch_user_repetition_detection.py:131-155 (superseded).
     "OMNI_REPETITION_DETECTION_CONFIG":
     lambda: get_env_with_fallback(
@@ -342,12 +341,20 @@ env_variables: Dict[str, Callable[[], Any]] = {
         _as_bool,
     ),
 
+    # Pangu V2 high-throughout attention backend.
+    # Default False keeps NPUPanguSparseAttention (low latency).
+    # Set to 1/true to build DeepSeek DSA (index_topk / dsa_layers) or MLA.
+    # Consumers: v1/models/pangu/pangu_v2_moe.py.
+    "OMNI_PANGU_V2_HIGH_THROUGHOUT":
+    lambda: get_env_with_fallback(
+        "OMNI_PANGU_V2_HIGH_THROUGHOUT", None, False, _as_bool),
+
     # When enabled, ``max_tokens`` limits only the content portion of the
     # output (not the reasoning/thinking portion). Exact ``"1"`` enables the
     # behavior to preserve the pre-OMNI contract of
     # ENABLE_MAX_TOKENS_EXCLUDE_REASONING; other values leave the default
     # (total-output) max_tokens accounting unchanged.
-    # Consumers: usefull_patch/patch_scheduler.py.
+    # Consumers: usefull_patch/models/pangu_v2_hybrid/patch_scheduler.py.
     "OMNI_ENABLE_MAX_TOKENS_EXCLUDE_REASONING":
     lambda: get_env_with_fallback(
         "OMNI_ENABLE_MAX_TOKENS_EXCLUDE_REASONING",
@@ -483,12 +490,10 @@ env_variables: Dict[str, Callable[[], Any]] = {
         "OMNI_VLLM_PATCHES", ["OMNI_NPU_VLLM_PATCHES"], ""),
 
     # Comma-separated list of model patch directories under
-    # vllm_patches/patches/models/. When empty, the model_type is read from
-    # the --model config.json and WRITTEN BACK into os.environ
-    # (vllm_patches/__init__.py:197 — the only env-var write in the project),
-    # so downstream readers see the inferred value, not the original unset.
-    # User-set values take the exact-match path; auto-inferred values take the
-    # fuzzy-match path (mapping table + prefix/contain).
+    # vllm_patches/usefull_patch/models/ (and the legacy
+    # vllm_patches/patches/models/ mapping table). Empty skips model-specific
+    # usefull_patch dirs and only loads usefull_patch/common/.
+    # Example: "pangu_v2_hybrid" or "pangu_v2_hybrid,pangu_v2_moe".
     # Also consumed by layers/__init__.py:28-36 (decides whether to load
     # mhc/mome modules), worker/npu_model_runner.py:458-462 (pangu_v2_hybrid
     # KV cache spec branch), and pangu_v2_hybrid/patch_speculative.py:66.

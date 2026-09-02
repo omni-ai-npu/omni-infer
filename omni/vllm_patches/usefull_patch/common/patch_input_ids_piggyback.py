@@ -294,13 +294,8 @@ class InputIdsPiggybackPatch(VLLMPatch):
         # Fallback: delegate to the original OnlineRenderer.preprocess_chat
         # (which itself may be wrapped by other patches in the relay chain).
         return await _original_preprocess_chat(
-            self,
-            request,
-            messages,
-            default_template,
-            default_template_content_format,
-            default_template_kwargs,
-            tool_dicts=tool_dicts,
-            parser=parser,
+            self, request, messages, default_template,
+            default_template_content_format, default_template_kwargs,
+            tool_dicts=tool_dicts, parser=parser,
             skip_mm_cache=skip_mm_cache,
         )

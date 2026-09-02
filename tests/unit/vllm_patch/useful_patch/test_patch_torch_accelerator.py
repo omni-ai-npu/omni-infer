@@ -40,7 +40,7 @@ def PATCH():
         del sys.modules[name]
     try:
         module = importlib.import_module(
-            "omni_npu.vllm_patches.usefull_patch.patch_torch_accelerator"
+            "omni_npu.vllm_patches.usefull_patch.common.patch_torch_accelerator"
         )
         yield module.TorchAcceleratorMemoryPatch
     finally:

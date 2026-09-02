@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 import torch
 
-from omni_npu.vllm_patches.usefull_patch.patch_eagle import EagleProposerPatch
-from omni_npu.vllm_patches.usefull_patch import patch_speculative as patch_mod
+from omni_npu.vllm_patches.usefull_patch.common.patch_eagle import EagleProposerPatch
+from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_hybrid import patch_speculative as patch_mod
 
 
 class HFConfig:
@@ -151,7 +151,7 @@ def test_prepare_inputs_padded_carries_cpu_metadata_shadows():
         return SimpleNamespace(**kwargs)
 
     with patch(
-        "omni_npu.vllm_patches.usefull_patch.patch_eagle.CommonAttentionMetadata",
+        "omni_npu.vllm_patches.usefull_patch.common.patch_eagle.CommonAttentionMetadata",
         side_effect=capture_metadata,
     ):
         result, _, _ = EagleProposerPatch.prepare_inputs_padded(
@@ -168,7 +168,7 @@ def test_prepare_inputs_padded_carries_cpu_metadata_shadows():
 
 
 def test_eagle_load_model_sets_image_token_index_for_omni_v2(monkeypatch):
-    from omni_npu.vllm_patches.usefull_patch import patch_eagle as eagle_mod
+    from omni_npu.vllm_patches.usefull_patch.common import patch_eagle as eagle_mod
 
     proposer = eagle_mod.EagleProposerPatch.__new__(eagle_mod.EagleProposerPatch)
     proposer.vllm_config = object()

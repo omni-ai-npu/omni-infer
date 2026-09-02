@@ -4,7 +4,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from omni_npu.vllm_patches.usefull_patch import patch_scheduler as sched_mod
+from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_hybrid import patch_scheduler as sched_mod
 
 
 def _request(**kwargs):

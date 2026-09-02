@@ -64,6 +64,7 @@ from vllm.transformers_utils.config import set_default_rope_theta
 from vllm.forward_context import get_forward_context
 from vllm.utils.torch_utils import direct_register_custom_op
 
+from omni_npu import envs
 from omni_npu.layers.fused_moe.layer import NPUSharedFusedMoE
 from omni_npu.layers.mhc.cube_side_task_ops import (
     maybe_register_mhc_task,
@@ -72,7 +73,10 @@ from omni_npu.layers.mhc.cube_side_task_ops import (
 from omni_npu.layers.mhc.npu_mhc import NPUmHC
 from omni_npu.model_config.config_loader.loader import model_extra_config
 from omni_npu.v1.distributed.parallel_state_ext import get_local_world_group
+from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
+from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 from omni_npu.v1.layers.attention.npu_pangu import NPUPanguSparseAttention
+from omni_npu.v1.layers.attention.weight_utils import run_post_weight_load
 from omni_npu.v1.layers.logits_processor import NPULogitsProcessor
 from omni_npu.v1.layers.vocab_parallel_embedding import NPUParallelLMHead, NPUVocabParallelEmbedding
 from omni_npu.v1.utils import on_ascend910b, on_ascend950
@@ -1509,6 +1513,39 @@ class OpenPanguV2DecoderLayerOutput(NamedTuple):
     topk_indices_buffer: Optional[torch.Tensor]
 
 
+def high_throughout() -> bool:
+    """True when Pangu V2 should build DeepSeek DSA/MLA instead of npu_pangu."""
+    return bool(envs.OMNI_PANGU_V2_HIGH_THROUGHOUT)
+
+
+def select_pangu_v2_attn_cls(config: PretrainedConfig, layer_idx: int):
+    """Pick the attention class for one decoder layer.
+
+    Default: NPUPanguSparseAttention.
+    OMNI_PANGU_V2_HIGH_THROUGHOUT=1: DSA on index_topk / dsa_layers, else MLA.
+    """
+    if not high_throughout():
+        return NPUPanguSparseAttention
+    is_dsa = hasattr(config, "index_topk") and (
+        not hasattr(config, "dsa_layers") or layer_idx in config.dsa_layers
+    )
+    return NPUDeepseekSparseAttention if is_dsa else NPUDeepseekMLAAttention
+
+
+def rewrite_mome_conv_name(name: str) -> str:
+    """Map a checkpoint's flat MoME conv name onto the DSA/MLA module tree."""
+    if "_conv" not in name:
+        return name
+    if not model_extra_config.operator_opt_config.use_noncontiguous_kv:
+        return name.replace("_conv", "_conv.merge_conv")
+    parts = name.split(".")
+    for i in range(len(parts) - 1, -1, -1):
+        if "_conv" in parts[i]:
+            parts.insert(i, "conv")
+            break
+    return ".".join(parts)
+
+
 class OpenPanguV2DecoderLayer(nn.Module):
     def __init__(
         self,
@@ -1573,7 +1610,19 @@ class OpenPanguV2DecoderLayer(nn.Module):
             self.attn_mhc_module = None
             self.mlp_mhc_module = None
 
-        self.self_attn = NPUPanguSparseAttention(
+        attn_cls = select_pangu_v2_attn_cls(config, self.layer_idx)
+        if self.layer_idx == 0:
+            logger.info(
+                "PanguV2Attn backend=%s OMNI_PANGU_V2_HIGH_THROUGHOUT=%s",
+                attn_cls.__name__,
+                int(high_throughout()),
+            )
+        logger.info(
+            "PanguV2Attn layer=%s cls=%s",
+            self.layer_idx,
+            attn_cls.__name__,
+        )
+        attn_kwargs = dict(
             vllm_config=vllm_config,
             config=config,
             hidden_size=self.hidden_size,
@@ -1583,15 +1632,30 @@ class OpenPanguV2DecoderLayer(nn.Module):
             v_head_dim=config.v_head_dim,
             q_lora_rank=config.q_lora_rank if hasattr(config, "q_lora_rank") else None,
             kv_lora_rank=config.kv_lora_rank,
-            rope_theta=config.rope_parameters["rope_theta"],
             max_position_embeddings=max_position_embeddings,
-            sliding_window_list=getattr(config, "sliding_window_list", []),
-            swa_layers=getattr(config, "swa_layers", []),
-            param_sink_number=config.param_sink_number,
             cache_config=cache_config,
             quant_config=quant_config,
             prefix=f"{prefix}.self_attn",
         )
+        if attn_cls is NPUPanguSparseAttention:
+            self.self_attn = attn_cls(
+                rope_theta=config.rope_parameters["rope_theta"],
+                sliding_window_list=getattr(config, "sliding_window_list", []),
+                swa_layers=getattr(config, "swa_layers", []),
+                param_sink_number=config.param_sink_number,
+                **attn_kwargs,
+            )
+        else:
+            if model_extra_config.parall_config.enable_flashcomm2:
+                logger.warning(
+                    "enable_flashcomm2 is set, but DeepSeek MLA/DSA attention "
+                    "does not implement FlashComm2. Disabling it for this run."
+                )
+                model_extra_config.parall_config.enable_flashcomm2 = False
+            self.self_attn = attn_cls(**attn_kwargs)
+
+        # DSA/MLA has no pre_epilog_callback; MHC overlap hooks only work on npu_pangu.
+        self.attn_supports_pre_epilog = hasattr(self.self_attn, "pre_epilog_callback")
 
         if (
             getattr(config, "n_routed_experts", None) is not None
@@ -1930,7 +1994,7 @@ class OpenPanguV2DecoderLayer(nn.Module):
 
         # Clear any stale callback from a previous forward (e.g. installed but
         # never fired because that step was prefill instead of decode).
-        if self.use_mhc and self.side_stream is not None:
+        if self.use_mhc and self.side_stream is not None and self.attn_supports_pre_epilog:
             self.self_attn.pre_epilog_callback = None
 
         # If the previous layer's call B deferred its mhc_pre split_post_res +
@@ -1942,6 +2006,7 @@ class OpenPanguV2DecoderLayer(nn.Module):
         deferred = (
             self.use_mhc
             and self.side_stream is not None
+            and self.attn_supports_pre_epilog
             and h_post is None
             and h_res is None
             and residual is not None
@@ -1968,6 +2033,7 @@ class OpenPanguV2DecoderLayer(nn.Module):
         deferred_sinkhorn = (
             self.use_mhc
             and self.side_stream is not None
+            and self.attn_supports_pre_epilog
             and sk_event is _DEFERRED_SINKHORN
         )
         if deferred_sinkhorn:
@@ -2049,7 +2115,7 @@ class OpenPanguV2DecoderLayer(nn.Module):
             is_model_tail,
             return_h_in_f32=False,
             sk_event=sk_event,
-            defer_side_launch=not is_model_tail,
+            defer_side_launch=self.attn_supports_pre_epilog and not is_model_tail,
         )
 
         return OpenPanguV2DecoderLayerOutput(
@@ -2363,8 +2429,13 @@ class OpenPanguV2Model(nn.Module):
             hidden_states = hidden_states.view(-1, 1, self.hidden_size) \
                                          .repeat(1, self.mhc_num_stream, 1)
 
-        cos = self.cos_cached.index_select(dim=0, index=positions)
-        sin = self.sin_cached.index_select(dim=0, index=positions)
+        if high_throughout():
+            cos, sin = self.layers[self.start_layer].self_attn.rotary_emb.get_cos_sin(
+                positions
+            )
+        else:
+            cos = self.cos_cached.index_select(dim=0, index=positions)
+            sin = self.sin_cached.index_select(dim=0, index=positions)
 
         topk_indices_buffer = torch.zeros(
             (hidden_states.shape[0], 1, self.config.index_topk),
@@ -2653,7 +2724,9 @@ class OpenPanguV2ForCausalLM(
             """Normalize weight name for compatibility across different checkpoints."""
             # Map k_layernorm to kv_a_layernorm for backward compatibility
             if "k_layernorm" in name:
-                return name.replace("k_layernorm", "kv_a_layernorm")
+                name = name.replace("k_layernorm", "kv_a_layernorm")
+            if high_throughout():
+                return rewrite_mome_conv_name(name)
             return name
 
         for name, loaded_weight in weights:
@@ -2705,8 +2778,13 @@ class OpenPanguV2ForCausalLM(
                 ):
                     if synthetic in params_dict:
                         loaded_params.add(synthetic)
-
+        
+        if high_throughout():
+            self.post_weight_load()
         return loaded_params
+
+    def post_weight_load(self) -> None:
+        run_post_weight_load(self)
 
 
 def get_spec_layer_idx_from_weight_name(

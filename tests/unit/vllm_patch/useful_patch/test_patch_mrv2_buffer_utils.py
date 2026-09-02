@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from omni_npu.vllm_patches.usefull_patch import patch_mrv2_buffer_utils as patch_mod
+from omni_npu.vllm_patches.usefull_patch.common import patch_mrv2_buffer_utils as patch_mod
 from omni_npu.worker.npu.buffer_utils import NPUUvaBuffer
 
 

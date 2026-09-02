@@ -14,6 +14,7 @@ from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 logger = init_logger(__name__)
 _original_ea_create_model_config = EngineArgs.create_model_config
 
+
 # ────────────────────────────────────────────────────────────
 # Patch 1: ModelConfig — add 3 LoPT fields
 # ────────────────────────────────────────────────────────────
@@ -56,20 +57,7 @@ class EngineArgsLoptPatch(VLLMPatch):
         Capture the upstream (already-patched) versions at apply-time so the
         chain stays intact.
         """
-        target = cls._target
-
-        # Save the currently-active (possibly already patched) versions
-        cls._upstream_add_cli_args = target.add_cli_args
-        cls._upstream_from_cli_args = target.from_cli_args.__func__
-        for name in cls._attr_names_to_apply:
-            if name in cls.__dict__:
-                setattr(target, name, cls.__dict__[name])
-
-        logger.info(
-            "patch applied: %s => %s (bypass-conflict)",
-            cls.__name__,
-            target.__name__,
-        )
+        cls.apply_bypass_conflict("add_cli_args", "from_cli_args")
 
     @staticmethod
     def add_cli_args(parser):
@@ -132,19 +120,7 @@ class BaseRendererLoptPatch(VLLMPatch):
         BaseRenderer. Patching the shared tokenizer hook covers both paths and
         avoids depending on the removed OpenAIServing class.
         """
-        target = cls._target
-
-        cls._upstream_tokenize_prompt = target._tokenize_prompt
-
-        for name in cls._attr_names_to_apply:
-            if name in cls.__dict__:
-                setattr(target, name, cls.__dict__[name])
-
-        logger.info(
-            "patch applied: %s => %s (bypass-conflict)",
-            cls.__name__,
-            target.__name__,
-        )
+        cls.apply_bypass_conflict("_tokenize_prompt")
 
     @staticmethod
     def _get_lopt_tokenizer(self):
