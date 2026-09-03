@@ -230,7 +230,14 @@ def quant_ssz(
         scale, offset, quant = init_scale, init_offset, init_quant
     else:
         # Initialize the scale and zero-point, then compute q = Q(x; s, z).
-        scale, offset = get_scale_offset(shaped_x, qW_min, qW_max, is_sym=is_ssz_sym, is_act_integer=is_act_integer, clip_ratio=clip_ratio)
+        scale, offset = get_scale_offset(
+            shaped_x,
+            qW_min,
+            qW_max,
+            is_sym=is_ssz_sym,
+            is_act_integer=is_act_integer,
+            clip_ratio=clip_ratio,
+        )
         scale = scale.clamp(min=1e-5)
         quant = get_quant(shaped_x, qW_min, qW_max, scale, offset=offset)
 
@@ -345,7 +352,15 @@ def copy_model_files(bf16_path, output_path):
     )
 
 
-def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepSeek-R1", disable_names=None, *legacy_args):
+def main(
+    args,
+    bf16_path,
+    output_path,
+    pangu_mode,
+    model_name="deepseek-ai/DeepSeek-R1",
+    disable_names=None,
+    *legacy_args,
+):
     # Keep older entry points working while the removed post-process flag is phased out.
     if len(legacy_args) > 1:
         raise TypeError("main() accepts at most one legacy positional argument")
@@ -392,7 +407,6 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
         file_quant_count = 0
         for weight_name, weight in state_dict.items():
             if weight_name in disable_names:
-                # print(weight_name, "bf16")
                 new_state_dict[weight_name] = weight
                 file_weight_map[weight_name] = file_name
                 continue
@@ -401,7 +415,6 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
                 assert weight.element_size() == 2
                 file_quant_count += 1
                 if weight_is_w4(weight_name):
-                    # print(weight_name, "int4")
                     int4_weight, int4_scale, bias, offset = quant_ssz(
                         weight,
                         w4_type,
@@ -426,7 +439,6 @@ def main(args, bf16_path, output_path, pangu_mode, model_name="deepseek-ai/DeepS
                         new_state_dict[new_offset] = offset
                         file_weight_map[new_offset] = file_name
                 else:
-                    # print(weight_name, "int8")
                     int8_weight, scale_inv = weight_quant(weight)
                     new_state_dict[weight_name] = int8_weight
                     new_scale_name = scale_inv_name.replace("_scale_inv", "_scale")

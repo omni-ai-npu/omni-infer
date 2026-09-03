@@ -52,6 +52,43 @@ def _make_decoder_layer(*, use_mhc: bool = False):
     return layer
 
 
+def _make_model(monkeypatch, layer, *, enable_mhc_multistream):
+    model = pangu_moe.OpenPanguV2Model.__new__(pangu_moe.OpenPanguV2Model)
+    model.use_mhc = True
+    model.hidden_size = HIDDEN
+    model.mhc_num_stream = 1
+    model.need_tp_padding = False
+    model.start_layer = 0
+    model.end_layer = 1
+    model.embed_tokens = MagicMock(return_value=torch.randn(TOKENS, HIDDEN))
+    model.norm = MagicMock(side_effect=lambda x: x)
+    model.layers = [layer]
+
+    layer.self_attn = SimpleNamespace(
+        rotary_emb=SimpleNamespace(
+            cos_cached=torch.zeros(8, 2),
+            sin_cached=torch.zeros(8, 2),
+        )
+    )
+    monkeypatch.setattr(
+        pangu_moe,
+        "get_pp_group",
+        lambda: SimpleNamespace(is_first_rank=True, is_last_rank=True),
+    )
+    monkeypatch.setattr(
+        pangu_moe,
+        "model_extra_config",
+        SimpleNamespace(
+            parall_config=SimpleNamespace(ena_seq_parallel=False),
+            operator_opt_config=SimpleNamespace(
+                enable_mhc_multistream=enable_mhc_multistream,
+                use_mhc_fusion_op=False,
+            ),
+        ),
+    )
+    return model
+
+
 @pytest.mark.unit
 def test_decoder_layer_forward_calls_attn_without_topk_buffer():
     """forward() must call self_attn(cos,sin) only and return a 5-tuple."""
@@ -85,46 +122,13 @@ def test_decoder_layer_forward_naive_without_topk_buffer():
 @pytest.mark.unit
 def test_model_forward_naive_mhc_multistream_path(monkeypatch):
     """Cube-side MHC multistream path calls _forward_naive without buffer."""
-    model = pangu_moe.OpenPanguV2Model.__new__(pangu_moe.OpenPanguV2Model)
-    model.use_mhc = True
-    model.hidden_size = HIDDEN
-    model.mhc_num_stream = 1
-    model.need_tp_padding = False
-    model.start_layer = 0
-    model.end_layer = 1
-    model.embed_tokens = MagicMock(
-        return_value=torch.randn(TOKENS, HIDDEN)
-    )
-    model.merge_mhc_module = MagicMock(
-        mhc_pre=MagicMock(return_value=(torch.ones(TOKENS, 1, HIDDEN), None, None))
-    )
-    model.norm = MagicMock(side_effect=lambda x: x)
-
     layer = MagicMock()
     layer._forward_naive = MagicMock(return_value=torch.ones(TOKENS, 1, HIDDEN))
-    layer.self_attn = SimpleNamespace(
-        rotary_emb=SimpleNamespace(
-            cos_cached=torch.zeros(8, 2),
-            sin_cached=torch.zeros(8, 2),
+    model = _make_model(monkeypatch, layer, enable_mhc_multistream=True)
+    model.merge_mhc_module = MagicMock(
+        mhc_pre=MagicMock(
+            return_value=(torch.ones(TOKENS, 1, HIDDEN), None, None)
         )
-    )
-    model.layers = [layer]
-
-    monkeypatch.setattr(
-        pangu_moe,
-        "get_pp_group",
-        lambda: SimpleNamespace(is_first_rank=True, is_last_rank=True),
-    )
-    monkeypatch.setattr(
-        pangu_moe,
-        "model_extra_config",
-        SimpleNamespace(
-            parall_config=SimpleNamespace(ena_seq_parallel=False),
-            operator_opt_config=SimpleNamespace(
-                enable_mhc_multistream=True,
-                use_mhc_fusion_op=False,
-            ),
-        ),
     )
 
     positions = torch.zeros(TOKENS, dtype=torch.long)
@@ -143,18 +147,6 @@ def test_model_forward_naive_mhc_multistream_path(monkeypatch):
 @pytest.mark.unit
 def test_model_forward_threaded_path_without_topk_buffer(monkeypatch):
     """Default threaded MHC path calls layer.forward without buffer."""
-    model = pangu_moe.OpenPanguV2Model.__new__(pangu_moe.OpenPanguV2Model)
-    model.use_mhc = True
-    model.hidden_size = HIDDEN
-    model.mhc_num_stream = 1
-    model.need_tp_padding = False
-    model.start_layer = 0
-    model.end_layer = 1
-    model.embed_tokens = MagicMock(
-        return_value=torch.randn(TOKENS, HIDDEN)
-    )
-    model.norm = MagicMock(side_effect=lambda x: x)
-
     layer = MagicMock()
     layer.mhc_head = MagicMock(
         return_value=(torch.ones(TOKENS, 1, HIDDEN), None, None, None, None)
@@ -162,30 +154,7 @@ def test_model_forward_threaded_path_without_topk_buffer(monkeypatch):
     layer.return_value = (
         torch.ones(TOKENS, 1, HIDDEN), None, None, None, None
     )
-    layer.self_attn = SimpleNamespace(
-        rotary_emb=SimpleNamespace(
-            cos_cached=torch.zeros(8, 2),
-            sin_cached=torch.zeros(8, 2),
-        )
-    )
-    model.layers = [layer]
-
-    monkeypatch.setattr(
-        pangu_moe,
-        "get_pp_group",
-        lambda: SimpleNamespace(is_first_rank=True, is_last_rank=True),
-    )
-    monkeypatch.setattr(
-        pangu_moe,
-        "model_extra_config",
-        SimpleNamespace(
-            parall_config=SimpleNamespace(ena_seq_parallel=False),
-            operator_opt_config=SimpleNamespace(
-                enable_mhc_multistream=False,
-                use_mhc_fusion_op=False,
-            ),
-        ),
-    )
+    model = _make_model(monkeypatch, layer, enable_mhc_multistream=False)
 
     positions = torch.zeros(TOKENS, dtype=torch.long)
     out = model.forward(

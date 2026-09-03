@@ -309,26 +309,17 @@ def _quant_ffn_w4a8(
     asym = experts.w13_weight_offset is not None
     tuning_config = [0, 1, -1] if experts.quant_method.gmm_autotiling else None
 
-    h = torch.ops.custom.npu_ai_infra_grouped_matmul(
-        [x_i8],
-        [experts.w13_weight],
-        bias=[experts.w13_weight_bias],
-        scale=[experts.w13_weight_int4_scale],
-        offset=[experts.w13_weight_offset] if asym else None,
-        antiquant_scale=None,
-        antiquant_offset=None,
-        per_token_scale=[x_sc.unsqueeze(-1) if asym else x_sc],
-        group_list=hist,
-        activation_input=None,
-        activation_quant_scale=None,
-        activation_quant_offset=None,
-        split_item=3,
-        group_type=0,
-        group_list_type=1,
-        act_type=0,
-        tuning_config=tuning_config,
-        output_dtype=torch.bfloat16,
-    )[0]
+    h = _w4a8_grouped_matmul(
+        x_i8,
+        experts.w13_weight,
+        experts.w13_weight_bias,
+        experts.w13_weight_int4_scale,
+        experts.w13_weight_offset,
+        x_sc,
+        hist,
+        tuning_config,
+        asym,
+    )
     h, h_sc = torch_npu.npu_dequant_swiglu_quant(
         h,
         weight_scale=None,
@@ -340,15 +331,39 @@ def _quant_ffn_w4a8(
         activate_left=True,
         quant_mode=1,
     )
+    return _w4a8_grouped_matmul(
+        h,
+        experts.w2_weight,
+        experts.w2_weight_bias,
+        experts.w2_weight_int4_scale,
+        experts.w2_weight_offset,
+        h_sc,
+        hist,
+        tuning_config,
+        asym,
+    )
+
+
+def _w4a8_grouped_matmul(
+    x,
+    weight,
+    bias,
+    scale,
+    offset,
+    token_scale,
+    hist,
+    tuning_config,
+    asym,
+):
     return torch.ops.custom.npu_ai_infra_grouped_matmul(
-        [h],
-        [experts.w2_weight],
-        bias=[experts.w2_weight_bias],
-        scale=[experts.w2_weight_int4_scale],
-        offset=[experts.w2_weight_offset] if asym else None,
+        [x],
+        [weight],
+        bias=[bias],
+        scale=[scale],
+        offset=[offset] if asym else None,
         antiquant_scale=None,
         antiquant_offset=None,
-        per_token_scale=[h_sc.unsqueeze(-1) if asym else h_sc],
+        per_token_scale=[token_scale.unsqueeze(-1) if asym else token_scale],
         group_list=hist,
         activation_input=None,
         activation_quant_scale=None,

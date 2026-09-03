@@ -2848,22 +2848,11 @@ class NPUPanguSparseAttention(torch.nn.Module):
         q_nope = q_nope.contiguous()
         q_pe = q_pe.contiguous()
 
+        topk_indices = self._run_indexer(
+            hidden_states, q_lora, cos, sin, attn_metadata, kv_cache,
+        )
         if self.is_dsa_layer:
-            if self.skip_topk:
-                topk_indices = self._get_topk_indices(attn_metadata)
-            else:
-                topk_indices = self.indexer(
-                    hidden_states,
-                    q_lora,
-                    cos,
-                    sin,
-                    attn_metadata,
-                    kv_cache,
-                )
-                self._set_topk_indices(attn_metadata, topk_indices)
             q_lora.record_stream(torch.npu.current_stream())
-        else:
-            topk_indices = None
 
         ret = (kv_cache, topk_indices)
 
@@ -2990,6 +2979,31 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 kv = torch.cat([k_nope, k_pe], dim=-1)
         return kv
 
+    def _run_indexer(
+        self,
+        hidden_states,
+        q_lora,
+        cos,
+        sin,
+        attn_metadata,
+        kv_cache,
+    ):
+        if not self.is_dsa_layer:
+            return None
+        if self.skip_topk:
+            return self._get_topk_indices(attn_metadata)
+
+        topk_indices = self.indexer(
+            hidden_states,
+            q_lora,
+            cos,
+            sin,
+            attn_metadata,
+            kv_cache,
+        )
+        self._set_topk_indices(attn_metadata, topk_indices)
+        return topk_indices
+
     def _mla_prolog_sequential(
         self, hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata,
     ):
@@ -3027,22 +3041,9 @@ class NPUPanguSparseAttention(torch.nn.Module):
         ### Q stream ends ###
 
         ### Indexer stream begins ###
-        topk_indices = None
-        if self.is_dsa_layer:
-            if self.skip_topk:
-                topk_indices = self._get_topk_indices(attn_metadata)
-            else:
-                topk_indices = self.indexer(
-                    hidden_states,
-                    q_lora,
-                    cos,
-                    sin,
-                    attn_metadata,
-                    kv_cache,
-                )
-                self._set_topk_indices(attn_metadata, topk_indices)
-        else:
-            topk_indices = None
+        topk_indices = self._run_indexer(
+            hidden_states, q_lora, cos, sin, attn_metadata, kv_cache,
+        )
         ### Indexer stream ends ###
 
         ### KV stream begins ###

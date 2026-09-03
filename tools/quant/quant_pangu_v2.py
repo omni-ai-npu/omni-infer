@@ -51,15 +51,16 @@ def build_quantization_config(
         weight_map = json.load(f)["weight_map"]
 
     existing_weights = set(weight_map)
-    ignores = sorted(
-        weight_name[:-len(".weight")]
-        for weight_name in set(disable_names)
-        if weight_name.endswith(".weight")
-        and weight_name in existing_weights
-        and _is_framework_ignore_module(
-            weight_name[:-len(".weight")]
-        )
-    )
+    ignores = []
+    for weight_name in set(disable_names):
+        if not weight_name.endswith(".weight"):
+            continue
+        if weight_name not in existing_weights:
+            continue
+        module_name = weight_name[:-len(".weight")]
+        if _is_framework_ignore_module(module_name):
+            ignores.append(module_name)
+    ignores.sort()
 
     weight_num_bits = (
         {"mlp.experts": 4, "proj": 8}

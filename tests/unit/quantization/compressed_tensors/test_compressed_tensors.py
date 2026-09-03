@@ -159,17 +159,25 @@ def _make_config_instance(module):
     return config
 
 
+def _is_available():
+    return True
+
+
+def _field(*, default_factory):
+    return default_factory()
+
+
 @pytest.fixture
 def mock_dependencies(monkeypatch: pytest.MonkeyPatch):
     if not hasattr(torch, "npu"):
         monkeypatch.setattr(
-            torch, "npu", SimpleNamespace(is_available=lambda: True), raising=False
+            torch, "npu", SimpleNamespace(is_available=_is_available), raising=False
         )
     if not hasattr(torch.npu, "is_available"):
-        torch.npu.is_available = lambda: True
+        torch.npu.is_available = _is_available
 
     pydantic_module = _make_module(monkeypatch, "pydantic")
-    pydantic_module.Field = lambda *, default_factory: default_factory()
+    pydantic_module.Field = _field
 
     compressed_tensors_module = _make_package(monkeypatch, "compressed_tensors")
     quant_module = _make_module(monkeypatch, "compressed_tensors.quantization")
