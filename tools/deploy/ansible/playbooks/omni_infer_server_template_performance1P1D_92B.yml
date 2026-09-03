@@ -11,7 +11,7 @@
     LOG_PATH: /data/log_path
     LOG_PATH_IN_EXECUTOR: /data/log_path_in_executor
     CODE_PATH: /data/local_code_path
-    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer_dev/ai-infra-infer-1.0.3-a3-arm-feature/vllm_0.25.1-202608261410-daily:0.0.2"
+    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer_dev/ai-infra-infer-1.0.3-a3-arm-feature/vllm_0.25.1-202609021706-daily:0.0.1"
     DOCKER_NAME_P: "docker_name_p"
     DOCKER_NAME_D: "docker_name_d"
     DOCKER_NAME_C: "docker_name_c"
@@ -53,7 +53,7 @@
 
     run_server_prefill_profile:
       kv_offload:
-        enable: true
+        enable: false
         hugepage_enabled: true
         cpu_bytes_to_use: 858993459200
       prepare_commands: |-

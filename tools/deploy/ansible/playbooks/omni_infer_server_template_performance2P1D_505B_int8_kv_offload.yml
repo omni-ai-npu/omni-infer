@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 ---
-- name: Run PanguV2 505B 4P1D Prefill, Decode, and Omni Proxy services.
+- name: Run PanguV2 505B INT8 2P1D Prefill with KV offload, Decode, and Omni Proxy services.
   hosts: all
   any_errors_fatal: true
   max_fail_percentage: 0
@@ -23,7 +23,9 @@
     enable_prefix_caching: true
 
     run_docker_profile:
-      shm_size: 1600g
+      # Keep the /dev/shm fallback large enough for the 1 TiB Prefill pool
+      # when Prefill kv_offload.hugepage_enabled is turned off.
+      shm_size: 1800g
       envs:
         - PYTHONHASHSEED=1234
       extra_mounts:
@@ -53,48 +55,50 @@
           "${DOCKER_NAME_D}:{{ container_workspace }}/omniinfer/"
 
     run_server_prefill_profile:
+      # Prefill enables a 1 TiB CPU offload pool in this 2P1D scenario.
       kv_offload:
-        enable: false
+        enable: true
         hugepage_enabled: true
-        cpu_bytes_to_use: 858993459200
+        cpu_bytes_to_use: 1099511627776  # 1 TiB
       prepare_commands: |-
         export SERVER_IP_LIST={{ DECODE_SERVER_IP_LIST_ALL | replace(' ', '') | trim | quote }}
         export VLLM_DISABLE_PYNCCL=1
         export HCCL_BUFFSIZE=100
-        export HCCL_CONNECT_TIMEOUT=1800
-        export HCCL_EXEC_TIMEOUT=1800
+        export HCCL_CONNECT_TIMEOUT=120
+        export HCCL_EXEC_TIMEOUT=120
         export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
         export HCCL_OP_EXPANSION_MODE="AIV"
         export ASCEND_GLOBAL_LOG_LEVEL=3
         export TASK_QUEUE_ENABLE=2
-        export OMNI_REUSE_PREFILLED_TOKENS=1
-        export OMNI_SKIP_DECODE_TOKENIZE=1
+        export OMNI_PIGGYBACK_INPUT_IDS=1
+        export OMNI_SKIP_DECODE_TOKENIZE=0
         export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
         export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
         export OMNI_HYBRID_ATTN_GROUP_SIZE=18
-        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
-        export OMNI_VLLM_PATCHES="ALL"
-        EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --max-num-batched-tokens 92160"
-        EXTRA_ARGS="${EXTRA_ARGS} --enable-expert-parallel --max-num-seqs 4"
+        ENDPOINT_PORT=$((API_PORT + 100))
+        KV_EVENTS_CONFIG='{"enable_kv_cache_events":true,"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:'${ENDPOINT_PORT}'"}'
+        EXTRA_ARGS="--kv-events-config ${KV_EVENTS_CONFIG}"
+        EXTRA_ARGS="${EXTRA_ARGS} --mamba-block-size 128 --enable-logging-iteration-details"
+        EXTRA_ARGS="${EXTRA_ARGS} --no-disable-hybrid-kv-cache-manager --max-num-batched-tokens 20480"
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-expert-parallel --max-num-seqs 3"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-prompt-tokens-details --enable-chunked-prefill"
         EXTRA_ARGS="${EXTRA_ARGS} --dtype bfloat16 --enforce-eager"
         EXTRA_ARGS="${EXTRA_ARGS} --kv-cache-dtype li_int8_ds_mla"
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu"
-        EXTRA_ARGS="${EXTRA_ARGS} --enable-lopt --lopt-pool-size 16 --lopt-chunk-size 4096"
         REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
         {% if enable_prefix_caching | bool %}
-        EXTRA_ARGS="${EXTRA_ARGS} --mamba-block-size 128 --enable-prefix-caching"
-        export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_505B_xp1d_p_claw.json"
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-prefix-caching"
+        export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_505B_xp1d_p_kv_offload.json"
         {% else %}
         EXTRA_ARGS="${EXTRA_ARGS} --no-enable-prefix-caching"
         export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_505B_xp1d_p_claw_noapc.json"
         {% endif %}
         export TORCH_COMPILE_DISABLE=1
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-        GPU_UTIL=0.9
+        GPU_UTIL=0.91
       args:
-        - --max-model-len 524288
+        - --max-model-len 262144
         - --served-model-name {{ model | quote }}
         - '--additional-config ''{"enable_low_latency": true}'''
         - --gpu-util "${GPU_UTIL}"
@@ -104,10 +108,12 @@
         - --num-speculative-tokens 3
 
     run_server_decode_profile:
+      # Decode keeps the plain LLMDataDist connector; flipping enable to true
+      # activates the configured per-device 50 GiB CPU offload pool.
       kv_offload:
         enable: false
         hugepage_enabled: true
-        cpu_bytes_to_use: 53687091200
+        cpu_bytes_to_use: 53687091200  # 50 GiB
       prepare_commands: |-
         export DECODE_DATA_PARALLEL_SIZE={{ DECODE_SERVER_BY_GROUP | quote }}
         export SERVER_IP_LIST={{ DECODE_SERVER_IP_LIST_BY_GROUP | replace(' ', '') | trim | quote }}
@@ -118,31 +124,27 @@
         export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
         export HCCL_OP_EXPANSION_MODE="AI_CPU"
         export ASCEND_GLOBAL_LOG_LEVEL=3
-        export OMNI_REUSE_PREFILLED_TOKENS=1
-        export OMNI_SKIP_DECODE_TOKENIZE=1
+        export OMNI_PIGGYBACK_INPUT_IDS=1
+        export OMNI_SKIP_DECODE_TOKENIZE=0
         export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
         export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
         export OMNI_HYBRID_ATTN_GROUP_SIZE=18
-        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
-        export OMNI_VLLM_PATCHES="ALL"
         export ENABLE_DP_LB=false
-        export VLLM_CACHE_ROOT='./graph_cache'
         export TASK_QUEUE_ENABLE=1
         export LOCAL_WORLD_SIZE=16
-        EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --enable-expert-parallel"
-        EXTRA_ARGS="${EXTRA_ARGS} --max-num-seqs 3"
+        EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --mamba-block-size 128"
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-expert-parallel --max-num-seqs 3"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-prompt-tokens-details --enable-chunked-prefill"
         EXTRA_ARGS="${EXTRA_ARGS} --distributed-executor-backend mp --dtype bfloat16"
-        COMPILATION_CONFIG='{"mode": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[12], "backend":"", "compile_sizes":[12]}'
+        COMPILATION_CONFIG='{"mode": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[4,12], "backend":"", "compile_sizes":[4,12]}'
         EXTRA_ARGS="${EXTRA_ARGS} --compilation-config ${COMPILATION_CONFIG}"
         EXTRA_ARGS="${EXTRA_ARGS} --kv-cache-dtype li_int8_ds_mla"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-logging-iteration-details"
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu"
-        EXTRA_ARGS="${EXTRA_ARGS} --enable-lopt --lopt-pool-size 16 --lopt-chunk-size 4096"
         REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
         {% if enable_prefix_caching | bool %}
-        EXTRA_ARGS="${EXTRA_ARGS} --mamba-block-size 128 --enable-prefix-caching"
+        EXTRA_ARGS="${EXTRA_ARGS} --enable-prefix-caching"
         export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_505B_xp1d_d_claw.json"
         {% else %}
         EXTRA_ARGS="${EXTRA_ARGS} --no-enable-prefix-caching"
@@ -150,9 +152,9 @@
         {% endif %}
         export TORCH_COMPILE_DISABLE=1
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-        GPU_UTIL=0.82
+        GPU_UTIL=0.95
       args:
-        - --max-model-len 524288
+        - --max-model-len 262144
         - --served-model-name {{ model | quote }}
         - --tp 1
         - >-
@@ -178,13 +180,16 @@
         - --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log
         - --log-level info
         - --access-log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_access.log
-        - --core-num 4
+        - --core-num 16
         - --start-core-index 16
         - --subrequest-output-buffer-size 10M
         - --omni-proxy-pd-policy sequential
-        - --omni-proxy-max-batch-num-token 100000
-        - --omni-proxy-prefill-max-num-seqs 4
+        - --omni-proxy-max-batch-num-token 20480
+        - --omni-proxy-prefill-max-num-seqs 3
         - --omni-proxy-decode-max-num-seqs 3
+
+    proc_bind_profile:
+      enabled: "{{ proc_bind_enabled | default(false) | bool }}"
 
   tasks:
     - ansible.builtin.import_role:
