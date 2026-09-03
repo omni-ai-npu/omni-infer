@@ -602,12 +602,12 @@ def _prefill_sp_manager(local, valid):
     )
 
 
-def _call_npu_pangu_forward_sp(attention, hidden, topk):
+def _call_npu_pangu_forward_sp(attention, hidden):
     """Invoke npu_pangu_forward under a stubbed prefill-SP context."""
     ctx = _prefill_sp_forward_ctx(attention)
     with patch.object(pangu_mod, "get_forward_context", return_value=ctx):
         return pangu_mod.npu_pangu_forward(
-            hidden, torch.zeros(4, 2), torch.zeros(4, 2), "layer", topk
+            hidden, torch.zeros(4, 2), torch.zeros(4, 2), "layer"
         )
 
 
@@ -626,20 +626,17 @@ class TestPanguSWASeqParallel(unittest.TestCase):
         """Pure prefill on an SP layer must call _forward_prefill_sp."""
         attention = _bare_swa_attention()
         hidden = torch.zeros(4, 8)
-        topk = torch.zeros(4, 1, 2, dtype=torch.int32)
-        attention._forward_prefill_sp = MagicMock(return_value=(hidden, topk))
-        out_h, out_t = _call_npu_pangu_forward_sp(attention, hidden, topk)
+        attention._forward_prefill_sp = MagicMock(return_value=hidden)
+        out_h = _call_npu_pangu_forward_sp(attention, hidden)
         attention._forward_prefill_sp.assert_called_once()
         self.assertIs(out_h, hidden)
-        self.assertIs(out_t, topk)
 
     def test_npu_pangu_forward_sp_rejects_allreduce_moe(self):
         """SWA SP cannot run with the allreduce MoE communication strategy."""
         attention = _bare_swa_attention(moe_comm_strategy="allreduce")
         hidden = torch.zeros(4, 8)
-        topk = torch.zeros(4, 1, 2, dtype=torch.int32)
         with self.assertRaises(AssertionError):
-            _call_npu_pangu_forward_sp(attention, hidden, topk)
+            _call_npu_pangu_forward_sp(attention, hidden)
 
     def test_absorb_returns_empty_on_zero_sp_shard(self):
         """Empty SP shards skip the FA kernel but still return a 2D tensor."""
@@ -670,11 +667,10 @@ class TestPanguSWASeqParallel(unittest.TestCase):
             prefill=SimpleNamespace(sp_manager=_prefill_sp_manager(local, valid)),
         )
         with _fwctx_patch():
-            out, topk = attention._forward_prefill_sp(
-                hidden, torch.zeros(8, 4), torch.zeros(8, 4), meta, None, None
+            out = attention._forward_prefill_sp(
+                hidden, torch.zeros(8, 4), torch.zeros(8, 4), meta, None
             )
         self.assertEqual(tuple(out.shape), (local, 8))
-        self.assertIsNone(topk)
         self.assertTrue(torch.equal(out[valid:], torch.zeros(local - valid, 8)))
 
     def test_forward_prefill_sp_rejects_ascend950(self):
@@ -715,8 +711,8 @@ class TestPanguSWASeqParallel(unittest.TestCase):
         ), patch.object(
             pangu_mod.torch.npu, "stream", return_value=nullcontext()
         ):
-            out, _topk = attention._forward_prefill_sp(
-                hidden, torch.zeros(6, 4), torch.zeros(6, 4), meta, object(), None
+            out = attention._forward_prefill_sp(
+                hidden, torch.zeros(6, 4), torch.zeros(6, 4), meta, object()
             )
         self.assertEqual(tuple(out.shape), (local, 8))
         attention.o_proj.prefetch.assert_called_once()

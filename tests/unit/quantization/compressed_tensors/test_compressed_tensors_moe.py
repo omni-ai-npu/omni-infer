@@ -202,6 +202,7 @@ def _operator_opt_config(**overrides):
         "enable_agrs_finalize_metadata_overlap": False,
         "enable_round_pipeline_comm": False,
         "shared_expert_multi_stream": False,
+        "gmm_autotiling": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -418,12 +419,13 @@ def _make_method(module, layer, has_bias=False):
 
 def _make_w4a8_method(module, layer, *, asymmetric):
     weight_quant = SimpleNamespace(
+        strategy="channel",
         symmetric=not asymmetric,
         asymmetric_group=["mlp.experts"] if asymmetric else [],
     )
-    parent = SimpleNamespace(moe_parallel_config=layer.moe_parallel_config, has_bias=False)
+    input_quant = SimpleNamespace(strategy="token", dynamic=True)
     return module.NPUCompressedTensorsW4A8Int4MoEMethod(
-        weight_quant, parent, layer
+        weight_quant, input_quant, layer
     )
 
 
@@ -514,6 +516,7 @@ def test_w4a8_process_asymmetric_weights_builds_bias_and_scales_offset(
     method_cls = compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod
     method = method_cls.__new__(method_cls)
     method.asymmetric_quant = True
+    method.gmm_autotiling = False
 
     packed = torch.tensor(
         [
@@ -1229,16 +1232,23 @@ def test_w4a8_apply_experts_calls_grouped_matmul_and_swiglu(compressed_moe_modul
     swiglu_scale = torch.ones(3)
     down_out = torch.randn(3, 4)
 
-    torch_npu.npu_grouped_matmul = MagicMock(side_effect=[[gate_up_out], [down_out]])
+    custom_gmm = MagicMock(side_effect=[[gate_up_out], [down_out]])
+    monkeypatch.setattr(
+        torch.ops,
+        "custom",
+        SimpleNamespace(npu_ai_infra_grouped_matmul=custom_gmm),
+        raising=False,
+    )
     torch_npu.npu_dequant_swiglu_quant = MagicMock(return_value=(swiglu_out, swiglu_scale))
 
     W4A8 = module.NPUCompressedTensorsW4A8Int4MoEMethod
     method = W4A8.__new__(W4A8)
+    method.gmm_autotiling = False
     layer, prepare_result = _w4a8_layer_and_prepare()
 
     result = method.apply_experts(layer, prepare_result)
 
-    assert torch_npu.npu_grouped_matmul.call_count == 2
+    assert custom_gmm.call_count == 2
     assert torch_npu.npu_dequant_swiglu_quant.call_count == 1
     assert result is down_out
 
@@ -1254,11 +1264,18 @@ def test_w4a8_apply_experts_finalize_routing_returns_intermediate(compressed_moe
     swiglu_out = torch.randn(3, 4)
     swiglu_scale = torch.ones(3)
 
-    torch_npu.npu_grouped_matmul = MagicMock(return_value=[gate_up_out])
+    custom_gmm = MagicMock(return_value=[gate_up_out])
+    monkeypatch.setattr(
+        torch.ops,
+        "custom",
+        SimpleNamespace(npu_ai_infra_grouped_matmul=custom_gmm),
+        raising=False,
+    )
     torch_npu.npu_dequant_swiglu_quant = MagicMock(return_value=(swiglu_out, swiglu_scale))
 
     W4A8 = module.NPUCompressedTensorsW4A8Int4MoEMethod
     method = W4A8.__new__(W4A8)
+    method.gmm_autotiling = False
     layer, prepare_result = _w4a8_layer_and_prepare(with_w2=False)
 
     result = method.apply_experts(layer, prepare_result, use_grouped_matmul_finalize_routing=True)
@@ -1268,7 +1285,7 @@ def test_w4a8_apply_experts_finalize_routing_returns_intermediate(compressed_moe
     assert result[0] is swiglu_out
     assert result[1] is swiglu_scale
     # w2 matmul should NOT be called (only gate_up matmul)
-    assert torch_npu.npu_grouped_matmul.call_count == 1
+    assert custom_gmm.call_count == 1
 
 
 def test_apply_multistream_finalize_with_moe_multi_stream_tune(compressed_moe_module, monkeypatch):

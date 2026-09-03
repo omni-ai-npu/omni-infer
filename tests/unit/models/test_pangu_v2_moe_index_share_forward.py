@@ -25,6 +25,7 @@ def _make_decoder_layer(*, use_mhc: bool = False):
     layer = pangu_moe.OpenPanguV2DecoderLayer.__new__(pangu_moe.OpenPanguV2DecoderLayer)
     layer.use_mhc = use_mhc
     layer.side_stream = None
+    layer.attn_supports_pre_epilog = False
     layer.layer_idx = 0
     layer.first_k_dense_replace = 0
     layer.hidden_size = HIDDEN
@@ -62,6 +63,8 @@ def _make_model(monkeypatch, layer, *, enable_mhc_multistream):
     model.end_layer = 1
     model.embed_tokens = MagicMock(return_value=torch.randn(TOKENS, HIDDEN))
     model.norm = MagicMock(side_effect=lambda x: x)
+    model.cos_cached = torch.zeros(8, 2)
+    model.sin_cached = torch.zeros(8, 2)
     model.layers = [layer]
 
     layer.self_attn = SimpleNamespace(

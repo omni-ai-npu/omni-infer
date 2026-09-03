@@ -15,8 +15,8 @@ pytestmark = pytest.mark.unit
 class _IdentityAttn:
     prefix = "attn"
 
-    def __call__(self, hs, _cos, _sin, topk):
-        return hs, topk
+    def __call__(self, hs, _cos, _sin):
+        return hs
 
 
 def _identity(x):
@@ -83,11 +83,9 @@ def test_forward_naive_reuses_hidden_states_as_residual():
     hidden_states = torch.ones(2, 4)
     cos = torch.zeros(2, 2)
     sin = torch.zeros(2, 2)
-    topk = torch.zeros(2, 1, dtype=torch.int32)
 
-    out, topk_out = layer._forward_naive(hidden_states, cos, sin, topk)
+    out = layer._forward_naive(hidden_states, cos, sin)
 
-    assert topk_out is topk
     # identity attn/mlp + residual add: hs -> 2*hs -> 4*hs
     torch.testing.assert_close(out, hidden_states * 4)
 
@@ -121,11 +119,10 @@ def test_forward_naive_passes_uncloned_residual_into_mhc_post():
     ), patch.object(
         model_mod, "resolve_mhc_h_res", side_effect=_return_last_arg
     ):
-        out, _topk = layer._forward_naive(
+        out = layer._forward_naive(
             hidden_states,
             torch.zeros(2, 2),
             torch.zeros(2, 2),
-            torch.zeros(2, 1, dtype=torch.int32),
         )
 
     assert attn_residuals == [hidden_states]
