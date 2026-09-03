@@ -304,6 +304,7 @@ class NPUDSAMetadataBuilder(MLACommonMetadataBuilder[NPUDSAMetadata]):
                     computed_lens=computed_lens,
                     cumlens_np=common_attn_metadata.query_start_loc_cpu.numpy(),
                     block_table_ref=prefill.block_table,
+                    page_size=self.kv_cache_spec.block_size,
                     table_size=prefill.block_table.size(1),
                 )
                 if mome_kernel_width == 0:

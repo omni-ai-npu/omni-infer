@@ -689,6 +689,10 @@ class SPManager:
         frag_lens = cdiv(seq_lens, frag_num)  # [B]
         seq_blks = cdiv(seq_lens, pg)  # [B]
 
+        # Keep kv_lens on the zigzag-padded length (not clamped to Q).
+        # sparse_mode=3 is rightDownCausal: last query aligns to kv_len-1.
+        # q_cumlens already includes pad, so shrinking kv_lens shifts the
+        # causal window and drops the last real tokens from real queries.
         kv_lens_1 = computed_lens + frag_lens * (self.sp_rank + 1)  # [B]
         kv_lens_2 = computed_lens + frag_lens * (frag_num - self.sp_rank)  # [B]
         frag_cumlens = frag_lens.cumsum(dim=0, dtype=torch.int32)  # [B]
@@ -703,6 +707,13 @@ class SPManager:
         table0 = torch.arange(tab, dtype=torch.int32, device=cumlens.device)
         blk_table = table0.view(1, -1) + blk_base.repeat_interleave(2, dim=0).view(-1, 1)
         cp_block_table = blk_table_ref.repeat_interleave(2, dim=0)
+        # Zigzag pad is < one page (frag_num-1 tokens, page typically 64/128).
+        # Repeat the last block as a spare column so indexer DMA stays
+        # in-range without kv_lens.max().item() host synchronization.
+        if cp_block_table.size(1) > 0:
+            cp_block_table = torch.cat(
+                [cp_block_table, cp_block_table[:, -1:]], dim=1
+            )
         self.cp_attn_metadata = (q_cumlens, kv_lens, blk_table, cp_block_table)
 
     @depends_on(_scheme_cp_attn)
