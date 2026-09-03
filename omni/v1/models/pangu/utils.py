@@ -307,8 +307,9 @@ def _quant_ffn_w4a8(
     hist: torch.Tensor,  # [N] int64
 ) -> torch.Tensor:
     asym = experts.w13_weight_offset is not None
+    tuning_config = [0, 1, -1] if experts.quant_method.gmm_autotiling else None
 
-    h = torch_npu.npu_grouped_matmul(
+    h = torch.ops.custom.npu_ai_infra_grouped_matmul(
         [x_i8],
         [experts.w13_weight],
         bias=[experts.w13_weight_bias],
@@ -325,7 +326,7 @@ def _quant_ffn_w4a8(
         group_type=0,
         group_list_type=1,
         act_type=0,
-        tuning_config=None,
+        tuning_config=tuning_config,
         output_dtype=torch.bfloat16,
     )[0]
     h, h_sc = torch_npu.npu_dequant_swiglu_quant(
@@ -339,7 +340,7 @@ def _quant_ffn_w4a8(
         activate_left=True,
         quant_mode=1,
     )
-    return torch_npu.npu_grouped_matmul(
+    return torch.ops.custom.npu_ai_infra_grouped_matmul(
         [h],
         [experts.w2_weight],
         bias=[experts.w2_weight_bias],
@@ -356,7 +357,7 @@ def _quant_ffn_w4a8(
         group_type=0,
         group_list_type=1,
         act_type=0,
-        tuning_config=None,
+        tuning_config=tuning_config,
         output_dtype=torch.bfloat16,
     )[0]
 

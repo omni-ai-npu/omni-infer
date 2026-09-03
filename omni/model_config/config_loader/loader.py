@@ -125,6 +125,7 @@ class ModelOperatorOptConfig:
     enable_prefill_mla_absorb_pa: bool = False
     kv_nz: bool = False
     gmm_nz: bool = True
+    gmm_autotiling: bool = False
     lmhead_fp32: bool = False
     moe_multi_stream_tune: bool = False
     # Shared-experts multi-stream:
