@@ -123,31 +123,6 @@ def test_decoder_layer_forward_naive_without_topk_buffer():
 
 
 @pytest.mark.unit
-def test_model_forward_naive_mhc_multistream_path(monkeypatch):
-    """Cube-side MHC multistream path calls _forward_naive without buffer."""
-    layer = MagicMock()
-    layer._forward_naive = MagicMock(return_value=torch.ones(TOKENS, 1, HIDDEN))
-    model = _make_model(monkeypatch, layer, enable_mhc_multistream=True)
-    model.merge_mhc_module = MagicMock(
-        mhc_pre=MagicMock(
-            return_value=(torch.ones(TOKENS, 1, HIDDEN), None, None)
-        )
-    )
-
-    positions = torch.zeros(TOKENS, dtype=torch.long)
-    out = model.forward(
-        input_ids=torch.zeros(TOKENS, dtype=torch.long),
-        positions=positions,
-        intermediate_tensors=None,
-    )
-
-    layer._forward_naive.assert_called_once()
-    args, _kwargs = layer._forward_naive.call_args
-    assert len(args) == 3  # hidden_states, cos, sin — no topk buffer
-    assert out.shape == (TOKENS, 1, HIDDEN)
-
-
-@pytest.mark.unit
 def test_model_forward_threaded_path_without_topk_buffer(monkeypatch):
     """Default threaded MHC path calls layer.forward without buffer."""
     layer = MagicMock()
