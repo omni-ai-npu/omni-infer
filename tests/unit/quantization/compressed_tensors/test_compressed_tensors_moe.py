@@ -1195,6 +1195,15 @@ def _npu_to_cpu(monkeypatch):
     monkeypatch.setattr(torch, "zeros", _zeros)
 
 
+def _patch_custom_gmm(monkeypatch, custom_gmm):
+    monkeypatch.setattr(
+        torch.ops,
+        "custom",
+        SimpleNamespace(npu_ai_infra_grouped_matmul=custom_gmm),
+        raising=False,
+    )
+
+
 def _w4a8_layer_and_prepare(*, with_w2=True):
     layer = SimpleNamespace(
         moe_parallel_config=SimpleNamespace(use_ep=True),
@@ -1233,12 +1242,7 @@ def test_w4a8_apply_experts_calls_grouped_matmul_and_swiglu(compressed_moe_modul
     down_out = torch.randn(3, 4)
 
     custom_gmm = MagicMock(side_effect=[[gate_up_out], [down_out]])
-    monkeypatch.setattr(
-        torch.ops,
-        "custom",
-        SimpleNamespace(npu_ai_infra_grouped_matmul=custom_gmm),
-        raising=False,
-    )
+    _patch_custom_gmm(monkeypatch, custom_gmm)
     torch_npu.npu_dequant_swiglu_quant = MagicMock(return_value=(swiglu_out, swiglu_scale))
 
     W4A8 = module.NPUCompressedTensorsW4A8Int4MoEMethod
@@ -1265,12 +1269,7 @@ def test_w4a8_apply_experts_finalize_routing_returns_intermediate(compressed_moe
     swiglu_scale = torch.ones(3)
 
     custom_gmm = MagicMock(return_value=[gate_up_out])
-    monkeypatch.setattr(
-        torch.ops,
-        "custom",
-        SimpleNamespace(npu_ai_infra_grouped_matmul=custom_gmm),
-        raising=False,
-    )
+    _patch_custom_gmm(monkeypatch, custom_gmm)
     torch_npu.npu_dequant_swiglu_quant = MagicMock(return_value=(swiglu_out, swiglu_scale))
 
     W4A8 = module.NPUCompressedTensorsW4A8Int4MoEMethod
