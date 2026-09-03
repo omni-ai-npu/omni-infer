@@ -23,7 +23,7 @@ from pathlib import Path
 # names carry: the test tree says "useful_patch", the source tree "usefull_patch".
 PATCH_PATH = (
     Path(__file__).resolve().parents[4]
-    / "omni/vllm_patches/usefull_patch/patch_health.py"
+    / "omni/vllm_patches/usefull_patch/common/patch_health.py"
 )
 
 HANG_SEC = 60.0

@@ -1,14 +1,16 @@
 """Tests for the Pangu speculative-config patch."""
 
+import inspect
 from types import SimpleNamespace
 from typing import get_args
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 import torch
 
-from omni_npu.vllm_patches.usefull_patch.patch_eagle import EagleProposerPatch
-from omni_npu.vllm_patches.usefull_patch import patch_speculative as patch_mod
+from omni_npu.vllm_patches.usefull_patch.common.patch_eagle import EagleProposerPatch
+from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_hybrid import patch_speculative as patch_mod
 
 
 class HFConfig:
@@ -149,7 +151,7 @@ def test_prepare_inputs_padded_carries_cpu_metadata_shadows():
         return SimpleNamespace(**kwargs)
 
     with patch(
-        "omni_npu.vllm_patches.usefull_patch.patch_eagle.CommonAttentionMetadata",
+        "omni_npu.vllm_patches.usefull_patch.common.patch_eagle.CommonAttentionMetadata",
         side_effect=capture_metadata,
     ):
         result, _, _ = EagleProposerPatch.prepare_inputs_padded(
@@ -166,7 +168,7 @@ def test_prepare_inputs_padded_carries_cpu_metadata_shadows():
 
 
 def test_eagle_load_model_sets_image_token_index_for_omni_v2(monkeypatch):
-    from omni_npu.vllm_patches.usefull_patch import patch_eagle as eagle_mod
+    from omni_npu.vllm_patches.usefull_patch.common import patch_eagle as eagle_mod
 
     proposer = eagle_mod.EagleProposerPatch.__new__(eagle_mod.EagleProposerPatch)
     proposer.vllm_config = object()
@@ -206,4 +208,42 @@ def test_eagle_load_model_sets_image_token_index_for_omni_v2(monkeypatch):
     eagle_mod.EagleProposerPatch.load_model(proposer, target)
 
     assert proposer.model.config.image_token_index == 77
+
+
+def test_prepare_next_token_ids_padded_counts_are_int32():
+    proposer = SimpleNamespace(
+        backup_next_token_ids=SimpleNamespace(
+            np=np.zeros(4, dtype=np.int32),
+            gpu=torch.tensor([70, 71, 72, 73], dtype=torch.int32),
+            copy_to_gpu=lambda _n: None,
+        )
+    )
+    batch = SimpleNamespace(
+        num_reqs=3,
+        req_ids=["a", "b", "c"],
+        num_tokens_no_spec=[5, 6, 7],
+        vocab_size=100,
+    )
+    requests = {
+        rid: SimpleNamespace(get_token_id=lambda _i, v=v: v)
+        for rid, v in (("a", 11), ("b", 22), ("c", 33))
+    }
+    sampled = torch.tensor([[5, 6, -1], [7, -1, -1], [8, 9, 10]], dtype=torch.int64)
+    discard = torch.tensor([False, False, True])
+
+    next_ids, counts = EagleProposerPatch.prepare_next_token_ids_padded(
+        proposer, sampled, requests, batch, discard
+    )
+
+    assert counts.dtype == torch.int32
+    assert torch.equal(counts, torch.tensor([2, 1, 0], dtype=torch.int32))
+    # discarded request falls back to its backup token
+    assert torch.equal(next_ids, torch.tensor([6, 7, 72]))
+
+
+def test_propose_early_exit_returns_int64_draft_ids():
+    source = inspect.getsource(EagleProposerPatch.propose)
+    early_exit, _, rest = source.partition("if not use_multi_mtp:")
+    assert "draft_token_ids.int()" not in early_exit
+    assert "draft_token_ids = draft_token_ids.int()" in rest
 

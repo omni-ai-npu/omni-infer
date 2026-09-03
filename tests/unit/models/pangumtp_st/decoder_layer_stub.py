@@ -154,7 +154,8 @@ class DecoderLayerStub(nn.Module):
       input_layernorm → self_attn → post_attention_layernorm → mlp
 
     Signature matches production code:
-      forward(hidden_states, cos, sin, residual) → (hidden_states, residual)
+      forward(hidden_states, cos, sin, residual, topk_indices_buffer=None)
+      → (hidden_states, residual, topk_indices_buffer)
     """
 
     # Match OpenPanguDecoderLayer.__init__(config, prefix, vllm_config) signature
@@ -172,7 +173,7 @@ class DecoderLayerStub(nn.Module):
         self.input_layernorm = SimpleRMSNorm(config.hidden_size, config.rms_norm_eps)
         self.post_attention_layernorm = SimpleRMSNorm(config.hidden_size, config.rms_norm_eps)
 
-    def forward(self, hidden_states, cos, sin, residual=None):
+    def forward(self, hidden_states, cos, sin, residual=None, topk_indices_buffer=None):
         if residual is None:
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
@@ -182,7 +183,7 @@ class DecoderLayerStub(nn.Module):
         hidden_states = self.self_attn(hidden_states.unsqueeze(1), cos, sin).squeeze(1)
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         hidden_states = self.mlp(hidden_states)
-        return hidden_states, residual
+        return hidden_states, residual, topk_indices_buffer
 
 
 # ==============================================================================
@@ -228,7 +229,9 @@ class TestMTPLayer(nn.Module):
             torch.cat([inputs_embeds, previous_hidden_states], dim=-1)
         )
         cos, sin = self.mtp_block.self_attn.rotary_emb.get_cos_sin(positions)
-        hidden_states, residual = self.mtp_block(hidden_states, cos, sin, residual=None)
+        hidden_states, residual, _ = self.mtp_block(
+            hidden_states, cos, sin, residual=None
+        )
         hidden_states = residual + hidden_states
         return hidden_states
 

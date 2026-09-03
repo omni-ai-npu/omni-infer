@@ -24,7 +24,7 @@ from pathlib import Path
 # <repo>/tests/unit/vllm_patch/useful_patch/ -> parents[4] is <repo>
 PATCH_PATH = (
     Path(__file__).resolve().parents[4]
-    / "omni/vllm_patches/usefull_patch/patch_repetition_detection_config.py"
+    / "omni/vllm_patches/usefull_patch/common/patch_repetition_detection_config.py"
 )
 
 REGISTERED = []
@@ -135,7 +135,7 @@ class _InputProcessor:
 
 
 class _VLLMPatch:
-    """Faithful mini-version of vllm_patches/core.py::VLLMPatch.apply()."""
+    """Faithful mini-version of vllm_patches/core.py::VLLMPatch."""
 
     _attr_names_to_apply = []
 
@@ -151,6 +151,18 @@ class _VLLMPatch:
                 raise ValueError(f"{target}.{name} already patched")
             target._omni_npu_applied_patches[name] = cls.__name__
             setattr(target, name, cls.__dict__[name])
+
+    @classmethod
+    def apply_bypass_conflict(cls, *upstream):
+        target = cls._target
+        for name in upstream:
+            attr = getattr(target, name)
+            if name == "from_cli_args":
+                attr = attr.__func__
+            setattr(cls, f"_upstream_{name}", attr)
+        for name in cls._attr_names_to_apply:
+            if name in cls.__dict__:
+                setattr(target, name, cls.__dict__[name])
 
 
 def _register_patch(name, target):
@@ -261,14 +273,16 @@ for _name, _module_value in _saved_modules.items():
 _vllm_module = sys.modules.get("vllm")
 if _vllm_module is not None:
     if _saved_vllm_engine_args is _MISSING:
-        delattr(_vllm_module, "EngineArgs")
+        if hasattr(_vllm_module, "EngineArgs"):
+            delattr(_vllm_module, "EngineArgs")
     else:
         _vllm_module.EngineArgs = _saved_vllm_engine_args
 
 _omni_module = sys.modules.get("omni_npu")
 if _omni_module is not None:
     if _saved_omni_envs is _MISSING:
-        delattr(_omni_module, "envs")
+        if hasattr(_omni_module, "envs"):
+            delattr(_omni_module, "envs")
     else:
         _omni_module.envs = _saved_omni_envs
 

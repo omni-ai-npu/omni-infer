@@ -240,8 +240,9 @@ class OpenPanguMoE(nn.Module):
                 num_redundant_experts=self.n_redundant_experts,
                 is_sequence_parallel=self.is_sequence_parallel,
             )
-        # Only this model's fused FP32-router path may bypass the gate owned by
-        # SharedFusedMoE. Other models retain the historical gate-first path.
+        # Bypass the gate inside SharedFusedMoE; this layer always feeds
+        # precomputed router logits so dummy/profile routing sees n_experts
+        # rather than hidden_size as the last dim.
         self.experts.use_precomputed_router_logits = True
 
     def forward(
@@ -269,6 +270,7 @@ class OpenPanguMoE(nn.Module):
             router_logits, _ = self.gate(
                 hidden_states_fp32.view(-1, hidden_dim)
             )
+
 
         fused_moe_out = self.experts(
             hidden_states=hidden_states, router_logits=router_logits
@@ -315,7 +317,9 @@ class OpenPanguDecoderLayer(nn.Module):
 
         _normalize_rope_parameters(config, max_position_embeddings=max_position_embeddings)
 
-        is_dsa = hasattr(config, "index_topk") and (not hasattr(config, "dsa_layers") or layer_idx in config.dsa_layers)
+        is_dsa = (getattr(config, "index_topk", 0) or 0) > 0 and (
+            not hasattr(config, "dsa_layers") or layer_idx in config.dsa_layers
+        )
         if is_dsa:
             attn_cls = NPUDeepseekSparseAttention
         else:
@@ -414,26 +418,33 @@ class OpenPanguDecoderLayer(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         residual: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        topk_indices_buffer: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         if self.use_mhc:
-            return self.forward_mhc(hidden_states, cos, sin, residual)
-        else:
-            return self.forward_normal(hidden_states, cos, sin, residual)
-    
+            return self.forward_mhc(
+                hidden_states, cos, sin, residual, topk_indices_buffer
+            )
+        return self.forward_normal(
+            hidden_states, cos, sin, residual, topk_indices_buffer
+        )
+
     def forward_normal(
         self,
         hidden_states: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
         residual: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        topk_indices_buffer: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         if residual is None:
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
 
-        hidden_states = self.self_attn(hidden_states, cos, sin)
+        hidden_states, topk_indices_buffer = self.self_attn(
+            hidden_states, cos, sin, topk_indices_buffer
+        )
 
         if self.sandwich_norm:
             hidden_states = self.post_attention_layernorm(hidden_states)
@@ -449,7 +460,7 @@ class OpenPanguDecoderLayer(nn.Module):
         if self.sandwich_norm:
             hidden_states = self.post_mlp_layernorm(hidden_states)
 
-        return hidden_states, residual
+        return hidden_states, residual, topk_indices_buffer
 
     def forward_mhc(
         self,
@@ -457,14 +468,17 @@ class OpenPanguDecoderLayer(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         residual: torch.Tensor | None,
-    ) -> torch.Tensor:
+        topk_indices_buffer: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, None, torch.Tensor | None]:
         residual = hidden_states
         hidden_states, h_post, h_res = self.attn_mhc_module.mhc_pre(hidden_states)
         h_res = self.attn_mhc_module.maybe_register_sinkhorn(
             h_res, self.attn_mhc_task_key
         )
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(hidden_states, cos, sin)
+        hidden_states, topk_indices_buffer = self.self_attn(
+            hidden_states, cos, sin, topk_indices_buffer
+        )
         if self.sandwich_norm:
             hidden_states = self.post_attention_layernorm(hidden_states)
         h_res = self.attn_mhc_module.resolve_sinkhorn(
@@ -490,7 +504,7 @@ class OpenPanguDecoderLayer(nn.Module):
         if self.has_block_post_layernorm:
             hidden_states = self.block_post_layernorm(hidden_states)
         
-        return hidden_states, None
+        return hidden_states, None, topk_indices_buffer
 
     def mhc_head(
         self,
@@ -537,8 +551,10 @@ class OpenPanguDecoderLayer(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         h_res_from_fused_split: bool = False,
+        topk_indices_buffer: torch.Tensor | None = None,
     ) -> tuple[
         torch.Tensor,
+        torch.Tensor | None,
         torch.Tensor | None,
         torch.Tensor | None,
         torch.Tensor | None,
@@ -550,18 +566,22 @@ class OpenPanguDecoderLayer(nn.Module):
                 raise ValueError(
                     "Deferred MHC split requires fused-split state"
                 )
-            hidden_states, h_post, h_res = (
-                self.self_attn.forward_mhc_deferred(
-                    hidden_states,
-                    cos,
-                    sin,
-                    residual,
-                    self.attn_mhc_module.prefix,
-                    self.attn_mhc_task_key,
-                )
+            (
+                (hidden_states, h_post, h_res),
+                topk_indices_buffer,
+            ) = self.self_attn.forward_mhc_deferred(
+                hidden_states,
+                cos,
+                sin,
+                residual,
+                self.attn_mhc_module.prefix,
+                self.attn_mhc_task_key,
+                topk_indices_buffer,
             )
         else:
-            hidden_states = self.self_attn(hidden_states, cos, sin)
+            hidden_states, topk_indices_buffer = self.self_attn(
+                hidden_states, cos, sin, topk_indices_buffer
+            )
         assert h_post is not None and h_res is not None
         if h_res_from_fused_split:
             h_post, h_res = self.attn_mhc_module.resolve_fused_split_sinkhorn(
@@ -596,8 +616,17 @@ class OpenPanguDecoderLayer(nn.Module):
         )
 
         if self._mhc_tail_refs is None or self._mhc_tail_refs[0] is None:
-            return self._finish_mhc_partition_tail(
-                hidden_states, residual, h_post, h_res
+            hidden_states, residual, h_post, h_res = (
+                self._finish_mhc_partition_tail(
+                    hidden_states, residual, h_post, h_res
+                )
+            )
+            return (
+                hidden_states,
+                residual,
+                h_post,
+                h_res,
+                topk_indices_buffer,
             )
 
         next_mhc_module, next_norm_module, next_task_key, is_model_tail = (
@@ -620,17 +649,17 @@ class OpenPanguDecoderLayer(nn.Module):
             )
         )
         if is_model_tail:
-            return hidden_states, None, None, None
+            return hidden_states, None, None, None, topk_indices_buffer
 
         if next_mhc_module.enable_mhc_multistream and next_task_key:
             # The next MLA block launches this after attention and before
             # v_up/o_proj, matching the 1.2.1 pre-epilog schedule.
-            return hidden_states, residual, None, None
+            return hidden_states, residual, None, None, topk_indices_buffer
 
         h_post, h_res = next_mhc_module.launch_fused_split_sinkhorn(
             residual, next_task_key
         )
-        return hidden_states, residual, h_post, h_res
+        return hidden_states, residual, h_post, h_res, topk_indices_buffer
 
 
 @support_torch_compile
@@ -741,6 +770,19 @@ class OpenPanguModel(nn.Module):
             positions
         )
 
+        topk_indices_buffer = None
+        if not get_pp_group().is_first_rank:
+            topk_indices_buffer = intermediate_tensors.tensors.get(
+                "topk_indices_buffer"
+            )
+        index_topk = getattr(self.config, "index_topk", 0) or 0
+        if topk_indices_buffer is None and index_topk > 0:
+            topk_indices_buffer = torch.zeros(
+                (hidden_states.shape[0], 1, index_topk),
+                dtype=torch.int32,
+                device=hidden_states.device,
+            )
+
         use_fused_mhc = (
             self.use_mhc_fusion_op
             and self.layers[self.start_layer].attn_mhc_module.can_use_fusion(
@@ -752,9 +794,13 @@ class OpenPanguModel(nn.Module):
                 self.start_layer
             ].mhc_head(hidden_states)
             for i in range(self.start_layer, self.end_layer):
-                hidden_states, residual, h_post, h_res = self.layers[
-                    i
-                ].forward_mhc_fused(
+                (
+                    hidden_states,
+                    residual,
+                    h_post,
+                    h_res,
+                    topk_indices_buffer,
+                ) = self.layers[i].forward_mhc_fused(
                     hidden_states,
                     residual,
                     h_post,
@@ -762,18 +808,29 @@ class OpenPanguModel(nn.Module):
                     cos,
                     sin,
                     h_res_from_fused_split=i > self.start_layer,
+                    topk_indices_buffer=topk_indices_buffer,
                 )
         else:
             for i in range(self.start_layer, self.end_layer):
                 layer = self.layers[i]
-                hidden_states, residual = layer(
-                    hidden_states, cos, sin, residual
+                hidden_states, residual, topk_indices_buffer = layer(
+                    hidden_states,
+                    cos,
+                    sin,
+                    residual,
+                    topk_indices_buffer,
                 )
 
         if not get_pp_group().is_last_rank:
-            return IntermediateTensors(
-                {"hidden_states": hidden_states, "residual": residual}
-            )
+            intermediate_values = {
+                "hidden_states": hidden_states,
+                "residual": residual,
+            }
+            if topk_indices_buffer is not None:
+                intermediate_values["topk_indices_buffer"] = (
+                    topk_indices_buffer
+                )
+            return IntermediateTensors(intermediate_values)
         if self.use_mhc:
             if not use_fused_mhc:
                 hidden_states, _, _ = self.merge_mhc_module.mhc_pre(hidden_states)

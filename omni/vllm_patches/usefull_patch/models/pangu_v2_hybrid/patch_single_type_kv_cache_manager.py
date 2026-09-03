@@ -28,7 +28,7 @@ from vllm.v1.kv_cache_interface import KVCacheSpec, SlidingWindowSpec as SWSpec
 from vllm.v1.kv_cache_spec_registry import KVCacheSpecRegistry
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
-from omni_npu.vllm_patches.usefull_patch.patch_kv_cache_interface import (
+from .patch_kv_cache_interface import (
     MomeSpec,
     ShareKVSlidingWindowSpec,
 )

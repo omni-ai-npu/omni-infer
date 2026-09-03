@@ -171,6 +171,7 @@ class InputBatchPatch(VLLMPatch):
             logit_proc.update_state(batch_update)
         if batch_update:
             self.sampling_metadata = self._make_sampling_metadata()
+        return None
 
     def _make_sampling_metadata(self) -> SamplingMetadata:
         ban_holder = getattr(self, "thinking_ban_state_holder", None)

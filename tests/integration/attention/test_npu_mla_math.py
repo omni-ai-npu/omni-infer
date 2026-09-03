@@ -721,8 +721,8 @@ def test_npu_mla_prefill_matches_reference(
 
     module = _build_module(device, dtype, monkeypatch, attn_metadata)
     kv_cache = _init_kv_cache(batch_size, seq_len, device, dtype)
-    # NPU runtime wraps each layer's cache for virtual-engine compatibility.
-    module.attn.kv_cache = [kv_cache]
+    # 0.25.1 binds the (nope, rope) tuple itself, not a per-virtual-engine list.
+    module.attn.kv_cache = kv_cache
 
     # Cos/sin for every token position (length = B * S).
     # Example: positions = [0, 1, 2, ..., S-1] repeated for each sequence.
@@ -739,7 +739,7 @@ def test_npu_mla_prefill_matches_reference(
 
     # Compare NPU output [B*S, H] against a pure PyTorch reference.
     # The reference expands q/k/v, applies rotary, and runs causal attention per sequence.
-    actual = module(hidden_states, cos, sin)
+    actual, _ = module(hidden_states, cos, sin)
     expected = _reference_prefill(
         module,
         hidden_states,
@@ -795,7 +795,7 @@ def test_npu_mla_decode_matches_reference(
     kv_cache[0].copy_(ref_kv_cache[0])
     kv_cache[1].copy_(ref_kv_cache[1])
 
-    module.attn.kv_cache = [kv_cache]
+    module.attn.kv_cache = kv_cache
 
     # Cos/sin for the decode token position (last position for each sequence).
     # Positions shape [B], cos/sin shape [B, 1, 1, rope_dim] in NPU rotary emb.
@@ -815,7 +815,7 @@ def test_npu_mla_decode_matches_reference(
 
     # Compare NPU output [B, H] against a pure PyTorch reference.
     # The reference uses cached KV for prefix and inserts the new token by slot mapping.
-    actual = module(hidden_states, cos, sin)
+    actual, _ = module(hidden_states, cos, sin)
     expected = _reference_decode(
         module,
         hidden_states,

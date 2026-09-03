@@ -22,7 +22,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 trace_enabled = bool((envs.OMNI_TRACE_OUTPUT_DIRECTORY or "").strip())
-namelist_path = os.path.join(os.environ["OMNIINFER_ROOT"], "tools/omni_trace/omnilogger_namelist.yml") if trace_enabled else ""
+namelist_path = (
+    os.path.join(
+        os.environ["OMNIINFER_ROOT"],
+        "tools/omni_trace/omnilogger_namelist.yml",
+    )
+    if trace_enabled
+    else ""
+)
 
 
 # This class is registered during auto_import_patches(), but is instantiated
@@ -56,7 +63,7 @@ class ProfilerDynamicPatch(VLLMPatch):
         )
         self.apply_patches(namelist_path)
 
-    def apply_patches(self, namelist_path: str):
+    def apply_patches(self, config_path: str):
         from omni_trace.prof_wrapper import (
             marker_prof_wrapper,
             timer_prof_wrapper,
@@ -70,7 +77,7 @@ class ProfilerDynamicPatch(VLLMPatch):
             "marker": marker_prof_wrapper
         }
         try:
-            with open(namelist_path, 'r') as f:
+            with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
 
             profiler_type = config.get('type')
@@ -80,7 +87,7 @@ class ProfilerDynamicPatch(VLLMPatch):
                     profiler_type == 'marker'):
                 logger.error(f"<<<type of namelist invalid, should be one of torchnpu/timer/viztracer/marker")
                 raise RuntimeError("<<<type of namelist invalid, should be one of torchnpu/timer/viztracer/marker")
-            logger.info(f"<<<Applying {profiler_type} profiler patches from {namelist_path}")
+            logger.info(f"<<<Applying {profiler_type} profiler patches from {config_path}")
             wrapper_method = wrapper_dict.get(profiler_type)
             if wrapper_method is None:
                 raise KeyError(
@@ -116,7 +123,7 @@ class ProfilerDynamicPatch(VLLMPatch):
                     logger.warning(f"<<<Skipping target with missing 'module': {target}")
 
             if not targets:
-                logger.warning(f"<<<No valid targets found in {namelist_path}")
+                logger.warning(f"<<<No valid targets found in {config_path}")
                 return
 
             for module_name, class_name, function_name, \
@@ -212,89 +219,81 @@ class RequestStatusPatch(VLLMPatch):
     status = property(status, status_set)
 
 
+_DECODE_YIELD_ACTIONS = {
+    2: "First decode output token",
+    3: "Second decode output token",
+    4: "Third decode output token",
+}
+
+
+def _trace_decode_stream_line(action: str, request_id: str, ip_str: str) -> str:
+    role = envs.OMNI_PD_ROLE or "unknown_role"
+    return (
+        f"<<<Action: {action}; Timestamp:{time.time()}; "
+        f"RequestID:{request_id}; Role:{role}_{ip_str}"
+    )
+
+
+async def _iter_traced_stream(original, serving, args, kwargs, request_id):
+    from omni_trace.utils import safe_print, ip_str, trace_output_directory
+    yield_count = 0
+    async for item in original(serving, *args, **kwargs):
+        yield_count += 1
+        action = _DECODE_YIELD_ACTIONS.get(yield_count)
+        if action is not None:
+            safe_print(
+                trace_output_directory,
+                _trace_decode_stream_line(action, request_id, ip_str),
+            )
+        if item == "data: [DONE]\n\n":
+            safe_print(
+                trace_output_directory,
+                _trace_decode_stream_line(
+                    "Finish decode pickle and start response",
+                    request_id,
+                    ip_str,
+                ),
+            )
+        yield item
+
+
 if trace_enabled:
-    from omni_npu.vllm_patches.usefull_patch.patch_serving_apc import OpenAIServingChatStreamAPCPatch
-    _ORIGINAL_CHAT_COMPLETION_STREAM_GENERATOR = OpenAIServingChatStreamAPCPatch.chat_completion_stream_generator
+    from omni_npu.vllm_patches.usefull_patch.common.patch_serving_apc import (
+        OpenAIServingChatStreamAPCPatch,
+        OpenAIServingCompletionStreamAPCPatch,
+    )
+    _ORIGINAL_CHAT_COMPLETION_STREAM_GENERATOR = (
+        OpenAIServingChatStreamAPCPatch.chat_completion_stream_generator
+    )
+    _ORIGINAL_COMPLETION_STREAM_GENERATOR = (
+        OpenAIServingCompletionStreamAPCPatch.completion_stream_generator
+    )
 
     @register_patch("ExpertIdServingChatStream", OpenAIServingChat)
     class OpenAIServingChatTokenLoggerPatch(VLLMPatch):
         # Relay patch: wrap APC stream patch instead of the original vLLM stream.
         _attr_names_to_apply = ['chat_completion_stream_generator']
 
-        async def chat_completion_stream_generator(self, *args, **kwargs) -> AsyncGenerator:
-            from omni_trace.utils import safe_print, ip_str, trace_output_directory
-            yield_count = 0
-            request_id = args[2]
-            async for item in _ORIGINAL_CHAT_COMPLETION_STREAM_GENERATOR(self, *args, **kwargs):
-                yield_count += 1
-                if yield_count == 1:
-                    # First chat_completion_stream_generator yield.
-                    pass
-                elif yield_count == 2:
-                    # Second chat_completion_stream_generator yield.
-                    safe_print(
-                        trace_output_directory,
-                        "<<<Action: First decode output token; "
-                        f"Timestamp:{time.time()}; RequestID:{request_id}; "
-                        f"Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}",
-                    )
-                elif yield_count == 3:
-                    # Third chat_completion_stream_generator yield.
-                    safe_print(
-                        trace_output_directory,
-                        "<<<Action: Second decode output token; "
-                        f"Timestamp:{time.time()}; RequestID:{request_id}; "
-                        f"Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}",
-                    )
-                elif yield_count == 4:
-                    # Fourth chat_completion_stream_generator yield.
-                    safe_print(
-                        trace_output_directory,
-                        "<<<Action: Third decode output token; "
-                        f"Timestamp:{time.time()}; RequestID:{request_id}; "
-                        f"Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}",
-                    )
-                if item == "data: [DONE]\n\n":
-                    safe_print(
-                        trace_output_directory,
-                        "<<<Action: Finish decode pickle and start response; "
-                        f"Timestamp:{time.time()}; RequestID:{request_id}; "
-                        f"Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}",
-                    )
+        async def chat_completion_stream_generator(
+            self, *args, **kwargs
+        ) -> AsyncGenerator:
+            async for item in _iter_traced_stream(
+                _ORIGINAL_CHAT_COMPLETION_STREAM_GENERATOR,
+                self, args, kwargs, args[2],
+            ):
                 yield item
 
-
-if trace_enabled:
-    from omni_npu.vllm_patches.usefull_patch.patch_serving_apc import OpenAIServingCompletionStreamAPCPatch
-    _ORIGINAL_COMPLETION_STREAM_GENERATOR = OpenAIServingCompletionStreamAPCPatch.completion_stream_generator
 
     @register_patch("ExpertIdServingCompletionStream", OpenAIServingCompletion)
     class OpenAIServingCompletionTokenLoggerPatch(VLLMPatch):
         # Relay patch: wrap APC stream patch instead of the original vLLM stream.
         _attr_names_to_apply = ['completion_stream_generator']
 
-        async def completion_stream_generator(self, *args, **kwargs) -> AsyncGenerator:
-            from omni_trace.utils import safe_print, ip_str, trace_output_directory
-            yield_count = 0
-            request_id = args[3]
-            async for item in _ORIGINAL_COMPLETION_STREAM_GENERATOR(self, *args, **kwargs):
-                yield_count += 1
-                if yield_count == 1:
-                    # First completion_stream_generator yield.
-                    pass
-                elif yield_count == 2:
-                    # Second completion_stream_generator yield.
-                    safe_print(trace_output_directory, f"<<<Action: First decode output token; "
-                               f"Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}")
-                elif yield_count == 3:
-                    # Third completion_stream_generator yield.
-                    safe_print(trace_output_directory, f"<<<Action: Second decode output token; "
-                               f"Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}")
-                elif yield_count == 4:
-                    # Fourth completion_stream_generator yield.
-                    safe_print(trace_output_directory, f"<<<Action: Third decode output token; "
-                               f"Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}")
-                if item == "data: [DONE]\n\n":
-                    safe_print(trace_output_directory, f"<<<Action: Finish decode pickle and start response; "
-                               f"Timestamp:{time.time()}; RequestID:{request_id}; Role:{envs.OMNI_PD_ROLE or 'unknown_role'}_{ip_str}")
+        async def completion_stream_generator(
+            self, *args, **kwargs
+        ) -> AsyncGenerator:
+            async for item in _iter_traced_stream(
+                _ORIGINAL_COMPLETION_STREAM_GENERATOR,
+                self, args, kwargs, args[3],
+            ):
                 yield item

@@ -9,16 +9,29 @@ from collections.abc import Sequence
 import torch
 from typing_extensions import override
 
+from vllm.config import VllmConfig
+from vllm.distributed.kv_transfer.kv_connector.v1 import (
+    KVConnectorBase_V1,
+    KVConnectorRole,
+)
+from vllm.distributed.kv_transfer.kv_connector.v1.offloading.worker import (
+    OffloadingConnectorWorker,
+)
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import (
     OffloadingConnector,
 )
 from vllm.logger import init_logger
+from vllm.v1.kv_offload.factory import OffloadingSpecFactory
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     KVCacheConfig,
     KVCacheSpec,
     MambaSpec,
     UniformTypeKVCacheSpecs,
+)
+
+from omni_npu.connector.npu_offloading_scheduler import (
+    NPUOffloadingConnectorScheduler,
 )
 
 logger = init_logger(__name__)
@@ -128,6 +141,33 @@ def prepare_kv_caches_for_offloading_registration(
 class NPUOffloadingConnector(OffloadingConnector):
     """OffloadingConnector that accepts NPU tuple/list KV views at registration."""
 
+    def __init__(
+        self,
+        vllm_config: VllmConfig,
+        role: KVConnectorRole,
+        kv_cache_config: KVCacheConfig,
+    ):
+        """Forked from ``OffloadingConnector.__init__`` (vLLM v0.25.1).
+
+        The base class builds the scheduler itself and does not keep the spec,
+        so there is no way to swap in the NPU scheduler afterwards without
+        creating a second spec (and with it a second offloading manager).
+        Deviations from upstream are bracketed by ``omni-npu diff`` markers.
+        """
+        KVConnectorBase_V1.__init__(self, vllm_config, role, kv_cache_config)
+
+        spec = OffloadingSpecFactory.create_spec(vllm_config, kv_cache_config)
+
+        self.connector_scheduler: NPUOffloadingConnectorScheduler | None = None
+        self.connector_worker: OffloadingConnectorWorker | None = None
+        if role == KVConnectorRole.SCHEDULER:
+            # --- omni-npu diff start: NPU scheduler instead of
+            # OffloadingConnectorScheduler ---
+            self.connector_scheduler = NPUOffloadingConnectorScheduler(spec)
+            # --- omni-npu diff end ---
+        elif role == KVConnectorRole.WORKER:
+            self.connector_worker = OffloadingConnectorWorker(spec)
+
     @override
     def register_kv_caches(self, kv_caches: dict[str, KVCacheValue]) -> None:
         if self._kv_cache_config is None:
@@ -139,37 +179,3 @@ class NPUOffloadingConnector(OffloadingConnector):
             self._kv_cache_config,
         )
         super().register_kv_caches(prepared)
-
-    @override
-    def get_num_new_matched_tokens(self, request, num_computed_tokens):
-        toks, load_async = super().get_num_new_matched_tokens(
-            request, num_computed_tokens
-        )
-        if toks is None:
-            self._omni_offload_defer_none = (
-                getattr(self, "_omni_offload_defer_none", 0) + 1
-            )
-        elif load_async:
-            self._omni_offload_async_load = (
-                getattr(self, "_omni_offload_async_load", 0) + 1
-            )
-        return toks, load_async
-
-    @override
-    def build_connector_meta(self, scheduler_output):
-        defer_none = getattr(self, "_omni_offload_defer_none", 0)
-        async_load = getattr(self, "_omni_offload_async_load", 0)
-        self._omni_offload_defer_none = 0
-        self._omni_offload_async_load = 0
-        scheduled = int(
-            getattr(scheduler_output, "total_num_scheduled_tokens", 0) or 0
-        )
-        if defer_none or (scheduled == 0 and async_load):
-            logger.info(
-                "kv_offload_schedule scheduled_tokens=%s defer_none=%s "
-                "async_load=%s",
-                scheduled,
-                defer_none,
-                async_load,
-            )
-        return super().build_connector_meta(scheduler_output)

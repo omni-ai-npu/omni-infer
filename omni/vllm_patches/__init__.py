@@ -164,14 +164,28 @@ def _find_patch_dir_fuzzy(model_type: str, models_root: Path) -> list[Path]:
     return patch_dirs
 
 
+def _get_manual_patches_dir_env() -> str:
+    """Return the user-set patches-dir env value, or empty if unset."""
+    for name in ("OMNI_VLLM_PATCHES_DIR", "OMNI_NPU_PATCHES_DIR"):
+        value = os.getenv(name)
+        if value:
+            return value
+    return ""
+
+
 def auto_import_patches():
     """
-    Load patches only from the curated usefull_patch directory.
-    The files within the directory are sorted by filename.
+    Load the curated usefull_patch tree:
+        1. common/ is always imported
+        2. models/<dir> is imported only when named in OMNI_VLLM_PATCHES_DIR
+           (comma-separated, e.g. "pangu_v2_hybrid" or
+           "pangu_v2_hybrid,pangu_v2_moe")
+    Files within each directory are sorted by filename.
     """
     vllm_patches_root = Path(__file__).parent
     usefull_patch_dir = vllm_patches_root / "usefull_patch"
     base_pkg = "omni_npu.vllm_patches.usefull_patch"
+    models_root = usefull_patch_dir / "models"
 
     if not usefull_patch_dir.exists():
         logger.warning(
@@ -179,8 +193,31 @@ def auto_import_patches():
         )
         return
 
-    import_patches_from_dir(usefull_patch_dir, base_pkg)
-    logger.info("loaded patches from %s", usefull_patch_dir)
+    common_dir = usefull_patch_dir / "common"
+    if common_dir.exists():
+        import_patches_from_dir(common_dir, f"{base_pkg}.common")
+        logger.info("loaded patches from %s", common_dir)
+    else:
+        logger.warning("usefull_patch common directory not found: %s", common_dir)
+
+    model_type = _get_manual_patches_dir_env()
+    if not model_type:
+        logger.info(
+            "OMNI_VLLM_PATCHES_DIR is unset; skip usefull_patch/models/"
+        )
+        return
+
+    if not models_root.exists():
+        logger.warning(
+            "usefull_patch models directory not found: %s", models_root
+        )
+        return
+
+    for model_dir in _find_patch_dir_exact(model_type, models_root):
+        import_patches_from_dir(
+            model_dir, f"{base_pkg}.models.{model_dir.name}"
+        )
+        logger.info("loaded patches from %s", model_dir)
 
 
 manager = PatchManager()
@@ -194,5 +231,5 @@ def apply_patches():
 
     # Run dynamic trace wrapping after normal patches are applied, so namelist
     # targets wrap the final patched methods instead of earlier implementations.
-    from omni_npu.vllm_patches.usefull_patch.patch_trace import ProfilerDynamicPatch
+    from omni_npu.vllm_patches.usefull_patch.common.patch_trace import ProfilerDynamicPatch
     profiler_patch_instance = ProfilerDynamicPatch()

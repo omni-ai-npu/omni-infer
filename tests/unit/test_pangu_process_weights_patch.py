@@ -8,7 +8,7 @@ import torch
 from torch import nn
 
 from omni_npu.layers.mhc.mhc_rl import NPUmHCRL
-from omni_npu.vllm_patches.usefull_patch import (
+from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_moe import (
     patch_process_weights_after_loading as patch_mod,
 )
 

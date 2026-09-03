@@ -36,11 +36,32 @@ class NPUModelRunnerV2(GPUModelRunner):
         torch.cuda.Stream on its third line. They stay here rather than in a
         patch because rewriting torch.cuda is global and MRv1 must not get it;
         the module patches themselves are applied by the plugin (see
-        omni/vllm_patches/usefull_patch/patch_mrv2_*.py).
+        omni/vllm_patches/usefull_patch/common/patch_mrv2_*.py).
         """
         install_torch_cuda_aliases()
+        from omni_npu.compilation.npugraph_ex_config import init_aclgraph_config
+
+        init_aclgraph_config(vllm_config)
         logger.info("[omni-npu/mrv2] building NPUModelRunnerV2")
         super().__init__(vllm_config, device)
+
+    def capture_model(self) -> int:
+        """Guard the aicpu-tiling assumption around the upstream capture.
+
+        The torch.accelerator memory APIs that upstream capture_model calls
+        are redirected process-wide by TorchAcceleratorMemoryPatch (!2496),
+        so this no longer wraps them -- MRv1 dropped its own mock.patch pair
+        in the same change.
+        """
+        from omni_npu.worker.npu.aclgraph_utils import (
+            assert_no_acl_tasks_registered,
+            ensure_graph_params,
+        )
+
+        ensure_graph_params(self.vllm_config.compilation_config)
+        captured = super().capture_model()
+        assert_no_acl_tasks_registered()
+        return captured
 
     def prepare_inputs(self, scheduler_output, batch_desc):
         """Stash the step's cudagraph mode for prepare_attn.
@@ -82,6 +103,29 @@ class NPUModelRunnerV2(GPUModelRunner):
             slot_mappings = slot_mappings[..., :num_tokens]
         return block_tables, slot_mappings
 
+    def prepare_dummy_attn(self, input_batch):
+        """Point a dummy forward's block tables at the null block.
+
+        Upstream neutralises dummy writes through the slot mappings --
+        get_dummy_slot_mappings fills PAD_SLOT_ID -- which covers every
+        backend that addresses the KV cache by slot. MoME addresses its
+        state cache by block table instead (cache_indices =
+        block_table_tensor[:, 0]), so that neutralisation misses it and a
+        dummy forward writes state into whatever blocks the previous real
+        request left in the persistent table. On a decode node those blocks
+        have already been handed to the next request and filled by the KV
+        pull, so the dummy overwrites transferred KV and the first generated
+        token is wrong.
+
+        gather_block_tables repopulates these tensors on every real forward,
+        so clearing them here cannot leak into one, and the tensor addresses
+        are unchanged, which cudagraph capture requires.
+        """
+        block_tables, slot_mappings = super().prepare_dummy_attn(input_batch)
+        for block_table in block_tables:
+            block_table.fill_(0)
+        return block_tables, slot_mappings
+
     def _omni_has_separate_kv_update(self) -> bool:
         """Whether any backend updates the KV cache outside forward()."""
         cached = getattr(self, "_omni_separate_kv_update", None)
@@ -105,20 +149,46 @@ class NPUModelRunnerV2(GPUModelRunner):
         self._omni_separate_kv_update = cached
         return cached
 
-    def _dummy_run(self, num_tokens, *args, **kwargs):
-        """Keep idle DP ranks in step with the LM head collectives.
+    def _sync_dummy_main_compute_logits(self, is_profile: bool) -> None:
+        """Mirror MRv1's dummy target lm_head sync point.
 
-        ``NPULogitsProcessor._get_logits`` runs DP collectives inside
-        ``compute_logits``, which a dummy run never reaches, so the
-        busy rank waits in ``all_gather`` while its peers wait on the
-        next step's ``all_reduce`` and the DP group deadlocks. MRv1
-        uses ``_dp_sync_main_compute_logits``; V2's dummy run returns
-        the hidden states, so the call can simply be issued here.
+        Active MRv2 ranks run target ``compute_logits`` after target forward
+        and before speculative drafter/propose. Upstream dummy ranks run the
+        same target forward through ``execute_model(dummy_run=True)``, then
+        continue into the drafter without sampling. When lm_head is sharded
+        over DP/local ranks, ``compute_logits`` contains collectives, so idle
+        ranks must join them at this exact boundary.
         """
-        hidden_states, sample_hidden_states = super()._dummy_run(
-            num_tokens, *args, **kwargs)
-        if (not kwargs.get("is_profile", False)
-                and sample_hidden_states is not None
-                and _dp_lmhead_enabled()):
-            self.model.compute_logits(sample_hidden_states)
-        return hidden_states, sample_hidden_states
+        if is_profile or not _dp_lmhead_enabled():
+            return
+
+        state = getattr(self, "execute_model_state", None)
+        if state is None:
+            return
+
+        hidden_states = getattr(state, "hidden_states", None)
+        if hidden_states is None:
+            return
+
+        input_batch = state.input_batch
+        sample_hidden_states = hidden_states[input_batch.logits_indices]
+        self.model.compute_logits(sample_hidden_states)
+
+    def execute_model(
+        self,
+        scheduler_output,
+        intermediate_tensors=None,
+        dummy_run: bool = False,
+        skip_attn_for_dummy_run: bool = False,
+        is_profile: bool = False,
+    ):
+        output = super().execute_model(
+            scheduler_output,
+            intermediate_tensors=intermediate_tensors,
+            dummy_run=dummy_run,
+            skip_attn_for_dummy_run=skip_attn_for_dummy_run,
+            is_profile=is_profile,
+        )
+        if dummy_run:
+            self._sync_dummy_main_compute_logits(is_profile)
+        return output

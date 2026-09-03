@@ -149,13 +149,13 @@ class All2AllPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
     ) -> All2AllPreparePermuteResult:
         x = x.view(-1, x.shape[-1])
         topk_ids = topk_ids.int()
-        max_num_deployed_expert = layer.w13_weight.shape[0] * self.ep_size
-        moe_quant_config = getattr(getattr(layer, "quant_method", None), "moe_quant_config", None)
+        max_num_deployed_expert = layer.routed_experts.w13_weight.shape[0] * self.ep_size
+        moe_quant_config = getattr(layer.routed_experts.quant_method, "moe_quant_config", None)
         use_mxfp8 = bool(moe_quant_config and getattr(moe_quant_config, "use_mxfp8_w8a8", False))
         # MXFP8: route bf16 (the in-routing MX scale path of
         # npu_moe_init_routing_v2 is buggy on current torch_npu) and quantize
         # the expanded output to FP8 after re-routing.
-        quant_mode = 1 if layer.quant_config is not None else -1
+        quant_mode = 1 if layer.routed_experts.quant_config is not None else -1
         if use_mxfp8:
             quant_mode = -1
 
@@ -188,7 +188,7 @@ class All2AllPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
             gathered_tokens, expanded_x, output_splits, input_splits, group=get_ep_group().device_group
         )
 
-        if layer.quant_config is None or use_mxfp8:
+        if layer.routed_experts.quant_config is None or use_mxfp8:
             gathered_pertoken_scale = None
         else:
             gathered_pertoken_scale = pertoken_scale.new_empty(gathered_tokens.shape[0])
@@ -285,15 +285,15 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
         x = x.view(-1, x.shape[-1])
         topk_ids = topk_ids.int()
         gathered_topk_weights = None
-        max_num_deployed_expert = layer.w13_weight.shape[0] * self.ep_size
-        experts_start_idx = self.ep_rank * layer.w13_weight.shape[0]
-        experts_end_idx = experts_start_idx + layer.w13_weight.shape[0]
+        max_num_deployed_expert = layer.routed_experts.w13_weight.shape[0] * self.ep_size
+        experts_start_idx = self.ep_rank * layer.routed_experts.w13_weight.shape[0]
+        experts_end_idx = experts_start_idx + layer.routed_experts.w13_weight.shape[0]
         expert_range = [experts_start_idx, experts_end_idx]
         row_idx_type = 0
         shared_output = None
         shared_expert_gate_up = None
         shared_expert_finished_event = None
-        if layer.quant_config is None:
+        if layer.routed_experts.quant_config is None:
             gathered_x = get_ep_group().all_gather(x, dim=0)
             gathered_topk_ids = get_ep_group().all_gather(topk_ids, dim=0)
             expanded_x, expanded_row_idx, expert_tokens, _ = torch_npu.npu_moe_init_routing_v2(
@@ -317,7 +317,7 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
                 not is_prefill or model_extra_config.operator_opt_config.prefill_grouped_matmul_finalize_routing
             ):
                 row_idx_type = 1
-            moe_quant_config = getattr(layer.quant_method, "moe_quant_config", None)
+            moe_quant_config = getattr(layer.routed_experts.quant_method, "moe_quant_config", None)
             if moe_quant_config and getattr(moe_quant_config, "use_hifloat8_w8a8", False):
                 x_hif8 = torch_npu.npu_dtype_cast(x, torch_npu.hifloat8)
                 x_quant = x_hif8.view(dtype=torch.int8)
@@ -342,7 +342,7 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
                 with torch.npu.stream(self.side_stream):
                     ready_to_dispatch_event.wait(self.side_stream)
                     x_dict = {"x_int8": x_int8, "pertoken_scale": x_scale}
-                    shared_output = layer.shared_experts(x_dict)
+                    shared_output = layer._shared_experts._layer(x_dict)
                     shared_expert_finished_event.record()
             if self.enable_round_pipeline_comm:
                 assert (
@@ -401,14 +401,14 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
                             x_quant_local,
                             dst_type=torch.float8_e4m3fn,
                         )
-                        shared_expert_gate_up = layer.shared_experts.gate_up_proj(
+                        shared_expert_gate_up = layer._shared_experts._layer.gate_up_proj(
                             {
                                 "x_mxfp8": shared_x_fp8,
                                 "pertoken_scale": shared_x_scale,
                             }
                         )
                     elif moe_quant_config and getattr(moe_quant_config, "use_hifloat8_w8a8", False):
-                        shared_expert_gate_up = layer.shared_experts.gate_up_proj({"x_hif8": x_quant_local})
+                        shared_expert_gate_up = layer._shared_experts._layer.gate_up_proj({"x_hif8": x_quant_local})
                     else:
                         raise NotImplementedError(
                             "with_routed_experts_cv schedule only supports hifloat8 or mxfp8 quant methods."
@@ -431,7 +431,7 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
                 quant_mode=-1,
                 row_idx_type=row_idx_type,
             )
-        moe_quant_config = getattr(layer.quant_method, "moe_quant_config", None)
+        moe_quant_config = getattr(layer.routed_experts.quant_method, "moe_quant_config", None)
         if moe_quant_config is not None and getattr(moe_quant_config, "use_mxfp8_w8a8", False):
             # npu_moe_init_routing_v2 mxfp8 scale handling is buggy on current
             # torch_npu, so we routed bf16 above and quant the expanded output
@@ -459,6 +459,13 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
             shared_expert_finished_event=shared_expert_finished_event,
         )
 
+    @staticmethod
+    def _w2_scale_and_bias(experts):
+        if hasattr(experts, "w2_weight_int4_scale"):
+            return experts.w2_weight_int4_scale, experts.w2_weight_bias
+        w2_bias = experts.w2_bias if hasattr(experts, "w2_bias") else None
+        return experts.w2_weight_scale.to(torch.float), w2_bias
+
     def prepare_finalize_params(
         self,
         layer: torch.nn.Module,
@@ -466,7 +473,7 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
         agrs_prepare_permute_result: AGRSPreparePermuteResult,
     ) -> Optional[AGRSFinalizeParams]:
         """Pre-compute finalize routing params on a separate stream."""
-        if layer.quant_config is None:
+        if layer.routed_experts.quant_config is None:
             return None
         if agrs_prepare_permute_result.row_idx_type != 1:
             return None
@@ -477,13 +484,7 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
         row_index = expanded_row_idx // self.top_k
         row_index = row_index.to(torch.int64)
 
-        is_w4a8 = hasattr(layer, "w2_weight_int4_scale")
-        if is_w4a8:
-            w2_scale = layer.w2_weight_int4_scale
-            w2_bias = layer.w2_weight_bias
-        else:
-            w2_scale = layer.w2_weight_scale.to(torch.float)
-            w2_bias = layer.w2_bias if hasattr(layer, "w2_bias") else None
+        w2_scale, w2_bias = self._w2_scale_and_bias(layer.routed_experts)
 
         return AGRSFinalizeParams(
             expanded_row_idx=expanded_row_idx,
@@ -525,7 +526,7 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
         if finalize_metadata is None:
             finalize_metadata = self.prepare_finalize_metadata(layer, topk_weights, agrs_prepare_permute_result)
         gathered_topk_weights = finalize_metadata.gathered_topk_weights
-        if layer.quant_config is not None:
+        if layer.routed_experts.quant_config is not None:
             # TODO wjc: 1.hif8 gmmfr adaption 2. add share_experts_output.
             if row_idx_type == 1 and finalize_params is not None:
                 x, pertoken_scale = hidden_states
@@ -534,7 +535,7 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
                 ).float()
                 y = torch_npu.npu_grouped_matmul_finalize_routing(
                     x,
-                    layer.w2_weight,
+                    layer.routed_experts.w2_weight,
                     expert_tokens,
                     scale=finalize_params.w2_scale,
                     bias=finalize_params.w2_bias,
@@ -556,17 +557,10 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
                     sorted_topk_weight = sorted_topk_weight.float()
                 row_index = expanded_row_idx // self.top_k
                 row_index = row_index.to(torch.int64)
-
-                is_w4a8 = hasattr(layer, "w2_weight_int4_scale")
-                if is_w4a8:
-                    w2_scale = layer.w2_weight_int4_scale
-                    w2_bias = layer.w2_weight_bias
-                else:
-                    w2_scale = layer.w2_weight_scale.to(torch.float)
-                    w2_bias = layer.w2_bias if hasattr(layer, "w2_bias") else None
+                w2_scale, w2_bias = self._w2_scale_and_bias(layer.routed_experts)
                 y = torch_npu.npu_grouped_matmul_finalize_routing(
                     x,
-                    layer.w2_weight,
+                    layer.routed_experts.w2_weight,
                     expert_tokens,
                     scale=w2_scale,
                     bias=w2_bias,
@@ -611,9 +605,9 @@ class AllReducePrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
     ) -> AllReducePreparePermuteResult:
         x = x.view(-1, x.shape[-1])
         topk_ids = topk_ids.int()
-        max_num_deployed_expert = layer.w13_weight.shape[0] * self.ep_size
-        experts_start_idx = self.ep_rank * layer.w13_weight.shape[0]
-        experts_end_idx = experts_start_idx + layer.w13_weight.shape[0]
+        max_num_deployed_expert = layer.routed_experts.w13_weight.shape[0] * self.ep_size
+        experts_start_idx = self.ep_rank * layer.routed_experts.w13_weight.shape[0]
+        experts_end_idx = experts_start_idx + layer.routed_experts.w13_weight.shape[0]
         expert_range = [experts_start_idx, experts_end_idx]
         row_idx_type = 0
 
@@ -699,8 +693,8 @@ class DispatchCombinePrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFina
         topk_ids: torch.Tensor,
         options: Optional[PreparePermuteOptions] = None,
     ) -> DispatchCombinePreparePermuteResult:
-        quant_mode = 2 if layer.quant_config is not None else 0
-        moe_quant_config = getattr(getattr(layer, "quant_method", None), "moe_quant_config", None)
+        quant_mode = 2 if layer.routed_experts.quant_config is not None else 0
+        moe_quant_config = getattr(layer.routed_experts.quant_method, "moe_quant_config", None)
         use_mxfp8 = bool(moe_quant_config and getattr(moe_quant_config, "use_mxfp8_w8a8", False))
 
         if use_mxfp8:

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import queue
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -47,7 +49,6 @@ def _get_swap_blocks_batch():
         from omni_npu.v1.kv_offload.cpu import _swap_blocks_batch as _ext
 
         fn = _ext.swap_blocks_batch
-        build_tag = getattr(_ext, "build_tag", "MISSING")
         host_location = getattr(_ext, "host_location", "MISSING")
         cann_batch = getattr(_ext, "cann_memcpy_batch", "MISSING")
     except Exception:
@@ -60,41 +61,11 @@ def _get_swap_blocks_batch():
     _SWAP_BLOCKS_BATCH = fn
     logger.info(
         "KV offload indexed copy via omni_npu.v1.kv_offload.cpu._swap_blocks_batch "
-        "build_tag=%s host_location=%s cann_batch=%s",
-        build_tag,
+        "host_location=%s cann_batch=%s",
         host_location,
         cann_batch,
     )
-    if build_tag != "host-attr-chunk4096-v4":
-        logger.error(
-            "stale _swap_blocks_batch.so (build_tag=%s); expected "
-            "host-attr-chunk4096-v4. Re-run omni/v1/kv_offload/cpu/build.sh",
-            build_tag,
-        )
     return fn
-
-
-def _block_byte_ptr(tensor: torch.Tensor, block: int, byte_offset: int) -> int:
-    return int(tensor.data_ptr()) + int(block) * int(tensor.stride(0)) + int(byte_offset)
-
-
-def _descriptors_from_ops(
-    ops: list[tuple[torch.Tensor, int, int, torch.Tensor, int, int, int]],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Build CPU int64 src/dst/size arrays for ``swap_blocks_batch``."""
-    n = len(ops)
-    src_np = np.empty(n, dtype=np.int64)
-    dst_np = np.empty(n, dtype=np.int64)
-    sz_np = np.empty(n, dtype=np.int64)
-    for i, (src_t, src_b, src_off, dst_t, dst_b, dst_off, nbytes) in enumerate(ops):
-        src_np[i] = _block_byte_ptr(src_t, src_b, src_off)
-        dst_np[i] = _block_byte_ptr(dst_t, dst_b, dst_off)
-        sz_np[i] = nbytes
-    return (
-        torch.from_numpy(src_np),
-        torch.from_numpy(dst_np),
-        torch.from_numpy(sz_np),
-    )
 
 
 def pin_memory_region(region: NPUSharedOffloadRegion) -> None:
@@ -154,12 +125,18 @@ def pin_memory_region(region: NPUSharedOffloadRegion) -> None:
 class Transfer:
     job_id: int
     stream: torch.npu.Stream
-    start_event: torch.npu.Event
     end_event: torch.npu.Event
-    num_bytes: int
     batch_src: torch.Tensor | None = None
     batch_dst: torch.Tensor | None = None
     batch_sizes: torch.Tensor | None = None
+
+
+@dataclass
+class QueuedJob:
+    job_id: int
+    src_spec: LoadStoreSpec
+    dst_spec: LoadStoreSpec
+    wait_stream: object | None = None
 
 
 def _block_slice(
@@ -251,6 +228,19 @@ class NpuSingleDirectionOffloadingHandler:
         self._batch_direction = (
             _DIRECTION_D2H if npu_to_cpu else _DIRECTION_H2D
         )
+        self._device_index = npu_tensors[0].device.index or 0
+        self._init_async_submit_state()
+
+    def _init_async_submit_state(self) -> None:
+        """Host-side queue so plan/enqueue leave the execute_model thread."""
+        if getattr(self, "_lock", None) is not None:
+            return
+        self._lock = threading.Lock()
+        self._cv = threading.Condition(self._lock)
+        self._queued: dict[int, QueuedJob] = {}
+        self._submit_errors: dict[int, BaseException] = {}
+        self._submit_queue: queue.Queue[QueuedJob | None] = queue.Queue()
+        self._submit_thread: threading.Thread | None = None
 
     def _owns_store_block(self, dst_block: int) -> bool:
         """Replicated store rotation: each rank writes CPU blocks it owns."""
@@ -258,59 +248,290 @@ class NpuSingleDirectionOffloadingHandler:
             return True
         return int(dst_block) % self._tp_size == self._tp_rank
 
-    def _plan_group_copies(
+    def _group_block_indices(
         self,
+        group_src: np.ndarray,
+        group_dst: np.ndarray,
+        group_size: int,
+        src_logical_blocks_to_skip: int,
+        dst_logical_blocks_to_skip: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Vectorized src/dst subscripts and physical block ids for one group."""
+        src_subs = np.arange(
+            src_logical_blocks_to_skip,
+            src_logical_blocks_to_skip + group_size,
+            dtype=np.int64,
+        )
+        dst_subs = np.arange(
+            dst_logical_blocks_to_skip,
+            dst_logical_blocks_to_skip + group_size,
+            dtype=np.int64,
+        )
+        src_blocks = np.asarray(group_src, dtype=np.int64)[
+            src_subs // self.src_block_size_factor
+        ]
+        dst_blocks = np.asarray(group_dst, dtype=np.int64)[
+            dst_subs // self.dst_block_size_factor
+        ]
+        if self.npu_to_cpu and self._rotate_store_writers and self._tp_size > 1:
+            mask = np.mod(dst_blocks, self._tp_size) == self._tp_rank
+            src_subs = src_subs[mask]
+            dst_subs = dst_subs[mask]
+            src_blocks = src_blocks[mask]
+            dst_blocks = dst_blocks[mask]
+        return src_subs, dst_subs, src_blocks, dst_blocks
+
+    def _fill_group_descriptors(
+        self,
+        src_ptrs: np.ndarray,
+        dst_ptrs: np.ndarray,
+        sizes: np.ndarray,
+        offset: int,
         group_src: np.ndarray,
         group_dst: np.ndarray,
         group_size: int,
         group_data_refs: list[CanonicalKVCacheRef],
         src_logical_blocks_to_skip: int,
         dst_logical_blocks_to_skip: int,
-    ) -> list[tuple[torch.Tensor, int, int, torch.Tensor, int, int, int]]:
-        """Return list of (src, src_block, src_byte, dst, dst_block, dst_byte, n)."""
-        ops: list[tuple[torch.Tensor, int, int, torch.Tensor, int, int, int]] = []
+    ) -> int:
+        """Write one group's copy descriptors into preallocated int64 buffers."""
+        if group_size <= 0 or not group_data_refs:
+            return offset
+        src_subs, dst_subs, src_blocks, dst_blocks = self._group_block_indices(
+            group_src,
+            group_dst,
+            group_size,
+            src_logical_blocks_to_skip,
+            dst_logical_blocks_to_skip,
+        )
+        n = int(src_blocks.size)
+        if n == 0:
+            return offset
+        src_factor = self.src_block_size_factor
+        dst_factor = self.dst_block_size_factor
         for data_ref in group_data_refs:
-            t_idx = data_ref.tensor_idx
-            src_tensor = self.src_tensors[t_idx]
-            dst_tensor = self.dst_tensors[t_idx]
-            page_size = data_ref.page_size_bytes
-            for i in range(group_size):
-                src_sub = src_logical_blocks_to_skip + i
-                dst_sub = dst_logical_blocks_to_skip + i
-                src_block = int(group_src[src_sub // self.src_block_size_factor])
-                dst_block = int(group_dst[dst_sub // self.dst_block_size_factor])
-                if not self._owns_store_block(dst_block):
-                    continue
-                src_page = (src_sub % self.src_block_size_factor) * page_size
-                dst_page = (dst_sub % self.dst_block_size_factor) * page_size
-                ops.append(
-                    (
-                        src_tensor,
-                        src_block,
-                        src_page,
-                        dst_tensor,
-                        dst_block,
-                        dst_page,
-                        page_size,
-                    )
+            src_tensor = self.src_tensors[data_ref.tensor_idx]
+            dst_tensor = self.dst_tensors[data_ref.tensor_idx]
+            page_size = int(data_ref.page_size_bytes)
+            sl = slice(offset, offset + n)
+            src_ptrs[sl] = (
+                int(src_tensor.data_ptr())
+                + src_blocks * int(src_tensor.stride(0))
+                + (src_subs % src_factor) * page_size
+            )
+            dst_ptrs[sl] = (
+                int(dst_tensor.data_ptr())
+                + dst_blocks * int(dst_tensor.stride(0))
+                + (dst_subs % dst_factor) * page_size
+            )
+            sizes[sl] = page_size
+            offset += n
+        return offset
+
+    def _iter_planned_groups(
+        self,
+        src_blocks: np.ndarray,
+        dst_blocks: np.ndarray,
+        group_sizes,
+        block_indices,
+        num_src_blocks: int,
+        num_dst_blocks: int,
+    ):
+        """Yield per-group slices after the same coverage checks as transfer."""
+        src_offset = 0
+        dst_offset = 0
+        for group_size, block_idx, group_data_refs in zip(
+            group_sizes, block_indices, self.kv_cache_groups_data_refs
+        ):
+            if group_size == 0:
+                continue
+
+            src_skip = block_idx % self.src_block_size_factor
+            dst_skip = block_idx % self.dst_block_size_factor
+            src_count = group_size + src_skip
+            dst_count = group_size + dst_skip
+
+            dst_blocks_count = cdiv(dst_count, self.dst_block_size_factor)
+            src_blocks_count = cdiv(src_count, self.src_block_size_factor)
+            src_end = src_offset + src_blocks_count
+            dst_end = dst_offset + dst_blocks_count
+            if src_end > num_src_blocks or dst_end > num_dst_blocks:
+                raise ValueError(
+                    f"block range overflow: src_end={src_end} "
+                    f"num_src_blocks={num_src_blocks} dst_end={dst_end} "
+                    f"num_dst_blocks={num_dst_blocks}"
                 )
-        return ops
+            yield (
+                group_size,
+                group_data_refs,
+                src_blocks[src_offset:src_end],
+                dst_blocks[dst_offset:dst_end],
+                src_skip,
+                dst_skip,
+            )
+            src_offset = src_end
+            dst_offset = dst_end
+
+        if src_offset != num_src_blocks or dst_offset != num_dst_blocks:
+            raise ValueError(
+                f"block coverage mismatch: src_offset={src_offset} "
+                f"num_src_blocks={num_src_blocks} dst_offset={dst_offset} "
+                f"num_dst_blocks={num_dst_blocks}"
+            )
+
+    def _for_each_planned_group(
+        self,
+        src_blocks: np.ndarray,
+        dst_blocks: np.ndarray,
+        group_sizes,
+        block_indices,
+        num_src_blocks: int,
+        num_dst_blocks: int,
+        visitor=None,
+    ) -> None:
+        """Walk planned groups once; visitor receives the unpacked group tuple."""
+        for planned in self._iter_planned_groups(
+            src_blocks, dst_blocks, group_sizes, block_indices,
+            num_src_blocks, num_dst_blocks,
+        ):
+            if visitor is not None:
+                visitor(*planned)
+
+    def _plan_transfer_descriptors(
+        self,
+        src_blocks: np.ndarray,
+        dst_blocks: np.ndarray,
+        group_sizes,
+        block_indices,
+        num_src_blocks: int,
+        num_dst_blocks: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Build all-group src/dst/size descriptor arrays without Python ops."""
+        max_ops = 0
+        for group_size, group_data_refs in zip(
+            group_sizes, self.kv_cache_groups_data_refs
+        ):
+            if group_size:
+                max_ops += int(group_size) * len(group_data_refs)
+        src_ptrs = np.empty(max_ops, dtype=np.int64)
+        dst_ptrs = np.empty(max_ops, dtype=np.int64)
+        sizes = np.empty(max_ops, dtype=np.int64)
+        offset = 0
+
+        def _fill(
+            group_size,
+            group_data_refs,
+            group_src,
+            group_dst,
+            src_skip,
+            dst_skip,
+        ):
+            nonlocal offset
+            offset = self._fill_group_descriptors(
+                src_ptrs,
+                dst_ptrs,
+                sizes,
+                offset,
+                group_src,
+                group_dst,
+                group_size,
+                group_data_refs,
+                src_skip,
+                dst_skip,
+            )
+
+        self._for_each_planned_group(
+            src_blocks, dst_blocks, group_sizes, block_indices,
+            num_src_blocks, num_dst_blocks,
+            None if max_ops <= 0 else _fill,
+        )
+        return src_ptrs[:offset], dst_ptrs[:offset], sizes[:offset]
 
     def _recycle_transfer(self, transfer: Transfer) -> TransferResult:
-        transfer_time = 0.0
         self._event_pool.append(transfer.end_event)
-        self._event_pool.append(transfer.start_event)
         self._transfer_events.pop(transfer.job_id, None)
         self._transfers_by_id.pop(transfer.job_id, None)
-        return TransferResult(
-            job_id=transfer.job_id,
-            success=True,
-            transfer_size=transfer.num_bytes,
-            transfer_time=transfer_time,
+        return TransferResult(job_id=transfer.job_id, success=True)
+
+    def submit(
+        self, job_id: int, src_spec: LoadStoreSpec, dst_spec: LoadStoreSpec
+    ) -> bool:
+        """Queue a transfer. Plan/enqueue run on the submit thread."""
+        return self._queue_transfer(job_id, src_spec, dst_spec)
+
+    def _queue_transfer(
+        self, job_id: int, src_spec: LoadStoreSpec, dst_spec: LoadStoreSpec
+    ) -> bool:
+        wait_stream = None
+        if self.npu_to_cpu:
+            # Capture the compute stream here. transfer_async runs on the
+            # submit thread, where current_stream() is not the writer stream.
+            try:
+                wait_stream = torch.npu.current_stream()
+            except Exception:
+                wait_stream = None
+        job = QueuedJob(
+            job_id=job_id,
+            src_spec=src_spec,
+            dst_spec=dst_spec,
+            wait_stream=wait_stream,
         )
+        self._ensure_submit_thread()
+        with self._lock:
+            if job_id in self._queued or job_id in self._transfers_by_id:
+                raise ValueError(f"duplicate offload job_id {job_id}")
+            self._queued[job_id] = job
+        self._submit_queue.put(job)
+        return True
+
+    def _ensure_submit_thread(self) -> None:
+        with self._lock:
+            if self._submit_thread is not None and self._submit_thread.is_alive():
+                return
+            self._submit_thread = threading.Thread(
+                target=self._submit_loop,
+                name=(
+                    "kv-offload-store-submit"
+                    if self.npu_to_cpu
+                    else "kv-offload-load-submit"
+                ),
+                daemon=True,
+            )
+            self._submit_thread.start()
+
+    def _submit_loop(self) -> None:
+        torch.npu.set_device(self._device_index)
+        while True:
+            job = self._submit_queue.get()
+            try:
+                if job is None:
+                    break
+                self.transfer_async(
+                    job.job_id,
+                    job.src_spec,
+                    job.dst_spec,
+                    wait_stream=job.wait_stream,
+                )
+            except Exception as exc:
+                if job is None:
+                    break
+                logger.exception(
+                    "KV offload submit failed job=%s",
+                    job.job_id,
+                )
+                with self._lock:
+                    self._queued.pop(job.job_id, None)
+                    self._submit_errors[job.job_id] = exc
+                    self._cv.notify_all()
+            finally:
+                self._submit_queue.task_done()
 
     def transfer_async(
-        self, job_id: int, src_spec: LoadStoreSpec, dst_spec: LoadStoreSpec
+        self,
+        job_id: int,
+        src_spec: LoadStoreSpec,
+        dst_spec: LoadStoreSpec,
+        wait_stream: object | None = None,
     ) -> bool:
         if not isinstance(src_spec, BlockIDsLoadStoreSpec):
             raise TypeError(
@@ -340,172 +561,152 @@ class NpuSingleDirectionOffloadingHandler:
                 f"{len(self.kv_cache_groups_data_refs)}"
             )
 
-        src_offset = 0
-        dst_offset = 0
-        planned_ops: list[
-            tuple[torch.Tensor, int, int, torch.Tensor, int, int, int]
-        ] = []
-
-        for group_size, block_idx, group_data_refs in zip(
-            group_sizes, block_indices, self.kv_cache_groups_data_refs
-        ):
-            if group_size == 0:
-                continue
-
-            src_skip = block_idx % self.src_block_size_factor
-            dst_skip = block_idx % self.dst_block_size_factor
-            src_count = group_size + src_skip
-            dst_count = group_size + dst_skip
-
-            dst_blocks_count = cdiv(dst_count, self.dst_block_size_factor)
-            src_blocks_count = cdiv(src_count, self.src_block_size_factor)
-            src_end = src_offset + src_blocks_count
-            dst_end = dst_offset + dst_blocks_count
-            if src_end > num_src_blocks or dst_end > num_dst_blocks:
-                raise ValueError(
-                    f"block range overflow: src_end={src_end} "
-                    f"num_src_blocks={num_src_blocks} dst_end={dst_end} "
-                    f"num_dst_blocks={num_dst_blocks}"
-                )
-
-            planned_ops.extend(
-                self._plan_group_copies(
-                    src_blocks[src_offset:src_end],
-                    dst_blocks[dst_offset:dst_end],
-                    group_size,
-                    group_data_refs,
-                    src_skip,
-                    dst_skip,
-                )
-            )
-            src_offset = src_end
-            dst_offset = dst_end
-
-        if src_offset != num_src_blocks or dst_offset != num_dst_blocks:
-            raise ValueError(
-                f"block coverage mismatch: src_offset={src_offset} "
-                f"num_src_blocks={num_src_blocks} dst_offset={dst_offset} "
-                f"num_dst_blocks={num_dst_blocks}"
-            )
-        num_transfer_bytes = sum(op[-1] for op in planned_ops)
+        src_ptrs, dst_ptrs, op_sizes = self._plan_transfer_descriptors(
+            src_blocks,
+            dst_blocks,
+            group_sizes,
+            block_indices,
+            num_src_blocks,
+            num_dst_blocks,
+        )
+        num_ops = int(op_sizes.size)
 
         stream = self._stream
-        start_event = (
-            self._event_pool.pop() if self._event_pool else torch.npu.Event()
-        )
-        end_event = (
-            self._event_pool.pop() if self._event_pool else torch.npu.Event()
-        )
+        with self._lock:
+            end_event = self._event_pool.pop() if self._event_pool else None
+        if end_event is None:
+            end_event = torch.npu.Event()
 
-        if self.npu_to_cpu:
-            stream.wait_stream(torch.npu.current_stream())
+        wait_compute = int(self.npu_to_cpu)
+        if wait_compute:
+            compute_stream = wait_stream
+            if compute_stream is None:
+                compute_stream = torch.npu.current_stream()
+            stream.wait_stream(compute_stream)
 
         batch_src: torch.Tensor | None = None
         batch_dst: torch.Tensor | None = None
         batch_sizes: torch.Tensor | None = None
         swap_fn = self._swap_blocks_batch
 
-        def _copy_ops_python(
-            ops: list[tuple[torch.Tensor, int, int, torch.Tensor, int, int, int]],
-        ) -> None:
-            for (
-                src_tensor,
-                src_block,
-                src_byte,
-                dst_tensor,
-                dst_block,
-                dst_byte,
-                page_size,
-            ) in ops:
-                src = _block_slice(src_tensor, src_block, src_byte, page_size)
-                dst = _block_slice(dst_tensor, dst_block, dst_byte, page_size)
-                dst.copy_(src, non_blocking=True)
+        def _copy_ops_python() -> None:
+            src_factor = self.src_block_size_factor
+            dst_factor = self.dst_block_size_factor
+
+            def _copy_group(
+                group_size,
+                group_data_refs,
+                group_src,
+                group_dst,
+                src_skip,
+                dst_skip,
+            ):
+                src_subs, dst_subs, src_blk, dst_blk = self._group_block_indices(
+                    group_src,
+                    group_dst,
+                    group_size,
+                    src_skip,
+                    dst_skip,
+                )
+                for data_ref in group_data_refs:
+                    src_tensor = self.src_tensors[data_ref.tensor_idx]
+                    dst_tensor = self.dst_tensors[data_ref.tensor_idx]
+                    page_size = int(data_ref.page_size_bytes)
+                    src_pages = (src_subs % src_factor) * page_size
+                    dst_pages = (dst_subs % dst_factor) * page_size
+                    for i in range(src_blk.size):
+                        src = _block_slice(
+                            src_tensor, int(src_blk[i]), int(src_pages[i]), page_size
+                        )
+                        dst = _block_slice(
+                            dst_tensor, int(dst_blk[i]), int(dst_pages[i]), page_size
+                        )
+                        dst.copy_(src, non_blocking=True)
+
+            self._for_each_planned_group(
+                src_blocks, dst_blocks, group_sizes, block_indices,
+                num_src_blocks, num_dst_blocks, _copy_group,
+            )
 
         with torch.npu.stream(stream):
-            start_event.record(stream)
-            if planned_ops:
+            if num_ops:
                 if swap_fn is not None:
-                    batch_src, batch_dst, batch_sizes = _descriptors_from_ops(
-                        planned_ops
-                    )
+                    batch_src = torch.from_numpy(np.ascontiguousarray(src_ptrs))
+                    batch_dst = torch.from_numpy(np.ascontiguousarray(dst_ptrs))
+                    batch_sizes = torch.from_numpy(np.ascontiguousarray(op_sizes))
                     swap_fn(
                         batch_src, batch_dst, batch_sizes, self._batch_direction
                     )
                 else:
-                    _copy_ops_python(planned_ops)
+                    _copy_ops_python()
             end_event.record(stream)
 
         transfer = Transfer(
             job_id=job_id,
             stream=stream,
-            start_event=start_event,
             end_event=end_event,
-            num_bytes=num_transfer_bytes,
             batch_src=batch_src,
             batch_dst=batch_dst,
             batch_sizes=batch_sizes,
         )
-        self._transfer_events[job_id] = end_event
-        self._transfers.append(transfer)
-        self._transfers_by_id[job_id] = transfer
-        logger.debug(
-            "KV offload submit: direction=%s job_id=%s bytes=%s "
-            "planned_ops=%s pending=%s stream=%s",
-            "store" if self.npu_to_cpu else "load",
-            job_id,
-            num_transfer_bytes,
-            len(planned_ops),
-            len(self._transfers),
-            stream,
-        )
+        with self._lock:
+            self._transfer_events[job_id] = end_event
+            self._transfers.append(transfer)
+            self._transfers_by_id[job_id] = transfer
+            self._queued.pop(job_id, None)
+            self._cv.notify_all()
         return True
 
     def get_finished(self) -> list[TransferResult]:
         results: list[TransferResult] = []
-        pending_before = len(self._transfers)
-        while self._transfers and self._transfers[0].end_event.query():
-            transfer = self._transfers.popleft()
-            results.append(self._recycle_transfer(transfer))
-        if results:
-            logger.debug(
-                "KV offload complete: direction=%s completed=%s "
-                "pending_before=%s pending_after=%s job_ids=%s",
-                "store" if self.npu_to_cpu else "load",
-                len(results),
-                pending_before,
-                len(self._transfers),
-                [result.job_id for result in results],
-            )
+        with self._lock:
+            while self._transfers and self._transfers[0].end_event.query():
+                transfer = self._transfers.popleft()
+                results.append(self._recycle_transfer(transfer))
         return results
 
     def wait(self, job_ids: set[int]) -> None:
-        logger.debug(
-            "KV offload wait enter: direction=%s jobs=%s pending=%s",
-            "store" if self.npu_to_cpu else "load",
-            sorted(job_ids),
-            len(self._transfers),
-        )
         for job_id in job_ids:
-            transfer = self._transfers_by_id.get(job_id)
+            transfer = None
+            with self._cv:
+                while True:
+                    err = self._submit_errors.get(job_id)
+                    if err is not None:
+                        raise err
+                    transfer = self._transfers_by_id.get(job_id)
+                    if transfer is not None or job_id not in self._queued:
+                        break
+                    self._cv.wait(timeout=1.0)
             if transfer is None:
                 continue
             # Fence before CPU block reuse: mmap must see store data.
             transfer.end_event.synchronize()
-        logger.debug(
-            "KV offload wait exit: direction=%s jobs=%s pending=%s",
-            "store" if self.npu_to_cpu else "load",
-            sorted(job_ids),
-            len(self._transfers),
-        )
 
     def shutdown(self) -> None:
-        while self._transfers:
-            transfer = self._transfers.popleft()
-            transfer.end_event.synchronize()
-            self._recycle_transfer(transfer)
-        self._transfer_events.clear()
-        self._transfers_by_id.clear()
-        self._event_pool.clear()
+        thread = self._submit_thread
+        if thread is not None and thread.is_alive():
+            self._submit_queue.put(None)
+            thread.join(timeout=60.0)
+        self._submit_thread = None
+        while True:
+            try:
+                leftover = self._submit_queue.get_nowait()
+            except queue.Empty:
+                break
+            if leftover is not None:
+                logger.warning(
+                    "KV offload shutdown drops queued job=%s",
+                    leftover.job_id,
+                )
+        with self._lock:
+            self._queued.clear()
+            while self._transfers:
+                transfer = self._transfers.popleft()
+                transfer.end_event.synchronize()
+                self._recycle_transfer(transfer)
+            self._transfer_events.clear()
+            self._transfers_by_id.clear()
+            self._event_pool.clear()
         self.src_tensors.clear()
         self.dst_tensors.clear()
         if self._mmap_region is not None:
@@ -610,14 +811,14 @@ class NPUCPUOffloadingWorker(OffloadingWorker):
     def submit_store(
         self, job_id: int, src_spec: GPULoadStoreSpec, dst_spec: LoadStoreSpec
     ) -> bool:
-        """Async NPU -> CPU."""
-        return self._store_handler.transfer_async(job_id, src_spec, dst_spec)
+        """Async NPU -> CPU. Plan/enqueue run on the store submit thread."""
+        return self._store_handler.submit(job_id, src_spec, dst_spec)
 
     def submit_load(
         self, job_id: int, src_spec: LoadStoreSpec, dst_spec: GPULoadStoreSpec
     ) -> bool:
-        """Async CPU -> NPU."""
-        return self._load_handler.transfer_async(job_id, src_spec, dst_spec)
+        """Async CPU -> NPU. Plan/enqueue run on the load submit thread."""
+        return self._load_handler.submit(job_id, src_spec, dst_spec)
 
     def get_finished(self) -> list[TransferResult]:
         # Store then load; order is not sorted by job_id. wait() keys by id.

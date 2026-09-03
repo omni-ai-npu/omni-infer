@@ -16,8 +16,8 @@ class NPUAttentionBackendEnum(VLLMPatch):
 
     _attr_names_to_apply = ['__getitem__']
 
-    def __getitem__(cls, key):
+    def __getitem__(self, key):
         if key in NPU_ATTENTION_BACKEND:
             return NPU_ATTENTION_BACKEND[key]
 
-        return _orig_getitem(cls, key)
+        return _orig_getitem(self, key)

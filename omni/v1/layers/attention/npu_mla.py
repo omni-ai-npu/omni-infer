@@ -18,6 +18,7 @@ from vllm.logger import init_logger
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
     ReplicatedLinear,
+    UnquantizedLinearMethod,
 )
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.rotary_embedding import get_rope
@@ -25,6 +26,8 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
 from vllm.utils.torch_utils import direct_register_custom_op
+
+from omni_npu.v1.distributed.parallel_state_ext import get_layer_parallel_group
 
 logger = init_logger(__name__)
 
@@ -93,6 +96,90 @@ npu_ai_infra_attention_pioneer_metadata: CrossLayerSharedOp | None = None
 
 
 class MomeAttentionMixin:
+    def _build_mome_conv(
+        self,
+        fake_num_spec_tokens: int,
+        config,
+        vllm_config,
+        prefix: str,
+    ) -> None:
+        """Shared noncontiguous-KV MoME conv construction (DSA and MLA).
+
+        Populates the mome state metadata and the single conv, which transposes
+        the QA/KV/O convs into one stateful convolution for noncontiguous KV.
+        """
+        self.mome_state_shapes = (
+            (self.q_lora_rank,),
+            (self.kv_lora_rank,),
+            (self.num_heads * self.v_head_dim,),
+        )
+        self.mome_state_dtypes = (self.dtype, self.dtype, self.dtype)
+        self.kernel_size = getattr(config, "router_sliding_window", 0)
+        self.cache_dtype_str = None
+        mome_kwargs = {
+            "kernel_size": self.kernel_size,
+            "num_spec_tokens": fake_num_spec_tokens,
+            "state_dtypes": self.mome_state_dtypes,
+            "state_shapes": self.mome_state_shapes,
+            "quant_config": None,
+            "vllm_config": vllm_config,
+            "prefix": f"{prefix}.conv",
+        }
+        self.conv = MomeAttention(**mome_kwargs)
+
+    def _register_sink_params(self, config):
+        weight_attrs = {
+            "output_dim": 1,
+            "weight_loader": self.sink_kv_weight_loader,
+        }
+        self.param_sink_k_pe = torch.empty(
+            self.param_sink_number, self.qk_rope_head_dim, **self.default_cfg
+        )
+        self.param_sink_k_pe = torch.nn.Parameter(
+            self.param_sink_k_pe, requires_grad=False
+        )
+        set_weight_attrs(self.param_sink_k_pe, weight_attrs)
+        self.param_sink_compressed_kv = torch.zeros(
+            self.param_sink_number, self.kv_lora_rank, **self.default_cfg
+        )
+        if self.param_sink_number > 0:
+            self.param_sink_compressed_kv = torch.nn.Parameter(
+                self.param_sink_compressed_kv, requires_grad=False
+            )
+            set_weight_attrs(self.param_sink_compressed_kv, weight_attrs)
+
+    def sink_kv_weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
+        from omni_npu.v1.layers.attention.weight_utils import load_sharded_param_weight
+
+        load_sharded_param_weight(self, param, loaded_weight)
+
+    def _run_pre_epilog_callback(self) -> None:
+        if self.pre_epilog_callback is None:
+            return
+        callback = self.pre_epilog_callback
+        self.pre_epilog_callback = None
+        callback()
+
+    def _inner_mla_attn_kwargs(self, cache_config, quant_config, prefix):
+        return {
+            "num_heads": self.num_local_heads,
+            "scale": self.scaling,
+            "qk_nope_head_dim": self.qk_nope_head_dim,
+            "qk_rope_head_dim": self.qk_rope_head_dim,
+            "v_head_dim": self.v_head_dim,
+            "q_lora_rank": self.q_lora_rank,
+            "kv_lora_rank": self.kv_lora_rank,
+            "cache_config": cache_config,
+            "quant_config": quant_config,
+            "prefix": f"{prefix}.attn",
+            "kv_b_proj": self.kv_b_proj,
+        }
+
+    def _static_sink_attn_base_kwargs(self, cache_config, quant_config, prefix):
+        kwargs = self._inner_mla_attn_kwargs(cache_config, quant_config, prefix)
+        kwargs["sink_len"] = self.param_sink_number
+        return kwargs
+
     def _apply_mome(self, x: torch.Tensor, state_indice, get_mome_args):
         if self.noncontiguous_kv:
             return self.conv(x, state_indice, **get_mome_args())
@@ -110,6 +197,61 @@ class MomeAttentionMixin:
             kv = torch.cat([kv_c, k_pe], dim=-1)
         return kv
 
+    def absorb_kv_b_weights(self) -> None:
+        """Compute W_UK_T / W_UV from kv_b_proj when vLLM could not.
+
+        vLLM's MLAAttentionImpl.process_weights_after_loading derives them with
+        get_and_maybe_dequant_weights, which drives the linear with an identity
+        matrix - unsupported by the FlashComm linears - and the spec-decode
+        (MTP) load path does not run it at all. Deriving them from the raw
+        weight reproduces vLLM's own layout:
+            W_UK_T = W_UK.permute(1, 2, 0)  -> [N, P, Lkv]
+            W_UV   = W_UV.transpose(0, 1)   -> [N, Lkv, V]
+        No-op once they exist.
+        """
+        impl = getattr(self.attn, "impl", None)
+        if impl is None or getattr(impl, "W_UK_T", None) is not None:
+            return
+        # num_local_heads, not num_heads: kv_b_proj is column-sharded and the
+        # inner MLAAttention was constructed with the local count.
+        w = self.kv_b_proj.weight
+        expected = (
+            self.num_local_heads
+            * (self.qk_nope_head_dim + self.v_head_dim)
+            * self.kv_lora_rank
+        )
+        if w.dim() != 2 or w.numel() != expected:
+            return
+        w = w.t().contiguous().view(
+            self.kv_lora_rank,
+            self.num_local_heads,
+            self.qk_nope_head_dim + self.v_head_dim,
+        )
+        w_uk, w_uv = w.split([self.qk_nope_head_dim, self.v_head_dim], dim=-1)
+        impl.W_UK_T = w_uk.permute(1, 2, 0).contiguous()
+        impl.W_UV = w_uv.transpose(0, 1).contiguous()
+
+    def _apply_o_proj(self, out: torch.Tensor) -> torch.Tensor:
+        """Project the attention output and reduce it across the o_proj shards.
+
+        ``RowParallelFlashCommLinear`` only reduces when the config declares a
+        ``y_transform``, and the default is ``NoOp``, so a sharded o_proj would
+        return partial sums. Decide from what the layer did, as npu_pangu does
+        in ``_mla_epilog``; a config that declares a transform stays
+        authoritative, since the linear will already have applied it.
+        """
+        out = self.o_proj(out)[0]
+        if self.o_proj.tp_size > 1 and self.o_proj.y_transform == "NoOp":
+            group = (
+                get_layer_parallel_group(self.o_proj.layer_name_inside_block, "y")
+                or get_tp_group()
+            )
+            if self.ena_sp:
+                out = group.reduce_scatter(out, dim=0)
+            else:
+                out = group.all_reduce(out)
+        return out
+
     def _maybe_mome_out(self, out: torch.Tensor, get_mome_args):
         if self.use_mome:
             if self.kv_b_proj.tp_size > 1:
@@ -126,7 +268,7 @@ class MomeAttentionMixin:
         self._run_pre_epilog_callback()
         out = self._post_attn_absorb(out)
         out = self._maybe_mome_out(out, get_mome_args)
-        return self.o_proj(out)[0]
+        return self._apply_o_proj(out)
 
 
 class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
@@ -244,6 +386,15 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.kv_a_proj_with_mqa",
         )
+        # _maybe_quant hands the projection a pre-quantized dict, which only
+        # a quantized linear method understands. Experts-only quantization
+        # leaves these two in bf16 on the unquantized gemm, which takes a plain
+        # tensor - so decide from the method each layer got, not from the
+        # config existing.
+        self.quant_symbol = self.quant_symbol and not any(
+            isinstance(getattr(proj, "quant_method", None), UnquantizedLinearMethod)
+            for proj in (self.q_a_proj, self.kv_a_proj_with_mqa)
+        )
         self.kv_a_layernorm = RMSNorm(self.kv_lora_rank, eps=config.rms_norm_eps)
         self.kv_b_proj = ColumnParallelFlashCommLinear(
             self.kv_lora_rank,
@@ -265,7 +416,11 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
             config.rope_parameters["rope_type"] = (
                 "deepseek_yarn" if config.rope_parameters.get("apply_yarn_scaling", True) else "deepseek_llama_scaling"
             )
-        self.rope_interleaved = getattr(config, "rope_interleaved", True)
+        self.rope_interleaved = getattr(
+            config,
+            "rope_interleaved",
+            getattr(config, "rope_interleave", True),
+        )
         rope_scaling = getattr(config, "rope_scaling", None)
         is_mrope = rope_scaling is not None and rope_scaling.get("mrope_section") is not None
         if is_mrope:
@@ -320,29 +475,9 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
             if self.noncontiguous_kv:
                 num_extra_token = 1 if self.is_pd_disagg else 0
                 fake_num_spec_tokens = max(self.num_spec_tokens, num_extra_token)
-                self.mome_state_shapes = (
-                    (self.q_lora_rank,),
-                    (self.kv_lora_rank,),
-                    (self.num_heads * self.v_head_dim,),
+                self._build_mome_conv(
+                    fake_num_spec_tokens, config, vllm_config, prefix
                 )
-                self.mome_state_dtypes = (
-                    self.dtype,
-                    self.dtype,
-                    self.dtype,
-                )
-                self.kernel_size = getattr(config, "router_sliding_window", 0)
-                self.cache_dtype_str = None
-
-                mome_kwargs = {
-                    "kernel_size": self.kernel_size,
-                    "num_spec_tokens": fake_num_spec_tokens,
-                    "state_dtypes": self.mome_state_dtypes,
-                    "state_shapes": self.mome_state_shapes,
-                    "quant_config": None,
-                    "vllm_config": vllm_config,
-                    "prefix": f"{prefix}.conv",
-                }
-                self.conv = MomeAttention(**mome_kwargs)
             else:
                 self.merge_q_kv_conv = model_extra_config.operator_opt_config.merge_q_kv_conv
                 self.qa_conv = AggregateConv(
@@ -357,50 +492,28 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
                         config,
                         vllm_config,
                         output_parallel=False,
-                        attn_prefix=f"{prefix}.attn",
+                        attn_prefix=f"{prefix}.attn"
                     )
                 else:
                     self.merge_conv = None
                 self.o_conv = AggregateConv(
-                    self.num_local_heads * self.v_head_dim,
-                    config,
-                    vllm_config,
-                    output_parallel=True,
-                    attn_prefix=f"{prefix}.attn",
+                    self.num_local_heads * self.v_head_dim, config, vllm_config,
+                    output_parallel=True, attn_prefix=f"{prefix}.attn"
                 )
 
         if self.param_sink_number == 0:
             self.attn = MLAAttention(
-                num_heads=self.num_local_heads,
-                scale=self.scaling,
-                qk_nope_head_dim=self.qk_nope_head_dim,
-                qk_rope_head_dim=self.qk_rope_head_dim,
-                v_head_dim=self.v_head_dim,
-                q_lora_rank=self.q_lora_rank,
-                kv_lora_rank=self.kv_lora_rank,
-                cache_config=cache_config,
-                quant_config=quant_config,
-                prefix=f"{prefix}.attn",
-                kv_b_proj=self.kv_b_proj,
+                **self._inner_mla_attn_kwargs(cache_config, quant_config, prefix),
                 use_sparse=False,
                 indexer=None,
             )
         else:
             self.attn = StaticSinkMLAAttention(
-                num_heads=self.num_local_heads,
-                scale=self.scaling,
-                qk_nope_head_dim=self.qk_nope_head_dim,
-                qk_rope_head_dim=self.qk_rope_head_dim,
-                v_head_dim=self.v_head_dim,
-                q_lora_rank=self.q_lora_rank,
-                kv_lora_rank=self.kv_lora_rank,
-                cache_config=cache_config,
-                quant_config=quant_config,
-                prefix=f"{prefix}.attn",
-                kv_b_proj=self.kv_b_proj,
+                **self._static_sink_attn_base_kwargs(
+                    cache_config, quant_config, prefix
+                ),
                 use_sparse=False,
                 indexer=None,
-                sink_len=self.param_sink_number,
                 sliding_window=self.sliding_window,
             )
             self._register_sink_params(config)
@@ -492,54 +605,6 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
                 dtype=torch.int32,
                 callers=metadata_callers,
             )
-
-    def _register_sink_params(self, config):
-        weight_attrs = {
-            "output_dim": 1,
-            "weight_loader": self.sink_kv_weight_loader,
-        }
-
-        self.param_sink_k_pe = torch.empty(self.param_sink_number, self.qk_rope_head_dim, **self.default_cfg)
-        self.param_sink_k_pe = torch.nn.Parameter(self.param_sink_k_pe, requires_grad=False)
-        set_weight_attrs(self.param_sink_k_pe, weight_attrs)
-
-        self.param_sink_compressed_kv = torch.zeros(self.param_sink_number, self.kv_lora_rank, **self.default_cfg)
-        if getattr(config, "param_sink_with_value", False):
-            self.param_sink_compressed_kv = torch.nn.Parameter(self.param_sink_compressed_kv, requires_grad=False)
-            set_weight_attrs(self.param_sink_compressed_kv, weight_attrs)
-
-    def sink_kv_weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
-        output_dim = getattr(param, "output_dim", None)
-        is_sharded_weight = getattr(param, "is_sharded_weight", False)
-        use_bitsandbytes_4bit = getattr(param, "use_bitsandbytes_4bit", False)
-        # bitsandbytes loads the weights of the specific portion
-        # no need to narrow
-        is_sharded_weight = is_sharded_weight or use_bitsandbytes_4bit
-        # Special case for GGUF
-        is_gguf_weight = getattr(param, "is_gguf_weight", False)
-        is_gguf_weight_type = getattr(param, "is_gguf_weight_type", False)
-        if is_gguf_weight_type:
-            param.weight_type = loaded_weight.item()
-        # Materialize GGUF UninitializedParameter
-        if is_gguf_weight and isinstance(param, nn.UninitializedParameter):
-            final_shape = list(loaded_weight.shape)
-            if output_dim is not None:
-                tp_size = getattr(self, "tp_size", 1)
-                assert final_shape[output_dim] % tp_size == 0
-                final_shape[output_dim] = final_shape[output_dim] // tp_size
-            param.materialize(final_shape, dtype=loaded_weight.dtype)
-        param_data = param.data
-        if output_dim is not None and not is_sharded_weight:
-            shard_size = param_data.shape[output_dim]
-            tp_rank = getattr(self, "tp_rank", 0)
-            start_idx = tp_rank * shard_size
-            loaded_weight = loaded_weight.narrow(output_dim, start_idx, shard_size)
-        # Special case for loading scales off disk, which often do not
-        # have a shape (such as in the case of AutoFP8).
-        if len(loaded_weight.shape) == 0:
-            loaded_weight = loaded_weight.reshape(1)
-        assert param_data.shape == loaded_weight.shape
-        param_data.copy_(loaded_weight)
 
     def post_weight_load(self):
         if self._init_wuk_t_uv and getattr(self.attn.impl, "W_UK_T", None) is not None:
@@ -1097,7 +1162,7 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
 
         if model_extra_config.operator_opt_config.enable_precision_strong_consistency:
             # normal + sink FA calls and merge, shared with the prefill consistency path
-            kv_cache = self.attn.kv_cache[get_forward_context().virtual_engine]
+            kv_cache = self.attn.kv_cache
             out = self._apply_sink_attention_consistency_core(
                 query=q_nope,
                 query_rope=q_pe,
@@ -1508,35 +1573,31 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
 
     # ========================= forward =========================
 
-    def _run_pre_epilog_callback(self) -> None:
-        """Run and clear deferred work before the MLA output epilog."""
-        if self.pre_epilog_callback is None:
-            return
-        callback = self.pre_epilog_callback
-        self.pre_epilog_callback = None
-        callback()
+    def forward(
+        self, x, cos, sin, topk_indices_buffer=None
+    ) -> tuple[torch.Tensor, torch.Tensor]:  # adaptor
+        """Return the hidden states and the shared top-k indices buffer.
 
-    def forward(self, x, cos, sin):  # adapter
-        return torch.ops.vllm.npu_mla_forward(x, cos, sin, self.prefix)
+        !2515 hoists the buffer out of layer state and threads it through the
+        decoder layers, so the model calls this with four arguments and unpacks
+        two. Nothing on this path writes it: the model never passed one at
+        construction, so these layers have no indexer at all,
+        and the buffer reaches the vLLM attention object the same way it
+        did before. Pass it through unchanged - this is where to populate it if
+        a consumer ever needs the selection.
+        """
+        return (
+            torch.ops.vllm.npu_mla_forward(x, cos, sin, self.prefix),
+            topk_indices_buffer,
+        )
 
     def forward_mhc_deferred(
-        self,
-        x: torch.Tensor,
-        cos: torch.Tensor,
-        sin: torch.Tensor,
-        residual: torch.Tensor,
-        mhc_layer_name: str,
-        task_key: str,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return torch.ops.vllm.npu_mla_forward_mhc_deferred(
-            x,
-            cos,
-            sin,
-            residual,
-            self.prefix,
-            mhc_layer_name,
-            task_key,
+        self, x, cos, sin, residual, mhc_layer_name, task_key, topk_indices_buffer=None
+    ):
+        hidden_states, h_post, h_res = torch.ops.vllm.npu_mla_forward_mhc_deferred(
+            x, cos, sin, residual, self.prefix, mhc_layer_name, task_key
         )
+        return (hidden_states, h_post, h_res), topk_indices_buffer
 
     def _decode_attention(
         self,
@@ -1572,7 +1633,7 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         if self.side_stream is not None:
             return self._forward_decode_multistream(x, cos, sin, attn_metadata, pd_mixed_flag)
 
-        kv_cache = self.attn.kv_cache[get_forward_context().virtual_engine]
+        kv_cache = self.attn.kv_cache
 
         def get_mome_args():
             if self.noncontiguous_kv:
@@ -1605,7 +1666,7 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         pd_mixed_flag: int = 0,
     ) -> torch.Tensor:
         """Overlap the decode Q path with KV/MoME/cache update on a side stream."""
-        kv_cache = self.attn.kv_cache[get_forward_context().virtual_engine]
+        kv_cache = self.attn.kv_cache
 
         def get_mome_args():
             if self.noncontiguous_kv:
@@ -1720,7 +1781,7 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         sp_manager = SPManager.init_sp(tok=cos.size(0)) if self.ena_sp else None
 
         if attn_metadata:
-            kv_cache = self.attn.kv_cache[get_forward_context().virtual_engine]
+            kv_cache = self.attn.kv_cache
             q_cumlens = attn_metadata.query_cumlens
             kv_lens = attn_metadata.seq_lens
             block_table = attn_metadata.block_table
@@ -1758,7 +1819,7 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
 
         if sp_manager and self.o_proj.tp_size > 1:
             out = sp_manager.align_tokens(out)
-        out = self.o_proj(out)[0]  # T,ND -> TD
+        out = self._apply_o_proj(out)  # T,ND -> TD
         if sp_manager and out.size(0) != x.size(0):
             out = sp_manager.slice_tokens(out)
         return out
@@ -1780,7 +1841,7 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
 
         if attn_metadata:
             q_cumlens = kv_cumlens = attn_metadata.query_cumlens
-            kv_cache = self.attn.kv_cache[get_forward_context().virtual_engine]
+            kv_cache = self.attn.kv_cache
             block_table = getattr(attn_metadata, "block_table", None)
             seq_lens = getattr(attn_metadata, "seq_lens", None)
         else:  # dummy_run
@@ -1854,7 +1915,7 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         out = self._maybe_mome_out(out, get_mome_args)  # fit o_proj.tp_size
         if sp_manager and self.o_proj.tp_size > 1:
             out = sp_manager.align_tokens(out)
-        out = self.o_proj(out)[0]  # T,ND -> TD
+        out = self._apply_o_proj(out)  # T,ND -> TD
         if sp_manager and out.size(0) != x.size(0):
             out = sp_manager.slice_tokens(out)
         return out
@@ -1880,7 +1941,7 @@ def npu_mla_forward(
             "sink_k_pe and sink_compressed_kv have not been prepared"
         )
         if not self.attn.sink_populated:
-            self_kv_cache = self.attn.kv_cache[forward_context.virtual_engine]
+            self_kv_cache = self.attn.kv_cache
             if self_kv_cache is not None and len(self_kv_cache) > 0:
                 self.attn.populate_sink_kv(self_kv_cache[0], self_kv_cache[1])
 

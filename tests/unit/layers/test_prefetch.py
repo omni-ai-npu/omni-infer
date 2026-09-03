@@ -144,14 +144,17 @@ class TestPrefetchManagerMethods(unittest.TestCase):
     def test_prefetch_moe_calls_prefetch_weight_for_routed_and_shared(self):
         import torch  # type: ignore[import-not-found]  # noqa: E402
 
+        shared_experts = SimpleNamespace(
+            gate_up_proj=SimpleNamespace(weight=torch.randn(1)),
+            down_proj=SimpleNamespace(weight=torch.randn(1)),
+        )
         layer = SimpleNamespace(
             w13_weight=torch.randn(2, 2),
             w2_weight=torch.randn(2, 2),
-            shared_experts=SimpleNamespace(
-                gate_up_proj=SimpleNamespace(weight=torch.randn(1)),
-                down_proj=SimpleNamespace(weight=torch.randn(1)),
-            ),
+            shared_experts=shared_experts,
         )
+        layer.routed_experts = layer
+        layer._shared_experts = SimpleNamespace(_layer=shared_experts)
         with mock.patch.object(self.pm, "prefetch_weight") as pw:
             self.pm.prefetch("moe", self.trigger, layer=layer)
             self.assertEqual(pw.call_count, 4)

@@ -2,7 +2,7 @@
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 """KV-cache reshape adaptation for NPU attention backends.
 
-Injected by omni/vllm_patches/usefull_patch/patch_mrv2_attn_utils.py.
+Injected by omni/vllm_patches/usefull_patch/common/patch_mrv2_attn_utils.py.
 """
 
 from __future__ import annotations

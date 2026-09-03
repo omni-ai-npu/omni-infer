@@ -12,14 +12,15 @@ from omni_npu.model_config.config_loader.loader import model_extra_config
 def _apply_experts(layer: torch.nn.Module, h: torch.Tensor, expert_tokens: torch.Tensor, pertoken_scale=None):
     from omni_npu.layers.fused_moe.prepare_permute_unpermute_finalize import PreparePermuteResult
 
-    return layer.quant_method.apply_experts(
+    experts = layer.routed_experts
+    return experts.quant_method.apply_experts(
         layer=layer,
         prepare_permute_result=PreparePermuteResult(
             hidden_states_sorted_by_experts=h,
             expert_tokens=expert_tokens,
             dynamic_scale=pertoken_scale,
         ),
-        activation=getattr(layer, "activation", "silu"),
+        activation=experts.activation.value,
     )
 
 
@@ -92,15 +93,16 @@ def fused_experts_tp(
         .transpose(0, 1)
     )
     num_tokens, hidden_size = x.shape
-    n_routed_experts = layer.global_num_experts
+    experts = layer.routed_experts
+    n_routed_experts = experts.global_num_experts
     sorted_tokens, expanded_src_to_dst_row, expanded_expert_idx = torch_npu.npu_moe_init_routing(
         x, row_idx, topk_ids, num_tokens
     )
     expert_tokens = torch_npu.npu_moe_compute_expert_tokens(expanded_expert_idx, n_routed_experts).to(torch.int64)
-    if layer.quant_config is None:
+    if experts.quant_config is None:
         pertoken_scale = None
     else:
-        moe_quant_config = getattr(layer.quant_method, "moe_quant_config", None)
+        moe_quant_config = getattr(experts.quant_method, "moe_quant_config", None)
         if moe_quant_config and getattr(moe_quant_config, "use_mxfp8_w8a8", False) is True:
             sorted_tokens, pertoken_scale = torch_npu.npu_dynamic_mx_quant(sorted_tokens, dst_type=torch.float8_e4m3fn)
         else:
@@ -111,3 +113,22 @@ def fused_experts_tp(
     return torch_npu.npu_moe_finalize_routing(
         out, None, None, None, topk_weights, expanded_src_to_dst_row, topk_ids
     ).to(model_extra_config.dtype)
+
+
+def fused_experts_tp_with_shared(
+    layer: torch.nn.Module,
+    x_slice: torch.Tensor,
+    topk_ids: torch.Tensor,
+    topk_weights: torch.Tensor,
+    shared_experts,
+):
+    routed_output = fused_experts_tp(
+        layer=layer,
+        x=x_slice,
+        topk_ids=topk_ids,
+        topk_weights=topk_weights,
+    )
+    if shared_experts is not None:
+        shared_output = shared_experts(x_slice)
+        return shared_output, routed_output + shared_output
+    return routed_output

@@ -381,3 +381,89 @@ class TestNPUPlatform:
         platform = NPUPlatform()
 
         assert platform.is_sleep_mode_available() is True
+
+    def _make_hybrid_align_config(
+        self,
+        *,
+        use_mla=True,
+        index_topk=2048,
+        index_head_dim=128,
+        head_size=576,
+        block_size=16,
+        dtype=torch.bfloat16,
+        mamba_page_size_padded=100,
+    ):
+        vllm_cfg = create_vllm_config(block_size=block_size)
+        vllm_cfg.model_config.use_mla = use_mla
+        vllm_cfg.model_config.dtype = dtype
+        vllm_cfg.model_config.get_head_size = MagicMock(return_value=head_size)
+        vllm_cfg.model_config.hf_config = SimpleNamespace(
+            index_topk=index_topk,
+            index_head_dim=index_head_dim,
+        )
+        vllm_cfg.cache_config.mamba_page_size_padded = mamba_page_size_padded
+        return vllm_cfg
+
+    def test_align_hybrid_block_size_skips_when_not_dsa(self, monkeypatch):
+        monkeypatch.setattr(
+            "vllm.platforms.interface.Platform._align_hybrid_block_size",
+            classmethod(lambda cls, cfg, backend: None),
+        )
+        vllm_cfg = self._make_hybrid_align_config(use_mla=False)
+        NPUPlatform._align_hybrid_block_size(vllm_cfg, object)
+        assert vllm_cfg.cache_config.mamba_page_size_padded == 100
+
+        vllm_cfg = self._make_hybrid_align_config(index_topk=0)
+        NPUPlatform._align_hybrid_block_size(vllm_cfg, object)
+        assert vllm_cfg.cache_config.mamba_page_size_padded == 100
+
+    def test_align_hybrid_block_size_skips_when_mamba_page_unset(self, monkeypatch):
+        monkeypatch.setattr(
+            "vllm.platforms.interface.Platform._align_hybrid_block_size",
+            classmethod(lambda cls, cfg, backend: None),
+        )
+        vllm_cfg = self._make_hybrid_align_config(mamba_page_size_padded=None)
+        NPUPlatform._align_hybrid_block_size(vllm_cfg, object)
+        assert vllm_cfg.cache_config.mamba_page_size_padded is None
+
+    def test_align_hybrid_block_size_pads_mamba_to_dsa_page(self, monkeypatch):
+        monkeypatch.setattr(
+            "vllm.platforms.interface.Platform._align_hybrid_block_size",
+            classmethod(lambda cls, cfg, backend: None),
+        )
+        vllm_cfg = self._make_hybrid_align_config(mamba_page_size_padded=100)
+        NPUPlatform._align_hybrid_block_size(vllm_cfg, object)
+        # 16 * (576 + 128) * 2 bytes (bf16)
+        assert vllm_cfg.cache_config.mamba_page_size_padded == 16 * (576 + 128) * 2
+
+    def test_align_hybrid_block_size_keeps_larger_existing_padding(self, monkeypatch):
+        monkeypatch.setattr(
+            "vllm.platforms.interface.Platform._align_hybrid_block_size",
+            classmethod(lambda cls, cfg, backend: None),
+        )
+        vllm_cfg = self._make_hybrid_align_config(
+            mamba_page_size_padded=10**9,
+        )
+        NPUPlatform._align_hybrid_block_size(vllm_cfg, object)
+        assert vllm_cfg.cache_config.mamba_page_size_padded == 10**9
+
+    @pytest.mark.parametrize(
+        ("cache_dtype", "expected_page"),
+        [
+            ("fp8_ds_mla", 2 * 16 * (656 + 128 + 4)),
+            ("hif8_ds_mla", 2 * 16 * (656 + 128 + 4)),
+            ("int8_ds_mla", 2 * 16 * (656 + 128 + 2)),
+            ("li_int8_ds_mla", 16 * (576 * 2 + 128 + 2)),
+        ],
+    )
+    def test_align_hybrid_block_size_pads_quantized_dsa_layouts(
+        self, monkeypatch, cache_dtype, expected_page
+    ):
+        monkeypatch.setattr(
+            "vllm.platforms.interface.Platform._align_hybrid_block_size",
+            classmethod(lambda cls, cfg, backend: None),
+        )
+        vllm_cfg = self._make_hybrid_align_config(mamba_page_size_padded=100)
+        vllm_cfg.cache_config.cache_dtype = cache_dtype
+        NPUPlatform._align_hybrid_block_size(vllm_cfg, object)
+        assert vllm_cfg.cache_config.mamba_page_size_padded == expected_page

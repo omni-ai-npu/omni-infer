@@ -185,34 +185,3 @@ def test_register_kv_caches_requires_config_and_forwards():
     ):
         connector.register_kv_caches({"L": torch.zeros(1)})
         super_reg.assert_called_once()
-
-
-def test_matched_tokens_and_build_meta_counters():
-    connector = NPUOffloadingConnector.__new__(NPUOffloadingConnector)
-    with patch(
-        "omni_npu.connector.npu_offloading_connector.OffloadingConnector.get_num_new_matched_tokens",
-        return_value=(None, False),
-    ):
-        toks, async_load = connector.get_num_new_matched_tokens("req", 0)
-        assert toks is None
-        assert async_load is False
-        assert connector._omni_offload_defer_none == 1
-
-    with patch(
-        "omni_npu.connector.npu_offloading_connector.OffloadingConnector.get_num_new_matched_tokens",
-        return_value=(4, True),
-    ):
-        connector.get_num_new_matched_tokens("req", 1)
-        assert connector._omni_offload_async_load == 1
-
-    with patch(
-        "omni_npu.connector.npu_offloading_connector.OffloadingConnector.build_connector_meta",
-        return_value="meta",
-    ) as super_meta:
-        out = connector.build_connector_meta(
-            SimpleNamespace(total_num_scheduled_tokens=0)
-        )
-        assert out == "meta"
-        super_meta.assert_called_once()
-        assert connector._omni_offload_defer_none == 0
-        assert connector._omni_offload_async_load == 0

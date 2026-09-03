@@ -287,7 +287,6 @@ class Indexer(torch.nn.Module):
         sin: torch.Tensor,  # BNSD
         attn_metadata: NPUDSAMetadata,
         ki_cache: torch.Tensor,  # [*, pg, 1, D]
-        topk_indices_buffer: torch.Tensor | None = None,  # [T, K]
     ) -> tuple[torch.Tensor, torch.Tensor]:
         wi, qi, ki = self._li_prolog(x, qr, cos, sin)
         if None in [attn_metadata, ki_cache]:
@@ -302,8 +301,6 @@ class Indexer(torch.nn.Module):
             kv_lens=attn_metadata.seq_lens.to(torch.int32),
             block_table=attn_metadata.block_table,
         )
-        if topk_indices_buffer is not None:
-            topk_indices_buffer[:x.shape[0], :] = tok_idx[:, 0, :]
         return tok_idx, ki
 
 
@@ -323,7 +320,6 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         cache_config: CacheConfig | None = None,
         quant_config: QuantizationConfig | None = None,
         prefix: str = "",
-        topk_indices_buffer: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -455,7 +451,11 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         assert self.q_b_proj.tp_size == self.kv_b_proj.tp_size
         self.num_local_heads = self.num_heads // self.q_b_proj.tp_size
 
-        self.rope_interleaved = getattr(config, "rope_interleaved", True)
+        self.rope_interleaved = getattr(
+            config,
+            "rope_interleaved",
+            getattr(config, "rope_interleave", True),
+        )
         if config.rope_parameters["rope_type"] != "default":
             config.rope_parameters["rope_type"] = (
                 "deepseek_yarn" if config.rope_parameters.get("apply_yarn_scaling", True) else "deepseek_llama_scaling"
@@ -499,6 +499,7 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         self.use_mome = getattr(config, "use_mome", False)
         self.merge_q_kv_conv = model_extra_config.operator_opt_config.merge_q_kv_conv
         self.param_sink_number = getattr(config, "param_sink_number", 0)
+        self.index_topk = config.index_topk
 
         # IndexCache config
         index_topk_freq = getattr(config, "index_topk_freq", 1)
@@ -530,35 +531,14 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
             )
         else:
             self.indexer = None
-        self.topk_indices_buffer = topk_indices_buffer
 
         if self.use_mome:
             if self.noncontiguous_kv:
                 num_extra_token = 1 if self.is_pd_disagg else 0
                 fake_num_spec_tokens = max(self.num_speculative_tokens, num_extra_token)
-                self.mome_state_shapes = (
-                    (self.q_lora_rank,),
-                    (self.kv_lora_rank,),
-                    (self.num_heads * self.v_head_dim,),
+                self._build_mome_conv(
+                    fake_num_spec_tokens, config, vllm_config, prefix
                 )
-                self.mome_state_dtypes = (
-                    self.dtype,
-                    self.dtype,
-                    self.dtype,
-                )
-                self.kernel_size = getattr(config, "router_sliding_window", 0)
-                self.cache_dtype_str = None
-
-                mome_kwargs = {
-                    "kernel_size": self.kernel_size,
-                    "num_spec_tokens": fake_num_spec_tokens,
-                    "state_dtypes": self.mome_state_dtypes,
-                    "state_shapes": self.mome_state_shapes,
-                    "quant_config": None,
-                    "vllm_config": vllm_config,
-                    "prefix": f"{prefix}.conv",
-                }
-                self.conv = MomeAttention(**mome_kwargs)
             else:
                 self.qa_conv = AggregateConv(
                     self.q_lora_rank, config, vllm_config, output_parallel=False, attn_prefix=f"{prefix}.attn"
@@ -576,38 +556,17 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
 
         if self.param_sink_number == 0:
             self.attn = MLAAttention(
-                num_heads=self.num_local_heads,
-                scale=self.scaling,
-                qk_nope_head_dim=self.qk_nope_head_dim,
-                qk_rope_head_dim=self.qk_rope_head_dim,
-                v_head_dim=self.v_head_dim,
-                q_lora_rank=self.q_lora_rank,
-                kv_lora_rank=self.kv_lora_rank,
-                cache_config=cache_config,
-                quant_config=quant_config,
-                prefix=f"{prefix}.attn",
-                kv_b_proj=self.kv_b_proj,
+                **self._inner_mla_attn_kwargs(cache_config, quant_config, prefix),
                 use_sparse=True,
                 indexer=self.indexer,
-                topk_indices_buffer=self.topk_indices_buffer,
             )
         else:
             self.attn = StaticSinkMLAAttention(
-                num_heads=self.num_local_heads,
-                scale=self.scaling,
-                qk_nope_head_dim=self.qk_nope_head_dim,
-                qk_rope_head_dim=self.qk_rope_head_dim,
-                v_head_dim=self.v_head_dim,
-                q_lora_rank=self.q_lora_rank,
-                kv_lora_rank=self.kv_lora_rank,
-                cache_config=cache_config,
-                quant_config=quant_config,
-                prefix=f"{prefix}.attn",
-                kv_b_proj=self.kv_b_proj,
+                **self._static_sink_attn_base_kwargs(
+                    cache_config, quant_config, prefix
+                ),
                 use_sparse=True,
                 indexer=self.indexer,
-                topk_indices_buffer=self.topk_indices_buffer,
-                sink_len=self.param_sink_number,
             )
             self._register_sink_params(config)
 
@@ -632,22 +591,6 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
             self.ki_stream = named_stream("ki_stream")
             self.indexer.wi_stream = self.wi_stream
             self.indexer.ki_stream = self.ki_stream
-
-
-    def _register_sink_params(self, config):
-        weight_attrs = {
-            "output_dim": 1,
-            "weight_loader": self.sink_kv_weight_loader,
-        }
-
-        self.param_sink_k_pe = torch.empty(self.param_sink_number, self.qk_rope_head_dim, **self.default_cfg)
-        self.param_sink_k_pe = torch.nn.Parameter(self.param_sink_k_pe, requires_grad=False)
-        set_weight_attrs(self.param_sink_k_pe, weight_attrs)
-
-        self.param_sink_compressed_kv = torch.zeros(self.param_sink_number, self.kv_lora_rank, **self.default_cfg)
-        if getattr(config, "param_sink_with_value", False):
-            self.param_sink_compressed_kv = torch.nn.Parameter(self.param_sink_compressed_kv, requires_grad=False)
-            set_weight_attrs(self.param_sink_compressed_kv, weight_attrs)
 
     def post_weight_load(self):
         if self._init_wuk_t_uv and getattr(self.attn.impl, "W_UK_T", None) is not None:
@@ -676,45 +619,6 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         )
         if self.split_q_up_in_multistream and not use_fused_mla_prolog:
             release_q_b_proj_storage(self.q_b_proj)
-
-    def sink_kv_weight_loader(
-        self,
-        param: nn.Parameter,
-        loaded_weight: torch.Tensor,
-    ):
-        output_dim = getattr(param, "output_dim", None)
-        is_sharded_weight = getattr(param, "is_sharded_weight", False)
-        use_bitsandbytes_4bit = getattr(param, "use_bitsandbytes_4bit", False)
-        # bitsandbytes loads the weights of the specific portion
-        # no need to narrow
-        is_sharded_weight = is_sharded_weight or use_bitsandbytes_4bit
-        # Special case for GGUF
-        is_gguf_weight = getattr(param, "is_gguf_weight", False)
-        is_gguf_weight_type = getattr(param, "is_gguf_weight_type", False)
-        if is_gguf_weight_type:
-            param.weight_type = loaded_weight.item()
-        # Materialize GGUF UninitializedParameter
-        if is_gguf_weight and isinstance(param, nn.UninitializedParameter):
-            final_shape = list(loaded_weight.shape)
-            if output_dim is not None:
-                tp_size = getattr(self, "tp_size", 1)
-                assert final_shape[output_dim] % tp_size == 0
-                final_shape[output_dim] = final_shape[output_dim] // tp_size
-            param.materialize(final_shape, dtype=loaded_weight.dtype)
-        param_data = param.data
-        if output_dim is not None and not is_sharded_weight:
-            shard_size = param_data.shape[output_dim]
-            tp_rank = getattr(self, "tp_rank", 0)
-            start_idx = tp_rank * shard_size
-            loaded_weight = loaded_weight.narrow(output_dim, start_idx, shard_size)
-        # Special case for loading scales off disk, which often do not
-        # have a shape (such as in the case of AutoFP8).
-        if len(loaded_weight.shape) == 0:
-            loaded_weight = loaded_weight.reshape(1)
-        assert param_data.shape == loaded_weight.shape
-        param_data.copy_(loaded_weight)
-
-    # ======================= linear =======================
 
     def _apply_rope(
         self,
@@ -1076,35 +980,24 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
 
     # ======================= forward =======================
 
-    def _run_pre_epilog_callback(self) -> None:
-        """Run and clear deferred work before the DSA output epilog."""
-        if self.pre_epilog_callback is None:
-            return
-        callback = self.pre_epilog_callback
-        self.pre_epilog_callback = None
-        callback()
-
-    def forward(self, x, cos, sin) -> torch.Tensor:  # adaptor
-        return torch.ops.vllm.npu_dsa_forward(x, cos, sin, self.prefix)
-
-    def forward_mhc_deferred(
+    def forward(
         self,
         x: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
-        residual: torch.Tensor,
-        mhc_layer_name: str,
-        task_key: str,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return torch.ops.vllm.npu_dsa_forward_mhc_deferred(
-            x,
-            cos,
-            sin,
-            residual,
-            self.prefix,
-            mhc_layer_name,
-            task_key,
+        topk_indices_buffer: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return torch.ops.vllm.npu_dsa_forward(
+            x, cos, sin, self.prefix, topk_indices_buffer
         )
+
+    def forward_mhc_deferred(
+        self, x, cos, sin, residual, mhc_layer_name, task_key, topk_indices_buffer=None
+    ):
+        hidden_states, h_post, h_res = torch.ops.vllm.npu_dsa_forward_mhc_deferred(
+            x, cos, sin, residual, self.prefix, mhc_layer_name, task_key
+        )
+        return (hidden_states, h_post, h_res), topk_indices_buffer
 
     def _forward_prefill(
         self,
@@ -1113,8 +1006,9 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         sin: torch.Tensor,  # BNSD
         attn_metadata: NPUDSAMetadata = None,
         kv_cache: tuple[torch.Tensor] = None,
+        topk_indices_buffer: torch.Tensor | None = None,
         pd_mixed_flag: bool = False,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         assert not self.sharded_o_proj  # TODO: sharded_o_proj only support cp
         assert not attn_metadata or not self.ena_kvsp  # TODO: kvsp only support cp
 
@@ -1169,14 +1063,14 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
                 wi, qi, ki = self.indexer._li_prolog(x, q, cos, sin)
             self.indexer._update_cache(ki, attn_metadata, ki_cache)
             topk_idx = self.indexer._apply_lightning_indexer(wi, qi, ki_cache, q_cumlens, kv_lens, block_table)
-            if not is_dummy and self.topk_indices_buffer is not None:
-                self.topk_indices_buffer[:topk_idx.shape[0], :topk_idx.shape[2]] = topk_idx[:, 0, :]
+        elif not is_dummy:
+            topk_idx = topk_indices_buffer
         else:
-            if not is_dummy:
-                topk_idx = self.topk_indices_buffer[:kv.shape[0], :].unsqueeze(1)
-            else:
-                topk_idx = None
+            topk_idx = None
 
+        next_topk_indices_buffer = (
+            topk_idx if topk_idx is not None else topk_indices_buffer
+        )
         topk_idx = self._apply_sink_offset(topk_idx)
 
         out = self._apply_attn_absorb(
@@ -1197,7 +1091,7 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         out = self.o_proj(out)[0]
         if self.ena_sp and out.size(0) != x.size(0):
             out = sp_manager.slice_tokens(out)
-        return out
+        return out, next_topk_indices_buffer
 
     def _forward_prefill_cp(
         self,
@@ -1206,7 +1100,8 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         sin: torch.Tensor,  # BNSD
         attn_metadata: NPUDSAMetadata = None,
         kv_cache: tuple[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        topk_indices_buffer: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         assert self.q_b_proj.tp_size == 1  # full head required
         assert self.kv_b_proj.tp_size == 1  # full head required
         assert self.ena_sp  # dependency
@@ -1308,11 +1203,14 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
                 q_cumlens,
                 kv_lens,  # int32 [2B]
                 blk_table,  # int32 [2B, *]
-            )  # int32 [T, 1, K] or None for dummy_run
-            if self.topk_indices_buffer is not None:
-                self.topk_indices_buffer[:topk_idx.shape[0], :topk_idx.shape[2]] = topk_idx[:, 0, :]
+            )  # int32 [T_cp, 1, K] or None for dummy_run
         else:
-            topk_idx = self.topk_indices_buffer[:kv.shape[0], :].unsqueeze(1)
+            # A full DSA layer returns CP-layout top-k; shared consumes it directly.
+            topk_idx = topk_indices_buffer
+
+        next_topk_indices_buffer = (
+            topk_idx if topk_idx is not None else topk_indices_buffer
+        )
         topk_idx = self._apply_sink_offset(topk_idx)
 
         cp_out = self._apply_attn_absorb(
@@ -1331,15 +1229,22 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
             cp_out = sp_manager.cp_to_sp(cp_out)  # sp
             cp_out = sp_manager.ag_tokens(cp_out)  # TD
             cp_out = self._maybe_mome_out(cp_out, get_mome_args)  # TD
-            cp_out = self.o_proj(cp_out)[0]
+            # Pad to a multiple of sp_size before o_proj, exactly as the
+            # non-CP prefill does: this branch hands o_proj the full token
+            # set, and a ReduceScatter y_transform (the correct SP setting)
+            # requires the row count to divide by the group size. Without
+            # the pad, any request whose token count is not a multiple of
+            # sp_size aborts in the communicator.
+            cp_out = sp_manager.align_tokens(cp_out)  # TD, padded
+            cp_out = self._apply_o_proj(cp_out)
             if cp_out.size(0) != sp_x.size(0):
                 cp_out = sp_manager.slice_tokens(cp_out)
-            return cp_out
+            return cp_out, next_topk_indices_buffer
 
         if self.o_proj.requires_input_partition():
             cp_out = sp_manager.sp_to_tp(cp_out)
-        cp_out = self.o_proj(cp_out)[0]
-        return sp_manager.cp_to_sp(cp_out)
+        cp_out = self._apply_o_proj(cp_out)
+        return sp_manager.cp_to_sp(cp_out), next_topk_indices_buffer
 
     def _forward_decode(
         self,
@@ -1348,15 +1253,17 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         sin: torch.Tensor, # BNSD
         attn_metadata: NPUDSAMetadata,
         kv_cache: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        topk_indices_buffer: torch.Tensor | None = None,
         pd_mixed_flag: int = 0,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         assert not self.ena_sp  # TODO: support decode sp in the future
         assert not self.sharded_o_proj  # sharded_o_proj is for prefill only
         use_fused_mla_prolog = self.use_mlaprolog and not self.use_mome and self.param_sink_number == 0
         can_decode_multistream = self.side_stream is not None and not self.skip_topk
         if can_decode_multistream and not use_fused_mla_prolog and not self.ena_kvsp:
             return self._forward_decode_multistream(
-                x, cos, sin, attn_metadata, kv_cache, pd_mixed_flag
+                x, cos, sin, attn_metadata, kv_cache,
+                topk_indices_buffer, pd_mixed_flag,
             )
 
         ki_cache = kv_cache[1] if self.noncontiguous_kv else kv_cache[2]
@@ -1415,10 +1322,12 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
                 kv_lens,  # [B]
                 blk_table,  # [B, *]
             )  # -> int32 [T, 1, K]
-            if self.topk_indices_buffer is not None:
-                self.topk_indices_buffer[:topk_idx.shape[0], :topk_idx.shape[2]] = topk_idx[:, 0, :]
         else:
-            topk_idx = self.topk_indices_buffer[:x.shape[0], :].unsqueeze(1)
+            topk_idx = topk_indices_buffer[:x.shape[0]]
+
+        next_topk_indices_buffer = (
+            topk_idx if topk_idx is not None else topk_indices_buffer
+        )
         topk_idx = self._apply_sink_offset(topk_idx)
 
         out = self._apply_attn_absorb(
@@ -1432,7 +1341,10 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
             attn_metadata=attn_metadata,
         )  # -> TND
 
-        return self._decode_attn_epilog(out, get_mome_args)
+        return (
+            self._decode_attn_epilog(out, get_mome_args),
+            next_topk_indices_buffer,
+        )
 
     def _forward_decode_multistream(
         self,
@@ -1441,8 +1353,9 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         sin: torch.Tensor,
         attn_metadata: NPUDSAMetadata,
         kv_cache: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        topk_indices_buffer: torch.Tensor | None = None,
         pd_mixed_flag: int = 0,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Overlap attention Q/KV-cache work with the complete indexer path."""
         q_cumlens = attn_metadata.query_cumlens.to(torch.int32)
         kv_lens = attn_metadata.seq_lens.to(torch.int32)
@@ -1532,10 +1445,7 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
             self._kv_norm_rope_cache(kv, cos, sin, attn_metadata, kv_cache)
         side_done.wait(main_stream)
         topk_idx.record_stream(main_stream)
-        if self.topk_indices_buffer is not None:
-            self.topk_indices_buffer[
-                :topk_idx.shape[0], :topk_idx.shape[2]
-            ] = topk_idx[:, 0, :]
+        next_topk_indices_buffer = topk_idx
         topk_idx = self._apply_sink_offset(topk_idx)
 
         out = self._apply_attn_absorb(
@@ -1548,7 +1458,10 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
             kv_cache=kv_cache,
             attn_metadata=attn_metadata,
         )
-        return self._decode_attn_epilog(out, get_mome_args)
+        return (
+            self._decode_attn_epilog(out, get_mome_args),
+            next_topk_indices_buffer,
+        )
 
 
 def npu_dsa_forward(
@@ -1556,14 +1469,14 @@ def npu_dsa_forward(
     cos: torch.Tensor,
     sin: torch.Tensor,
     layer_name: str,
-) -> torch.Tensor:
+    topk_indices_buffer: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
     forward_context = get_forward_context()
     self: NPUDeepseekSparseAttention = forward_context.no_compile_layers[layer_name]
     attn_metadata = forward_context.attn_metadata
     if isinstance(attn_metadata, dict):
         attn_metadata = attn_metadata[f"{self.prefix}.attn"]
-
-    kv_cache = self.attn.kv_cache[forward_context.virtual_engine] if attn_metadata else None
+    kv_cache = self.attn.kv_cache if attn_metadata else None
     p_slice, d_slice, has_prefill, has_decode = get_batch_desc(
         attn_metadata, self.layer_idx
     )
@@ -1578,25 +1491,74 @@ def npu_dsa_forward(
             self.attn.populate_sink_kv(kv_cache[0], kv_cache[1])
 
     if has_prefill and has_decode:
+        sp_enabled = self.ena_sp
+        if sp_enabled:
+            topk_indices_buffer = get_tp_group().all_gather(topk_indices_buffer, dim=0)
         with sp_disabled(self, hs) as (x, y, out):
-            y[p_slice] = self._forward_prefill(
-                x[p_slice], cos[p_slice], sin[p_slice], prefill, kv_cache, pd_mixed_flag=True
+            y[p_slice], topk_indices_buffer[p_slice] = self._forward_prefill(
+                x[p_slice],
+                cos[p_slice],
+                sin[p_slice],
+                prefill,
+                kv_cache,
+                topk_indices_buffer[p_slice],
+                pd_mixed_flag=True,
             )
             # short prefill in decode or pure decode
-            pd_mixed_flag = 2 if attn_metadata.num_decode_tokens > attn_metadata.num_decodes else 1
-            y[d_slice] = self._forward_decode(x[d_slice], cos[d_slice], sin[d_slice], decode, kv_cache, pd_mixed_flag)
+            pd_mixed_flag = (
+                2 if attn_metadata.num_decode_tokens > attn_metadata.num_decodes else 1
+            )
+            y[d_slice], topk_indices_buffer[d_slice] = self._forward_decode(
+                x[d_slice],
+                cos[d_slice],
+                sin[d_slice],
+                decode,
+                kv_cache,
+                topk_indices_buffer[d_slice],
+                pd_mixed_flag,
+            )
+        if sp_enabled:
+            topk_indices_buffer = topk_indices_buffer.split(hs.size(0))[get_tp_group().rank_in_group]
     elif has_prefill:
         out = lazy_zero_like(hs)
         if self.ena_cp:
-            out[:] = self._forward_prefill_cp(hs, cos, sin, prefill, kv_cache)
+            out[:], topk_indices_buffer = self._forward_prefill_cp(
+                hs,
+                cos,
+                sin,
+                prefill,
+                kv_cache,
+                topk_indices_buffer
+            )
         elif self.ena_sp:
-            out[:] = self._forward_prefill(hs, cos, sin, prefill, kv_cache)
+            out[:], topk_indices_buffer = self._forward_prefill(
+                hs,
+                cos,
+                sin,
+                prefill,
+                kv_cache,
+                topk_indices_buffer
+            )
         else:
-            out[p_slice] = self._forward_prefill(hs[p_slice], cos[p_slice], sin[p_slice], prefill, kv_cache)
-    else:  # has_decode
+            out[p_slice], topk_indices_buffer = self._forward_prefill(
+                hs[p_slice],
+                cos[p_slice],
+                sin[p_slice],
+                prefill,
+                kv_cache,
+                topk_indices_buffer[p_slice],
+            )
+    else:
         with sp_disabled(self, hs) as (x, y, out):
-            y[d_slice] = self._forward_decode(x[d_slice], cos[d_slice], sin[d_slice], decode, kv_cache)
-    return out.tensor()
+            y[d_slice], topk_indices_buffer[d_slice] = self._forward_decode(
+                x[d_slice],
+                cos[d_slice],
+                sin[d_slice],
+                decode,
+                kv_cache,
+                topk_indices_buffer[d_slice],
+            )
+    return out.tensor(), topk_indices_buffer
 
 
 def npu_dsa_forward_fake(
@@ -1604,8 +1566,9 @@ def npu_dsa_forward_fake(
     cos: torch.Tensor,
     sin: torch.Tensor,
     layer_name: str,
-) -> torch.Tensor:
-    return torch.empty_like(x)
+    topk_indices_buffer: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return torch.empty_like(x), torch.empty_like(topk_indices_buffer)
 
 
 def npu_dsa_forward_mhc_deferred(
@@ -1618,9 +1581,22 @@ def npu_dsa_forward_mhc_deferred(
     task_key: str,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Launch next-layer MHC work between attention and the DSA epilog."""
+    layer = get_forward_context().no_compile_layers[layer_name]
+    topk_indices_buffer = torch.zeros(
+        (hidden_states.shape[0], 1, layer.index_topk),
+        dtype=torch.int32, device=hidden_states.device,
+    )
     return call_attention_mhc_deferred(
-        npu_dsa_forward, hidden_states, cos, sin, residual,
-        layer_name, mhc_layer_name, task_key,
+        lambda x, cos, sin, name: npu_dsa_forward(
+            x, cos, sin, name, topk_indices_buffer
+        )[0],
+        hidden_states,
+        cos,
+        sin,
+        residual,
+        layer_name,
+        mhc_layer_name,
+        task_key,
     )
 
 

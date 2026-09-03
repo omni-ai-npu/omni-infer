@@ -155,19 +155,8 @@ class EngineArgsRepetitionDetectionPatch(VLLMPatch):
     @classmethod
     def apply(cls):
         """Capture the active EngineArgs wrapper chain before adding ours."""
-        target = cls._target
-        cls._upstream_add_cli_args = target.add_cli_args
-        cls._upstream_from_cli_args = target.from_cli_args.__func__
-        cls._upstream_create_engine_config = target.create_engine_config
-
-        for name in cls._attr_names_to_apply:
-            if name in cls.__dict__:
-                setattr(target, name, cls.__dict__[name])
-
-        logger.info(
-            "patch applied: %s => %s (bypass-conflict)",
-            cls.__name__,
-            target.__name__,
+        cls.apply_bypass_conflict(
+            "add_cli_args", "from_cli_args", "create_engine_config",
         )
 
     @staticmethod

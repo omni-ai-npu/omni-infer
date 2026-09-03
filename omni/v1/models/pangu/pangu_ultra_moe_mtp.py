@@ -16,7 +16,7 @@ from transformers import PretrainedConfig
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import VllmConfig
 from vllm.distributed import get_tp_group
-from vllm.model_executor.layers.fused_moe import FusedMoE
+from vllm.model_executor.layers.fused_moe import fused_moe_make_expert_params_mapping
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
@@ -101,8 +101,20 @@ class OpenPanguMultiTokenPredictorLayer(nn.Module):
             torch.cat([inputs_embeds, previous_hidden_states], dim=-1)
         )
         cos, sin = self.mtp_block.self_attn.rotary_emb.get_cos_sin(positions)
-        hidden_states, residual = self.mtp_block(
-            hidden_states, cos, sin, residual=None
+        topk_indices_buffer = None
+        index_topk = getattr(self.config, "index_topk", 0) or 0
+        if index_topk > 0:
+            topk_indices_buffer = torch.zeros(
+                (hidden_states.shape[0], 1, index_topk),
+                dtype=torch.int32,
+                device=hidden_states.device,
+            )
+        hidden_states, residual, _ = self.mtp_block(
+            hidden_states,
+            cos,
+            sin,
+            residual=None,
+            topk_indices_buffer=topk_indices_buffer,
         )
         hidden_states = residual + hidden_states
 
@@ -252,7 +264,7 @@ class OpenPanguMTP(nn.Module, SupportsPP):
             ("gate_up_proj", "up_proj", 1),
         ]
 
-        expert_params_mapping = FusedMoE.make_expert_params_mapping(
+        expert_params_mapping = fused_moe_make_expert_params_mapping(
             self,
             ckpt_gate_proj_name="gate_proj",
             ckpt_down_proj_name="down_proj",

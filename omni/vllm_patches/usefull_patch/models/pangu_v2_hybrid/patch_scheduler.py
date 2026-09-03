@@ -36,11 +36,13 @@ class PanguV2SchedulerPatch(VLLMPatch):
         # vLLM 0.25.1 initializes these IDs on reasoning_config.
         start_token_id = end_token_id = None
         reasoning_config = getattr(self.vllm_config, "reasoning_config", None)
+        reasoning_enabled = (
+            reasoning_config is not None and reasoning_config.enabled
+        )
         if (
             not is_p_node
             and envs.OMNI_ENABLE_MAX_TOKENS_EXCLUDE_REASONING
-            and reasoning_config is not None
-            and reasoning_config.enabled
+            and reasoning_enabled
         ):
             start_token_ids = reasoning_config.reasoning_start_token_ids
             end_token_ids = reasoning_config.reasoning_end_token_ids

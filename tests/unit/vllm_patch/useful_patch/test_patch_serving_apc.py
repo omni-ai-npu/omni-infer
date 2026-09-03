@@ -34,7 +34,7 @@ import pytest
 # <repo>/tests/unit/vllm_patch/useful_patch/ -> parents[4] is <repo>
 PATCH_PATH = (
     Path(__file__).resolve().parents[4]
-    / "omni/vllm_patches/usefull_patch/patch_serving_apc.py"
+    / "omni/vllm_patches/usefull_patch/common/patch_serving_apc.py"
 )
 
 REGISTERED: list[tuple[str, object]] = []

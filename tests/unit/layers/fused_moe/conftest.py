@@ -196,6 +196,18 @@ def _stub_fused_moe_deps(monkeypatch: pytest.MonkeyPatch) -> None:
 
     fused_moe_config_module.FusedMoEQuantConfig = FusedMoEQuantConfig
 
+    routed_experts_module = _ensure_module(
+        monkeypatch,
+        "vllm.model_executor.layers.fused_moe.routed_experts",
+    )
+
+    class RoutedExperts(_Registerable):
+        pass
+
+    routed_experts_module.RoutedExperts = RoutedExperts
+    fused_moe_pkg.RoutedExperts = RoutedExperts
+    fused_moe_pkg.routed_experts = routed_experts_module
+
     routed_experts_capturer_module = _ensure_module(
         monkeypatch,
         "vllm.model_executor.layers.fused_moe.routed_experts_capturer",

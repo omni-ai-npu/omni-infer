@@ -33,6 +33,7 @@ from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.spec_decode.eagle import EagleProposer
 from vllm.v1.spec_decode.utils import PADDING_SLOT_ID
+from vllm.v1.attention.backends.utils import NULL_BLOCK_ID
 from omni_npu.attention.backends.mome import NPUMomeAttentionMetadataBuilder
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 from omni_npu.model_config.config_loader.loader import model_extra_config
@@ -137,8 +138,9 @@ class EagleProposerPatch(VLLMPatch):
                 valid_sampled_token_ids_gpu < gpu_input_batch.vocab_size
         )
 
-        # Count the number of valid tokens in each request
-        valid_sampled_tokens_count = valid_mask.sum(dim=1)
+        # int32 to match the pinned valid_sampled_token_count_cpu buffer;
+        # a dtype mismatch makes the non_blocking D2H copy synchronous.
+        valid_sampled_tokens_count = valid_mask.sum(dim=1, dtype=torch.int32)
 
         # Get the rightmost valid index per row
         last_valid_indices = valid_sampled_tokens_count - 1
@@ -229,13 +231,18 @@ class EagleProposerPatch(VLLMPatch):
     @torch.inference_mode()
     def dummy_run(
             self,
-            attn_metadata,
-            num_tokens: int,
-            use_cudagraphs=True,
-            is_graph_capturing=False,
-            slot_mappings: dict[str, torch.Tensor] | None = None,
+            attn_metadata=None,
+            num_tokens: int | None = None,
+            use_cudagraphs: bool = True,
+            is_graph_capturing: bool = False,
             is_profile: bool = False,
     ) -> None:
+        # Skip-propose dummy_run has no attn_metadata. Reuse the stashed
+        # CommonAttentionMetadata for shapes / graph replay, but pad every
+        # slot and block id so leftover input_ids cannot write draft KV of
+        # requests that will keep running after this step.
+        if attn_metadata is None:
+            attn_metadata = getattr(self.runner, "_omni_spec_decode_common_attn_metadata", None)
 
         if self.runner.batch_execution_and_padding_state is None:
             raise ValueError(
@@ -245,12 +252,26 @@ class EagleProposerPatch(VLLMPatch):
         cudagraph_mode, batch_descriptor, num_tokens_across_dp = self.runner.batch_execution_and_padding_state
         self.runner.batch_execution_and_padding_state = None
         num_input_tokens = batch_descriptor.num_tokens
-        if attn_metadata is not None:
+        if attn_metadata is None:
+            per_layer_attn_metadata = None
+        elif isinstance(attn_metadata, dict):
             per_layer_attn_metadata = {}
             for layer_name in self.attn_layer_names:
                 per_layer_attn_metadata[layer_name] = attn_metadata[layer_name]
         else:
-            per_layer_attn_metadata = None
+            # Replace with new all-padding tensors. Do not fill_ in place:
+            # slot_mapping is a view of slot_mapping.gpu, block_table_tensor
+            # is the live page table.
+            attn_metadata.slot_mapping = torch.full_like(
+                attn_metadata.slot_mapping, PADDING_SLOT_ID
+            )
+            attn_metadata.block_table_tensor = torch.full_like(
+                attn_metadata.block_table_tensor, NULL_BLOCK_ID
+            )
+            _, per_layer_attn_metadata = self.build_per_group_and_layer_attn_metadata(
+                common_attn_metadata=attn_metadata,
+                draft_index=0,
+            )
         # NOTE: when using tree-based specdec, adjust number of forward-passes
         # according to the depth of the tree.
         for fwd_idx in range(
@@ -821,8 +842,6 @@ class EagleProposerPatch(VLLMPatch):
                 sampling_metadata=sampling_metadata,
                 spec_step_idx=first_spec_step_idx,
             )
-            if use_multi_mtp:
-                draft_token_ids = draft_token_ids.int()
             if draft_probs is not None:
                 self._last_draft_probs = draft_probs.view(
                     -1, self.num_speculative_tokens, draft_probs.shape[-1]
@@ -1006,23 +1025,29 @@ class EagleProposerPatch(VLLMPatch):
                     slot_mapping=self._get_slot_mapping(num_tokens=input_batch_size),
                     batch_descriptor=batch_descriptor,
             ):
-                forward_context = get_forward_context()
+                forward_context = (
+                    get_forward_context()
+                )
                 forward_context.capturing = False
-                ret_hidden_states = self.model(**model_kwargs)
+                ret_hidden_states = self.model(
+                    **model_kwargs
+                )
 
             if not self.model_returns_tuple():
                 last_hidden_states = ret_hidden_states
                 hidden_states = last_hidden_states
             else:
-                last_hidden_states, hidden_states = ret_hidden_states
+                last_hidden_states, hidden_states = (
+                    ret_hidden_states
+                )
 
             draft_token_ids, draft_probs = self._sample_draft_tokens(
                 hidden_states=last_hidden_states[sample_indices],
                 sampling_metadata=sampling_metadata,
                 spec_step_idx=spec_step_idx,
             )
-            if use_multi_mtp:
-                draft_token_ids = draft_token_ids.int()
+            # Keep int64: an int32 stack breaks the async D2H into the
+            # pinned draft_token_ids_cpu; input_ids consumers cast at use.
             if draft_probs is not None:
                 assert draft_probs_list is not None
                 draft_probs_list.append(draft_probs)
@@ -1062,7 +1087,7 @@ class EagleProposerPatch(VLLMPatch):
                 1 + self.num_speculative_tokens,
                 device=device, dtype=common_attn_metadata.query_start_loc.dtype
             )
-            # FIXME: this assumes every request contributes >= (num_speculative_tokens + 1)
+            # Assumption: every request contributes >= (num_speculative_tokens + 1)
             # query tokens (always true for a decode step: 1 token + num_speculative_tokens
             # drafts). In PD-mixed batches a prefilling request whose prompt is shorter than
             # (num_speculative_tokens + 1) makes final_n_token_indices underflow past its own

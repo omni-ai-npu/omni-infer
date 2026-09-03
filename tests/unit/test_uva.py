@@ -226,7 +226,7 @@ def _install_fake_patch_deps(monkeypatch, *, device_type="npu", uva_available=Tr
 
 @pytest.fixture
 def patch_uva_module(monkeypatch):
-    module_name = "omni_npu.vllm_patches.usefull_patch.patch_uva"
+    module_name = "omni_npu.vllm_patches.usefull_patch.common.patch_uva"
     sys.modules.pop(module_name, None)
     yield lambda: importlib.import_module(module_name)
     sys.modules.pop(module_name, None)

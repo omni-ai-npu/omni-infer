@@ -1,6 +1,8 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 """CPU-only tests for NPU offload worker helpers and handler paths."""
 
+import threading
+import time
 from collections import deque
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -14,9 +16,7 @@ from omni_npu.v1.kv_offload.cpu.npu_worker import (
     NPUCPUOffloadingWorker,
     NpuSingleDirectionOffloadingHandler,
     Transfer,
-    _block_byte_ptr,
     _block_slice,
-    _descriptors_from_ops,
     _get_swap_blocks_batch,
     pin_memory_region,
 )
@@ -27,16 +27,6 @@ def test_block_slice_full_and_partial():
     t = torch.arange(12, dtype=torch.int32, device="cpu").to(torch.int8).reshape(3, 4)
     assert torch.equal(_block_slice(t, 1, 0, 4), t[1])
     assert torch.equal(_block_slice(t, 1, 1, 2), t[1, 1:3])
-
-
-def test_block_byte_ptr_and_descriptors():
-    t = torch.zeros((2, 8), dtype=torch.int8, device="cpu")
-    ptr = _block_byte_ptr(t, 1, 2)
-    assert ptr == int(t.data_ptr()) + int(t.stride(0)) + 2
-    src, dst, sizes = _descriptors_from_ops([(t, 0, 0, t, 1, 0, 8)])
-    assert src.numel() == 1
-    assert dst.numel() == 1
-    assert int(sizes[0]) == 8
 
 
 def test_owns_store_block_rotation():
@@ -52,6 +42,151 @@ def test_owns_store_block_rotation():
 
     handler._rotate_store_writers = False
     assert handler._owns_store_block(2) is True
+
+
+def _ref_plan_group_copies(
+    handler, group_src, group_dst, group_size, refs, src_skip, dst_skip
+):
+    """Old per-op Python loop; used as oracle for the numpy planner."""
+    src_ptrs = []
+    dst_ptrs = []
+    sizes = []
+    for data_ref in refs:
+        src_t = handler.src_tensors[data_ref.tensor_idx]
+        dst_t = handler.dst_tensors[data_ref.tensor_idx]
+        page = data_ref.page_size_bytes
+        for i in range(group_size):
+            src_sub = src_skip + i
+            dst_sub = dst_skip + i
+            src_block = int(group_src[src_sub // handler.src_block_size_factor])
+            dst_block = int(group_dst[dst_sub // handler.dst_block_size_factor])
+            if not handler._owns_store_block(dst_block):
+                continue
+            src_page = (src_sub % handler.src_block_size_factor) * page
+            dst_page = (dst_sub % handler.dst_block_size_factor) * page
+            src_ptrs.append(
+                int(src_t.data_ptr()) + src_block * int(src_t.stride(0)) + src_page
+            )
+            dst_ptrs.append(
+                int(dst_t.data_ptr()) + dst_block * int(dst_t.stride(0)) + dst_page
+            )
+            sizes.append(page)
+    return (
+        np.asarray(src_ptrs, dtype=np.int64),
+        np.asarray(dst_ptrs, dtype=np.int64),
+        np.asarray(sizes, dtype=np.int64),
+    )
+
+
+def _fill_group_plan(handler, group_src, group_dst, group_size, refs, src_skip, dst_skip):
+    group_src = np.asarray(group_src, dtype=np.int64)
+    group_dst = np.asarray(group_dst, dtype=np.int64)
+    max_ops = int(group_size) * len(refs)
+    if max_ops <= 0:
+        empty = np.empty(0, dtype=np.int64)
+        return empty, empty, empty
+    src_ptrs = np.empty(max_ops, dtype=np.int64)
+    dst_ptrs = np.empty(max_ops, dtype=np.int64)
+    sizes = np.empty(max_ops, dtype=np.int64)
+    n = handler._fill_group_descriptors(
+        src_ptrs,
+        dst_ptrs,
+        sizes,
+        0,
+        group_src,
+        group_dst,
+        group_size,
+        refs,
+        src_skip,
+        dst_skip,
+    )
+    return src_ptrs[:n], dst_ptrs[:n], sizes[:n]
+
+
+def _assert_plan_matches(handler, group_src, group_dst, group_size, refs, src_skip, dst_skip):
+    got = _fill_group_plan(
+        handler, group_src, group_dst, group_size, refs, src_skip, dst_skip
+    )
+    exp = _ref_plan_group_copies(
+        handler, group_src, group_dst, group_size, refs, src_skip, dst_skip
+    )
+    np.testing.assert_array_equal(got[0], exp[0])
+    np.testing.assert_array_equal(got[1], exp[1])
+    np.testing.assert_array_equal(got[2], exp[2])
+
+
+def test_plan_group_copies_matches_python_oracle():
+    handler, npu, cpu = _make_handler(npu_to_cpu=True, factor=1)
+    refs = handler.kv_cache_groups_data_refs[0]
+    _assert_plan_matches(handler, [0, 1, 2], [4, 5, 6], 3, refs, 0, 0)
+
+    handler, npu, cpu = _make_handler(npu_to_cpu=True, factor=2)
+    refs = handler.kv_cache_groups_data_refs[0]
+    # dst packed by factor=2; skip=1 shifts the first logical page.
+    _assert_plan_matches(handler, [0, 1, 2, 3], [8, 9, 10], 3, refs, 0, 1)
+
+    handler, npu, cpu = _make_handler(npu_to_cpu=False, factor=2)
+    refs = handler.kv_cache_groups_data_refs[0]
+    _assert_plan_matches(handler, [2, 3], [0, 1, 2, 3], 3, refs, 1, 0)
+
+
+def test_plan_group_copies_multi_ref_and_rotation():
+    handler, npu, cpu = _make_handler(npu_to_cpu=True, factor=1)
+    extra_npu = torch.zeros((4, 4), dtype=torch.int8, device="cpu")
+    extra_cpu = torch.zeros((4, 4), dtype=torch.int8, device="cpu")
+    handler.src_tensors = [npu, extra_npu]
+    handler.dst_tensors = [cpu, extra_cpu]
+    refs = [
+        SimpleNamespace(tensor_idx=0, page_size_bytes=8),
+        SimpleNamespace(tensor_idx=1, page_size_bytes=4),
+    ]
+    _assert_plan_matches(handler, [0, 1], [2, 3], 2, refs, 0, 0)
+
+    handler._rotate_store_writers = True
+    handler._tp_size = 2
+    handler._tp_rank = 0
+    _assert_plan_matches(handler, [0, 1], [2, 3], 2, refs, 0, 0)
+
+    empty = _fill_group_plan(
+        handler,
+        np.asarray([0], dtype=np.int64),
+        np.asarray([0], dtype=np.int64),
+        0,
+        refs,
+        0,
+        0,
+    )
+    assert empty[0].size == 0
+    assert empty[1].size == 0
+    assert empty[2].size == 0
+
+
+def _two_group_plan_setup():
+    """Two KV groups plus src/dst block ids shared by planner tests."""
+    handler, npu, cpu = _make_handler(npu_to_cpu=True, factor=1)
+    extra_npu = torch.zeros((4, 8), dtype=torch.int8, device="cpu")
+    extra_cpu = torch.zeros((4, 8), dtype=torch.int8, device="cpu")
+    handler.src_tensors = [npu, extra_npu]
+    handler.dst_tensors = [cpu, extra_cpu]
+    handler.kv_cache_groups_data_refs = [
+        [SimpleNamespace(tensor_idx=0, page_size_bytes=8)],
+        [SimpleNamespace(tensor_idx=1, page_size_bytes=8)],
+    ]
+    src = np.asarray([0, 1, 2], dtype=np.int64)
+    dst = np.asarray([0, 1, 2], dtype=np.int64)
+    return handler, src, dst
+
+
+def test_plan_transfer_descriptors_two_groups():
+    handler, src, dst = _two_group_plan_setup()
+    src_np, dst_np, sz_np = handler._plan_transfer_descriptors(
+        src, dst, [2, 1], [0, 0], 3, 3
+    )
+    g0 = _fill_group_plan(handler, src[:2], dst[:2], 2, handler.kv_cache_groups_data_refs[0], 0, 0)
+    g1 = _fill_group_plan(handler, src[2:], dst[2:], 1, handler.kv_cache_groups_data_refs[1], 0, 0)
+    np.testing.assert_array_equal(src_np, np.concatenate([g0[0], g1[0]]))
+    np.testing.assert_array_equal(dst_np, np.concatenate([g0[1], g1[1]]))
+    np.testing.assert_array_equal(sz_np, np.concatenate([g0[2], g1[2]]))
 
 
 def test_handler_init_rejects_cpu_npu_mismatch():
@@ -93,7 +228,6 @@ def test_get_swap_blocks_batch_cache_and_import_paths(monkeypatch):
     monkeypatch.setattr(worker_mod, "_SWAP_BLOCKS_BATCH", None)
     fake_ext = SimpleNamespace(
         swap_blocks_batch=lambda *a, **k: None,
-        build_tag="host-attr-chunk4096-v4",
         host_location="host",
         cann_memcpy_batch=True,
     )
@@ -106,7 +240,6 @@ def test_get_swap_blocks_batch_cache_and_import_paths(monkeypatch):
     monkeypatch.setattr(worker_mod, "_SWAP_BLOCKS_BATCH", None)
     stale = SimpleNamespace(
         swap_blocks_batch=lambda *a, **k: "fn",
-        build_tag="old",
         host_location="x",
         cann_memcpy_batch=False,
     )
@@ -212,6 +345,7 @@ def _make_handler(*, npu_to_cpu=True, factor=1, rotate=False, tp_size=1, tp_rank
     handler._event_pool = []
     handler._swap_blocks_batch = None
     handler._batch_direction = 1 if npu_to_cpu else 0
+    handler._init_async_submit_state()
     return handler, npu, cpu
 
 
@@ -256,14 +390,13 @@ def test_handler_transfer_get_finished_wait_shutdown():
     dst = ConcreteCPU.__new__(ConcreteCPU)
     dst.block_ids = np.asarray([0, 1], dtype=np.int64)
 
-    start_ev = MagicMock()
     end_ev = MagicMock()
     end_ev.query.return_value = True
     stream_ctx = MagicMock()
     stream_ctx.__enter__ = MagicMock(return_value=None)
     stream_ctx.__exit__ = MagicMock(return_value=False)
 
-    with patch.object(torch.npu, "Event", side_effect=[start_ev, end_ev]), patch.object(
+    with patch.object(torch.npu, "Event", return_value=end_ev), patch.object(
         torch.npu, "stream", return_value=stream_ctx
     ), patch.object(torch.npu, "current_stream", return_value=MagicMock()):
         assert handler.transfer_async(7, src, dst) is True
@@ -279,9 +412,7 @@ def test_handler_transfer_get_finished_wait_shutdown():
     transfer = Transfer(
         job_id=9,
         stream=handler._stream,
-        start_event=MagicMock(),
         end_event=end2,
-        num_bytes=8,
     )
     handler._transfers_by_id[9] = transfer
     handler.wait({9, 99})
@@ -292,9 +423,7 @@ def test_handler_transfer_get_finished_wait_shutdown():
     pending = Transfer(
         job_id=10,
         stream=handler._stream,
-        start_event=MagicMock(),
         end_event=end3,
-        num_bytes=4,
     )
     handler._transfers.append(pending)
     handler._transfers_by_id[10] = pending
@@ -313,7 +442,7 @@ def test_handler_transfer_batch_path_and_rotation_skip():
     handler._swap_blocks_batch = swap_fn
     # reuse events from pool
     pooled = MagicMock()
-    handler._event_pool = [pooled, pooled]
+    handler._event_pool = [pooled]
 
     ConcreteGPU, ConcreteCPU = _concrete_specs()
     src = ConcreteGPU.__new__(ConcreteGPU)
@@ -332,6 +461,9 @@ def test_handler_transfer_batch_path_and_rotation_skip():
         assert handler.transfer_async(1, src, dst) is True
     # rank0 owns even dst blocks → both 0 and? 0 yes, 1 no → one op or two
     assert swap_fn.called
+    batched = swap_fn.call_args[0]
+    assert int(batched[2].numel()) == 1
+    assert int(batched[2][0]) == 8
 
 
 def test_handler_transfer_rejects_bad_specs():
@@ -355,46 +487,6 @@ def test_handler_transfer_rejects_bad_specs():
         handler.transfer_async(1, src, dst)
 
 
-def test_handler_init_happy_path_with_mocked_npu_stream():
-    cpu = torch.zeros((2, 8), dtype=torch.int8, device="cpu")
-    npu = MagicMock()
-    npu.dtype = torch.int8
-    npu.ndim = 2
-    npu.device = SimpleNamespace(type="npu")
-    npu.shape = (2, 8)
-
-    stream = MagicMock()
-    with patch.object(torch.npu, "Stream", return_value=stream), patch.object(
-        worker_mod, "_get_swap_blocks_batch", return_value=None
-    ):
-        handler = NpuSingleDirectionOffloadingHandler(
-            npu_tensors=[npu],
-            cpu_tensors=[cpu],
-            block_size_factor=1,
-            kv_cache_groups_data_refs=[[]],
-            npu_to_cpu=True,
-        )
-    assert handler._stream is stream
-    assert handler.npu_to_cpu is True
-
-    bad_cpu = MagicMock()
-    bad_cpu.dtype = torch.int8
-    bad_cpu.ndim = 2
-    bad_cpu.device = SimpleNamespace(type="npu")
-    bad_cpu.shape = (2, 8)
-    with patch.object(torch.npu, "Stream", return_value=stream), patch.object(
-        worker_mod, "_get_swap_blocks_batch", return_value=None
-    ):
-        with pytest.raises(ValueError, match="cpu_tensors must stay on CPU"):
-            NpuSingleDirectionOffloadingHandler(
-                npu_tensors=[npu],
-                cpu_tensors=[bad_cpu],
-                block_size_factor=1,
-                kv_cache_groups_data_refs=[[]],
-                npu_to_cpu=True,
-            )
-
-
 def test_worker_init_submit_finished_wait_shutdown():
     kv_tensor = MagicMock()
     kv_tensor.page_size_bytes = 8
@@ -413,6 +505,7 @@ def test_worker_init_submit_finished_wait_shutdown():
 
     fake_handler = MagicMock()
     fake_handler.transfer_async.return_value = True
+    fake_handler.submit.return_value = True
     fake_handler.get_finished.return_value = []
     with patch.object(worker_mod, "pin_memory_region"), patch.object(
         worker_mod, "_get_swap_blocks_batch", return_value=None
@@ -431,10 +524,12 @@ def test_worker_init_submit_finished_wait_shutdown():
             rotate_store_writers=True,
         )
 
+    fake_handler.submit.return_value = True
     ConcreteGPU, _ = _concrete_specs()
     src = ConcreteGPU.__new__(ConcreteGPU)
     assert worker.submit_store(1, src, MagicMock()) is True
     assert worker.submit_load(2, MagicMock(), src) is True
+    assert fake_handler.submit.call_count == 2
     assert worker.get_finished() == []
     worker.wait({1, 2})
     worker.shutdown()
@@ -463,3 +558,14 @@ def test_worker_init_without_mmap_allocates_cpu():
             mmap_region=None,
         )
     assert handler_cls.call_count == 2
+
+
+def _transfer_specs(npu_to_cpu: bool):
+    ConcreteGPU, ConcreteCPU = _concrete_specs()
+    gpu = ConcreteGPU.__new__(ConcreteGPU)
+    gpu.block_ids = np.asarray([0, 1], dtype=np.int64)
+    gpu.group_sizes = [2]
+    gpu.block_indices = [0]
+    cpu = ConcreteCPU.__new__(ConcreteCPU)
+    cpu.block_ids = np.asarray([0, 1], dtype=np.int64)
+    return (gpu, cpu) if npu_to_cpu else (cpu, gpu)

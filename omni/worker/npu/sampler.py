@@ -3,7 +3,7 @@
 """NPU sampling ops for the V2 runner.
 
 Two symbols are injected by
-``omni/vllm_patches/usefull_patch/patch_mrv2_sampler.py``:
+``omni/vllm_patches/usefull_patch/common/patch_mrv2_sampler.py``:
 
 1. ``gumbel_sample`` — ported from vllm-ascend's
    ``vllm_ascend/worker/v2/sample/gumbel.py`` (the Ascend-native adaptation of

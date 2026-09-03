@@ -916,6 +916,7 @@ class TestMxfp8MoEMethodApplyExpertsCV:
         layer.ensure_moe_quant_config_init = MagicMock()
         moe_method.process_weights_after_loading(layer)
         layer.shared_experts = shared_experts
+        layer._shared_experts = SimpleNamespace(_layer=shared_experts)
         return layer
 
     def test_apply_experts_cv_returns_routed_and_shared_tuple(

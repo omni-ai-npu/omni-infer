@@ -233,11 +233,24 @@ def _bare_runner(module):
     return module.NPUFusedMoERunner.__new__(module.NPUFusedMoERunner)
 
 
-def _ep_layer(gate=None, shared_experts=None):
+def _bare_experts(module):
+    experts = module.NPURoutedExperts.__new__(module.NPURoutedExperts)
+    experts.moe_config = SimpleNamespace(
+        tp_rank=0,
+        moe_parallel_config=SimpleNamespace(enable_eplb=False),
+    )
+    return experts
+
+
+def _ep_layer(gate=None, shared_experts=None, use_ep=True):
     return SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
+        routed_experts=SimpleNamespace(),
+        moe_config=SimpleNamespace(
+            moe_parallel_config=SimpleNamespace(use_ep=use_ep),
+            is_sequence_parallel=False,
+        ),
+        _shared_experts=None if shared_experts is None else SimpleNamespace(_layer=shared_experts),
         gate=gate,
-        shared_experts=shared_experts,
     )
 
 
@@ -316,9 +329,12 @@ def test_apply_experts_uses_grouped_matmul_twice(layer_module):
     module, torch_npu, _ = layer_module
     method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
     layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
-        w13_weight=torch.ones(2, 4, 4),
-        w2_weight=torch.ones(2, 4, 4),
+        routed_experts=SimpleNamespace(
+            w13_weight=torch.ones(2, 4, 4),
+            w2_weight=torch.ones(2, 4, 4),
+        ),
+        moe_config=SimpleNamespace(moe_parallel_config=SimpleNamespace(use_ep=True)),
+        _shared_experts=None,
     )
     prepare_result = module.PreparePermuteResult(
         hidden_states_sorted_by_experts=torch.ones(3, 4),
@@ -500,11 +516,7 @@ def test_apply_shared_experts_reduce_branch(layer_module, monkeypatch):
     hidden_states = torch.arange(12, dtype=torch.float32).view(3, 4)
     shared = MagicMock(return_value=torch.full((3, 4), 6.0))
     shared.gate_up_proj = SimpleNamespace(tp_size=2)
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
-        gate=None,
-        shared_experts=shared,
-    )
+    layer = _ep_layer(shared_experts=shared)
     output = method.apply(
         layer=layer,
         hidden_states=hidden_states,
@@ -523,15 +535,15 @@ def test_apply_shared_experts_reduce_branch(layer_module, monkeypatch):
 def test_weight_loader_handles_transposed_weights(layer_module, monkeypatch):
     module, _, _ = layer_module
     super_weight_loader = MagicMock(return_value=True)
-    monkeypatch.setattr(module.FusedMoE, "weight_loader", super_weight_loader, raising=False)
-    fused = module.NPUFusedMoE.__new__(module.NPUFusedMoE)
-    fused.enable_eplb = False
+    monkeypatch.setattr(module.RoutedExperts, "weight_loader", super_weight_loader, raising=False)
+    experts = _bare_experts(module)
+    experts.enable_eplb = False
 
     param = torch.nn.Parameter(torch.arange(32, dtype=torch.float32).view(2, 4, 4))
     setattr(param, "is_weight_transposed", True)
     original = param.data.clone()
 
-    result = fused.weight_loader(
+    result = experts.weight_loader(
         param=param,
         loaded_weight=torch.zeros(2, 3, 4),
         weight_name="w13_weight",
@@ -552,23 +564,27 @@ def test_forward_uses_expert_mask_when_rocm_enabled(layer_module, monkeypatch):
     fused._shared_experts = None
     fused.shared_experts = None
     fused.layer_name = "dummy.layer"
-    fused.quant_method = SimpleNamespace(apply=MagicMock(return_value=torch.ones(1, 2)))
-    fused.top_k = 2
-    fused.renormalize = False
-    fused.use_grouped_topk = False
-    fused.global_num_experts = 4
-    fused.expert_map = torch.tensor([0, 1])
-    fused.expert_mask = torch.tensor([1, 0])
-    fused.rocm_aiter_fmoe_enabled = True
-    fused.topk_group = None
-    fused.num_expert_group = None
-    fused.custom_routing_function = None
-    fused.scoring_func = "softmax"
-    fused.routed_scaling_factor = 1.0
-    fused.e_score_correction_bias = None
-    fused.activation = "silu"
-    fused.apply_router_weight_on_input = False
-    fused.enable_eplb = False
+    expert_mask = torch.tensor([1, 0])
+    apply_mock = MagicMock(return_value=torch.ones(1, 2))
+    fused.routed_experts = SimpleNamespace(
+        quant_method=SimpleNamespace(apply=apply_mock),
+        top_k=2,
+        renormalize=False,
+        use_grouped_topk=False,
+        global_num_experts=4,
+        expert_map=expert_mask,
+        topk_group=None,
+        num_expert_group=None,
+        custom_routing_function=None,
+        scoring_func="softmax",
+        routed_scaling_factor=1.0,
+        e_score_correction_bias=None,
+        activation=SimpleNamespace(value="silu"),
+        apply_router_weight_on_input=False,
+    )
+    fused.moe_config = SimpleNamespace(
+        moe_parallel_config=SimpleNamespace(enable_eplb=False)
+    )
     monkeypatch.setattr(
         module.torch.ops.vllm,
         "npu_moe_forward",
@@ -583,8 +599,8 @@ def test_forward_uses_expert_mask_when_rocm_enabled(layer_module, monkeypatch):
     )
 
     assert torch.equal(out, torch.ones(1, 2))
-    kwargs = fused.quant_method.apply.call_args.kwargs
-    assert torch.equal(kwargs["expert_map"], fused.expert_mask)
+    kwargs = apply_mock.call_args.kwargs
+    assert torch.equal(kwargs["expert_map"], expert_mask)
 
 
 @pytest.mark.unit
@@ -660,12 +676,13 @@ def test_apply_single_card_a5_shared_experts_returns_shared_and_routed(layer_mod
     )
     routed_mock = MagicMock(return_value=torch.full((2, 4), 2.0))
     monkeypatch.setattr(module, "fused_experts_tp", routed_mock)
-    shared = MagicMock(return_value=torch.full((2, 4), 5.0))
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=False),
-        gate=None,
-        shared_experts=shared,
+    monkeypatch.setattr(
+        sys.modules["omni_npu.layers.fused_moe.fused_moe"],
+        "fused_experts_tp",
+        routed_mock,
     )
+    shared = MagicMock(return_value=torch.full((2, 4), 5.0))
+    layer = _ep_layer(shared_experts=shared, use_ep=False)
 
     shared_output, routed_output = method.apply(
         layer=layer,
@@ -705,11 +722,12 @@ def test_apply_single_card_a5_no_shared_experts_returns_routed(layer_module, mon
     )
     routed_mock = MagicMock(return_value=torch.full((2, 4), 3.0))
     monkeypatch.setattr(module, "fused_experts_tp", routed_mock)
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=False),
-        gate=None,
-        shared_experts=None,
+    monkeypatch.setattr(
+        sys.modules["omni_npu.layers.fused_moe.fused_moe"],
+        "fused_experts_tp",
+        routed_mock,
     )
+    layer = _ep_layer(use_ep=False)
 
     output = method.apply(
         layer=layer,
@@ -749,11 +767,7 @@ def test_apply_single_card_non_a5_returns_routed_directly(layer_module, monkeypa
     routed_mock = MagicMock(return_value=torch.full((2, 4), 4.0))
     monkeypatch.setattr(module, "fused_experts_tp", routed_mock)
     shared = MagicMock(return_value=torch.full((2, 4), 9.0))
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=False),
-        gate=None,
-        shared_experts=shared,
-    )
+    layer = _ep_layer(shared_experts=shared, use_ep=False)
 
     output = method.apply(
         layer=layer,
@@ -801,37 +815,44 @@ def test_fused_moe_init_sets_gate_and_strategy_selector(layer_module, monkeypatc
 
     assert fused.gate is gate_obj
     assert fused.runner_cls is module.NPUFusedMoERunner
+    assert fused.routed_experts_cls is module.NPURoutedExperts
 
     selector_mock = MagicMock()
 
     def _fake_super_init(self, *args, **kwargs):
-        self.routed_experts = SimpleNamespace(
-            quant_method=SimpleNamespace(
-                make_communication_strategy_selector=selector_mock
-            )
+        self.quant_method = SimpleNamespace(
+            make_communication_strategy_selector=selector_mock
         )
 
-    monkeypatch.setattr(module.MoERunner, "__init__", _fake_super_init, raising=False)
-    runner = module.NPUFusedMoERunner()
-    selector_mock.assert_called_once_with(runner)
+    monkeypatch.setattr(module.RoutedExperts, "__init__", _fake_super_init, raising=False)
+    experts = module.NPURoutedExperts()
+    selector_mock.assert_called_once_with(experts)
 
 
 @pytest.mark.unit
 def test_weight_loader_skips_non_local_expert(layer_module):
     module, _, _ = layer_module
-    fused = _bare_runner(module)
-    fused.enable_eplb = False
-    fused.tp_rank = 0
-    fused._map_global_expert_id_to_local_expert_id = lambda eid: -1
-    fused._load_per_channel_weight_scale = lambda **kw: pytest.fail(
-        "scale loader must not run for non-local expert"
+    experts = _bare_experts(module)
+    experts.enable_eplb = False
+    experts.moe_config = SimpleNamespace(
+        tp_rank=0,
+        moe_parallel_config=SimpleNamespace(enable_eplb=False),
     )
+
+    def _never_local(_eid):
+        return -1
+
+    def _fail_scale_loader(**_kw):
+        pytest.fail("scale loader must not run for non-local expert")
+
+    experts._map_global_expert_id_to_local_expert_id = _never_local
+    experts._load_per_channel_weight_scale = _fail_scale_loader
 
     param = torch.nn.Parameter(torch.zeros(2, 4, dtype=torch.float32))
     setattr(param, "quant_method", "channel")
     setattr(param, "is_weight_transposed", False)
 
-    assert fused.weight_loader(
+    assert experts.weight_loader(
         param=param,
         loaded_weight=torch.ones(4),
         weight_name="w13_weight_int4_scale",
@@ -839,7 +860,7 @@ def test_weight_loader_skips_non_local_expert(layer_module):
         expert_id=999,
         return_success=True,
     ) is False
-    assert fused.weight_loader(
+    assert experts.weight_loader(
         param=param,
         loaded_weight=torch.ones(4),
         weight_name="w13_weight_int4_scale",
@@ -853,13 +874,13 @@ def test_weight_loader_skips_non_local_expert(layer_module):
 def test_weight_loader_handles_non_full_load_transposed_branch(layer_module, monkeypatch):
     module, _, _ = layer_module
     super_weight_loader = MagicMock(return_value=True)
-    monkeypatch.setattr(module.FusedMoE, "weight_loader", super_weight_loader, raising=False)
-    fused = module.NPUFusedMoE.__new__(module.NPUFusedMoE)
-    fused.enable_eplb = False
+    monkeypatch.setattr(module.RoutedExperts, "weight_loader", super_weight_loader, raising=False)
+    experts = _bare_experts(module)
+    experts.enable_eplb = False
 
     param = torch.nn.Parameter(torch.arange(32, dtype=torch.float32).view(2, 4, 4))
     setattr(param, "is_weight_transposed", True)
-    result = fused.weight_loader(
+    result = experts.weight_loader(
         param=param,
         loaded_weight=torch.zeros(3, 4),
         weight_name="w2_weight",
@@ -886,24 +907,29 @@ def test_weight_loader_channel_quant_params(
     layer_module, monkeypatch, weight_name, expected_shard_dim
 ):
     module, _, _ = layer_module
-    fused = _bare_runner(module)
-    fused.enable_eplb = False
-    fused.tp_rank = 0
-    fused._map_global_expert_id_to_local_expert_id = lambda eid: eid
+    experts = _bare_experts(module)
+    experts.enable_eplb = False
+    experts.moe_config = SimpleNamespace(
+        tp_rank=0,
+        moe_parallel_config=SimpleNamespace(enable_eplb=False),
+    )
+
+    def _identity_eid(eid):
+        return eid
+
+    experts._map_global_expert_id_to_local_expert_id = _identity_eid
     load_called = {}
 
     def _load_per_channel_weight_scale(**kwargs):
         load_called.update(kwargs)
 
-    fused.routed_experts = SimpleNamespace(
-        _load_per_channel_weight_scale=_load_per_channel_weight_scale
-    )
+    experts._load_per_channel_weight_scale = _load_per_channel_weight_scale
 
     param = torch.nn.Parameter(torch.zeros(2, 4, dtype=torch.float32))
     setattr(param, "quant_method", "channel")
     setattr(param, "is_weight_transposed", False)
 
-    result = fused.weight_loader(
+    result = experts.weight_loader(
         param=param,
         loaded_weight=torch.ones(4),
         weight_name=weight_name,
