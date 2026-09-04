@@ -8,6 +8,7 @@
         "layer_parallel_config": {}
     },
     "operator_optimization_config": {
+        "gmm_autotiling": true,
         "moe_comm_strategy": "allgather_reducescatter",
         "moe_tbo_threshold": 16384,
         "enable_mome_sp": true,

@@ -292,15 +292,103 @@ def quant_ffn(
     x_sc: torch.Tensor,  # [T] fp32
     hist: torch.Tensor,  # [N]
 ) -> torch.Tensor:
+    assert x_i8.dtype == torch.int8
+    assert x_sc.dtype == torch.float
+    hist = hist.to(torch.int64)
+    if hasattr(experts, "w13_weight_int4_scale"):
+        return _quant_ffn_w4a8(experts, x_i8, x_sc, hist)
+    return _quant_ffn_w8a8(experts, x_i8, x_sc, hist)
+
+
+def _quant_ffn_w4a8(
+    experts: NPUSharedFusedMoE,
+    x_i8: torch.Tensor,  # [T, D] int8
+    x_sc: torch.Tensor,  # [T] fp32
+    hist: torch.Tensor,  # [N] int64
+) -> torch.Tensor:
+    asym = experts.w13_weight_offset is not None
+    tuning_config = [0, 1, -1] if experts.quant_method.gmm_autotiling else None
+
+    h = _w4a8_grouped_matmul(
+        x_i8,
+        experts.w13_weight,
+        experts.w13_weight_bias,
+        experts.w13_weight_int4_scale,
+        experts.w13_weight_offset,
+        x_sc,
+        hist,
+        tuning_config,
+        asym,
+    )
+    h, h_sc = torch_npu.npu_dequant_swiglu_quant(
+        h,
+        weight_scale=None,
+        activation_scale=None,
+        bias=None,
+        quant_scale=None,
+        quant_offset=None,
+        group_index=hist,
+        activate_left=True,
+        quant_mode=1,
+    )
+    return _w4a8_grouped_matmul(
+        h,
+        experts.w2_weight,
+        experts.w2_weight_bias,
+        experts.w2_weight_int4_scale,
+        experts.w2_weight_offset,
+        h_sc,
+        hist,
+        tuning_config,
+        asym,
+    )
+
+
+def _w4a8_grouped_matmul(
+    x,
+    weight,
+    bias,
+    scale,
+    offset,
+    token_scale,
+    hist,
+    tuning_config,
+    asym,
+):
+    return torch.ops.custom.npu_ai_infra_grouped_matmul(
+        [x],
+        [weight],
+        bias=[bias],
+        scale=[scale],
+        offset=[offset] if asym else None,
+        antiquant_scale=None,
+        antiquant_offset=None,
+        per_token_scale=[token_scale.unsqueeze(-1) if asym else token_scale],
+        group_list=hist,
+        activation_input=None,
+        activation_quant_scale=None,
+        activation_quant_offset=None,
+        split_item=3,
+        group_type=0,
+        group_list_type=1,
+        act_type=0,
+        tuning_config=tuning_config,
+        output_dtype=torch.bfloat16,
+    )[0]
+
+
+def _quant_ffn_w8a8(
+    experts: NPUSharedFusedMoE,
+    x_i8: torch.Tensor,  # [T, D] int8
+    x_sc: torch.Tensor,  # [T] fp32
+    hist: torch.Tensor,  # [N]
+) -> torch.Tensor:
     # int8 quantized MoE FFN: grouped_matmul → dequant_swiglu_quant → grouped_matmul
     w13 = experts.w13_weight
     s13 = experts.w13_weight_scale
     w2 = experts.w2_weight
     s2 = experts.w2_weight_scale
     assert s2.dtype == torch.bfloat16
-    assert x_i8.dtype == torch.int8
-    assert x_sc.dtype == torch.float
-    hist = hist.to(torch.int64)
 
     x_i32 = torch_npu.npu_grouped_matmul(
         [x_i8],

@@ -271,10 +271,10 @@ class NPUUnquantizedFusedMoEMethod(UnquantizedFusedMoEMethod, NPUFusedMoEMethodB
 
         if shared_experts is not None and share_expert_tp > 1 and use_custom_model_add:
             routed_output = routed_output + shared_output
-        
+
         if shared_output is not None:
             return shared_output, routed_output
-        
+
         return routed_output
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
@@ -366,7 +366,10 @@ class NPURoutedExperts(RoutedExperts):
                 return False if return_success else None
             expert_id = local_pos + local_num_experts * ep_rank
 
-        if "bias" in weight_name or "int4_scale" in weight_name:
+        if any(
+            name in weight_name
+            for name in ("bias", "int4_scale", "weight_offset")
+        ):
             shard_dim = 0 if "bias" in weight_name else 1
             quant_method = getattr(param, "quant_method", None)
             expert_id = self._map_global_expert_id_to_local_expert_id(expert_id)

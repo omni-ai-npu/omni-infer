@@ -895,7 +895,17 @@ def test_weight_loader_handles_non_full_load_transposed_branch(layer_module, mon
 
 
 @pytest.mark.unit
-def test_weight_loader_bias_branch_channel_quant(layer_module, monkeypatch):
+@pytest.mark.parametrize(
+    "weight_name, expected_shard_dim",
+    [
+        ("w13_weight_int4_scale", 1),
+        ("w13_weight_offset", 1),
+        ("w13_weight_bias", 0),
+    ],
+)
+def test_weight_loader_channel_quant_params(
+    layer_module, monkeypatch, weight_name, expected_shard_dim
+):
     module, _, _ = layer_module
     experts = _bare_experts(module)
     experts.enable_eplb = False
@@ -922,7 +932,7 @@ def test_weight_loader_bias_branch_channel_quant(layer_module, monkeypatch):
     result = experts.weight_loader(
         param=param,
         loaded_weight=torch.ones(4),
-        weight_name="w13_weight_int4_scale",
+        weight_name=weight_name,
         shard_id="0",
         expert_id=0,
         return_success=True,
@@ -930,7 +940,7 @@ def test_weight_loader_bias_branch_channel_quant(layer_module, monkeypatch):
 
     assert result is True
     assert "shard_dim" in load_called
-    assert load_called["shard_dim"] == 1
+    assert load_called["shard_dim"] == expected_shard_dim
 
 
 @pytest.mark.unit

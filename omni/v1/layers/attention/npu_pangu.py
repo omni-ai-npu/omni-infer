@@ -17,7 +17,11 @@ from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.linear import ReplicatedLinear
-from vllm.model_executor.layers.attention.mla_attention import MLACommonMetadata
+from vllm.model_executor.layers.attention.mla_attention import (
+    MLACommonDecodeMetadata,
+    MLACommonMetadata,
+    MLACommonPrefillMetadata,
+)
 from omni_npu.attention.backends.mome import NPUMomeAttentionMetadata
 from vllm.logger import init_logger
 
@@ -680,11 +684,10 @@ class NPUPanguSparseAttention(torch.nn.Module):
             self.is_dsa_layer = True
             self.index_topk = config.index_topk
             self.index_head_dim = config.index_head_dim
-            indexer_types = getattr(config, "indexer_types", None)
-            if indexer_types and indexer_types[self.layer_idx] == "shared":
-                self.skip_topk = True
+            self.skip_topk = self._skip_topk(config)
+            if self.skip_topk:
                 logger.info(
-                    "Index Share enabled: layer %s reuses the prior DSA topk indices",
+                    "Index Share enabled: layer %s skip_topk=True (reuse prior DSA topk)",
                     self.layer_idx,
                 )
         else:
@@ -1312,8 +1315,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         hidden_states: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
-        topk_indices_buffer: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         if self.on_ascend950:
             # A5: dispatch through the registered custom op so the attention
             # (incl. the MLA prolog) stays opaque to Dynamo/cudagraph, matching
@@ -1327,15 +1329,8 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 cos=cos,
                 sin=sin,
                 layer_name=self.layer_name,
-                topk_indices_buffer=topk_indices_buffer,
             )
-        return npu_pangu_forward(
-            hidden_states,
-            cos,
-            sin,
-            self.layer_name,
-            topk_indices_buffer=topk_indices_buffer,
-        )
+        return npu_pangu_forward(hidden_states, cos, sin, self.layer_name)
 
     def _prepare_phase_inputs(
         self,
@@ -1344,7 +1339,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
         sin: torch.Tensor,
         attn_metadata: MLACommonMetadata,
         phase: str,
-        topk_indices_buffer: torch.Tensor,
     ):
         num_decode_tokens = attn_metadata.num_decode_tokens
 
@@ -1357,7 +1351,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
             sliced_hidden = hidden_states[num_decode_tokens:num_actual_tokens, ...]
             sliced_cos = cos[num_decode_tokens:num_actual_tokens, ...]
             sliced_sin = sin[num_decode_tokens:num_actual_tokens, ...]
-            sliced_topk_indices_buffer = topk_indices_buffer[num_decode_tokens:num_actual_tokens, ...]
             attn_metadata.prefill.slot_mapping = attn_metadata.origin_slot_mapping[num_decode_tokens:num_actual_tokens]
             attn_metadata.slot_mapping = attn_metadata.prefill.slot_mapping
             slot_mapping_2d = _get_slot_mapping_2d(attn_metadata)
@@ -1377,7 +1370,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
             sliced_hidden = hidden_states[:num_decode_tokens, ...]
             sliced_cos = cos[:num_decode_tokens, ...]
             sliced_sin = sin[:num_decode_tokens, ...]
-            sliced_topk_indices_buffer = topk_indices_buffer[:num_decode_tokens, ...]
             attn_metadata.decode.slot_mapping = origin_slot_mapping[:num_decode_tokens]
             attn_metadata.slot_mapping = attn_metadata.decode.slot_mapping
             origin_slot_mapping_2d = getattr(attn_metadata, "origin_slot_mapping_2d", None)
@@ -1387,7 +1379,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             attn_metadata.saved_prefill = attn_metadata.prefill
             attn_metadata.prefill = None
             attn_metadata.num_actual_tokens = num_decode_tokens
-        return sliced_hidden, sliced_cos, sliced_sin, sliced_topk_indices_buffer
+        return sliced_hidden, sliced_cos, sliced_sin
 
     def _restore_phase_metadata(self, attn_metadata: MLACommonMetadata):
         saved_prefill = getattr(attn_metadata, 'saved_prefill', None)
@@ -1401,8 +1393,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
     def _forward_dummy(
         self,
         hidden_states: torch.Tensor,
-        topk_indices_buffer: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
 
         if self.tp_size > 1 and self.moe_comm_strategy != "allreduce":
             hidden_states = get_tp_group().all_gather(hidden_states, dim=0)
@@ -1433,7 +1424,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             else:
                 hidden_states = get_tp_group().reduce_scatter(hidden_states, dim=0)
 
-        return hidden_states, topk_indices_buffer
+        return hidden_states
 
     def _forward_decode(
         self,
@@ -1442,8 +1433,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         sin: torch.Tensor,
         attn_metadata: Optional[MLACommonMetadata] = None,
         mome_metadata: Optional[NPUMomeAttentionMetadata] = None,
-        topk_indices_buffer: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
 
         # with torch.npu.npugraph_ex.scope.limit_core_num(8,8):
         q_nope, q_pe, kv_cache, topk_indices = self._mla_prolog(
@@ -1452,7 +1442,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
             sin,
             attn_metadata,
             mome_metadata,
-            topk_indices_buffer,
         )
 
         if self.is_dsa_layer:
@@ -1464,7 +1453,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 attn_metadata=attn_metadata,
             )
         else:
-            topk_indices = topk_indices_buffer
             # with torch.npu.npugraph_ex.scope.limit_core_num(8,8):
             attn_output = torch.ops.vllm.npu_pangu_swa_decode(
                 q_nope, q_pe, kv_cache[0], kv_cache[1], self.prefix,
@@ -1479,7 +1467,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         # with torch.npu.npugraph_ex.scope.limit_core_num(8,8):
         res = self._mla_epilog(attn_output, attn_metadata, mome_metadata)
-        return res, topk_indices
+        return res
 
     @attn_decorator(type="mome")
     def _apply_MOME(
@@ -1767,8 +1755,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         sin: torch.Tensor,
         attn_metadata: Optional[MLACommonMetadata] = None,
         mome_metadata: Optional[NPUMomeAttentionMetadata] = None,
-        topk_indices_buffer: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         sp_manager: SPManager = (
             attn_metadata.prefill.sp_manager
             if attn_metadata is not None
@@ -1821,12 +1808,11 @@ class NPUPanguSparseAttention(torch.nn.Module):
         q_pe = q_pe.contiguous()
         ### Q stream ends ###
 
-        # get KV cache for this layer
         kv_cache = self.attn.kv_cache
-        ### Indexer stream begins ###
         if self.skip_topk:
-            topk_indices = topk_indices_buffer
+            topk_indices = self._get_topk_indices(attn_metadata)
         else:
+            ### Indexer stream begins ###
             topk_indices = self.indexer.forward_cp(
                 sp_x,
                 q_lora,
@@ -1838,7 +1824,8 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 attn_metadata,
                 kv_cache,
             )
-        ### Indexer stream ends ###
+            self._set_topk_indices(attn_metadata, topk_indices)
+            ### Indexer stream ends ###
 
         ### KV stream begins ###
         kv = self.kv_a_proj_with_mqa(sp_x)
@@ -1917,7 +1904,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                     inplace=True,
                     ena_sp=True,
                 )
-                return self._apply_o_proj(attn_output), topk_indices
+                return self._apply_o_proj(attn_output)
             else:
                 attn_output = sp_manager.cp_to_sp(attn_output)
                 attn_output = sp_manager.ag_tokens(attn_output)
@@ -1929,10 +1916,10 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 )
                 if self.o_proj.tp_size == 1:
                     attn_output = sp_manager.slice_tokens(attn_output)
-                return self._apply_o_proj(attn_output), topk_indices
+                return self._apply_o_proj(attn_output)
 
         hidden_states = self._apply_o_proj(attn_output)
-        return sp_manager.cp_to_sp(hidden_states), topk_indices
+        return sp_manager.cp_to_sp(hidden_states)
 
     def _forward_prefill(
         self,
@@ -1941,8 +1928,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         sin: torch.Tensor,
         attn_metadata: Optional[MLACommonMetadata] = None,
         mome_metadata: Optional[NPUMomeAttentionMetadata] = None,
-        topk_indices_buffer: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         
         if self.is_dsa_layer:
             q_nope, q_pe, kv_cache, topk_indices = self._mla_prolog(
@@ -1951,7 +1937,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 sin,
                 attn_metadata,
                 mome_metadata,
-                topk_indices_buffer,
             )
             attn_output = self._apply_DSA_attention(
                 q_nope,
@@ -1961,7 +1946,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 attn_metadata=attn_metadata,
             )
         else:
-            topk_indices = topk_indices_buffer
             mla_output = self._mla_prolog(
                 hidden_states,
                 cos,
@@ -1999,7 +1983,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             with torch.npu.stream(prefetch_stream):
                 self.o_proj.prefetch(prefetch_stream)
 
-        return self._mla_epilog(attn_output, attn_metadata, mome_metadata), topk_indices
+        return self._mla_epilog(attn_output, attn_metadata, mome_metadata)
 
     def _forward_prefill_sp(
         self,
@@ -2008,8 +1992,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         sin: torch.Tensor,
         attn_metadata: Optional[MLACommonMetadata] = None,
         mome_metadata: Optional[NPUMomeAttentionMetadata] = None,
-        topk_indices_buffer: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """SWA prefill with contiguous token SP and replicated head weights."""
         assert not self.on_ascend950, "ena_swa_attn_seq_parallel is supported on A3 only"
         assert attn_metadata is not None and attn_metadata.prefill is not None
@@ -2128,7 +2111,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 )
                 attn_output = sp_manager.slice_tokens(attn_output)
 
-        return self._apply_o_proj(attn_output), topk_indices_buffer
+        return self._apply_o_proj(attn_output)
 
     def _forward_prefill_FC2(
         self,
@@ -2137,8 +2120,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         sin: torch.Tensor,
         attn_metadata: Optional[MLACommonMetadata] = None,
         mome_metadata: Optional[NPUMomeAttentionMetadata] = None,
-        topk_indices_buffer: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """FlashComm2.0 prefill path: MLA prolog -> SWA attention -> FC2 epilog.
 
         FC2 optimization: hidden_states arrives ungathered (TP-local).
@@ -2342,7 +2324,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 ena_sp=True,
             )
 
-        return self._apply_o_proj(attn_output), topk_indices_buffer
+        return self._apply_o_proj(attn_output)
 
     @attn_decorator(type="mla")
     def _apply_SWA_attention_prefill_absorb(
@@ -2718,7 +2700,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
         sin: torch.Tensor,
         attn_metadata: Optional[MLACommonMetadata] = None,
         mome_metadata: Optional[NPUMomeAttentionMetadata] = None,
-        topk_indices_buffer: Optional[torch.Tensor] = None,
     ) -> Union[Tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor], torch.Tensor], # DSA/MLA/SWA absorb
                Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]: # MLA/SWA non-absorb
         # get KV cache for this layer
@@ -2867,21 +2848,11 @@ class NPUPanguSparseAttention(torch.nn.Module):
         q_nope = q_nope.contiguous()
         q_pe = q_pe.contiguous()
 
+        topk_indices = self._run_indexer(
+            hidden_states, q_lora, cos, sin, attn_metadata, kv_cache,
+        )
         if self.is_dsa_layer:
-            if self.skip_topk:
-                topk_indices = topk_indices_buffer
-            else:
-                topk_indices = self.indexer(
-                    hidden_states,
-                    q_lora,
-                    cos,
-                    sin,
-                    attn_metadata,
-                    kv_cache,
-                )
             q_lora.record_stream(torch.npu.current_stream())
-        else:
-            topk_indices = None
 
         ret = (kv_cache, topk_indices)
 
@@ -2895,7 +2866,6 @@ class NPUPanguSparseAttention(torch.nn.Module):
         sin: torch.Tensor,
         attn_metadata: Optional[MLACommonMetadata] = None,
         mome_metadata: Optional[NPUMomeAttentionMetadata] = None,
-        topk_indices_buffer: Optional[torch.Tensor] = None,
     ) -> Union[Tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor], torch.Tensor], # DSA/MLA/SWA absorb
                Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]: # MLA/SWA non-absorb
 
@@ -2907,8 +2877,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 hidden_states,
                 cos, sin,
                 attn_metadata=attn_metadata,
-                mome_metadata=mome_metadata,
-                topk_indices_buffer=topk_indices_buffer,
+                mome_metadata=mome_metadata
             )
 
         # get KV cache for this layer
@@ -2921,7 +2890,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         # numerically identical (same ops, no stream overlap); keeps A5 last-known-good.
         if self.on_ascend950:
             return self._mla_prolog_sequential(
-                hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata, topk_indices_buffer,
+                hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata,
             )
         is_decode = attn_metadata.decode is not None or self.is_dsa_layer
         use_side = self.side_stream is not None and is_decode
@@ -2931,7 +2900,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         # high-throughput (allgather/alltoall) multi-stream
         if use_side and self.is_dsa_layer:
             return self._mla_prolog_dsa_multistream(
-                hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata, topk_indices_buffer,
+                hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata,
             )
         elif use_side:
             return self._mla_prolog_swa_multistream(
@@ -2939,7 +2908,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             )
         else:
             return self._mla_prolog_sequential(
-                hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata, topk_indices_buffer,
+                hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata,
             )
 
     def _q_rope(self, q_pe, cos, sin):
@@ -3010,8 +2979,33 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 kv = torch.cat([k_nope, k_pe], dim=-1)
         return kv
 
+    def _run_indexer(
+        self,
+        hidden_states,
+        q_lora,
+        cos,
+        sin,
+        attn_metadata,
+        kv_cache,
+    ):
+        if not self.is_dsa_layer:
+            return None
+        if self.skip_topk:
+            return self._get_topk_indices(attn_metadata)
+
+        topk_indices = self.indexer(
+            hidden_states,
+            q_lora,
+            cos,
+            sin,
+            attn_metadata,
+            kv_cache,
+        )
+        self._set_topk_indices(attn_metadata, topk_indices)
+        return topk_indices
+
     def _mla_prolog_sequential(
-        self, hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata, topk_indices_buffer,
+        self, hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata,
     ):
         """Original sequential path (prefill / DSA without multi-stream / no side_stream)."""
         enable_pa = (
@@ -3047,18 +3041,9 @@ class NPUPanguSparseAttention(torch.nn.Module):
         ### Q stream ends ###
 
         ### Indexer stream begins ###
-        topk_indices = None
-        if self.is_dsa_layer:
-            topk_indices = topk_indices_buffer
-            if not self.skip_topk:
-                topk_indices = self.indexer(
-                    hidden_states,
-                    q_lora,
-                    cos,
-                    sin,
-                    attn_metadata,
-                    kv_cache,
-                )
+        topk_indices = self._run_indexer(
+            hidden_states, q_lora, cos, sin, attn_metadata, kv_cache,
+        )
         ### Indexer stream ends ###
 
         ### KV stream begins ###
@@ -3089,7 +3074,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         return output
 
     def _mla_prolog_swa_multistream(
-        self, hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata
+        self, hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata,
     ):
         """SWA decode multi-stream: main computes Q nope path, side computes KV + Q pe path.
 
@@ -3174,7 +3159,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         return (q_nope, q_pe, new_kv_cache, None)
 
     def _mla_prolog_dsa_multistream(
-        self, hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata, topk_indices_buffer,
+        self, hidden_states, cos, sin, kv_cache, attn_metadata, mome_metadata,
     ):
         """DSA decode multi-stream: main stream does Q + indexer k/w + kvrmsnorm,
         side stream does KV down + indexer q + LI.
@@ -3266,10 +3251,8 @@ class NPUPanguSparseAttention(torch.nn.Module):
                         indexer_q = indexer_q.view(-1, self.indexer.index_n_heads, self.indexer.index_head_dim)
                         q_pe_i, q_nope_i = torch.split(
                             indexer_q,
-                            [
-                                self.indexer.qk_rope_head_dim,
-                                self.indexer.index_head_dim - self.indexer.qk_rope_head_dim,
-                            ],
+                            [self.indexer.qk_rope_head_dim,
+                             self.indexer.index_head_dim - self.indexer.qk_rope_head_dim],
                             dim=-1,
                         )
                         q_pe_i = torch_npu.npu_rotary_mul(
@@ -3281,10 +3264,8 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
                         k_pe_i, k_nope_i = torch.split(
                             indexer_k,
-                            [
-                                self.indexer.qk_rope_head_dim,
-                                self.indexer.index_head_dim - self.indexer.qk_rope_head_dim,
-                            ],
+                            [self.indexer.qk_rope_head_dim,
+                             self.indexer.index_head_dim - self.indexer.qk_rope_head_dim],
                             dim=-1,
                         )
                         k_pe_i = torch_npu.npu_rotary_mul(
@@ -3302,7 +3283,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                         self.prefix,
                     )
             if self.skip_topk:
-                topk_indices = topk_indices_buffer
+                topk_indices = self._get_topk_indices(attn_metadata)
             else:
                 with torch.npu.npugraph_ex.scope.limit_core_num(20, 40):
                     topk_indices = torch.ops.vllm.npu_pangu_lightning_indexer(
@@ -3310,6 +3291,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                         kv_cache[0], kv_cache[1], kv_cache_2,
                         self.prefix,
                     )
+                self._set_topk_indices(attn_metadata, topk_indices)
 
             side_done_event = torch.npu.Event()
             side_done_event.record()
@@ -3633,14 +3615,35 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         return self._apply_o_proj(attn_output)
 
+    def _skip_topk(self, config: DeepseekV2Config | DeepseekV3Config) -> bool:
+        indexer_types = getattr(config, "indexer_types", None)
+        if indexer_types is None:
+            return False
+        return indexer_types[self.layer_idx] == "shared"
+
+    @staticmethod
+    def _get_topk_metadata(
+        attn_metadata: MLACommonMetadata,
+    ) -> MLACommonPrefillMetadata | MLACommonDecodeMetadata:
+        if attn_metadata.prefill is not None:
+            return attn_metadata.prefill
+        return attn_metadata.decode
+
+    @classmethod
+    def _get_topk_indices(cls, attn_metadata: MLACommonMetadata) -> torch.Tensor:
+        return cls._get_topk_metadata(attn_metadata).topk_indices_buffer
+
+    @classmethod
+    def _set_topk_indices(cls, attn_metadata: MLACommonMetadata, topk_indices: torch.Tensor) -> None:
+        cls._get_topk_metadata(attn_metadata).topk_indices_buffer = topk_indices
+
 
 def npu_pangu_forward(
     hidden_states: torch.Tensor,
     cos: torch.Tensor,
     sin: torch.Tensor,
     layer_name: str,
-    topk_indices_buffer: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     forward_context = get_forward_context()
     self = forward_context.no_compile_layers[layer_name]    
     attn_metadata = get_forward_context().attn_metadata
@@ -3653,7 +3656,6 @@ def npu_pangu_forward(
     if attn_metadata is None:
         return self._forward_dummy(
             hidden_states,
-            topk_indices_buffer,
         )
     else:
         num_actual_tokens = attn_metadata.num_actual_tokens
@@ -3674,53 +3676,30 @@ def npu_pangu_forward(
             is_prefill_cp = enable_cp or enable_attn_sp or enable_flashcomm2
             if not is_prefill_cp or (has_decode and has_prefill):
                 hidden_states = get_tp_group().all_gather(hidden_states, dim=0)
-                topk_indices_buffer = get_tp_group().all_gather(
-                    topk_indices_buffer, dim=0
-                )
 
         if has_decode and has_prefill:
-            (
-                prefill_hidden_states,
-                prefill_cos,
-                prefill_sin,
-                prefill_topk_indices_buffer,
-            ) = self._prepare_phase_inputs(
+            prefill_hidden_states, prefill_cos, prefill_sin = self._prepare_phase_inputs(
                 hidden_states, cos, sin, attn_metadata,
                 phase="prefill",
-                topk_indices_buffer=topk_indices_buffer,
             )
-            (
-                hidden_states[num_decode_tokens:num_actual_tokens],
-                topk_indices_buffer[num_decode_tokens:num_actual_tokens],
-            ) = self._forward_prefill(
+            hidden_states[num_decode_tokens:num_actual_tokens] = self._forward_prefill(
                 prefill_hidden_states,
                 prefill_cos,
                 prefill_sin,
                 attn_metadata,
                 mome_metadata.prefill if mome_metadata is not None else None,
-                prefill_topk_indices_buffer,
             )
 
-            (
-                decode_hidden_states,
-                decode_cos,
-                decode_sin,
-                decode_topk_indices_buffer,
-            ) = self._prepare_phase_inputs(
+            decode_hidden_states, decode_cos, decode_sin = self._prepare_phase_inputs(
                 hidden_states, cos, sin, attn_metadata,
                 phase="decode",
-                topk_indices_buffer=topk_indices_buffer,
             )
-            (
-                hidden_states[:num_decode_tokens],
-                topk_indices_buffer[:num_decode_tokens],
-            ) = self._forward_decode(
+            hidden_states[:num_decode_tokens] = self._forward_decode(
                 decode_hidden_states,
                 decode_cos,
                 decode_sin,
                 attn_metadata,
                 mome_metadata.decode if mome_metadata is not None else None,
-                decode_topk_indices_buffer,
             )
 
             self._restore_phase_metadata(attn_metadata)
@@ -3736,7 +3715,6 @@ def npu_pangu_forward(
                     sin,
                     attn_metadata,
                     mome_metadata,
-                    topk_indices_buffer,
                 )
             elif enable_attn_sp:
                 assert (
@@ -3751,7 +3729,6 @@ def npu_pangu_forward(
                     sin,
                     attn_metadata,
                     mome_metadata,
-                    topk_indices_buffer,
                 )
             elif enable_flashcomm2:
                 return self._forward_prefill_FC2(
@@ -3760,60 +3737,46 @@ def npu_pangu_forward(
                     sin,
                     attn_metadata,
                     mome_metadata,
-                    topk_indices_buffer,
                 )
             else:
-                (
-                    hidden_states[num_decode_tokens:num_actual_tokens],
-                    topk_indices_buffer[num_decode_tokens:num_actual_tokens],
-                ) = self._forward_prefill(
+                hidden_states[num_decode_tokens:num_actual_tokens] = self._forward_prefill(
                     hidden_states[num_decode_tokens:num_actual_tokens],
                     cos[num_decode_tokens:num_actual_tokens],
                     sin[num_decode_tokens:num_actual_tokens],
                     attn_metadata,
                     mome_metadata,
-                    topk_indices_buffer[num_decode_tokens:num_actual_tokens],
                 )
         else:
             if hidden_states.shape[0] == num_decode_tokens:
-                hidden_states, topk_indices_buffer = self._forward_decode(
+                hidden_states = self._forward_decode(
                     hidden_states,
                     cos,
                     sin,
                     attn_metadata,
                     mome_metadata,
-                    topk_indices_buffer,
                 )
             else:
-                (
-                    hidden_states[:num_decode_tokens],
-                    topk_indices_buffer[:num_decode_tokens],
-                ) = self._forward_decode(
+                hidden_states[:num_decode_tokens] = self._forward_decode(
                     hidden_states[:num_decode_tokens],
                     cos[:num_decode_tokens],
                     sin[:num_decode_tokens],
                     attn_metadata,
                     mome_metadata,
-                    topk_indices_buffer[:num_decode_tokens],
                 )
         if self.tp_size > 1:
             need_reduce = self.o_proj.tp_size > 1
             need_scatter = self.moe_comm_strategy != "allreduce"
-            tp_rank = get_tp_group().rank_in_group
-            chunk_size = hidden_states.shape[0] // self.tp_size
             if need_reduce and need_scatter:
                 hidden_states = get_tp_group().reduce_scatter(hidden_states, dim=0)
             elif need_reduce:
                 hidden_states = get_tp_group().all_reduce(hidden_states)
             elif need_scatter:
+                tp_rank = get_tp_group().rank_in_group
+                chunk_size = hidden_states.shape[0] // self.tp_size
                 hidden_states = hidden_states[
                     chunk_size * tp_rank : chunk_size * (tp_rank + 1)
                 ]
-            if need_scatter:
-                topk_indices_buffer = topk_indices_buffer[
-                    chunk_size * tp_rank : chunk_size * (tp_rank + 1)
-                ]
-        return hidden_states, topk_indices_buffer
+        return hidden_states
 
 
 def npu_pangu_forward_fake(
@@ -3821,9 +3784,8 @@ def npu_pangu_forward_fake(
     cos: torch.Tensor,
     sin: torch.Tensor,
     layer_name: str,
-    topk_indices_buffer: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    return torch.zeros_like(hidden_states), torch.zeros_like(topk_indices_buffer)
+) -> torch.Tensor:
+    return torch.zeros_like(hidden_states)
 
 
 direct_register_custom_op(

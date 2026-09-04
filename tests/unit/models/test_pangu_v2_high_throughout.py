@@ -115,16 +115,14 @@ class TestHighThroughoutModelForward:
                 cos,
                 sin,
                 sk_event,
-                topk_indices_buffer,
             ):
                 self.seen_cos = cos
-                return model_mod.OpenPanguV2DecoderLayerOutput(
+                return (
                     hidden_states,
                     residual,
                     h_post,
                     h_res,
                     sk_event,
-                    topk_indices_buffer,
                 )
 
         model = model_mod.OpenPanguV2Model.__new__(model_mod.OpenPanguV2Model)
@@ -262,8 +260,8 @@ class TestHighThroughoutDecoderForward:
             prefix = "attn"
             pre_epilog_callback = "stale"
 
-            def __call__(self, hs, _cos, _sin, topk):
-                return hs, topk
+            def __call__(self, hs, _cos, _sin):
+                return hs
 
         layer.self_attn = _Attn()
         layer.mhc_sandwich_norm_post_pre = MagicMock(
@@ -278,12 +276,11 @@ class TestHighThroughoutDecoderForward:
             torch.zeros(2, 2),
             torch.zeros(2, 2),
             None,
-            torch.zeros(2, 1, dtype=torch.int32),
         )
         assert layer.self_attn.pre_epilog_callback == "stale"
         kwargs = layer.mhc_sandwich_norm_post_pre.call_args_list[-1].kwargs
         assert kwargs["defer_side_launch"] is False
-        torch.testing.assert_close(out.hidden_states, hs)
+        torch.testing.assert_close(out[0], hs)
 
     def test_forward_clears_and_installs_pre_epilog_hook(self):
         layer = model_mod.OpenPanguV2DecoderLayer.__new__(
@@ -312,8 +309,8 @@ class TestHighThroughoutDecoderForward:
             prefix = "attn"
             pre_epilog_callback = "stale"
 
-            def __call__(self, hs, _cos, _sin, topk):
-                return hs, topk
+            def __call__(self, hs, _cos, _sin):
+                return hs
 
         layer.self_attn = _Attn()
         layer.mhc_sandwich_norm_post_pre = MagicMock(
@@ -327,7 +324,6 @@ class TestHighThroughoutDecoderForward:
             torch.zeros(2, 2),
             torch.zeros(2, 2),
             None,
-            torch.zeros(2, 1, dtype=torch.int32),
         )
         layer._launch_split_post_res_sinkhorn.assert_called_once()
         assert layer.self_attn.pre_epilog_callback is None

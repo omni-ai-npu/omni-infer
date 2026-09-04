@@ -636,6 +636,11 @@ class NPUCompressedTensorsW4A8Int4MoEMethod(NPUCompressedTensorsW8A8Int8MoEMetho
         self.n_total_experts = None
         self.pack_factor = STORAGE_BITS_NPU // WEIGHT_BITS
         self.smooth_scale = None
+        self.asymmetric_quant = (
+            not weight_quant.symmetric
+            and "mlp.experts" in getattr(weight_quant, "asymmetric_group", [])
+        )
+        self.gmm_autotiling = model_extra_config.operator_opt_config.gmm_autotiling
 
     def create_weights(self, layer: torch.nn.Module, num_experts: int,
                        hidden_size: int, intermediate_size_per_partition: int,
@@ -703,15 +708,94 @@ class NPUCompressedTensorsW4A8Int4MoEMethod(NPUCompressedTensorsW8A8Int8MoEMetho
         set_weight_attrs(w2_weight_int4_scale, extra_weight_attrs)
         set_weight_attrs(w2_weight_bias, extra_weight_attrs)
 
+        if self.asymmetric_quant:
+            w13_weight_offset = torch.nn.Parameter(
+                torch.ones(
+                    num_experts,
+                    1,
+                    2 * intermediate_size_per_partition,
+                    dtype=torch.float32,
+                ),
+                requires_grad=False,
+            )
+            w2_weight_offset = torch.nn.Parameter(
+                torch.ones(
+                    num_experts,
+                    1,
+                    hidden_size,
+                    dtype=torch.float32,
+                ),
+                requires_grad=False,
+            )
+            layer.register_parameter("w13_weight_offset", w13_weight_offset)
+            layer.register_parameter("w2_weight_offset", w2_weight_offset)
+            set_weight_attrs(w13_weight_offset, extra_weight_attrs)
+            set_weight_attrs(w2_weight_offset, extra_weight_attrs)
+        else:
+            layer.register_parameter("w13_weight_offset", None)
+            layer.register_parameter("w2_weight_offset", None)
+
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
-        layer.w13_weight = torch.nn.Parameter(layer.w13_weight.transpose(1, 2).contiguous(), requires_grad=False)
-        layer.w2_weight = torch.nn.Parameter(layer.w2_weight.transpose(1, 2).contiguous(), requires_grad=False)
+        if self.asymmetric_quant:
+            for proj in ("w13", "w2"):
+                scale_i64 = getattr(layer, f"{proj}_weight_int4_scale").data
+                scale = ((scale_i64 << 32) >> 32).to(torch.int32).view(
+                    torch.float32
+                )
 
-        layer.w13_weight.data = torch_npu.npu_format_cast(layer.w13_weight, 29)            
-        layer.w2_weight.data = torch_npu.npu_format_cast(layer.w2_weight, 29)
+                packed = getattr(layer, f"{proj}_weight").data
+                bias = getattr(layer, f"{proj}_weight_bias")
+                unpacked = packed.clone()
+                unpacked.bitwise_left_shift_(4).bitwise_right_shift_(4)
+                bias.data[..., 0::2].copy_(
+                    unpacked.sum(dim=-1, dtype=torch.int32)
+                )
+                unpacked.copy_(packed).bitwise_right_shift_(4)
+                bias.data[..., 1::2].copy_(
+                    unpacked.sum(dim=-1, dtype=torch.int32)
+                )
+                bias.data.mul_(scale.squeeze(-2)).mul_(8.0)
 
-        layer.w13_weight.data = layer.w13_weight.data.view(torch.int32).contiguous()
-        layer.w2_weight.data = layer.w2_weight.data.view(torch.int32).contiguous()
+                offset = getattr(layer, f"{proj}_weight_offset")
+                offset.data = (-scale * offset.data.float()).contiguous()
+
+        repack = self._repack_autotiling if self.gmm_autotiling else self._repack_default
+        layer.w13_weight = repack(layer.w13_weight)
+        layer.w2_weight = repack(layer.w2_weight)
+
+    @staticmethod
+    def _repack_default(weight: torch.nn.Parameter) -> torch.nn.Parameter:
+        repacked = torch.nn.Parameter(
+            weight.transpose(1, 2).contiguous(), requires_grad=False
+        )
+        repacked.data = torch_npu.npu_format_cast(repacked, 29).view(
+            torch.int32
+        ).contiguous()
+        return repacked
+
+    @staticmethod
+    def _repack_autotiling(weight: torch.nn.Parameter) -> torch.nn.Parameter:
+        num_experts, packed_output_size, input_size = weight.shape
+        output_size = packed_output_size * 2
+
+        unpacked = torch.empty(
+            (num_experts, output_size, input_size),
+            dtype=torch.int8,
+            device=weight.device,
+        )
+        unpacked[:, 0::2, :] = weight.data.bitwise_left_shift(4).bitwise_right_shift(4)
+        unpacked[:, 1::2, :] = weight.data.bitwise_right_shift(4)
+
+        packed_input = (
+            (unpacked[:, :, 0::2].to(torch.uint8) & 0xF)
+            | ((unpacked[:, :, 1::2].to(torch.uint8) & 0xF) << 4)
+        ).to(torch.int8).contiguous()
+        del unpacked
+
+        repacked = torch_npu.npu_format_cast(packed_input, 29).view(
+            num_experts, input_size, output_size // 2
+        ).view(torch.int32)
+        return torch.nn.Parameter(repacked, requires_grad=False)
 
     def get_fused_moe_quant_config(
         self, layer: torch.nn.Module
@@ -719,6 +803,8 @@ class NPUCompressedTensorsW4A8Int4MoEMethod(NPUCompressedTensorsW8A8Int8MoEMetho
         return int4_w4a8_moe_quant_config(
             w1_scale=layer.w13_weight_int4_scale,
             w2_scale=layer.w2_weight_int4_scale,
+            w1_offset=layer.w13_weight_offset,
+            w2_offset=layer.w2_weight_offset,
             w1_bias=layer.w13_weight_bias,
             w2_bias=layer.w2_weight_bias,
             a1_scale=layer.w13_input_scale,
@@ -743,9 +829,9 @@ class NPUCompressedTensorsW4A8Int4MoEMethod(NPUCompressedTensorsW8A8Int8MoEMetho
 
         assert moe_parallel_config.use_ep, "W4A8 only support ep"
 
-        tuning_config = None
+        tuning_config = [0, 1, -1] if self.gmm_autotiling else None
 
-        gate_up_proj = torch_npu.npu_grouped_matmul(
+        gate_up_proj = torch.ops.custom.npu_ai_infra_grouped_matmul(
             [hidden_states],
             [experts.w13_weight],
             bias=[experts.w13_weight_bias],
@@ -785,7 +871,7 @@ class NPUCompressedTensorsW4A8Int4MoEMethod(NPUCompressedTensorsW8A8Int8MoEMetho
         if use_grouped_matmul_finalize_routing:
             return gate_up_proj, pertoken_scale
 
-        return torch_npu.npu_grouped_matmul(
+        return torch.ops.custom.npu_ai_infra_grouped_matmul(
             [gate_up_proj],
             [experts.w2_weight],
             scale=[experts.w2_weight_int4_scale],

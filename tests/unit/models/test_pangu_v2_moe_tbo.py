@@ -71,6 +71,7 @@ def _make_moe(tokens=4, top_k=2, hidden_size=4):
     moe.e_score_correction_bias = None
     moe.moe_tbo_threshold = 4
     moe.moe_seq_split_length = 64
+    moe._is_quant = True
     moe.gate = MagicMock(return_value=(torch.zeros(tokens, 4), None))
     moe.experts = SimpleNamespace(top_k=top_k, topk_group=1, num_expert_group=1)
     moe.shared_calls = []

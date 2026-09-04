@@ -6,6 +6,7 @@ from typing import Any, List, Optional
 
 import torch
 from compressed_tensors.quantization import QuantizationArgs, QuantizationStrategy
+from pydantic import Field
 
 from vllm.model_executor.layers.fused_moe import RoutedExperts
 from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase, UnquantizedLinearMethod
@@ -36,6 +37,10 @@ from omni_npu.layers.quantization.compressed_tensors.schemes.compressed_tensors_
 NPU_COMPRESSED_TENSORS = "npu-compressed-tensors"
 
 
+class NPUQuantizationArgs(QuantizationArgs):
+    asymmetric_group: List[str] = Field(default_factory=list)
+
+
 @register_quantization_config(NPU_COMPRESSED_TENSORS)
 class NPUCompressedTensorsConfig(CompressedTensorsConfig):
     """Config class for NPU
@@ -60,11 +65,13 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
             for target in targets:
                 target_scheme_map[target] = {}
                 # adapt: do not validate parameters
-                module_num_bits = quant_config.get("weights").get("num_bits")
-                quant_config["weights"]["num_bits"] = 0
-                target_scheme_map[target]["weights"] = QuantizationArgs.parse_obj(quant_config.get("weights"))
-                quant_config["weights"]["num_bits"] = module_num_bits
-                target_scheme_map[target]["weights"].num_bits = module_num_bits
+                weight_config = quant_config.get("weights")
+                module_num_bits = weight_config.get("num_bits")
+                weight_quant = NPUQuantizationArgs.parse_obj(
+                    {**weight_config, "num_bits": 0}
+                )
+                weight_quant.num_bits = module_num_bits
+                target_scheme_map[target]["weights"] = weight_quant
                 try:
                     target_scheme_map[target]["input_activations"] = (
                         QuantizationArgs.parse_obj(
@@ -128,12 +135,11 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
         is_token = (weight_strategy and input_quant.strategy == QuantizationStrategy.TOKEN.value)
         is_dynamic = not weight_quant.dynamic and input_quant.dynamic
 
-        # Both symmetric and asymmetric input quantization supported.
-        # Only symmetric weight quantization supported.
-        return is_8_bits and is_token and weight_quant.symmetric and is_dynamic
+        # Both symmetric and asymmetric weight/input quantization are supported.
+        return is_8_bits and is_token and is_dynamic
 
     @staticmethod
-    def _is_dynamic_token_w4a8_int(
+    def _is_dynamic_token_w4a8(
         weight_quant: QuantizationArgs, input_quant: QuantizationArgs, weight_num_bits: int
     ) -> bool:
         is_weight_4_bits = weight_num_bits == 4
@@ -146,9 +152,8 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
         is_token = (weight_strategy and input_quant.strategy == QuantizationStrategy.TOKEN.value)
         is_dynamic = not weight_quant.dynamic and input_quant.dynamic
 
-        # Both symmetric and asymmetric input quantization supported.
-        # Only symmetric weight quantization supported.
-        return is_weight_4_bits and is_activation_8_bits and is_token and weight_quant.symmetric and is_dynamic
+        # Both symmetric and asymmetric weight/input quantization are supported.
+        return is_weight_4_bits and is_activation_8_bits and is_token and is_dynamic
 
     def _get_weight_num_bits(
         self,
@@ -195,7 +200,7 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
                     input_symmetric=input_quant.symmetric,
                 )
 
-            if self._is_dynamic_token_w4a8_int(weight_quant, input_quant, weight_num_bits):
+            if self._is_dynamic_token_w4a8(weight_quant, input_quant, weight_num_bits):
                 raise NotImplementedError
 
         raise NotImplementedError("No compressed-tensors compatible scheme was found.")
@@ -212,7 +217,18 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
             return NPU_COMPRESSED_TENSORS
         return None
 
-    def get_moe_method(self, layer: RoutedExperts) -> Optional[QuantizeMethodBase]:
+    def get_moe_method(
+        self,
+        layer: RoutedExperts,
+        layer_name: Optional[str] = None,
+    ) -> Optional[QuantizeMethodBase]:
+        if should_ignore_layer(
+            layer_name,
+            ignore=self.ignore,
+            fused_mapping=self.packed_modules_mapping,
+        ):
+            return None
+
         self._add_fused_moe_to_target_scheme_map()
         if "Linear" in self.target_scheme_map:
             matched_target = "Linear"
@@ -247,7 +263,7 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
         if self._is_dynamic_token_w8a8(weight_quant, input_quant, weight_num_bits):
             return NPUCompressedTensorsW8A8Int8MoEMethod(
                 weight_quant, input_quant, layer)
-        elif self._is_dynamic_token_w4a8_int(weight_quant, input_quant, weight_num_bits):
+        elif self._is_dynamic_token_w4a8(weight_quant, input_quant, weight_num_bits):
             layer.weight_num_bits = 4
             return NPUCompressedTensorsW4A8Int4MoEMethod(weight_quant, input_quant, layer)
         else:
@@ -299,7 +315,7 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
                     return W8A8Int8ShardedLinearMethod()
                 return W8A8Int8FCLinearMethod(self)
 
-            if self._is_dynamic_token_w4a8_int(weight_quant, input_quant, weight_num_bits):
+            if self._is_dynamic_token_w4a8(weight_quant, input_quant, weight_num_bits):
                 raise NotImplementedError
 
         raise NotImplementedError("No compressed-tensors compatible method was found.")
@@ -324,7 +340,7 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
             return super().get_quant_method(layer, prefix)
 
         if isinstance(layer, RoutedExperts):
-            return self.get_moe_method(layer)
+            return self.get_moe_method(layer, prefix)
 
         if "omni_custom_models" in os.environ.get("VLLM_PLUGINS", ""):
             from omni_npu.v1.layers.fused_mlp.layer import FusedMLP

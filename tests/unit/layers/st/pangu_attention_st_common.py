@@ -14,7 +14,6 @@ chunk / prefix boundaries on block_size multiples.
 
 from __future__ import annotations
 
-import inspect
 import os
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -544,20 +543,7 @@ def run_forward(layer, hidden, cos, sin, attn_meta, mome_meta):
             stack.enter_context(
                 patch.object(module, "get_forward_context", return_value=ctx)
             )
-        kwargs = {}
-        if "topk_indices_buffer" in inspect.signature(type(layer).forward).parameters:
-            index_topk = getattr(layer, "index_topk", PANGU_HF_CONFIG["index_topk"])
-            kwargs["topk_indices_buffer"] = torch.zeros(
-                hidden.shape[0],
-                1,
-                index_topk,
-                dtype=torch.int32,
-                device=hidden.device,
-            )
-        output = layer.forward(hidden, cos, sin, **kwargs)
-        if isinstance(output, tuple):
-            return output[0]
-        return output
+        return layer.forward(hidden, cos, sin)
 
 
 def cos_sin_for_positions(layer, positions: torch.Tensor):

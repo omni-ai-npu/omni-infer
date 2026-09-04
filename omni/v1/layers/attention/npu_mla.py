@@ -488,10 +488,10 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
                 )
                 if self.merge_q_kv_conv:
                     self.merge_conv = AggregateConv(
-                        self.q_lora_rank + self.kv_lora_rank, 
-                        config, 
+                        self.q_lora_rank + self.kv_lora_rank,
+                        config,
                         vllm_config,
-                        output_parallel=False, 
+                        output_parallel=False,
                         attn_prefix=f"{prefix}.attn"
                     )
                 else:
