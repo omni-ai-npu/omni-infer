@@ -1092,54 +1092,17 @@ class TestPanguUltraMoeFusedMhcBranches(unittest.TestCase):
         self.assertIs(result["topk_indices_buffer"], topk)
 
 
-class TestOpenPanguMHCWeightPostProcessing(unittest.TestCase):
-    def test_module_does_not_import_weight_utils_helpers(self):
-        self.assertFalse(hasattr(ultra_mod, "run_post_weight_load"))
-        self.assertFalse(hasattr(ultra_mod, "try_load_stacked_or_expert_weight"))
-        self.assertFalse(hasattr(ultra_mod, "load_sharded_param_weight"))
-        self.assertTrue(hasattr(ultra_mod, "mark_split_q_up_params_loaded"))
-
-    def test_process_mhc_weights_initializes_mhc_modules(self):
-        model = ultra_mod.OpenPanguModelBase.__new__(
-            ultra_mod.OpenPanguModelBase
-        )
-        nn.Module.__init__(model)
-        mhc = ultra_mod.NPUmHCRL.__new__(ultra_mod.NPUmHCRL)
-        nn.Module.__init__(mhc)
-        mhc.process_weights_after_loading = MagicMock()
-        model.add_module("mhc", mhc)
-
-        model._process_mhc_weights_after_loading()
-
-        mhc.process_weights_after_loading.assert_called_once_with()
-
-    def test_moe_post_weight_load_processes_mhc_weights(self):
+class TestOpenPanguMoEPostWeightLoad(unittest.TestCase):
+    def test_moe_post_weight_load_delegates_to_run_post_weight_load(self):
         model = ultra_mod.OpenPanguMoEModel.__new__(
             ultra_mod.OpenPanguMoEModel
         )
         nn.Module.__init__(model)
-        model._process_mhc_weights_after_loading = MagicMock()
-        child = SimpleNamespace(post_weight_load=MagicMock())
 
-        def _named_modules():
-            return [("", model), ("child", child)]
+        with patch.object(ultra_mod, "run_post_weight_load") as mock_run:
+            model.post_weight_load()
 
-        model.named_modules = _named_modules
-
-        model.post_weight_load()
-
-        child.post_weight_load.assert_called_once_with()
-        model._process_mhc_weights_after_loading.assert_called_once_with()
-
-    def test_base_load_weights_runs_split_mark_and_mhc_processing(self):
-        model = _new_open_pangu_model_base()
-        model._process_mhc_weights_after_loading = MagicMock()
-        loaded_params = {"model.layers.0.self_attn.q_b_proj.weight"}
-        result, mark_split = _load_weights_with_split_mark(model, loaded_params)
-
-        self.assertIs(result, loaded_params)
-        mark_split.assert_called_once_with(model, loaded_params)
-        model._process_mhc_weights_after_loading.assert_called_once_with()
+        mock_run.assert_called_once_with(model)
 
 
 class TestOpenPanguMoERouterGatingInFp32(unittest.TestCase):

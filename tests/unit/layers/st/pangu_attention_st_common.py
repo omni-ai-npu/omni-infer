@@ -118,13 +118,9 @@ def bootstrap_worker(kv_role: Optional[str] = None,
     from vllm.distributed import get_tp_group
     from omni_npu.vllm_patches import apply_patches
 
-    # This is a manual multi-directory selection, so the patch loader does not
-    # expand pangu_v2_hybrid's dependency mapping. List every dependency
-    # explicitly; pangu_sink_swa_mla provides SinkMLAAttentionSpec used by the
-    # high-performance DSA/MLA StaticSinkMLAAttention cache spec.
-    os.environ["OMNI_NPU_PATCHES_DIR"] = (
-        "pangu_v2_base,pangu_sink_swa_mla,pangu_v2_hybrid,pangu_v2_moe"
-    )
+    # high_throughout also pulls in pangu_v2_base (kv specs + managers).
+    # SinkMLAAttentionSpec / StaticSink live under high_throughout.
+    os.environ["OMNI_NPU_PATCHES_DIR"] = "high_throughout"
     os.environ.setdefault("OMNI_NPU_VLLM_PATCHES", "ALL")
     os.environ.setdefault("OMNI_REUSE_PREFILLED_TOKENS", "1")
     # Single-host multi-process: give each rank's HCCL socket a distinct port.

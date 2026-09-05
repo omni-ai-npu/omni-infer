@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from omni_npu.vllm_patches.usefull_patch.common.patch_eagle import EagleProposerPatch
-from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_hybrid import patch_speculative as patch_mod
+from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_base import patch_speculative as patch_mod
 
 
 class HFConfig:

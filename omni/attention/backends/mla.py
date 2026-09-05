@@ -501,7 +501,7 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
                 # for static sink attention, we need to add the sink length to the seq_lens
                 metadata.decode.sink_len = self.sink_len
                 if model_extra_config.operator_opt_config.use_aicpu_fa_tiling:
-                    metadata.decode.seq_lens[metadata.decode.seq_lens == 0] = self.sink_len
+                    metadata.decode.seq_lens.masked_fill_(metadata.decode.seq_lens == 0, self.sink_len)
                 else:
                     metadata.decode.seq_lens = [
                         self.sink_len if seq == 0 else seq 

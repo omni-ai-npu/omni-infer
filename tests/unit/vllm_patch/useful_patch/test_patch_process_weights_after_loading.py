@@ -2,7 +2,7 @@ from contextlib import contextmanager
 
 import torch
 
-from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_moe import (
+from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_base import (
     patch_process_weights_after_loading as patch_mod,
 )
 
@@ -50,6 +50,7 @@ def test_process_weights_calls_upstream_then_npu_specific_modules(monkeypatch):
     )
     monkeypatch.setattr(patch_mod, "NPUPanguSparseAttention", SupportedModule)
     monkeypatch.setattr(patch_mod, "NPUmHC", SupportedModule)
+    monkeypatch.setattr(patch_mod, "NPUmHCRL", SupportedModule)
     monkeypatch.setattr(patch_mod, "NPURMSNorm", SupportedModule)
     monkeypatch.setattr(
         patch_mod.model_loader_utils,

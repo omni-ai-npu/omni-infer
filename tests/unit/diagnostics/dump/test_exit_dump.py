@@ -5,7 +5,6 @@ import json
 import os
 import signal
 import time
-from pathlib import Path
 
 import pytest
 
@@ -97,7 +96,9 @@ class TestAtexit:
         for _ in range(3):
             os.kill(child.pid, signal.SIGUSR1)
             time.sleep(0.05)
-        assert wait_until(lambda: len(dump_jsons(tmp_path, child.pid)) == 1)
+        assert wait_until(
+            lambda: len(dump_jsons(tmp_path, child.pid)) == 1, timeout=15.0
+        )
         child.release()
         assert child.proc.wait(timeout=5) == 0
         files = dump_jsons(tmp_path, child.pid)

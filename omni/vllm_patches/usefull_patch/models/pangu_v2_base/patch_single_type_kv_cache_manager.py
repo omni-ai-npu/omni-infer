@@ -110,9 +110,10 @@ def get_manager_for_kv_cache_spec(
 ) -> SingleTypeKVCacheManager:
     _ensure_custom_specs_registered()
     manager_class = KVCacheSpecRegistry.get_manager_class(kv_cache_spec)
-    assert manager_class is not None, (
-        f"No manager registered for KVCacheSpec {type(kv_cache_spec)}"
-    )
+    if manager_class is None:
+        raise ValueError(
+            f"No manager registered for KVCacheSpec {type(kv_cache_spec)}"
+        )
     if isinstance(
         kv_cache_spec,
         (SlidingWindowSpec, ChunkedLocalAttentionSpec, MomeSpec),

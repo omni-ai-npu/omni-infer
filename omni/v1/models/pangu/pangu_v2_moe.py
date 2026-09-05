@@ -33,10 +33,6 @@ from vllm.model_executor.layers.linear import (
     ReplicatedLinear,
     RowParallelLinear,
 )
-from vllm.model_executor.layers.mamba.mamba_utils import (
-    MambaStateDtypeCalculator,
-    MambaStateShapeCalculator,
-)
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader,
@@ -62,7 +58,7 @@ from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
 from vllm.transformers_utils.config import set_default_rope_theta
 from vllm.forward_context import get_forward_context
-from vllm.utils.torch_utils import direct_register_custom_op
+from vllm.utils.torch_utils import direct_register_custom_op, get_kv_cache_torch_dtype
 
 from omni_npu import envs
 from omni_npu.layers.fused_moe.layer import NPUSharedFusedMoE
@@ -403,11 +399,11 @@ class OpenPanguV2MOE(nn.Module):
         self,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        # 1. 获取第0维长度（样本/序列维度）
+        # 1. Token/sequence length along dim 0.
         if isinstance(hidden_states, torch.Tensor):
             total_len = hidden_states.shape[0]
         elif isinstance(hidden_states, dict):
-            # 取字典中第一个张量的第0维大小
+            # Use dim 0 of the first tensor in the dict.
             total_len = next(iter(hidden_states.values())).shape[0]
         else:
             raise TypeError(f"Unsupported type: {type(hidden_states)}")
@@ -417,15 +413,15 @@ class OpenPanguV2MOE(nn.Module):
             if total_len * get_tp_group().world_size > self.moe_tbo_threshold:
                 return self._forward_tbo(hidden_states)
 
-        # 2. 长度不超过拆分阈值，直接单步计算
+        # 2. Below the split threshold: run in one pass.
         if total_len <= self.moe_seq_split_length:
             return self._forward_single(hidden_states)
 
-        # 3. 按第0维拆分成多个片段
+        # 3. Split along dim 0 into chunks.
         if isinstance(hidden_states, torch.Tensor):
             chunks = hidden_states.split(self.moe_seq_split_length, dim=0)
         else:
-            # dict 情况：每个 value 都 split，然后 zip 组合
+            # Dict case: split every value, then zip the pieces back together.
             chunks = [
                 dict(zip(hidden_states.keys(), pieces))
                 for pieces in zip(
@@ -433,7 +429,7 @@ class OpenPanguV2MOE(nn.Module):
                 )
             ]
 
-        # 4. 逐片前向，并在第0维拼接结果
+        # 4. Forward each chunk and concat along dim 0.
         outputs = [self._forward_single(c) for c in chunks]
         return torch.cat(outputs, dim=0)
     
@@ -2484,13 +2480,11 @@ class OpenPanguV2ForCausalLM(
             if vllm_config.speculative_config
             else 0
         )
-        return MambaStateShapeCalculator.mome_state_shape(
-            q_lora_rank=hf_config.q_lora_rank,
-            kv_lora_rank=hf_config.kv_lora_rank,
-            num_heads=hf_config.num_attention_heads,
-            v_head_dim=hf_config.v_head_dim,
-            kernel_size=getattr(hf_config, "router_sliding_window", 1),
-            num_spec=num_spec,
+        num_tokens = getattr(hf_config, "router_sliding_window", 1) - 1 + num_spec
+        return (
+            (num_tokens, hf_config.q_lora_rank),
+            (num_tokens, hf_config.kv_lora_rank),
+            (num_tokens, hf_config.num_attention_heads * hf_config.v_head_dim),
         )
 
     @classmethod
@@ -2498,10 +2492,11 @@ class OpenPanguV2ForCausalLM(
         cls,
         vllm_config: VllmConfig,
     ) -> tuple[torch.dtype, torch.dtype, torch.dtype]:
-        return MambaStateDtypeCalculator.mome_state_dtype(
-            vllm_config.model_config.dtype,
+        state_dtype = get_kv_cache_torch_dtype(
             vllm_config.cache_config.mamba_cache_dtype,
+            vllm_config.model_config.dtype,
         )
+        return (state_dtype, state_dtype, state_dtype)
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()

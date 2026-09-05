@@ -9,7 +9,7 @@ Add new KV cache spec classes for Pangu V2 hybrid attention:
 - MomeSpec: Mamba-like state management
 """
 
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, replace
 from math import prod
 
 from vllm.v1 import kv_cache_interface
@@ -17,7 +17,6 @@ from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheSpec,
     MambaSpec,
-    MLAAttentionSpec,
     SlidingWindowSpec,
 )
 from vllm.utils.math_utils import cdiv
@@ -219,33 +218,3 @@ class PanguNewKVCacheSpecsPatch(VLLMPatch):
     DSAAttentionSpec = DSAAttentionSpec
     ShareKVSlidingWindowSpec = ShareKVSlidingWindowSpec
     MomeSpec = MomeSpec
-
-
-@dataclass(frozen=True, kw_only=True)
-class SinkMLAAttentionSpec(MLAAttentionSpec):
-    """MLA KV spec that also reserves static-sink tokens.
-
-    Upstream 0.25.1 has SinkFullAttentionSpec but not this MLA variant.
-    Same patch name as pangu_sink_swa_mla/patch_kv_cache_interface so the
-    model-dir copy overwrites this registration when it loads.
-    """
-
-    sink_len: int = 0
-
-    @classmethod
-    def merge(cls, specs: list) -> "SinkMLAAttentionSpec":
-        merged = MLAAttentionSpec.merge(specs)
-        sink_len_set = {getattr(spec, "sink_len", 0) for spec in specs}
-        assert len(sink_len_set) == 1, (
-            "All SinkMLAAttentionSpec layers in the same KV cache group must "
-            "use the same sink_len."
-        )
-        kwargs = {f.name: getattr(merged, f.name) for f in fields(merged)}
-        kwargs["sink_len"] = sink_len_set.pop()
-        return cls(**kwargs)
-
-
-@register_patch("SinkAttentionSpecPatch", kv_cache_interface)
-class SinkAttentionSpecPatch(VLLMPatch):
-    _attr_names_to_apply = ["SinkMLAAttentionSpec"]
-    SinkMLAAttentionSpec = SinkMLAAttentionSpec

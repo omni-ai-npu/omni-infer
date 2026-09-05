@@ -2,13 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-"""Keep hybrid APC hits on a prefix every KV-cache group can serve.
+"""Keep hybrid APC hits on a prefix Full Attention can actually serve.
 
 vLLM 0.25.1's hybrid fixed-point can report a length that Full Attention does
 not hold: with MTP it drops the last FA block, Mome/Mamba then revives a longer
-hit, and ``is_simple_hybrid`` exits before FA is capped. The connector path
-makes it worse — the scheduler uses ``max(per_group_hits)`` as the common
-prefix, which ``LLMDataDistConnector`` cannot fill in.
+hit, and ``is_simple_hybrid`` exits before FA is capped.
 
 This patch keeps the stock loop, with two changes:
 
@@ -16,7 +14,8 @@ This patch keeps the stock loop, with two changes:
 2. when FA is skipped as downward-closed, cap ``curr_hit_length`` to the
    tokens those blocks actually hold, so a later Mome revive is pulled back.
 
-``find_longest_cache_hit_per_group`` then just repeats that common length.
+The scheduler connector path (``find_longest_cache_hit_per_group``) lives in
+``pangu_base/patch_hybrid_kv_cache_coordinator.py``.
 
 TODO: remove once vLLM tracks a per-group hit length in the fixed-point loop
 (upstream #50344; v0.27.2+).
@@ -57,14 +56,14 @@ def find_longest_cache_hit(
         ):
             cached_blocks = hit_blocks_by_group[group_ids[0]]
             if isinstance(spec, FullAttentionSpec) and cached_blocks is not None:
-                ### adapt start
+                # adapt start
                 # Cap to tokens FA actually holds. Stock only aligns curr_hit_length,
                 # so a later Mome revive can leave hit_length past these blocks.
                 curr_hit_length = min(
                     curr_hit_length,
                     len(cached_blocks) * spec.block_size,
                 )
-                ### adapt end
+                # adapt end
                 curr_hit_length = (
                     curr_hit_length // spec.block_size * spec.block_size
                 )
@@ -116,28 +115,8 @@ def find_longest_cache_hit(
     ), hit_length
 
 
-def find_longest_cache_hit_per_group(
-    self: HybridKVCacheCoordinator,
-    block_hashes,
-    max_cache_hit_length: int,
-):
-    """Return the common hybrid hit as a per-group tuple for the scheduler."""
-    ### adapt start
-    # Stock looks up each group independently; the scheduler then uses
-    # max(per_group_hits). Repeat the common length instead.
-    blocks, hit_length = find_longest_cache_hit(
-        self, block_hashes, max_cache_hit_length
-    )
-    return blocks, (hit_length,) * len(blocks)
-    ### adapt end
-
-
-@register_patch("HybridAPCConnectorHitPatch", HybridKVCacheCoordinator)
-class HybridAPCConnectorHitPatch(VLLMPatch):
-    _attr_names_to_apply = [
-        "find_longest_cache_hit",
-        "find_longest_cache_hit_per_group",
-    ]
+@register_patch("HybridAPCFindLongestCacheHitPatch", HybridKVCacheCoordinator)
+class HybridAPCFindLongestCacheHitPatch(VLLMPatch):
+    _attr_names_to_apply = ["find_longest_cache_hit"]
 
     find_longest_cache_hit = find_longest_cache_hit
-    find_longest_cache_hit_per_group = find_longest_cache_hit_per_group

@@ -9,7 +9,7 @@ import torch_npu
 from vllm.model_executor.layers.attention.attention import Attention
 from vllm.model_executor.layers.attention.mla_attention import MLAAttention
 from vllm.config import CacheConfig, VllmConfig
-from vllm.forward_context import ForwardContext, get_forward_context
+from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.linear import ColumnParallelLinear
 from vllm.model_executor.layers.quantization import QuantizationConfig
@@ -34,7 +34,6 @@ from vllm.utils.math_utils import cdiv
 from vllm.model_executor.layers.attention.static_sink_attention import (
     StaticSinkAttention,
     get_attn_backend,
-    create_static_sink_attention_backend,
 )
 from vllm.model_executor.custom_op import CustomOp
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
@@ -285,7 +284,7 @@ class StaticSinkAttentionPatch(VLLMPatch):
                     "sink_k_pe and sink_compressed_kv have not been prepared"
                 )
             if not self.sink_populated:
-                forward_context: ForwardContext = get_forward_context()
+                get_forward_context()
                 self_kv_cache = self.kv_cache
                 if self_kv_cache is not None and len(self_kv_cache) > 0:
                     self.populate_sink_kv(self_kv_cache[0], self_kv_cache[1])
@@ -435,7 +434,7 @@ class StaticSinkAttentionClassPatch(VLLMPatch):
                 "sink_key and sink_value have not been prepared"
             )
         if not self.sink_populated:
-            forward_context: ForwardContext = get_forward_context()
+            get_forward_context()
             self_kv_cache = self.kv_cache
             if self_kv_cache is not None and len(self_kv_cache) > 0:
                 self.populate_sink_kv(self_kv_cache[0], self_kv_cache[1])

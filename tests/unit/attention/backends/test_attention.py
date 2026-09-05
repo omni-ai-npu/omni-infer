@@ -171,11 +171,15 @@ def npu_attention_classes(monkeypatch):
     mock_forward_ctx.capturing = False
     mock_forward_ctx.batch_descriptor = None
 
-    forward_ctx_mod = types.ModuleType('vllm.forward_context')
-    forward_ctx_mod.get_forward_context = MagicMock(return_value=mock_forward_ctx)
-    forward_ctx_mod.BatchDescriptor = MagicMock()
-    forward_ctx_mod.capturing = False
-    monkeypatch.setitem(sys.modules, "vllm.forward_context", forward_ctx_mod)
+    # Keep the real vllm.forward_context module so isolated runs can still
+    # import ForwardContext / is_forward_context_available. Only stub the
+    # runtime accessor used by attention forward.
+    import vllm.forward_context as forward_ctx_mod
+    monkeypatch.setattr(
+        forward_ctx_mod,
+        "get_forward_context",
+        MagicMock(return_value=mock_forward_ctx),
+    )
 
     model_utils_mod = types.ModuleType("vllm.model_executor.models.utils")
     model_utils_mod.extract_layer_index = MagicMock(return_value=0)
@@ -358,6 +362,16 @@ class TestNPUAttentionBackendDefault(unittest.TestCase):
             self.assertEqual(v_cache.shape, value_shape)
 
 @pytest.mark.unit
+class _FakeCommonAttentionMetadata:
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    def compute_num_computed_tokens(self) -> torch.Tensor:
+        query_lens = self.query_start_loc[1:] - self.query_start_loc[:-1]
+        return self.seq_lens - query_lens
+
+
 class TestNPUAttentionBackendDefaultMetadataBuilder(unittest.TestCase):
 
     @pytest.fixture(autouse=True)
@@ -367,30 +381,23 @@ class TestNPUAttentionBackendDefaultMetadataBuilder(unittest.TestCase):
         self.attention_module = npu_attention_classes['attention_module']
         self.npu_attention_classes = npu_attention_classes
 
-    def test_metadata_builder(self):
-        # Define a minimal CommonAttentionMetadata (normally from vLLm)
-        class CommonAttentionMetadata:
-            def __init__(self, **kwargs):
-                for k, v in kwargs.items():
-                    setattr(self, k, v)
-
-            def compute_num_computed_tokens(self) -> torch.Tensor:
-                query_lens = self.query_start_loc[1:] - self.query_start_loc[:-1]
-                return self.seq_lens - query_lens
-
+    def _new_metadata_builder(self):
         spec = MagicMock()
         spec.block_size = 16
+        spec.head_size = 128
         vllm_config = MagicMock()
         vllm_config.reorder_batch_threshold = 0
         vllm_config.compilation_config = None
-        builder = self.metadata_builder_cls(
+        return self.metadata_builder_cls(
             kv_cache_spec=spec,
             layer_names=["test"],
             vllm_config=vllm_config,
-            device=torch.device("npu")
+            device=torch.device("npu"),
         )
 
-        common_meta = CommonAttentionMetadata(
+    def test_metadata_builder(self):
+        builder = self._new_metadata_builder()
+        common_meta = _FakeCommonAttentionMetadata(
             num_actual_tokens=20,
             query_start_loc=torch.tensor([0, 10, 20]),
             seq_lens=torch.tensor([10, 10]),
@@ -425,29 +432,8 @@ class TestNPUAttentionBackendDefaultMetadataBuilder(unittest.TestCase):
         self.assertTrue(meta.is_pure_prefill_without_prefix_and_use_kvnz)
 
     def test_metadata_builder_marks_prefill_with_prefix_false(self):
-        class CommonAttentionMetadata:
-            def __init__(self, **kwargs):
-                for k, v in kwargs.items():
-                    setattr(self, k, v)
-
-            def compute_num_computed_tokens(self) -> torch.Tensor:
-                query_lens = self.query_start_loc[1:] - self.query_start_loc[:-1]
-                return self.seq_lens - query_lens
-
-        spec = MagicMock()
-        spec.block_size = 16
-        spec.head_size = 128
-        vllm_config = MagicMock()
-        vllm_config.reorder_batch_threshold = 0
-        vllm_config.compilation_config = None
-        builder = self.metadata_builder_cls(
-            kv_cache_spec=spec,
-            layer_names=["test"],
-            vllm_config=vllm_config,
-            device=torch.device("npu"),
-        )
-
-        common_meta = CommonAttentionMetadata(
+        builder = self._new_metadata_builder()
+        common_meta = _FakeCommonAttentionMetadata(
             num_actual_tokens=4,
             query_start_loc=torch.tensor([0, 4]),
             seq_lens=torch.tensor([10]),
@@ -463,6 +449,29 @@ class TestNPUAttentionBackendDefaultMetadataBuilder(unittest.TestCase):
                                  common_attn_metadata=common_meta)
 
         self.assertFalse(meta.is_pure_prefill_without_prefix_and_use_kvnz)
+
+    def test_metadata_builder_masked_fill_zero_seq_lens_with_sink_len(self):
+        builder = self._new_metadata_builder()
+        builder.sink_len = 32
+        seq_lens = torch.tensor([0, 7, 0], dtype=torch.int32)
+        common_meta = _FakeCommonAttentionMetadata(
+            num_actual_tokens=3,
+            query_start_loc=torch.tensor([0, 1, 2, 3], dtype=torch.int32),
+            seq_lens=seq_lens,
+            max_query_len=1,
+            block_table_tensor=torch.randint(0, 100, (3, 10)),
+            slot_mapping=torch.arange(3),
+        )
+
+        with patch(
+            "omni_npu.attention.backends.attention.split_decodes_and_prefills",
+            return_value=(0, 3, 0, 3),
+        ):
+            meta = builder.build(common_prefix_len=0, common_attn_metadata=common_meta)
+
+        self.assertEqual(seq_lens.tolist(), [32, 7, 32])
+        got = meta.seq_lens.tolist() if torch.is_tensor(meta.seq_lens) else meta.seq_lens
+        self.assertEqual(got, [32, 7, 32])
 
 
 @pytest.mark.unit

@@ -2,7 +2,7 @@
 
 Pangu V2 MoE 505B int8 + EP 离线精度测试所需的最小 patch 集合。
 
-目录划分对齐 `patches/`：`common/` 为通用 patch，`models/pangu_v2_hybrid/` 与 `models/pangu_v2_moe/` 为模型相关 patch。
+目录划分：`common/` 为通用 patch；`models/pangu_v2_base/` 为共享补丁；`models/high_throughout/` 与 `models/low_latency/` 为性能路径补丁。
 
 ## 目录结构
 
@@ -10,8 +10,9 @@ Pangu V2 MoE 505B int8 + EP 离线精度测试所需的最小 patch 集合。
 usefull_patch/
 ├── common/
 ├── models/
-│   ├── pangu_v2_hybrid/
-│   └── pangu_v2_moe/
+│   ├── pangu_v2_base/
+│   ├── high_throughout/
+│   └── low_latency/
 └── README.md
 ```
 
@@ -36,27 +37,34 @@ usefull_patch/
 
 > MRv2 四个 patch 的实现在 omni/worker/npu/，采样相关 Triton helper 放在 omni/worker/npu/ops/；绑定按消费方逐个枚举（应用晚于消费方 import，只改定义模块盖不住），目标模块 import 失败只记 error 不注册。
 
-## models/pangu_v2_hybrid/
+## models/pangu_v2_base/
+
+共享补丁，由 `high_throughout` / `low_latency` 自动带上。
 
 | 文件 | 作用 |
 |------|------|
-| `patch_kv_cache_interface.py` | 注入 `MomeSpec` / `DSAAttentionSpec` 等 KV cache spec |
+| `patch_kv_cache_interface.py` | 注入 `MomeSpec` / `DSAAttentionSpec` / `ShareKVSlidingWindowSpec` |
 | `patch_single_type_kv_cache_manager.py` | 注册 `MomeManager` / `ShareKVSlidingWindowManager` 并为 Mome 注入 admission cap |
 | `patch_kv_cache_utils.py` | `HYBRID_ATTN_GROUP_SIZE` 环境变量 override hybrid KV group 分组 |
-| `patch_static_sink_attention.py` | StaticSink attention |
-| `patch_hybrid_kv_cache_coordinator.py` | hybrid APC 命中长度固定点：禁止 simple-hybrid 提前退出，并把 FA 命中长度限制在实际持有的 block 上 |
-| `patch_mome_hybrid.py` | Pangu V2 hybrid MoME attention |
-| `patch_scheduler.py` | Pangu V2 scheduler：PD / reasoning `max_tokens` 排除 thinking |
-| `patch_speculative.py` | Pangu V2 MTP / speculative config |
+| `patch_kv_cache_dtype.py` | 支持 int8/hif8 等 KV cache dtype |
+| `patch_hybrid_kv_cache_coordinator.py` | hybrid APC connector：`find_longest_cache_hit_per_group` 把公共命中长度按 group 重复 |
+| `patch_scheduler.py` | PD / reasoning `max_tokens` 排除 thinking |
+| `patch_speculative.py` | MTP / speculative config |
+| `patch_model_arch_config_convertor.py` | Pangu MLA 架构识别 |
+| `patch_process_weights_after_loading.py` | NPU 权重后处理：loader 在 quant packing 之后补调 `NPUPanguSparseAttention` / `NPUmHC` / `NPUmHCRL` / `NPURMSNorm` |
 
-## models/pangu_v2_moe/
+## models/high_throughout/
 
 | 文件 | 作用 |
 |------|------|
-| `patch_mamba_utils.py` | 注入 `mome_state_shape` / `mome_state_dtype` |
-| `patch_kv_cache_dtype.py` | 支持 int8/hif8 等 KV cache dtype |
-| `patch_model_arch_config_convertor.py` | Pangu MLA 架构识别 |
-| `patch_process_weights_after_loading.py` | NPU 权重后处理 |
+| `patch_sink_attention_spec.py` | 注入 `SinkMLAAttentionSpec` |
+| `patch_static_sink_attention.py` | StaticSink attention |
+| `patch_hybrid_kv_cache_coordinator.py` | hybrid APC `find_longest_cache_hit`：禁止 simple-hybrid 提前退出，并把 FA 命中长度限制在实际持有的 block 上 |
+| `patch_mome_hybrid.py` | Pangu V2 hybrid MoME attention |
+
+## models/low_latency/
+
+当前无额外 patch 文件。设置 `OMNI_VLLM_PATCHES_DIR=low_latency` 仍会加载 `pangu_v2_base`。
 
 ## 加载方式
 
@@ -64,13 +72,18 @@ usefull_patch/
 
 - `common/` 始终导入
 - `models/<dir>/` 仅在 `OMNI_VLLM_PATCHES_DIR` 中点名时导入；支持逗号分隔多个目录，按顺序加载
+- `high_throughout` / `low_latency` 会自动附带 `pangu_v2_base`（先加载共享目录，再加载对应性能目录）
+- 旧写法 `pangu_v2_hybrid` / `pangu_v2_moe` 分别等价于 `high_throughout` / `low_latency`
 
 ```bash
-export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid"
-# 加载 common/ + models/pangu_v2_hybrid/
+export OMNI_VLLM_PATCHES_DIR="high_throughout"
+# 加载 common/ + models/pangu_v2_base/ + models/high_throughout/
 
-export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid,pangu_v2_moe"
-# 加载 common/ + models/pangu_v2_hybrid/ + models/pangu_v2_moe/
+export OMNI_VLLM_PATCHES_DIR="low_latency"
+# 加载 common/ + models/pangu_v2_base/ + models/low_latency/
+
+export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+# 兼容旧 playbook：加载 pangu_v2_base + high_throughout + low_latency
 ```
 
 未设置 `OMNI_VLLM_PATCHES_DIR` 时只加载 `common/`。每个目录内的文件按文件名排序。

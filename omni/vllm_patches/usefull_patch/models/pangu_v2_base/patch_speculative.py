@@ -67,7 +67,7 @@ class PanguV2MoeSpeculativeConfigPatch(VLLMPatch):
         has_pangu_v2_moe_patch = "pangu_v2_moe" in {item.strip() for item in patch_dirs.split(",")}
         is_pangu_v2_moe_vl = is_openpangu_vl and has_pangu_v2_moe_patch
         is_openpangu_mtp_vl = is_openpangu_vl and not has_pangu_v2_moe_patch
-    
+
         archs = getattr(hf_config, "architectures", None) or []
 
         if (hf_config.model_type == "openpangu_v2"

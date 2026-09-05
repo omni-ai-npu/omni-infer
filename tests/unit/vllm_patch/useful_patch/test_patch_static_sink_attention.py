@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_hybrid.patch_static_sink_attention import (
+from omni_npu.vllm_patches.usefull_patch.models.high_throughout.patch_static_sink_attention import (
     StaticSinkAttentionPatch,
     create_static_sink_attention_backendPatch,
 )
@@ -63,12 +63,26 @@ def _static_sink_mla_spec(
     vllm_config=None,
 ):
     from vllm.v1 import kv_cache_interface
-    from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_hybrid import patch_kv_cache_interface as kv_mod
-    import omni_npu.vllm_patches.usefull_patch.models.pangu_v2_hybrid.patch_static_sink_attention as sink_mod
+    from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_base import (
+        patch_kv_cache_interface as kv_mod,
+    )
+    from omni_npu.vllm_patches.usefull_patch.models.high_throughout import (
+        patch_sink_attention_spec as sink_spec_mod,
+    )
+    import omni_npu.vllm_patches.usefull_patch.models.high_throughout.patch_static_sink_attention as sink_mod
 
-    monkeypatch.setattr(kv_cache_interface, "DSAAttentionSpec", kv_mod.DSAAttentionSpec)
+    # These types are omni patches, not upstream vLLM 0.25.1 attributes.
     monkeypatch.setattr(
-        kv_cache_interface, "SinkMLAAttentionSpec", kv_mod.SinkMLAAttentionSpec
+        kv_cache_interface,
+        "DSAAttentionSpec",
+        kv_mod.DSAAttentionSpec,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        kv_cache_interface,
+        "SinkMLAAttentionSpec",
+        sink_spec_mod.SinkMLAAttentionSpec,
+        raising=False,
     )
 
     def _bf16(*_a, **_k):
@@ -94,7 +108,7 @@ def _static_sink_mla_spec(
     spec = StaticSinkAttentionPatch.StaticSinkMLAAttention.get_kv_cache_spec(
         attn, vllm_config
     )
-    return spec, kv_mod
+    return spec, kv_mod, sink_spec_mod
 
 
 def _make_builder(monkeypatch, *, use_noncontiguous_kv, sink_len=32):
@@ -164,7 +178,7 @@ def test_static_sink_builder_prefixes_block_table_and_seq_lens(monkeypatch):
 def test_static_sink_mla_get_kv_cache_spec_uses_dsa_for_noncontiguous_sparse(
     monkeypatch,
 ):
-    spec, kv_mod = _static_sink_mla_spec(
+    spec, kv_mod, _sink_spec_mod = _static_sink_mla_spec(
         monkeypatch,
         use_noncontiguous_kv=True,
         use_sparse=True,
@@ -176,7 +190,7 @@ def test_static_sink_mla_get_kv_cache_spec_uses_dsa_for_noncontiguous_sparse(
 
 @pytest.mark.unit
 def test_static_sink_mla_get_kv_cache_spec_uses_sink_mla_otherwise(monkeypatch):
-    spec, kv_mod = _static_sink_mla_spec(
+    spec, _kv_mod, sink_spec_mod = _static_sink_mla_spec(
         monkeypatch,
         use_noncontiguous_kv=False,
         use_sparse=False,
@@ -186,5 +200,5 @@ def test_static_sink_mla_get_kv_cache_spec_uses_sink_mla_otherwise(monkeypatch):
             cache_config=SimpleNamespace(block_size=16, cache_dtype="auto"),
         ),
     )
-    assert isinstance(spec, kv_mod.SinkMLAAttentionSpec)
+    assert isinstance(spec, sink_spec_mod.SinkMLAAttentionSpec)
     assert spec.sink_len == 128

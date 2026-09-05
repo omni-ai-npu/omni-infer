@@ -134,7 +134,7 @@ class NPUAttentionMetadataBuilder(V1AttentionMetadataBuilder[NPUMetadata]):
             )
 
         if hasattr(self, "sink_len") and self.sink_len > 0:
-            seq_lens[seq_lens == 0] = self.sink_len
+            seq_lens.masked_fill_(seq_lens == 0, self.sink_len)
 
         if not model_extra_config.operator_opt_config.use_aicpu_fa_tiling:
             query_start_loc = query_start_loc.tolist()

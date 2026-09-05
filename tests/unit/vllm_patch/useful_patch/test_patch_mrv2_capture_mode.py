@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from omni_npu.vllm_patches.usefull_patch import patch_mrv2_capture_mode as patch_mod
+from omni_npu.vllm_patches.usefull_patch.common import patch_mrv2_capture_mode as patch_mod
 from omni_npu.worker.npu import aclgraph_utils as cudagraph
 
 

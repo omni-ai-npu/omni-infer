@@ -26,22 +26,36 @@ _SpecGroup = namedtuple(
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-PATCH_PATH = (
+BASE_PATCH_PATH = (
     REPO_ROOT
-    / "omni/vllm_patches/usefull_patch/models/pangu_v2_hybrid/patch_hybrid_kv_cache_coordinator.py"
+    / "omni/vllm_patches/usefull_patch/models/pangu_v2_base/patch_hybrid_kv_cache_coordinator.py"
+)
+HYBRID_PATCH_PATH = (
+    REPO_ROOT
+    / "omni/vllm_patches/usefull_patch/models/high_throughout/patch_hybrid_kv_cache_coordinator.py"
 )
 
 NULL_BLOCK = "NULL"
 BLOCK_SIZE = 16
 
 
-def _load_patch_module():
+def _exec_patch(path, module_name):
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_patch_modules():
     try:
-        from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_hybrid import (
-            patch_hybrid_kv_cache_coordinator as mod,
+        from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_base import (
+            patch_hybrid_kv_cache_coordinator as loaded_base,
+        )
+        from omni_npu.vllm_patches.usefull_patch.models.high_throughout import (
+            patch_hybrid_kv_cache_coordinator as loaded_hybrid,
         )
 
-        return mod
+        return loaded_base, loaded_hybrid
     except Exception:  # noqa: BLE001 - use a direct source load on dev machines
         pass
 
@@ -114,12 +128,13 @@ def _load_patch_module():
     )
     sys.modules["omni_npu.vllm_patches.core"] = core
     try:
-        spec = importlib.util.spec_from_file_location(
-            "_hybrid_apc_connector_patch_under_test", PATCH_PATH
+        loaded_base = _exec_patch(
+            BASE_PATCH_PATH, "_hybrid_apc_connector_patch_under_test"
         )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+        loaded_hybrid = _exec_patch(
+            HYBRID_PATCH_PATH, "_hybrid_apc_find_longest_hit_patch_under_test"
+        )
+        return loaded_base, loaded_hybrid
     finally:
         for name, saved in reversed(saved_modules.items()):
             if saved is None:
@@ -128,8 +143,8 @@ def _load_patch_module():
                 sys.modules[name] = saved
 
 
-patch_mod = _load_patch_module()
-FullAttentionSpec = patch_mod.FullAttentionSpec
+base_mod, hybrid_mod = _load_patch_modules()
+FullAttentionSpec = hybrid_mod.FullAttentionSpec
 
 
 class FakeBlockPool:
@@ -246,11 +261,16 @@ class FakeCoordinator:
             for gid, (spec, manager, _cached, use_eagle) in enumerate(groups)
         ]
 
+    def find_longest_cache_hit(self, block_hashes, max_cache_hit_length):
+        return hybrid_mod.find_longest_cache_hit(
+            self, block_hashes, max_cache_hit_length
+        )
+
 
 class HybridAPCConnectorHitPatchTest(unittest.TestCase):
     @staticmethod
     def _call_per_group(coordinator, max_cache_hit_length=256):
-        return patch_mod.find_longest_cache_hit_per_group(
+        return base_mod.find_longest_cache_hit_per_group(
             coordinator, coordinator.block_hashes, max_cache_hit_length
         )
 
@@ -319,7 +339,7 @@ class HybridAPCConnectorHitPatchTest(unittest.TestCase):
             ]
         )
 
-        blocks, hit_length = patch_mod.find_longest_cache_hit(
+        blocks, hit_length = hybrid_mod.find_longest_cache_hit(
             coordinator, coordinator.block_hashes, 256
         )
 
@@ -328,8 +348,20 @@ class HybridAPCConnectorHitPatchTest(unittest.TestCase):
 
     def test_patch_targets_active_hybrid_coordinator(self):
         self.assertIs(
-            patch_mod.HybridAPCConnectorHitPatch._target,
-            patch_mod.HybridKVCacheCoordinator,
+            base_mod.HybridAPCConnectorHitPatch._target,
+            base_mod.HybridKVCacheCoordinator,
+        )
+        self.assertEqual(
+            base_mod.HybridAPCConnectorHitPatch._attr_names_to_apply,
+            ["find_longest_cache_hit_per_group"],
+        )
+        self.assertIs(
+            hybrid_mod.HybridAPCFindLongestCacheHitPatch._target,
+            hybrid_mod.HybridKVCacheCoordinator,
+        )
+        self.assertEqual(
+            hybrid_mod.HybridAPCFindLongestCacheHitPatch._attr_names_to_apply,
+            ["find_longest_cache_hit"],
         )
 
 

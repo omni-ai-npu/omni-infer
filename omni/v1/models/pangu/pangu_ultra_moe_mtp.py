@@ -37,6 +37,7 @@ from omni_npu.layers.mhc.mhc_rl import NPUmHCRL
 from omni_npu.model_config.config_loader.loader import model_extra_config
 from omni_npu.v1.layers.attention.weight_utils import (
     mark_split_q_up_params_loaded,
+    run_post_weight_load,
 )
 
 
@@ -366,15 +367,11 @@ class OpenPanguMTP(nn.Module, SupportsPP):
 
         mark_split_q_up_params_loaded(self, loaded_params)
         self.post_weight_load()
-        
+
         return loaded_params
 
     def post_weight_load(self) -> None:
-        for _, module in self.named_modules():
-            if module is self:
-                continue
-            if hasattr(module, "post_weight_load"):
-                module.post_weight_load()
+        run_post_weight_load(self)
 
     def _rewrite_spec_layer_name(self, spec_layer: int, name: str) -> str:
         """

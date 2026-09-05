@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_moe import (
+from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_base import (
     patch_model_arch_config_convertor as patch_mod,
 )
 

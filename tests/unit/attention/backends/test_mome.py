@@ -10,7 +10,7 @@ import torch
 
 import omni_npu.attention.backends.mome as mome_mod
 from vllm.v1.attention.backends.utils import PAD_SLOT_ID
-from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_hybrid.patch_kv_cache_interface import MomeSpec
+from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_base.patch_kv_cache_interface import MomeSpec
 
 
 class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):

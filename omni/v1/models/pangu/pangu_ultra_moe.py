@@ -56,6 +56,7 @@ from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
 from omni_npu.v1.layers.attention.weight_utils import (
     mark_split_q_up_params_loaded,
+    run_post_weight_load,
 )
 from omni_npu.v1.layers.fused_mlp.layer import FusedMLP
 from omni_npu.v1.layers.vocab_parallel_embedding import (
@@ -908,12 +909,6 @@ class OpenPanguModelBase(nn.Module, SupportsPP, SupportsLoRA):
         logits = self.logits_processor(self.lm_head, hidden_states.to(dtype))
         return logits
 
-    def _process_mhc_weights_after_loading(self) -> None:
-        """Build the derived FP32 weights required by the MHC fusion kernels."""
-        for module in self.modules():
-            if isinstance(module, NPUmHCRL):
-                module.process_weights_after_loading()
-
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(
             self,
@@ -921,7 +916,6 @@ class OpenPanguModelBase(nn.Module, SupportsPP, SupportsLoRA):
         )
         loaded_params = loader.load_weights(weights)
         mark_split_q_up_params_loaded(self, loaded_params)
-        self._process_mhc_weights_after_loading()
         return loaded_params
 
 
@@ -1114,12 +1108,7 @@ class OpenPanguMoEModel(OpenPanguModelBase, MixtureOfExperts):
         return loaded_params
 
     def post_weight_load(self) -> None:
-        for _, module in self.named_modules():
-            if module is self:
-                continue
-            if hasattr(module, "post_weight_load"):
-                module.post_weight_load()
-        self._process_mhc_weights_after_loading()
+        run_post_weight_load(self)
 
 
 def insert_conv_before(name: str) -> str:

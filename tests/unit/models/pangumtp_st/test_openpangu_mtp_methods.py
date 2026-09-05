@@ -48,15 +48,6 @@ def _make_minimal_mtp():
     return m, mtp_mod
 
 
-def test_mtp_module_does_not_import_weight_utils_helpers():
-    import omni_npu.v1.models.pangu.pangu_ultra_moe_mtp as mtp_mod
-
-    assert not hasattr(mtp_mod, "run_post_weight_load")
-    assert not hasattr(mtp_mod, "try_load_stacked_or_expert_weight")
-    assert not hasattr(mtp_mod, "load_sharded_param_weight")
-    assert hasattr(mtp_mod, "mark_split_q_up_params_loaded")
-
-
 # ==============================================================================
 # compute_logits dtype alignment
 # ==============================================================================
@@ -437,6 +428,12 @@ class TestPostWeightLoad:
         m.named_modules = lambda: [("", m), ("model.layers.2", sub)]
         m.post_weight_load()
         assert len(called) == 1, "post_weight_load should be called on submodules"
+
+    def test_delegates_to_run_post_weight_load(self):
+        m, mtp_mod = _make_minimal_mtp()
+        with patch.object(mtp_mod, "run_post_weight_load") as mock_run:
+            m.post_weight_load()
+        mock_run.assert_called_once_with(m)
 
     def test_skips_self(self):
         m, mtp_mod = _make_minimal_mtp()

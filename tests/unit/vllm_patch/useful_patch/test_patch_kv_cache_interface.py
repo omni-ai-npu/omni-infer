@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_hybrid import patch_kv_cache_interface as patch_mod
+from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_base import patch_kv_cache_interface as patch_mod
 
 
 def _dsa(cache_dtype_str=None, **overrides):
@@ -52,6 +52,29 @@ def test_dsa_merge_preserves_cache_dtype():
         patch_mod.DSAAttentionSpec.merge(
             [_dsa("int8_ds_mla"), _dsa("hif8_ds_mla")]
         )
+
+
+def _share_kv_swa():
+    return patch_mod.ShareKVSlidingWindowSpec(
+        block_size=4,
+        num_kv_heads=1,
+        head_size=512,
+        dtype=torch.bfloat16,
+        sliding_window=128,
+    )
+
+
+def test_dsa_merge_mixed_spec_types_signals_non_uniform():
+    # vLLM is_kv_cache_spec_uniform only catches AssertionError from merge().
+    with pytest.raises(AssertionError, match="DSAAttentionSpec"):
+        patch_mod.DSAAttentionSpec.merge([_dsa(), _share_kv_swa()])
+
+
+def test_mixed_hybrid_specs_are_not_uniform():
+    from vllm.v1.core.kv_cache_utils import is_kv_cache_spec_uniform
+
+    specs = {"dsa": _dsa(), "swa": _share_kv_swa()}
+    assert is_kv_cache_spec_uniform(specs) is False
 
 
 def test_share_kv_sliding_window_uses_single_shared_head_storage():
@@ -129,37 +152,3 @@ def test_new_kv_cache_specs_patch_registration():
     assert cls.DSAAttentionSpec is patch_mod.DSAAttentionSpec
     assert cls.ShareKVSlidingWindowSpec is patch_mod.ShareKVSlidingWindowSpec
     assert cls.MomeSpec is patch_mod.MomeSpec
-
-
-def _sink_mla(sink_len=128, **overrides):
-    kwargs = {
-        "block_size": 4,
-        "num_kv_heads": 1,
-        "head_size": 576,
-        "dtype": torch.bfloat16,
-        "sink_len": sink_len,
-    }
-    kwargs.update(overrides)
-    return patch_mod.SinkMLAAttentionSpec(**kwargs)
-
-
-def test_sink_mla_spec_keeps_sink_len_and_merges_uniform_groups():
-    spec = _sink_mla()
-    assert spec.sink_len == 128
-    merged = patch_mod.SinkMLAAttentionSpec.merge([_sink_mla(64), _sink_mla(64)])
-    assert isinstance(merged, patch_mod.SinkMLAAttentionSpec)
-    assert merged.sink_len == 64
-    assert merged.block_size == 4
-    assert merged.head_size == 576
-
-
-def test_sink_mla_spec_merge_rejects_mismatched_sink_len():
-    with pytest.raises(AssertionError, match="same sink_len"):
-        patch_mod.SinkMLAAttentionSpec.merge([_sink_mla(64), _sink_mla(128)])
-
-
-def test_sink_attention_spec_patch_registration():
-    cls = patch_mod.SinkAttentionSpecPatch
-    assert cls._target is patch_mod.kv_cache_interface
-    assert cls.SinkMLAAttentionSpec is patch_mod.SinkMLAAttentionSpec
-    assert "SinkMLAAttentionSpec" in cls._attr_names_to_apply

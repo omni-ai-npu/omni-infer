@@ -2,7 +2,7 @@ from typing import get_args
 
 import torch
 
-from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_moe import patch_kv_cache_dtype as patch_mod
+from omni_npu.vllm_patches.usefull_patch.models.pangu_v2_base import patch_kv_cache_dtype as patch_mod
 
 
 def test_extended_cache_dtype_contains_custom_values():

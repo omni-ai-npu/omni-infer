@@ -2,55 +2,83 @@
 from pathlib import Path
 
 from omni import vllm_patches
-from omni.vllm_patches import patches as _patches_mod  # explicit submodule load
 
 
-def test_get_patch_dir_names_for_openpangu_v2():
-    assert vllm_patches._get_patch_dir_names("openpangu_v2") == [
+def test_get_patch_dir_names_for_high_throughout():
+    assert vllm_patches._get_patch_dir_names("high_throughout") == [
         "pangu_v2_base",
-        "pangu_sink_swa_mla",
+        "high_throughout",
     ]
 
 
-def test_get_patch_dir_names_for_manual_legacy_alias():
-    assert vllm_patches._get_patch_dir_names("pangu_sink_swa_mla") == [
+def test_get_patch_dir_names_for_low_latency():
+    assert vllm_patches._get_patch_dir_names("low_latency") == [
         "pangu_v2_base",
-        "pangu_sink_swa_mla",
+        "low_latency",
     ]
 
 
-def test_get_patch_dir_names_for_minimax_m2():
-    assert vllm_patches._get_patch_dir_names("minimax_m2") == ["minimax"]
+def test_get_patch_dir_names_legacy_pangu_v2_hybrid_maps_to_high_throughout():
+    assert vllm_patches._get_patch_dir_names("pangu_v2_hybrid") == [
+        "pangu_v2_base",
+        "high_throughout",
+    ]
 
 
-def test_find_patch_dir_exact_supports_multiple_manual_dirs():
-    models_root = Path(_patches_mod.__file__).parent / "models"
+def test_get_patch_dir_names_legacy_pangu_v2_moe_maps_to_low_latency():
+    assert vllm_patches._get_patch_dir_names("pangu_v2_moe") == [
+        "pangu_v2_base",
+        "low_latency",
+    ]
 
-    patch_dirs = vllm_patches._find_patch_dir_exact("pangu_sink_swa_mla", models_root)
+
+def test_get_patch_dir_names_legacy_comma_separated_aliases_are_expanded():
+    assert vllm_patches._get_patch_dir_names("pangu_v2_hybrid, pangu_v2_moe") == [
+        "pangu_v2_base",
+        "high_throughout",
+        "low_latency",
+    ]
+
+
+def test_find_patch_dir_exact_high_throughout_includes_pangu_v2_base():
+    models_root = Path(vllm_patches.__file__).parent / "usefull_patch" / "models"
+
+    patch_dirs = vllm_patches._find_patch_dir_exact("high_throughout", models_root)
 
     assert [path.name for path in patch_dirs] == [
         "pangu_v2_base",
-        "pangu_sink_swa_mla",
+        "high_throughout",
     ]
 
 
-def test_find_patch_dir_fuzzy_supports_multiple_auto_dirs():
-    models_root = Path(_patches_mod.__file__).parent / "models"
+def test_find_patch_dir_exact_low_latency_includes_pangu_v2_base():
+    models_root = Path(vllm_patches.__file__).parent / "usefull_patch" / "models"
 
-    patch_dirs = vllm_patches._find_patch_dir_fuzzy("openpangu_ultra_omni", models_root)
+    patch_dirs = vllm_patches._find_patch_dir_exact("low_latency", models_root)
 
     assert [path.name for path in patch_dirs] == [
         "pangu_v2_base",
-        "pangu_sink_swa_mla",
-        "openpangu_v1_vl",
+        "low_latency",
     ]
 
 
-def test_find_patch_dir_exact_supports_bench_aligned_decode_manual_dir():
-    models_root = Path(_patches_mod.__file__).parent / "models"
+def test_find_patch_dir_exact_legacy_pangu_v2_hybrid():
+    models_root = Path(vllm_patches.__file__).parent / "usefull_patch" / "models"
 
-    patch_dirs = vllm_patches._find_patch_dir_exact(
-        "pd_bench_aligned_decode", models_root
-    )
+    patch_dirs = vllm_patches._find_patch_dir_exact("pangu_v2_hybrid", models_root)
 
-    assert [path.name for path in patch_dirs] == ["pd_bench_aligned_decode"]
+    assert [path.name for path in patch_dirs] == [
+        "pangu_v2_base",
+        "high_throughout",
+    ]
+
+
+def test_find_patch_dir_exact_legacy_pangu_v2_moe():
+    models_root = Path(vllm_patches.__file__).parent / "usefull_patch" / "models"
+
+    patch_dirs = vllm_patches._find_patch_dir_exact("pangu_v2_moe", models_root)
+
+    assert [path.name for path in patch_dirs] == [
+        "pangu_v2_base",
+        "low_latency",
+    ]

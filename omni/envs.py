@@ -493,7 +493,8 @@ env_variables: Dict[str, Callable[[], Any]] = {
     # vllm_patches/usefull_patch/models/ (and the legacy
     # vllm_patches/patches/models/ mapping table). Empty skips model-specific
     # usefull_patch dirs and only loads usefull_patch/common/.
-    # Example: "pangu_v2_hybrid" or "pangu_v2_hybrid,pangu_v2_moe".
+    # Example: "high_throughout" (also loads pangu_v2_base) or
+    # "low_latency" (also loads pangu_v2_base).
     # Also consumed by layers/__init__.py:28-36 (decides whether to load
     # mhc/mome modules), worker/npu_model_runner.py:458-462 (pangu_v2_hybrid
     # KV cache spec branch), and pangu_v2_hybrid/patch_speculative.py:66.

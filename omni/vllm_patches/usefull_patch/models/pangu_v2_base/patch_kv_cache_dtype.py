@@ -4,7 +4,6 @@ from typing import Literal
 
 import torch
 import vllm.utils.torch_utils as torch_utils_module
-import vllm.model_executor.models.config as models_config_module
 from vllm.v1.attention import selector
 from vllm.config import cache
 from vllm.config.cache import CacheConfig
