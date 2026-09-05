@@ -25,6 +25,7 @@ def apply_eager_mode_config(model_extra_config):
         model_extra_config.operator_opt_config.split_q_up_in_multistream = False
         model_extra_config.operator_opt_config.li_prolog_multi_stream = False
         model_extra_config.operator_opt_config.enable_super_kernel = False
+        model_extra_config.operator_opt_config.enable_sk_scope = False
         model_extra_config.operator_opt_config.enable_prefetch = False
         model_extra_config.operator_opt_config.expert_gate_up_prefetch = 0
         model_extra_config.operator_opt_config.expert_down_prefetch = 0

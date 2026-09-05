@@ -8,6 +8,8 @@ import sys
 from types import SimpleNamespace
 import types
 
+from unittest.mock import patch
+
 import pytest
 import torch
 
@@ -301,3 +303,32 @@ def test_row_parallel_linear_keeps_dp2tp_all2all_input_unsharded(monkeypatch):
 
     layer.tp_size = 1
     assert not layer.requires_input_partition()
+
+
+@pytest.mark.unit
+def test_apply_ai_infra_and_enable(monkeypatch):
+    module = _import_linear_module(monkeypatch)
+    method = module.UnquantizedFlashCommLinearMethod()
+    layer = SimpleNamespace(
+        layer_name_inside_block="self_attn.q_a_proj",
+        weight=torch.ones(2, 3),
+        quant_method=method,
+    )
+    monkeypatch.setattr(
+        module, "layer_parallel_communication_op", lambda value, *_args: value
+    )
+
+    with patch(
+        "torch.ops.custom.npu_ai_infra_matmul",
+        side_effect=torch.matmul,
+        create=True,
+    ):
+        for x in (torch.ones(2, 2), torch.ones(1, 2, 2)):
+            output = method.apply_ai_infra(
+                layer, x, bias=torch.ones(3)
+            )
+            assert output.shape == (*x.shape[:-1], 3)
+
+    assert module.enable_ai_infra_matmul(layer) is True
+    assert layer.quant_method.apply == method.apply_ai_infra
+    assert module.enable_ai_infra_matmul(SimpleNamespace()) is False

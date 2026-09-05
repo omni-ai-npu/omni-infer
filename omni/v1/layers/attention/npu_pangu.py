@@ -30,9 +30,12 @@ from omni_npu.v1.layers.utils import yarn_get_mscale
 from omni_npu.v1.layers.linear import (
     ColumnParallelFlashCommLinear,
     RowParallelFlashCommLinear,
+    ReplicatedFlashCommLinear,
     ShardedLinear,
+    enable_ai_infra_matmul,
 )
 from omni_npu.model_config.config_loader.loader import model_extra_config
+from omni_npu.compilation.acl_graph import sk_scope, enable_sk_scope
 from omni_npu.attention.backends.utils import SPManager, DummySPManager, conv_sp
 from omni_npu.layers.mome.npu_mome import ColumnParallelMOME
 from omni_npu.layers.attention.npu_sparse_attentions import (
@@ -836,14 +839,18 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
     def _init_MLA_weights(self):
         replicate_attention_weights = self.is_cp_layer or self.is_attn_sp_layer
-        self.q_a_proj = ReplicatedLinear(
-            self.hidden_size,
-            self.q_lora_rank,
+        # Default ReplicatedLinear. SK + unquant upgrades to FlashComm PWAL + AiInfra.
+        q_a_kw = dict(
             bias=False,
             quant_config=self.quant_config,
             prefix=f"{self.layer_name}.q_a_proj",
             return_bias=False,
         )
+        self.q_a_proj = ReplicatedLinear(self.hidden_size, self.q_lora_rank, **q_a_kw)
+        if enable_sk_scope():
+            sk_q_a = ReplicatedFlashCommLinear(self.hidden_size, self.q_lora_rank, **q_a_kw)
+            if enable_ai_infra_matmul(sk_q_a):
+                self.q_a_proj = sk_q_a
         self.kv_a_proj_with_mqa = ReplicatedLinear(
             self.hidden_size,
             self.kv_lora_rank + self.qk_rope_head_dim,
@@ -1445,18 +1452,24 @@ class NPUPanguSparseAttention(torch.nn.Module):
         )
 
         if self.is_dsa_layer:
-            attn_output = self._apply_DSA_attention(
-                q_nope=q_nope,
-                q_pe=q_pe,
-                kv_cache=kv_cache,
-                topk_indices=topk_indices,
-                attn_metadata=attn_metadata,
-            )
+            # Decode FA only (cat + SparseFA). Prefill W_UV absorb is inside
+            # _apply_DSA_attention and is not on this path.
+            with sk_scope(f"dsa_fa_{self.layer_idx}"):
+                attn_output = self._apply_DSA_attention(
+                    q_nope=q_nope,
+                    q_pe=q_pe,
+                    kv_cache=kv_cache,
+                    topk_indices=topk_indices,
+                    attn_metadata=attn_metadata,
+                )
         else:
             # with torch.npu.npugraph_ex.scope.limit_core_num(8,8):
-            attn_output = torch.ops.vllm.npu_pangu_swa_decode(
-                q_nope, q_pe, kv_cache[0], kv_cache[1], self.prefix,
-            )
+            # Decode SWA FA. AICPU metadata is produced inside the custom op
+            # on the first layer; later layers reuse the shared buffer.
+            with sk_scope(f"swa_fa_{self.layer_idx}"):
+                attn_output = torch.ops.vllm.npu_pangu_swa_decode(
+                    q_nope, q_pe, kv_cache[0], kv_cache[1], self.prefix,
+                )
 
         # Fire one-shot pre-epilog hook so the caller can enqueue side-stream
         # work that overlaps with v_up / o_proj / all_reduce inside the epilog.
@@ -1466,7 +1479,10 @@ class NPUPanguSparseAttention(torch.nn.Module):
             cb()
 
         # with torch.npu.npugraph_ex.scope.limit_core_num(8,8):
-        res = self._mla_epilog(attn_output, attn_metadata, mome_metadata)
+        # SK: multi-op output chain (TBMM -> quant -> o_proj). Callback stays
+        # outside so side-stream work can overlap the epilog.
+        with sk_scope(f"attn_o_{self.layer_idx}"):
+            res = self._mla_epilog(attn_output, attn_metadata, mome_metadata)
         return res
 
     @attn_decorator(type="mome")
@@ -3095,15 +3111,19 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         with torch.npu.npugraph_ex.scope.limit_core_num(16,24):
             # Main stream: q_lora
-            q_lora = self.q_a_proj(hidden_states)
-            if self.use_mome:
-                q_lora = self._apply_MOME(
-                    q_lora, self.qa_conv, attn_metadata=attn_metadata, mome_metadata=mome_metadata,
-                )
-            q_lora = self.q_a_layernorm(q_lora)
-
             if split_q_up:
                 # Share q_lora with side stream so q_b_pe_proj can run there.
+                # SK: q_a→MOME→RMS only; Event stays outside.
+                # tokens < 16: no fusion gain, skip SuperKernel.
+                sk_swa_q = hidden_states.shape[0] >= 16
+                with sk_scope(f"swa_q_lora_{self.layer_idx}", sk_swa_q):
+                    q_lora = self.q_a_proj(hidden_states)
+                    if self.use_mome:
+                        q_lora = self._apply_MOME(
+                            q_lora, self.qa_conv, attn_metadata=attn_metadata, mome_metadata=mome_metadata,
+                        )
+                    q_lora = self.q_a_layernorm(q_lora)
+
                 q_lora_event = torch.npu.Event()
                 q_lora_event.record()
                 q_lora.record_stream(self.side_stream)
@@ -3115,12 +3135,21 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 )
             else:
                 # Unsplit: main runs full q_b_proj then split; q_pe handed to side for rope.
-                q = self.q_b_proj(q_lora).view(-1, self.num_local_heads, self.qk_head_dim)
-                q_nope, q_pe = torch.split(
-                    q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1,
-                )
-                q_nope = q_nope.contiguous()
-                q_pe = q_pe.contiguous()
+                # SK: q_b stays in the scope; q_pe Event stays outside.
+                with sk_scope(f"swa_q_lora_{self.layer_idx}"):
+                    q_lora = self.q_a_proj(hidden_states)
+                    if self.use_mome:
+                        q_lora = self._apply_MOME(
+                            q_lora, self.qa_conv, attn_metadata=attn_metadata, mome_metadata=mome_metadata,
+                        )
+                    q_lora = self.q_a_layernorm(q_lora)
+
+                    q = self.q_b_proj(q_lora).view(-1, self.num_local_heads, self.qk_head_dim)
+                    q_nope, q_pe = torch.split(
+                        q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1,
+                    )
+                    q_nope = q_nope.contiguous()
+                    q_pe = q_pe.contiguous()
 
                 q_pe_event = torch.npu.Event()
                 q_pe_event.record()
@@ -3179,14 +3208,19 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         with torch.npu.npugraph_ex.scope.limit_core_num(16,24):
             # Main stream: q_lora
-            q_lora = self.q_a_proj(hidden_states)
-            if self.use_mome:
-                q_lora = self._apply_MOME(
-                    q_lora, self.qa_conv, attn_metadata=attn_metadata, mome_metadata=mome_metadata,
-                )
-            q_lora = self.q_a_layernorm(q_lora)
+            # SK: q_a→MOME→RMS; Event stays outside.
+            # tokens < 16: no fusion gain, skip SuperKernel.
+            sk_dsa_q = hidden_states.shape[0] >= 16
+            with sk_scope(f"dsa_q_lora_{self.layer_idx}", sk_dsa_q):
+                q_lora = self.q_a_proj(hidden_states)
+                if self.use_mome:
+                    q_lora = self._apply_MOME(
+                        q_lora, self.qa_conv, attn_metadata=attn_metadata, mome_metadata=mome_metadata,
+                    )
+                q_lora = self.q_a_layernorm(q_lora)
 
             # Signal q_lora ready
+            # SK: Event outside the scope so side is not postponed.
             q_lora_event = torch.npu.Event()
             q_lora_event.record()
             q_lora.record_stream(self.side_stream)
@@ -3298,20 +3332,22 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         with torch.npu.npugraph_ex.scope.limit_core_num(12,24):
             # Main stream: full Q path
-            if self.split_q_up_in_multistream:
-                q_nope = self.q_b_nope_proj(q_lora).view(
-                    -1, self.num_local_heads, self.qk_nope_head_dim,
-                )
-                q_pe = self.q_b_pe_proj(q_lora).view(
-                    -1, self.num_local_heads, self.qk_rope_head_dim,
-                )
-            else:
-                q = self.q_b_proj(q_lora).view(-1, self.num_local_heads, self.qk_head_dim)
-                q_nope, q_pe = torch.split(
-                    q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1,
-                )
-                q_nope = q_nope.contiguous()
-                q_pe = q_pe.contiguous()
+            # SK: only q_b (DynQ→QBMM). Absorb+RoPE stay outside the scope.
+            with sk_scope(f"dsa_main_q_{self.layer_idx}"):
+                if self.split_q_up_in_multistream:
+                    q_nope = self.q_b_nope_proj(q_lora).view(
+                        -1, self.num_local_heads, self.qk_nope_head_dim,
+                    )
+                    q_pe = self.q_b_pe_proj(q_lora).view(
+                        -1, self.num_local_heads, self.qk_rope_head_dim,
+                    )
+                else:
+                    q = self.q_b_proj(q_lora).view(-1, self.num_local_heads, self.qk_head_dim)
+                    q_nope, q_pe = torch.split(
+                        q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1,
+                    )
+                    q_nope = q_nope.contiguous()
+                    q_pe = q_pe.contiguous()
             q_nope = self._w_uk_t_absorb(q_nope)
             q_pe = self._q_rope(q_pe, cos, sin)
 

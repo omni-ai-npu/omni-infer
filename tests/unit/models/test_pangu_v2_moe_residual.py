@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -130,3 +131,39 @@ def test_forward_naive_passes_uncloned_residual_into_mhc_post():
     assert mlp_residuals == [hidden_states]
     assert mlp_residuals[0] is hidden_states
     assert out is hidden_states
+
+
+def test_dense_mlp_sk_scope(monkeypatch):
+    monkeypatch.setattr(model_mod, "get_tp_group", lambda: SimpleNamespace(world_size=1))
+    monkeypatch.setattr(model_mod, "MergedColumnParallelLinear", lambda *a, **k: _identity)
+    monkeypatch.setattr(model_mod, "RowParallelLinear", lambda *a, **k: _identity)
+    monkeypatch.setattr(model_mod, "SiluAndMul", lambda: _identity)
+    mlp = model_mod.OpenPanguV2MLP(4, 8, "silu", prefix="model.layers.0.mlp")
+    x = torch.ones(2, 4)
+    assert torch.equal(mlp.forward(x), x)
+    assert mlp._fuse_dense_mlp is True
+    assert mlp._sk_dense_name == "dense_mlp_0"
+
+
+def test_mhc_post_pre_sk_scope():
+    layer = _bare_decoder_layer(use_mhc=True)
+    layer.use_mhc_fusion_op = False
+    layer.layer_idx = 0
+    hidden = torch.ones(2, 4)
+    post_mhc = MagicMock()
+    post_mhc.mhc_post.return_value = hidden
+    pre_mhc = MagicMock()
+    pre_mhc.mhc_pre.return_value = (hidden, "h_post", "h_res")
+    pre_mhc.mhc_sinkhorn.return_value = "h_res"
+
+    out, residual, h_post, h_res, sk_event = layer.mhc_sandwich_norm_post_pre(
+        hidden, hidden, None, None, _identity, post_mhc, None, pre_mhc, _identity,
+        is_model_tail=True,
+    )
+
+    post_mhc.mhc_post.assert_called_once()
+    assert out is hidden
+    assert residual is None
+    assert h_post == "h_post"
+    assert h_res == "h_res"
+    assert sk_event is None

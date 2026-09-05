@@ -67,6 +67,7 @@ from omni_npu.layers.mhc.cube_side_task_ops import (
     resolve_mhc_h_res,
 )
 from omni_npu.layers.mhc.npu_mhc import NPUmHC
+from omni_npu.compilation.acl_graph import sk_scope
 from omni_npu.model_config.config_loader.loader import model_extra_config
 from omni_npu.v1.distributed.parallel_state_ext import get_local_world_group
 from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
@@ -219,6 +220,10 @@ class OpenPanguV2MLP(nn.Module):
         self.disable_tp = disable_tp
         self.tp_size = get_tp_group().world_size
         self.moe_comm_strategy = model_extra_config.operator_opt_config.moe_comm_strategy
+        # Shared-expert instances stay unfused so they still overlap routed MoE.
+        self._fuse_dense_mlp = "shared_experts" not in prefix
+        dense_idx = extract_layer_index(prefix) if self._fuse_dense_mlp else -1
+        self._sk_dense_name = f"dense_mlp_{dense_idx}"
         self.gate_up_proj = MergedColumnParallelLinear(
             hidden_size,
             [intermediate_size] * 2,
@@ -251,9 +256,11 @@ class OpenPanguV2MLP(nn.Module):
             if not self.moe_comm_strategy == "allreduce":
                 x = get_tp_group().all_gather(x, dim=0)
 
-        gate_up = self.gate_up_proj(x)
-        act = self.act_fn(gate_up)
-        out = self.down_proj(act)
+        # Keep AG/RS/AR outside SK. Early dense only; shared experts stay unfused.
+        with sk_scope(self._sk_dense_name, self._fuse_dense_mlp):
+            gate_up = self.gate_up_proj(x)
+            act = self.act_fn(gate_up)
+            out = self.down_proj(act)
 
         # ReduceScatter or AllReduce for sequence parallelism:
         # - "allreduce" strategy: use AllReduce to fully gather across all ranks
@@ -1921,28 +1928,26 @@ class OpenPanguV2DecoderLayer(nn.Module):
                 # Wait for previous side-stream sinkhorn (h_res used by mhc_post below).
                 if use_side_stream and sk_event is not None:
                     sk_event.wait(main_stream)
-                hidden_states = post_mhc_module.mhc_post(
-                    hidden_states, h_post, residual, h_res,
-                )
-                if use_side_stream and sk_event is not None:
-                    h_res.record_stream(main_stream)
-            else:
-                hidden_states = hidden_states + residual
+                # SK boxes post → [block_norm] → pre after the wait.
+                # Sinkhorn launch stays outside so it still overlaps pre_norm.
+                with sk_scope(f"mhc_post_pre_{self.layer_idx}"):
+                    hidden_states = post_mhc_module.mhc_post(
+                        hidden_states, h_post, residual, h_res,
+                    )
+                    if use_side_stream and sk_event is not None:
+                        h_res.record_stream(main_stream)
 
-            ###### Block Post LayerNorm (only when MHC is enabled) ######
-            if self.use_mhc and block_norm_module is not None:
-                hidden_states = block_norm_module(
-                    hidden_states.view(-1, self.mhc_num_stream * self.hidden_size)
-                )
-                hidden_states = hidden_states.view(-1, self.mhc_num_stream, self.hidden_size)
-            elif not self.use_mhc and hidden_states.dim() == 3:
-                hidden_states = hidden_states.view(-1, self.hidden_size)
+                    ###### Block Post LayerNorm (only when MHC is enabled) ######
+                    if block_norm_module is not None:
+                        hidden_states = block_norm_module(
+                            hidden_states.view(-1, self.mhc_num_stream * self.hidden_size)
+                        )
+                        hidden_states = hidden_states.view(-1, self.mhc_num_stream, self.hidden_size)
 
-            residual = None if is_model_tail else hidden_states
-            if self.use_mhc:
-                hidden_states, h_post, h_res = pre_mhc_module.mhc_pre(
-                    hidden_states,
-                )
+                    residual = None if is_model_tail else hidden_states
+                    hidden_states, h_post, h_res = pre_mhc_module.mhc_pre(
+                        hidden_states,
+                    )
                 if use_side_stream and not is_model_tail and defer_side_launch:
                     # Non-fused mhc_pre can't be split (the fused npu_mhc_pre
                     # op emits mixed hidden_states + h_post + h_res together,
@@ -1966,6 +1971,11 @@ class OpenPanguV2DecoderLayer(nn.Module):
                     new_sk_event = ev_done
                 else:
                     h_res = pre_mhc_module.mhc_sinkhorn(h_res)
+            else:
+                hidden_states = hidden_states + residual
+                if hidden_states.dim() == 3:
+                    hidden_states = hidden_states.view(-1, self.hidden_size)
+                residual = None if is_model_tail else hidden_states
 
             hidden_states = pre_norm_module(hidden_states)
             if return_h_in_f32:

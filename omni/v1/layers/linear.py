@@ -161,6 +161,51 @@ class UnquantizedFlashCommLinearMethod(FlashCommLinearMethodBase):
         else:
             return torch.matmul(input_parallel, layer.weight)
 
+    def apply_ai_infra(
+        self,
+        layer: torch.nn.Module,
+        x: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+        x_transform: Optional[str] = None,
+        x_dim: Optional[int] = 0,
+        throw_dequant: Optional[bool] = False,
+    ) -> torch.Tensor:
+        """GEMM via npu_ai_infra_matmul so SuperKernel can fuse this layer.
+
+        Same communication as apply(); weight must already be ``[in, out]``
+        (FlashComm PWAL). Bind with enable_ai_infra_matmul; do not make
+        this the default apply for other FlashComm layers.
+        """
+        input_parallel = layer_parallel_communication_op(
+            x, x_transform, layer.layer_name_inside_block, "x", x_dim
+        )
+        weight = layer.weight
+        if input_parallel.dim() == 2:
+            out = torch.ops.custom.npu_ai_infra_matmul(input_parallel, weight)
+        else:
+            out = torch.ops.custom.npu_ai_infra_matmul(
+                input_parallel.reshape(-1, input_parallel.shape[-1]),
+                weight,
+            ).reshape(*input_parallel.shape[:-1], weight.shape[-1])
+        if bias is not None:
+            out = out + bias
+        return out
+
+
+def enable_ai_infra_matmul(linear: torch.nn.Module) -> bool:
+    """Use AiInfra GEMM on this unquant FlashComm layer only.
+
+    Intended for Pangu q_a_proj when enable_sk_scope() is true. PWAL / NZ
+    already come from UnquantizedFlashCommLinearMethod; this only swaps
+    MatMulV2 for AiInfraMatmul so SuperKernel can fuse from this GEMM.
+    Quantized layers are left unchanged (returns False).
+    """
+    quant_method = getattr(linear, "quant_method", None)
+    if not isinstance(quant_method, UnquantizedFlashCommLinearMethod):
+        return False
+    quant_method.apply = quant_method.apply_ai_infra
+    return True
+
 
 class FlashCommLinearBase(torch.nn.Module):
 

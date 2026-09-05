@@ -741,5 +741,21 @@ def test_ensure_weak_ref_graph_params_updates_tasks_and_workspaces():
     assert graph_params.workspaces[4][workspace_fn] == [weak_workspace]
 
 
+class TestSkScope:
+    def test_enabled_and_disabled_scope(self):
+        with (
+            patch.object(acl_graph_mod, "enable_sk_scope", return_value=True),
+            patch("torch.npu.super_kernel_scope_begin") as begin,
+            patch("torch.npu.super_kernel_scope_end") as end,
+        ):
+            with acl_graph_mod.sk_scope("enabled"):
+                pass
+            with acl_graph_mod.sk_scope("disabled", False):
+                pass
+
+        begin.assert_called_once_with("enabled")
+        end.assert_called_once_with("enabled")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -2,7 +2,13 @@
 import pytest
 from unittest.mock import MagicMock
 
-from omni_npu.compilation.npugraph_ex_config import AclGraphConfig, init_aclgraph_config, get_aclgraph_config, _ACLGRAPH_CONFIG
+from omni_npu.compilation.npugraph_ex_config import (
+    AclGraphConfig,
+    enable_sk_scope,
+    get_aclgraph_config,
+    init_aclgraph_config,
+    _ACLGRAPH_CONFIG,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -104,3 +110,29 @@ class TestGetAclGraphConfig:
 
         assert "Ascend config is not initialized" in str(exc_info.value)
         assert "Please call init_aclgraph_config first" in str(exc_info.value)
+
+
+class TestEnableSkScope:
+    def test_enable_sk_scope_gates(self, monkeypatch):
+        import omni_npu.compilation.npugraph_ex_config as config_module
+
+        assert enable_sk_scope() is False
+
+        mock_vllm_config = MagicMock()
+        mock_vllm_config.additional_config = {
+            "npugraph_ex_config": {"enable": True, "super_kernel_optimize": True}
+        }
+        monkeypatch.setattr(config_module, "on_ascend950", lambda: True)
+        assert AclGraphConfig(mock_vllm_config).enable_sk_scope is False
+
+        monkeypatch.setattr(config_module, "on_ascend950", lambda: False)
+        extra = MagicMock()
+        extra.operator_opt_config.enable_sk_scope = True
+        monkeypatch.setattr(
+            "omni_npu.model_config.config_loader.loader.model_extra_config",
+            extra,
+        )
+        cfg = AclGraphConfig(mock_vllm_config)
+        assert cfg.enable_sk_scope is True
+        config_module._ACLGRAPH_CONFIG = cfg
+        assert enable_sk_scope() is True

@@ -6,7 +6,7 @@ import time
 import copy
 import dataclasses
 import gc
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Union
 from unittest.mock import patch
@@ -23,6 +23,7 @@ from vllm.logger import logger
 from vllm.platforms import current_platform
 
 from omni_npu.configs import OmniAdditionalConfig
+from omni_npu.compilation.npugraph_ex_config import enable_sk_scope
 
 global_recapture = False
 
@@ -146,6 +147,24 @@ class ACLGraphEntry:
     # for aclgraph debugging, track the input addresses
     # during capture, and check if they are the same during replay
     input_addresses: Optional[list[int]] = None
+
+
+@contextmanager
+def sk_scope(name: str, active: bool = True):
+    """Named SuperKernel fusion range.
+
+    Master SK switch is ``super_kernel_optimize``. This wrapper is a no-op
+    unless that is on, operator_opt ``enable_sk_scope`` is on, the device
+    is not Ascend950, and ``active``.
+    """
+    if not (enable_sk_scope() and active):
+        yield
+        return
+    torch.npu.super_kernel_scope_begin(name)
+    try:
+        yield
+    finally:
+        torch.npu.super_kernel_scope_end(name)
 
 
 class ACLGraphWrapper:
@@ -335,7 +354,7 @@ class ACLGraphWrapper:
             logger.debug(f"<<< Capturing aclgraph time {end - begin =}s")
 
             if self.need_super_kernel_optimize:
-                logger.debug("<<< Running aclgraph super kernel optimize")
+                logger.info("<<< Running aclgraph super kernel optimize")
                 entry.aclgraph.super_kernel_optimize(optimize_options={
                     "dcci_before_kernel_start": [
                         ".*GroupedMatmul.*",

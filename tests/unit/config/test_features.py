@@ -27,6 +27,7 @@ def _make_config(graph_mode="eager_mode", moe_multi_stream_tune=False):
             use_mhc_fusion_op=True,
             split_q_up_in_multistream=True,
             enable_super_kernel=True,
+            enable_sk_scope=True,
             enable_prefetch=True,
             expert_gate_up_prefetch=50,
             expert_down_prefetch=28,
@@ -52,6 +53,7 @@ def test_eager_mode_disables_other_optimizations():
     apply_eager_mode_config(cfg)
     assert cfg.operator_opt_config.enable_prefetch is False
     assert cfg.operator_opt_config.enable_super_kernel is False
+    assert cfg.operator_opt_config.enable_sk_scope is False
     assert cfg.operator_opt_config.enable_scmoe_multi_stream is False
     assert cfg.operator_opt_config.expert_gate_up_prefetch == 0
     assert cfg.operator_opt_config.enable_multi_stream is False

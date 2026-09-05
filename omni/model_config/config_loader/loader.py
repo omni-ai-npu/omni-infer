@@ -157,6 +157,7 @@ class ModelOperatorOptConfig:
     decode_moe_dispatch_combine: bool = False
     enable_super_kernel: bool = False
     sk_code: bool = False # 是否调用 torch.npu.super_kernel_scope_begin/end；老驱动一旦加载到 sk_scope 代码就报错，因此需要开关守卫
+    enable_sk_scope: bool = True # 是否只对有收益的范围套 sk_scope；不开启的情况下 super kernel会默认融合所有计算。
     enable_mlaprolog: bool = False
     mtp_remove_redundant_kv: bool = False # MTP场景下，去除FIA算子对同一请求的冗余KV cache搬运，当前不支持与Omni Attention同时使用
     enable_prefetch: bool = True # 是否开启预取
