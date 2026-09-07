@@ -33,7 +33,9 @@ logger = init_logger(__name__)
 class DatadistEngine:
     LINK_TIMEOUT = int(os.environ.get("LINK_TIMEOUT", "120000"))  # ms
     SYNC_KV_TIMEOUT = int(os.environ.get("SYNC_KV_TIMEOUT", "120000"))  # ms
-    LINK_RECYCLE_DELAY = 300.0
+    LINK_RECYCLE_DELAY = float(
+        os.environ.get("OMNI_LLMDATADIST_LINK_RECYCLE_DELAY", "300")
+    )
     HEARTBEAT_INTERVAL = 1.0
 
     def __init__(self, port: int, is_prefill: bool):
