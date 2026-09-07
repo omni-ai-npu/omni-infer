@@ -11,7 +11,7 @@
     LOG_PATH: /data/log_path
     LOG_PATH_IN_EXECUTOR: /data/log_path_in_executor
     CODE_PATH: /data/local_code_path
-    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer_dev/ai-infra-infer-1.0.3-a3-arm-feature/vllm_0.25.1-202609021706-daily:0.0.1"
+    DOCKER_IMAGE_ID: "registry-cbu.huawei.com/omniai_omniinfer_dev/ai-infra-infer-1.0.3-a3-arm-develop-202609050943-daily:0.0.1"
     DOCKER_NAME_P: "docker_name_p"
     DOCKER_NAME_D: "docker_name_d"
     DOCKER_NAME_C: "docker_name_c"
@@ -73,7 +73,7 @@
         export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
         export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
         export OMNI_HYBRID_ATTN_GROUP_SIZE=17
-        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+        export OMNI_VLLM_PATCHES_DIR="low_latency"
         export OMNI_VLLM_PATCHES="ALL"
         export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_92B_xp1d_p_open.json"
         export OMNI_PANGU_TOOL_CALL_ENDS_THINKING=1
@@ -121,7 +121,7 @@
         export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
         export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
         export OMNI_HYBRID_ATTN_GROUP_SIZE=17
-        export OMNI_VLLM_PATCHES_DIR="pangu_v2_hybrid, pangu_v2_moe"
+        export OMNI_VLLM_PATCHES_DIR="low_latency"
         export OMNI_VLLM_PATCHES="ALL"
         export ENABLE_DP_LB=false
         export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_92B_xp1d_d_open.json"
