@@ -148,10 +148,13 @@ class NPUMLADecodeMetadata(MLACommonDecodeMetadata):
     slot_mapping_2d: torch.Tensor = None
     num_tokens: int | None = None
     num_actual_tokens: int = None
+    ori_kv_range: torch.Tensor = None
+    dmtp_token_post: torch.Tensor = None
 
 
 @dataclass
 class NPUMLAMetadata(MLACommonMetadata[NPUMLADecodeMetadata]):
+    causal: bool = True
     decode_threshold: int = 1
     slot_mapping_2d: torch.Tensor = None
 
@@ -191,8 +194,9 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
         query_start_loc_device: torch.Tensor,
         num_decode_tokens: int,
         dcp_tot_seq_lens_device: torch.Tensor | None,
+        causal: bool = True,
     ) -> NPUMLADecodeMetadata:
-        if model_extra_config.operator_opt_config.use_aicpu_fa_tiling:
+        if model_extra_config.operator_opt_config.use_aicpu_fa_tiling or not causal:
             seq_lens = seq_lens_device
             query_cumlens = query_start_loc_device[1:]
             num_tokens = num_decode_tokens
@@ -466,6 +470,7 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
                 query_start_loc_device=query_start_loc[: num_decodes + 1],
                 num_decode_tokens=num_decode_tokens,
                 dcp_tot_seq_lens_device=dcp_tot_seq_lens_device,
+                causal=common_attn_metadata.causal,
             )
 
         metadata = self.metadata_cls(
@@ -482,6 +487,7 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
             num_prefills=num_prefills,
             prefill=prefill_metadata,
             decode=decode_metadata,
+            causal=common_attn_metadata.causal,
         )
 
         # === NPU-specific post-processing (was previously applied on top of
@@ -545,6 +551,16 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
                         self.sink_len if seq == 0 else seq 
                         for seq in metadata.prefill.seq_lens
                     ]
+
+        if not metadata.causal and metadata.decode is not None:
+            block_start = metadata.decode.seq_lens - metadata.max_query_len
+            context_start = (
+                block_start - self.kv_cache_spec.sliding_window
+            ).clamp_min(0)
+            metadata.decode.ori_kv_range = torch.stack(
+                (context_start, block_start - context_start), dim=-1
+            )
+            metadata.decode.dmtp_token_post = block_start.reshape(-1, 1)
 
         if self.dcp_world_size > 1:
             self.prepare_dcp_slots(metadata)

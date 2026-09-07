@@ -298,7 +298,7 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         builder.page_size = 16
         builder.chunked_prefill_workspace_size = 0
         builder.chunked_prefill_workspace = None
-        builder.kv_cache_spec = MagicMock(block_size=16)
+        builder.kv_cache_spec = MagicMock(block_size=16, sliding_window=2048)
         builder.model_config = MagicMock()
         builder.model_config.get_head_size.return_value = 128
         builder.mc2_mask = torch.zeros(256, dtype=torch.bool)
@@ -334,9 +334,53 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
             seq_lens_cpu=seq_lens.cpu(),
             seq_lens_cpu_upper_bound=seq_lens.cpu(),
             dcp_local_seq_lens=seq_lens,
+            causal=True,
         )
         metadata.update(metadata_overrides)
         return MagicMock(**metadata)
+
+    def _build_noncausal_decode(self, seq_lens):
+        builder, mla_mod = self._new_builder_for_current_build()
+        query_start_loc = list(range(0, (len(seq_lens) + 1) * 16, 16))
+        common_attn_metadata = self._make_common_for_current_build(
+            seq_lens=seq_lens,
+            query_start_loc=query_start_loc,
+            max_query_len=16,
+            causal=False,
+        )
+        with patch.object(
+            mla_mod,
+            "split_decodes_and_prefills",
+            return_value=(len(seq_lens), 0, len(seq_lens) * 16, 0),
+        ):
+            return builder.build(
+                common_prefix_len=0,
+                common_attn_metadata=common_attn_metadata,
+                fast_build=False,
+            )
+
+    def test_build_noncausal_decode_single_batch_geometry(self):
+        result = self._build_noncausal_decode([2064])
+
+        self.assertFalse(result.causal)
+        self.assertEqual(result.decode.ori_kv_range.tolist(), [[0, 2048]])
+        self.assertEqual(result.decode.dmtp_token_post.tolist(), [[2048]])
+        self.assertTrue(torch.equal(result.decode.query_cumlens, torch.tensor([16])))
+
+    def test_build_noncausal_decode_multi_batch_geometry(self):
+        result = self._build_noncausal_decode([16, 2064, 4096])
+
+        self.assertEqual(
+            result.decode.ori_kv_range.tolist(),
+            [[0, 0], [0, 2048], [2032, 2048]],
+        )
+        self.assertEqual(
+            result.decode.dmtp_token_post.tolist(),
+            [[0], [2048], [4080]],
+        )
+        self.assertTrue(
+            torch.equal(result.decode.seq_lens, torch.tensor([16, 2064, 4096]))
+        )
 
 
     def test_builder_build_prefill_with_sink_len_updates_seq_lens(self):

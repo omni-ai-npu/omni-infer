@@ -1546,6 +1546,42 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         num_actual_tokens = attn_metadata.decode.num_tokens
         num_tokens = q_nope.size(0)
+        if not attn_metadata.causal:
+            section = attn_metadata.decode
+            kwargs = {
+                "ori_kv_range": section.ori_kv_range,
+                "dmtp_token_post": section.dmtp_token_post,
+                "block_table": section.block_table,
+                "actual_seq_lengths_query": section.query_cumlens,
+                "actual_seq_lengths_kv": section.seq_lens,
+                "query_rope": q_pe[:num_actual_tokens],
+                "key_rope": kv_cache[1],
+                "dmtp_block_size": attn_metadata.max_query_len,
+                "layout_query": "TND",
+                "layout_kv": "PA_BSND",
+                "sparse_mode": 0,
+                "attention_mode": 2,
+            }
+            if num_actual_tokens == num_tokens:
+                return torch.ops.custom.npu_ai_infra_diffusion_mtp_attention(
+                    q_nope, kv_cache[0], kv_cache[0], self.scaling, **kwargs
+                )[0]
+            attn_output = torch.zeros(
+                (num_tokens, self.num_local_heads, self.kv_lora_rank),
+                device=q_nope.device,
+                dtype=q_nope.dtype,
+            )
+            attn_output[:num_actual_tokens] = (
+                torch.ops.custom.npu_ai_infra_diffusion_mtp_attention(
+                    q_nope[:num_actual_tokens],
+                    kv_cache[0],
+                    kv_cache[0],
+                    self.scaling,
+                    **kwargs,
+                )[0]
+            )
+            return attn_output
+
         kwargs = {
             "query": q_nope[:num_actual_tokens],
             "key": kv_cache[0],
@@ -3698,6 +3734,9 @@ def npu_pangu_forward(
         num_decode_tokens = attn_metadata.num_decode_tokens
         has_decode = attn_metadata.num_decodes > 0
         has_prefill = attn_metadata.num_prefills > 0
+
+        if has_prefill and not self.is_dsa_layer and not getattr(attn_metadata, "causal", True):
+            raise NotImplementedError("Non-causal MLA prefill is not supported.")
 
         enable_cp = self.is_cp_layer and not has_decode \
             and num_actual_tokens > attn_metadata.num_prefills * self.tp_size * 2

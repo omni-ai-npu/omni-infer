@@ -128,6 +128,54 @@ def _build_sparse_attention(
         )
 
 
+class TestDSparkAttention(unittest.TestCase):
+    def test_decode_graph_padding(self):
+        attention = NPUPanguSparseAttention.__new__(NPUPanguSparseAttention)
+        attention.scaling = 0.125
+        attention.num_local_heads = 2
+        attention.kv_lora_rank = 8
+        q_nope = torch.zeros(32, 2, 8)
+        q_pe = torch.zeros(32, 2, 4)
+        ori_kv_range = torch.tensor([[0, 2048]], dtype=torch.int32)
+        dmtp_token_post = torch.tensor([[2048]], dtype=torch.int32)
+        section = SimpleNamespace(
+            num_tokens=16,
+            seq_lens=torch.tensor([2064], dtype=torch.int32),
+            query_cumlens=torch.tensor([16], dtype=torch.int32),
+            block_table=torch.zeros(1, 4, dtype=torch.int32),
+            ori_kv_range=ori_kv_range,
+            dmtp_token_post=dmtp_token_post,
+        )
+        metadata = SimpleNamespace(
+            causal=False,
+            max_query_len=16,
+            decode=section,
+        )
+        captured = {}
+
+        def fake_dmtp(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return (torch.full((16, 2, 8), 3.0),)
+
+        custom_ops = SimpleNamespace(npu_ai_infra_diffusion_mtp_attention=fake_dmtp)
+        with patch.object(pangu_mod.torch.ops, "custom", custom_ops, create=True):
+            output = attention._apply_SWA_attention_decode(
+                q_nope,
+                q_pe,
+                (torch.zeros(1), torch.zeros(1)),
+                metadata,
+            )
+
+        self.assertEqual(output.shape, (32, 2, 8))
+        self.assertTrue(torch.all(output[:16] == 3))
+        self.assertTrue(torch.all(output[16:] == 0))
+        self.assertTrue(output.is_contiguous())
+        self.assertEqual(captured["args"][0].shape[0], 16)
+        self.assertIs(captured["kwargs"]["ori_kv_range"], ori_kv_range)
+        self.assertIs(captured["kwargs"]["dmtp_token_post"], dmtp_token_post)
+
+
 class TestGetSlotMapping2d(unittest.TestCase):
     def test_fast_path_returns_existing_slot_mapping_2d(self):
         cached = torch.tensor([[0, 0], [1, 1]])
@@ -551,6 +599,7 @@ def _fwctx_patch():
 def _prefill_sp_forward_ctx(attention, tokens=4):
     """Forward context used by npu_pangu_forward SWA SP dispatch tests."""
     meta = SimpleNamespace(
+        causal=True,
         num_actual_tokens=tokens,
         num_decode_tokens=0,
         num_decodes=0,
@@ -629,6 +678,42 @@ class TestPanguSWASeqParallel(unittest.TestCase):
         attention._forward_prefill_sp = MagicMock(return_value=hidden)
         out_h = _call_npu_pangu_forward_sp(attention, hidden)
         attention._forward_prefill_sp.assert_called_once()
+        self.assertIs(out_h, hidden)
+
+    def test_npu_pangu_forward_rejects_noncausal_prefill(self):
+        attention = _bare_swa_attention()
+        hidden = torch.zeros(4, 8)
+        ctx = _prefill_sp_forward_ctx(attention)
+        ctx.attn_metadata.causal = False
+        with patch.object(pangu_mod, "get_forward_context", return_value=ctx):
+            with self.assertRaisesRegex(
+                NotImplementedError, "Non-causal MLA prefill is not supported"
+            ):
+                pangu_mod.npu_pangu_forward(
+                    hidden,
+                    torch.zeros(4, 2),
+                    torch.zeros(4, 2),
+                    "layer",
+                )
+
+    def test_npu_pangu_forward_keeps_dsa_prefill(self):
+        attention = _bare_swa_attention(
+            is_dsa_layer=True,
+            is_attn_sp_layer=False,
+        )
+        hidden = torch.zeros(4, 8)
+        ctx = _prefill_sp_forward_ctx(attention)
+        del ctx.attn_metadata.causal
+        attention._forward_prefill = MagicMock(return_value=hidden)
+        with patch.object(pangu_mod, "get_forward_context", return_value=ctx):
+            out_h = pangu_mod.npu_pangu_forward(
+                hidden,
+                torch.zeros(4, 2),
+                torch.zeros(4, 2),
+                "layer",
+            )
+
+        attention._forward_prefill.assert_called_once()
         self.assertIs(out_h, hidden)
 
     def test_npu_pangu_forward_sp_rejects_allreduce_moe(self):
