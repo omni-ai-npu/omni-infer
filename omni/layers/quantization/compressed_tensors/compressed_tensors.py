@@ -3,6 +3,7 @@
 
 import os
 from typing import Any, List, Optional
+from pydantic import Field
 
 import torch
 from compressed_tensors.quantization import QuantizationArgs, QuantizationStrategy
@@ -67,9 +68,10 @@ class NPUCompressedTensorsConfig(CompressedTensorsConfig):
                 # adapt: do not validate parameters
                 weight_config = quant_config.get("weights")
                 module_num_bits = weight_config.get("num_bits")
-                weight_quant = NPUQuantizationArgs.parse_obj(
-                    {**weight_config, "num_bits": 0}
-                )
+                weight_quant = NPUQuantizationArgs.parse_obj({
+                    **weight_config,
+                    "num_bits": 0,
+                })
                 weight_quant.num_bits = module_num_bits
                 target_scheme_map[target]["weights"] = weight_quant
                 try:

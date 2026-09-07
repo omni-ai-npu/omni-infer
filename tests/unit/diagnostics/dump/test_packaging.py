@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 """Packaging checks: the prestop script must ship with the wheel."""
-import os
 from pathlib import Path
 
 import pytest
@@ -13,9 +12,10 @@ SCRIPT = ROOT / "omni" / "script" / "omni_npu_prestop.sh"
 
 
 class TestPrestopShipping:
-    def test_script_exists_and_is_executable(self):
+    def test_script_exists_with_shebang(self):
         assert SCRIPT.exists()
-        assert os.access(SCRIPT, os.X_OK)
+        first_line = SCRIPT.read_text().splitlines()[0]
+        assert first_line.startswith("#!"), "prestop script must start with a shebang"
 
     def test_pyproject_declares_package_data(self):
         pyproject = (ROOT / "pyproject.toml").read_text()

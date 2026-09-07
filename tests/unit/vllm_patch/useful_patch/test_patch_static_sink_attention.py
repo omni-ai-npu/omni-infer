@@ -71,13 +71,13 @@ def _static_sink_mla_spec(
     )
     import omni_npu.vllm_patches.usefull_patch.models.high_throughout.patch_static_sink_attention as sink_mod
 
-    # These types are omni patches, not upstream vLLM 0.25.1 attributes.
+    # vLLM 0.25.1 kv_cache_interface does not ship these specs; the patch
+    # injects them. raising=False lets setattr create the missing names.
     monkeypatch.setattr(
-        kv_cache_interface,
-        "DSAAttentionSpec",
-        kv_mod.DSAAttentionSpec,
-        raising=False,
+        kv_cache_interface, "DSAAttentionSpec", kv_mod.DSAAttentionSpec, raising=False
     )
+    # SinkMLAAttentionSpec is defined/registered by the high_throughout patch,
+    # not pangu_v2_base, so source it from sink_spec_mod.
     monkeypatch.setattr(
         kv_cache_interface,
         "SinkMLAAttentionSpec",

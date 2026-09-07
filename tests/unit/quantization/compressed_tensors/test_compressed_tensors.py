@@ -391,7 +391,12 @@ class TestNPUCompressedTensorsConfig:
     def test_get_scheme_ignores_layer(self, compressed_tensors_module):
         config = _make_config_instance(compressed_tensors_module)
         config.ignore = ["skip_layer"]
-        config.target_scheme_map = {"Linear": {"weights": _make_w8a8_quant(), "input_activations": _make_w8a8_quant(8, "token", True)}}
+        config.target_scheme_map = {
+            "Linear": {
+                "weights": _make_w8a8_quant(),
+                "input_activations": _make_w8a8_quant(8, "token", True),
+            }
+        }
         scheme = config.get_scheme(layer=DummyLinearBase(), layer_name="skip_layer")
         assert scheme is None
 
@@ -499,6 +504,60 @@ class TestNPUCompressedTensorsConfig:
         assert isinstance(method, DummyNPUCompressedTensorsW4A8Int4MoEMethod)
         assert method.weight_quant.symmetric is False
         assert method.weight_quant.asymmetric_group == ["mlp.experts"]
+
+    def test_is_dynamic_token_w8a8_allows_asymmetric_weight(self, compressed_tensors_module):
+        """w8a8 detection no longer requires weight_quant.symmetric; asymmetric weight quant is now accepted."""
+        config = compressed_tensors_module.NPUCompressedTensorsConfig
+        weight_quant = _make_w8a8_quant(8, "tensor", False, symmetric=False)
+        input_quant = _make_w8a8_quant(8, "token", True, True)
+        assert config._is_dynamic_token_w8a8(weight_quant, input_quant, 8) is True
+
+    def test_is_dynamic_token_w4a8_allows_asymmetric_weight(self, compressed_tensors_module):
+        """w4a8 detection no longer requires weight_quant.symmetric; asymmetric weight quant is now accepted."""
+        config = compressed_tensors_module.NPUCompressedTensorsConfig
+        weight_quant = _make_w4a8_quant({"mlp.experts": 4}, "tensor", False, symmetric=False)
+        input_quant = _make_w8a8_quant(8, "token", True, True)
+        assert config._is_dynamic_token_w4a8(weight_quant, input_quant, 4) is True
+
+    def test_get_moe_method_returns_none_for_ignored_layer(self, compressed_tensors_module):
+        """get_moe_method honours layer_name against the ignore list and returns None for ignored layers."""
+        config = _make_config_instance(compressed_tensors_module)
+        config.ignore = ["lm_head.gate_up"]
+        config.target_scheme_map = {
+            "Linear": {
+                "weights": _make_w8a8_quant(8, "tensor", False, True),
+                "input_activations": _make_w8a8_quant(8, "token", True, True),
+            }
+        }
+        assert config.get_moe_method(DummyFusedMoE(), layer_name="lm_head.gate_up") is None
+
+    def test_get_moe_method_forwards_layer_name_when_not_ignored(self, compressed_tensors_module):
+        """get_moe_method returns a real method when layer_name is not ignored."""
+        config = _make_config_instance(compressed_tensors_module)
+        config.ignore = ["other.layer"]
+        config.target_scheme_map = {
+            "Linear": {
+                "weights": _make_w8a8_quant(8, "tensor", False, True),
+                "input_activations": _make_w8a8_quant(8, "token", True, True),
+            }
+        }
+        method = config.get_moe_method(DummyFusedMoE(), layer_name="moe.layer")
+        assert isinstance(method, DummyNPUCompressedTensorsW8A8Int8MoEMethod)
+
+    def test_get_quant_method_moe_forwards_prefix_to_get_moe_method(self, compressed_tensors_module):
+        """get_quant_method forwards prefix to get_moe_method so ignored MoE layers are skipped."""
+        config = _make_config_instance(compressed_tensors_module)
+        config.ignore = ["skip.moe"]
+        config.target_scheme_map = {
+            "Linear": {
+                "weights": _make_w8a8_quant(8, "tensor", False, True),
+                "input_activations": _make_w8a8_quant(8, "token", True, True),
+            }
+        }
+        # prefix is ignored -> get_moe_method returns None -> get_quant_method
+        # falls through to the Linear branch.
+        method = config.get_quant_method(DummyFusedMoE(), "skip.moe")
+        assert method is None
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

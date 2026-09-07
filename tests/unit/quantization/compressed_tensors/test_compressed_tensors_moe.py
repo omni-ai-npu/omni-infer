@@ -165,34 +165,37 @@ class DummyStreamContext:
 
 
 class MockMoELayer(torch.nn.Module):
+    """Stand-in for the post-vLLM-0.25.1 runner + routed_experts split.
+
+    ``create_weights`` still registers expert params on this module. ``apply``
+    now reads them through ``routed_experts`` and unwraps shared experts from
+    ``_shared_experts._layer``, so the mock keeps both views in sync.
+    """
+
     def __init__(self, use_ep=True, num_experts=2):
         super().__init__()
         self.layer_name = "test_layer"
-        self.moe_config = SimpleNamespace(
-            num_experts=num_experts,
-            moe_parallel_config=SimpleNamespace(use_ep=use_ep),
-            is_sequence_parallel=False,
-        )
         self.local_num_experts = num_experts
         self.enable_eplb = False
-        self.moe_parallel_config = SimpleNamespace(use_ep=use_ep)
+        self.moe_parallel_config = SimpleNamespace(use_ep=use_ep, enable_eplb=False)
+        self.moe_config = SimpleNamespace(
+            num_experts=num_experts,
+            moe_parallel_config=self.moe_parallel_config,
+            is_sequence_parallel=False,
+            has_bias=False,
+        )
         self.quant_config = object()
         self.gate = None
-        self.routed_experts = self
         self._shared_experts = None
-        self.shared_experts = None
+        self.routed_experts = self
 
     @property
     def shared_experts(self):
-        if self._shared_experts is None:
-            return None
-        return self._shared_experts._layer
+        return None if self._shared_experts is None else self._shared_experts._layer
 
     @shared_experts.setter
     def shared_experts(self, value):
-        self._shared_experts = (
-            None if value is None else SimpleNamespace(_layer=value)
-        )
+        self._shared_experts = None if value is None else SimpleNamespace(_layer=value)
 
 
 def _operator_opt_config(**overrides):
@@ -510,6 +513,22 @@ def test_w4a8_create_weights_registers_offsets_only_for_asymmetric_quant(
         assert layer.w2_weight_offset is None
 
 
+@pytest.mark.unit
+def test_w4a8_asymmetric_quant_requires_mlp_experts_group(compressed_moe_module):
+    """asymmetric_quant stays False when the group list does not include mlp.experts."""
+    layer = MockMoELayer(use_ep=True)
+    weight_quant = SimpleNamespace(
+        strategy="channel",
+        symmetric=False,
+        asymmetric_group=["other.module"],
+    )
+    input_quant = SimpleNamespace(strategy="token", dynamic=True)
+    method = compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod(
+        weight_quant, input_quant, layer
+    )
+    assert method.asymmetric_quant is False
+
+
 def test_w4a8_process_asymmetric_weights_builds_bias_and_scales_offset(
     compressed_moe_module
 ):
@@ -572,6 +591,39 @@ def test_w4a8_process_asymmetric_weights_builds_bias_and_scales_offset(
     assert torch.equal(layer.w2_weight_bias, expected_bias)
     assert torch.equal(layer.w13_weight_offset, expected_offset)
     assert torch.equal(layer.w2_weight_offset, expected_offset)
+
+
+def test_w4a8_process_symmetric_weights_skips_offset_rewrite(compressed_moe_module):
+    """Symmetric W4A8 still recomputes bias/transpose but leaves offset as None."""
+    method_cls = compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod
+    method = method_cls.__new__(method_cls)
+    method.asymmetric_quant = False
+    method.gmm_autotiling = False
+
+    packed = torch.zeros(1, 4, 8, dtype=torch.int8)
+    packed[0, 0, :2] = torch.tensor([1, 2], dtype=torch.int8)
+    scale_one = torch.tensor([1.0]).view(torch.int32).to(torch.int64).item()
+    layer = SimpleNamespace(
+        w13_weight=torch.nn.Parameter(packed.clone(), requires_grad=False),
+        w2_weight=torch.nn.Parameter(packed.clone(), requires_grad=False),
+        w13_weight_int4_scale=torch.nn.Parameter(
+            torch.full((1, 1, 8), scale_one, dtype=torch.int64), requires_grad=False
+        ),
+        w2_weight_int4_scale=torch.nn.Parameter(
+            torch.full((1, 1, 8), scale_one, dtype=torch.int64), requires_grad=False
+        ),
+        w13_weight_bias=torch.nn.Parameter(torch.zeros(1, 8), requires_grad=False),
+        w2_weight_bias=torch.nn.Parameter(torch.zeros(1, 8), requires_grad=False),
+        w13_weight_offset=None,
+        w2_weight_offset=None,
+    )
+
+    method.process_weights_after_loading(layer)
+
+    assert layer.w13_weight_offset is None
+    assert layer.w2_weight_offset is None
+    assert layer.w13_weight.shape[1] == 8
+    assert layer.w2_weight.shape[1] == 8
 
 
 def test_w4a8_quant_config_forwards_weight_offsets(compressed_moe_module):
@@ -932,8 +984,7 @@ def test_init_enable_best_ep_from_env_invalid(compressed_moe_module, monkeypatch
 def test_apply_enable_eplb_with_best_ep_calls_apply_best_load_balance(
     compressed_moe_module, monkeypatch
 ):
-    """Test that when enable_eplb=True and enable_best_ep=True,
-    apply_best_load_balance is called with correct arguments."""
+    """When enable_eplb=True and enable_best_ep=True, apply_best_load_balance is called."""
     # Setup model_extra_config mock - directly patch the module
     model_extra_config = SimpleNamespace(
         parall_config=SimpleNamespace(ena_seq_parallel=False),
@@ -984,8 +1035,7 @@ def test_apply_enable_eplb_with_best_ep_calls_apply_best_load_balance(
 def test_apply_enable_eplb_without_best_ep_calls_plan_path(
     compressed_moe_module, monkeypatch
 ):
-    """Test that when enable_eplb=True but enable_best_ep=False,
-    the planner.plan path is used instead of apply_best_load_balance."""
+    """When enable_eplb=True and enable_best_ep=False, planner.plan is used."""
     # Setup model_extra_config mock - directly patch the module
     model_extra_config = SimpleNamespace(
         parall_config=SimpleNamespace(ena_seq_parallel=False),
@@ -1195,45 +1245,40 @@ def _npu_to_cpu(monkeypatch):
     monkeypatch.setattr(torch, "zeros", _zeros)
 
 
-def _patch_custom_gmm(monkeypatch, custom_gmm):
-    monkeypatch.setattr(
-        torch.ops,
-        "custom",
-        SimpleNamespace(npu_ai_infra_grouped_matmul=custom_gmm),
-        raising=False,
-    )
-
-
-def _w4a8_layer_and_prepare(*, with_w2=True):
-    layer = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
+def _w4a8_apply_layer(*, with_w2=True, use_ep=True, scale_2d=False):
+    """Layer layout expected by unpack_apply_experts_state + W4A8 apply_experts."""
+    experts = SimpleNamespace(
         w13_weight=torch.randn(2, 4, 4),
         w13_weight_bias=torch.zeros(2, 8),
         w13_weight_int4_scale=torch.ones(2, 1, 8, dtype=torch.int64),
     )
     if with_w2:
-        layer.w2_weight = torch.randn(2, 4, 4)
-        layer.w2_weight_bias = torch.zeros(2, 4)
-        layer.w2_weight_int4_scale = torch.ones(2, 1, 4, dtype=torch.int64)
-    layer.routed_experts = layer
-    layer._shared_experts = None
-    layer.moe_config = SimpleNamespace(
-        moe_parallel_config=SimpleNamespace(use_ep=True),
-        is_sequence_parallel=False,
+        experts.w2_weight = torch.randn(2, 4, 4)
+        experts.w2_weight_bias = torch.zeros(2, 4)
+        experts.w2_weight_int4_scale = torch.ones(2, 1, 4, dtype=torch.int64)
+    layer = SimpleNamespace(
+        routed_experts=experts,
+        _shared_experts=None,
+        moe_config=SimpleNamespace(
+            moe_parallel_config=SimpleNamespace(use_ep=use_ep),
+        ),
     )
+    dynamic_scale = torch.ones(3, 1) if scale_2d else torch.ones(3)
     prepare_result = SimpleNamespace(
         hidden_states_sorted_by_experts=torch.randn(3, 4),
         expert_tokens=torch.tensor([2, 1], dtype=torch.int64),
-        dynamic_scale=torch.ones(3),
+        dynamic_scale=dynamic_scale,
+        avg_tokens_per_expert=[2, 1],
     )
     return layer, prepare_result
 
 
 @pytest.mark.unit
-def test_w4a8_apply_experts_calls_grouped_matmul_and_swiglu(compressed_moe_module, monkeypatch):
-    """Test that W4A8 apply_experts calls gate_up matmul, dequant_swiglu_quant, and down matmul."""
+def test_w4a8_apply_experts_calls_grouped_matmul_and_swiglu(
+    compressed_moe_module, monkeypatch
+):
+    """W4A8 apply_experts calls gate_up matmul, dequant_swiglu_quant, and down matmul."""
     _npu_to_cpu(monkeypatch)
-    module = compressed_moe_module
     torch_npu = sys.modules["torch_npu"]
 
     gate_up_out = torch.randn(3, 8)
@@ -1241,50 +1286,100 @@ def test_w4a8_apply_experts_calls_grouped_matmul_and_swiglu(compressed_moe_modul
     swiglu_scale = torch.ones(3)
     down_out = torch.randn(3, 4)
 
-    custom_gmm = MagicMock(side_effect=[[gate_up_out], [down_out]])
-    _patch_custom_gmm(monkeypatch, custom_gmm)
-    torch_npu.npu_dequant_swiglu_quant = MagicMock(return_value=(swiglu_out, swiglu_scale))
+    torch_npu.npu_grouped_matmul = MagicMock(side_effect=[[gate_up_out], [down_out]])
+    torch_npu.npu_dequant_swiglu_quant = MagicMock(
+        return_value=(swiglu_out, swiglu_scale)
+    )
 
-    W4A8 = module.NPUCompressedTensorsW4A8Int4MoEMethod
-    method = W4A8.__new__(W4A8)
+    method = compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod.__new__(
+        compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod
+    )
     method.gmm_autotiling = False
-    layer, prepare_result = _w4a8_layer_and_prepare()
+    layer, prepare_result = _w4a8_apply_layer()
 
     result = method.apply_experts(layer, prepare_result)
 
-    assert custom_gmm.call_count == 2
+    assert torch_npu.npu_grouped_matmul.call_count == 2
     assert torch_npu.npu_dequant_swiglu_quant.call_count == 1
     assert result is down_out
 
 
 @pytest.mark.unit
-def test_w4a8_apply_experts_finalize_routing_returns_intermediate(compressed_moe_module, monkeypatch):
-    """W4A8 apply_experts returns (intermediate_h, pertoken_scale) when use_grouped_matmul_finalize_routing=True, skipping w2 matmul."""
+def test_w4a8_apply_experts_finalize_routing_returns_intermediate(
+    compressed_moe_module, monkeypatch
+):
+    """W4A8 apply_experts returns (intermediate_h, pertoken_scale) when finalize_routing is on."""
     _npu_to_cpu(monkeypatch)
-    module = compressed_moe_module
     torch_npu = sys.modules["torch_npu"]
 
     gate_up_out = torch.randn(3, 8)
     swiglu_out = torch.randn(3, 4)
     swiglu_scale = torch.ones(3)
 
-    custom_gmm = MagicMock(return_value=[gate_up_out])
-    _patch_custom_gmm(monkeypatch, custom_gmm)
-    torch_npu.npu_dequant_swiglu_quant = MagicMock(return_value=(swiglu_out, swiglu_scale))
+    torch_npu.npu_grouped_matmul = MagicMock(return_value=[gate_up_out])
+    torch_npu.npu_dequant_swiglu_quant = MagicMock(
+        return_value=(swiglu_out, swiglu_scale)
+    )
 
-    W4A8 = module.NPUCompressedTensorsW4A8Int4MoEMethod
-    method = W4A8.__new__(W4A8)
+    method = compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod.__new__(
+        compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod
+    )
     method.gmm_autotiling = False
-    layer, prepare_result = _w4a8_layer_and_prepare(with_w2=False)
+    layer, prepare_result = _w4a8_apply_layer(with_w2=False)
 
-    result = method.apply_experts(layer, prepare_result, use_grouped_matmul_finalize_routing=True)
+    result = method.apply_experts(
+        layer, prepare_result, use_grouped_matmul_finalize_routing=True
+    )
 
     assert isinstance(result, tuple)
     assert len(result) == 2
     assert result[0] is swiglu_out
     assert result[1] is swiglu_scale
-    # w2 matmul should NOT be called (only gate_up matmul)
-    assert custom_gmm.call_count == 1
+    assert torch_npu.npu_grouped_matmul.call_count == 1
+
+
+@pytest.mark.unit
+def test_w4a8_apply_experts_reshapes_2d_pertoken_scale(
+    compressed_moe_module, monkeypatch
+):
+    """2D dynamic_scale is flattened before the first grouped matmul."""
+    _npu_to_cpu(monkeypatch)
+    torch_npu = sys.modules["torch_npu"]
+    captured = {}
+
+    def _gmm(inputs, weights, **kwargs):
+        captured["per_token_scale"] = kwargs.get("per_token_scale")
+        tokens = inputs[0]
+        return [torch.zeros(tokens.size(0), 8, dtype=torch.bfloat16)]
+
+    torch_npu.npu_grouped_matmul = MagicMock(side_effect=_gmm)
+    torch_npu.npu_dequant_swiglu_quant = MagicMock(
+        return_value=(torch.zeros(3, 4, dtype=torch.int8), torch.ones(3))
+    )
+
+    method = compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod.__new__(
+        compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod
+    )
+    method.gmm_autotiling = False
+    layer, prepare_result = _w4a8_apply_layer(scale_2d=True)
+
+    method.apply_experts(layer, prepare_result, use_grouped_matmul_finalize_routing=True)
+
+    scale = captured["per_token_scale"][0]
+    assert scale.ndim == 1
+    assert scale.numel() == 3
+
+
+@pytest.mark.unit
+def test_w4a8_apply_experts_requires_ep(compressed_moe_module, monkeypatch):
+    """W4A8 apply_experts only supports expert-parallel layers."""
+    _npu_to_cpu(monkeypatch)
+    method = compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod.__new__(
+        compressed_moe_module.NPUCompressedTensorsW4A8Int4MoEMethod
+    )
+    layer, prepare_result = _w4a8_apply_layer(use_ep=False)
+    with pytest.raises(AssertionError, match="W4A8 only support ep"):
+        method.apply_experts(layer, prepare_result)
 
 
 def test_apply_multistream_finalize_with_moe_multi_stream_tune(compressed_moe_module, monkeypatch):
