@@ -34,7 +34,8 @@ rm -f -- /dev/shm/vllm_offload_*.mmap
         'kv_connector': 'NPUOffloadingConnector',
         'kv_role': 'kv_both',
         'kv_connector_extra_config': {
-          'cpu_bytes_to_use': cpu_bytes_to_use
+          'cpu_bytes_to_use': cpu_bytes_to_use,
+          'eviction_policy': kv_offload_config.get('eviction_policy', 'arc')
         }
       }
     ]

@@ -71,6 +71,7 @@ run_server_prefill_profile_defaults:
     enable: false
     hugepage_enabled: true
     cpu_bytes_to_use: 858993459200
+    eviction_policy: arc
   # 加载容器 .bashrc 后、调用 runner 前原样执行的 Bash 命令。
   prepare_commands: ""
   # 多节点 Prefill 使用的执行后端；null 表示不追加后端参数。
@@ -93,6 +94,7 @@ run_server_decode_profile_defaults:
     enable: false
     hugepage_enabled: true
     cpu_bytes_to_use: 53687091200
+    eviction_policy: arc
   # 加载容器 .bashrc 后、调用 runner 前原样执行的 Bash 命令。
   prepare_commands: ""
   # 按列表顺序追加到 runner 的 CLI 参数。

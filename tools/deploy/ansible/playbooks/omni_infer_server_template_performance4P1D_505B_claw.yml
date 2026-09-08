@@ -57,6 +57,7 @@
         enable: false
         hugepage_enabled: true
         cpu_bytes_to_use: 858993459200
+        eviction_policy: arc  # arc or lru
       prepare_commands: |-
         export SERVER_IP_LIST={{ DECODE_SERVER_IP_LIST_ALL | replace(' ', '') | trim | quote }}
         export OMNI_LLMDATADIST_LINK_RECYCLE_DELAY=3600
@@ -109,6 +110,7 @@
         enable: false
         hugepage_enabled: true
         cpu_bytes_to_use: 53687091200
+        eviction_policy: arc  # arc or lru
       prepare_commands: |-
         export DECODE_DATA_PARALLEL_SIZE={{ DECODE_SERVER_BY_GROUP | quote }}
         export SERVER_IP_LIST={{ DECODE_SERVER_IP_LIST_BY_GROUP | replace(' ', '') | trim | quote }}

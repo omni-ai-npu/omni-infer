@@ -708,10 +708,22 @@ playbook 中声明空 profile。
 
 Prefill 和 Decode 的 `kv_offload` 会与各自默认值递归合并，common 和 elastic
 路径均支持只覆盖单个字段。例如仅设置 `enable: true` 时，仍会继承默认的
-`hugepage_enabled` 和 `cpu_bytes_to_use`。模板仅在 `enable` 为 `true` 时生成
+`hugepage_enabled`、`cpu_bytes_to_use` 和 `eviction_policy`。模板仅在 `enable` 为 `true` 时生成
 `MultiConnector` JSON、准备 KV offload 运行时环境并传入
 `--kv-transfer-config`；为 `false` 时继续传入原有的 `--kv-role`、`--kv-rank`、
 `--kv-parallel-size` 和 `--kv-connector` 等参数。
+
+`kv_offload.eviction_policy` 默认是 `arc`，也可设为 `lru`。Prefill 和 Decode
+可以分别配置；该值会直接写入 `NPUOffloadingConnector.kv_connector_extra_config`
+的 `eviction_policy` 字段，与 `cpu_bytes_to_use` 同级。例如：
+
+```yaml
+run_server_prefill_profile:
+  kv_offload:
+    enable: true
+    eviction_policy: arc
+```
+
 Ansible 不负责为 KV offload 安装扩展。启用 HugePage 时，P/D 启动 J2 会在
 `pd_run.sh` 前于特权容器内执行 `tools/deploy/start_server/setup_hugetlbfs.sh`，并将
 Prefill 的 `cpu_bytes_to_use`，或 Decode 的 `cpu_bytes_to_use × NUM_SERVERS`，作为
