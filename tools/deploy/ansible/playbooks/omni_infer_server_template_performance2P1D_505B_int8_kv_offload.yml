@@ -99,7 +99,7 @@
         {% endif %}
         export TORCH_COMPILE_DISABLE=1
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-        GPU_UTIL=0.91
+        GPU_UTIL=0.9
       args:
         - --max-model-len 262144
         - --served-model-name {{ model | quote }}
