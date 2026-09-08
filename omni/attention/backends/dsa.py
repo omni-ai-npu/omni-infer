@@ -398,7 +398,9 @@ class NPUDSAImpl(SparseMLAAttentionImpl[NPUDSAMetadata]):
 
         self.indexer = indexer
         self.topk_indices_buffer: torch.Tensor | None = (
-            indexer.topk_indices_buffer if indexer is not None and hasattr(indexer, "topk_indices_buffer") else topk_indices_buffer
+            indexer.topk_indices_buffer
+            if indexer is not None and hasattr(indexer, "topk_indices_buffer")
+            else topk_indices_buffer
         )
 
         self.supports_quant_query_input = False

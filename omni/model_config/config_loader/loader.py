@@ -9,7 +9,6 @@ import os
 import torch
 import torch_npu
 
-# import logging
 from vllm.logger import init_logger
 
 from omni_npu import envs
@@ -27,8 +26,9 @@ default_config_path = os.path.normpath(os.path.join(os.path.abspath(__file__), '
 
 MoECommStrategyType = Literal["allreduce", "allgather_reducescatter", "dispatch_combine", "all2allv"]
 
+
 def load_model_extra_config(model_config, vllm_config, scheduler_config):
-    model_name, quant_type= parse_hf_config(model_config.hf_config)
+    model_name, quant_type = parse_hf_config(model_config.hf_config)
     is_pd_disaggregation = False
     is_prefill_node = None
     if envs.OMNI_PD_ROLE:
@@ -50,7 +50,7 @@ def load_model_extra_config(model_config, vllm_config, scheduler_config):
         graph_mode = 'acl_graph'
 
     enable_chunked_prefill = scheduler_config.enable_chunked_prefill
-    enable_eplb=vllm_config.parallel_config.enable_eplb
+    enable_eplb = vllm_config.parallel_config.enable_eplb
     
     device_name = torch_npu.npu.get_device_name(0)
 
@@ -67,19 +67,19 @@ def load_model_extra_config(model_config, vllm_config, scheduler_config):
     model_extra_config.dtype = vllm_config.model_config.dtype
 
     update_task_config(
-        model_name = model_name,
-        hardware_platform = hardware_platform,
-        is_pd_disaggregation = is_pd_disaggregation,
-        is_prefill_node = is_prefill_node,
-        quant_type = quant_type,
-        prefill_node_num = envs.OMNI_PD_PREFILL_POD_NUM,
-        decode_node_num = envs.OMNI_PD_DECODE_POD_NUM,
-        enable_eplb = enable_eplb,
-        enable_chunked_prefill = enable_chunked_prefill,
-        enable_low_latency = enable_low_latency,
-        graph_mode = graph_mode,
-        enable_pd_elastic_scaling = enable_pd_elastic_scaling,
-        enable_omni_cache = enable_omni_cache
+        model_name=model_name,
+        hardware_platform=hardware_platform,
+        is_pd_disaggregation=is_pd_disaggregation,
+        is_prefill_node=is_prefill_node,
+        quant_type=quant_type,
+        prefill_node_num=envs.OMNI_PD_PREFILL_POD_NUM,
+        decode_node_num=envs.OMNI_PD_DECODE_POD_NUM,
+        enable_eplb=enable_eplb,
+        enable_chunked_prefill=enable_chunked_prefill,
+        enable_low_latency=enable_low_latency,
+        graph_mode=graph_mode,
+        enable_pd_elastic_scaling=enable_pd_elastic_scaling,
+        enable_omni_cache=enable_omni_cache
     )
     _validate_config(vllm_config.additional_config)
     _print_model_config()
@@ -239,8 +239,8 @@ class ModelOperatorOptConfig:
 @dataclass
 class ModelExtraConfig:
     dtype: torch.dtype = torch.bfloat16
-    parall_config: ModelParallelConfig = field(default_factory = ModelParallelConfig)
-    operator_opt_config: ModelOperatorOptConfig = field(default_factory = ModelOperatorOptConfig)
+    parall_config: ModelParallelConfig = field(default_factory=ModelParallelConfig)
+    operator_opt_config: ModelOperatorOptConfig = field(default_factory=ModelOperatorOptConfig)
     task_config: TaskConfig = field(default_factory = TaskConfig)
 
 

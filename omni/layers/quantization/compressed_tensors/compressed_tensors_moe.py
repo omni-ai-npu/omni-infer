@@ -18,11 +18,9 @@ from vllm.distributed import (
     get_tensor_model_parallel_world_size,
     get_tensor_model_parallel_rank,
 )
-from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe.compressed_tensors_moe_w8a8_int8 import (
-    CompressedTensorsW8A8Int8MoEMethod,
-)
 from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe import (
     CompressedTensorsMoEMethod,
+    compressed_tensors_moe_w8a8_int8,
 )
 from vllm.model_executor.layers.fused_moe import FusedMoeWeightScaleSupported
 from vllm.distributed import get_world_group
@@ -43,6 +41,8 @@ from omni_npu.layers.fused_moe.prepare_permute_unpermute_finalize import (
 from omni_npu.layers.utils import named_stream
 from omni_npu.model_config.config_loader.loader import model_extra_config
 from omni_npu.v1.distributed.parallel_state_ext import get_npu_device_count
+
+CompressedTensorsW8A8Int8MoEMethod = compressed_tensors_moe_w8a8_int8.CompressedTensorsW8A8Int8MoEMethod
 
 torch.npu.config.allow_internal_format = True
 logger = init_logger(__name__)
@@ -84,8 +84,7 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
         # TODO: eplb need to be supported
         # self.init_eplb(layer)
         # apply() reads self.enable_eplb on every call, so the attribute has to
-        # exist even while init_eplb is stubbed out; False is what "not yet
-        # supported" means here.
+        # exist anyway; False is what "not yet supported" means here.
         self.enable_eplb = False
 
         self.model_prefetch = PrefetchManager()

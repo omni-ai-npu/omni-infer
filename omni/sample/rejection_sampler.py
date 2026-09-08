@@ -52,10 +52,8 @@ class NPURejectionSampler(RejectionSampler):
     def forward(
         self,
         metadata: SpecDecodeMetadata,
-        # [num_tokens, vocab_size]
-        draft_probs: Optional[torch.Tensor],
-        # [num_tokens + batch_size, vocab_size]
-        logits: torch.Tensor,
+        draft_probs: Optional[torch.Tensor],  # shape: (num_tokens, vocab_size)
+        logits: torch.Tensor,  # shape: (num_tokens + batch_size, vocab_size)
         sampling_metadata: SamplingMetadata,
     ) -> SamplerOutput:
         """
@@ -200,10 +198,9 @@ class NPURejectionSampler(RejectionSampler):
                     for _ in range(consumed):
                         self.rollback_dummy.exponential_(generator=generator)
         else:
-            # [num_tokens, vocab_size]
             # NOTE(woosuk): `target_logits` can be updated in place inside the
             # `compute_probs` function.
-            target_logits = compute_probs(
+            target_logits = compute_probs(  # shape: (num_tokens, vocab_size)
                 target_logits,
                 metadata.cu_num_draft_tokens,
                 sampling_metadata,
@@ -241,19 +238,13 @@ class NPURejectionSampler(RejectionSampler):
 
 
 def rejection_sample(
-    # [num_tokens]
-    draft_token_ids: torch.Tensor,
-    # [batch_size]
-    num_draft_tokens: list[int],
+    draft_token_ids: torch.Tensor,  # shape: (num_tokens)
+    num_draft_tokens: list[int],  # shape: (batch_size)
     max_spec_len: int,
-    # [batch_size]
-    cu_num_draft_tokens: torch.Tensor,
-    # [num_tokens, vocab_size]
-    draft_probs: Optional[torch.Tensor],
-    # [num_tokens, vocab_size]
-    target_probs: torch.Tensor,
-    # [batch_size, 1]
-    bonus_token_ids: torch.Tensor,
+    cu_num_draft_tokens: torch.Tensor,  # shape: (batch_size)
+    draft_probs: Optional[torch.Tensor],  # shape: (num_tokens, vocab_size)
+    target_probs: torch.Tensor,  # shape: (num_tokens, vocab_size)
+    bonus_token_ids: torch.Tensor,  # shape: (batch_size, 1)
     sampling_metadata: SamplingMetadata,
     stream: torch.npu.Stream,
 ) -> torch.Tensor:
@@ -301,8 +292,7 @@ def rejection_sample(
         if sampling_metadata.all_greedy:
             return output_token_ids
 
-    # Generate uniform probabilities for rejection sampling.
-    # [num_tokens]
+    # Generate uniform probabilities for rejection sampling. shape: (num_tokens)
     if multi_stream:
         with torch.npu.stream(stream):
             uniform_probs = generate_uniform_probs(
@@ -324,8 +314,7 @@ def rejection_sample(
         )
 
     # Sample recovered tokens for each position.
-    # [num_tokens]
-    recovered_token_ids = sample_recovered_tokens(
+    recovered_token_ids = sample_recovered_tokens(  # shape: (num_tokens)
         max_spec_len,
         num_draft_tokens,
         cu_num_draft_tokens,
@@ -464,14 +453,10 @@ def expand_batch_to_tokens(
 def sample_recovered_tokens(
     max_spec_len: int,
     num_draft_tokens: list[int],
-    # [batch_size]
-    cu_num_draft_tokens: torch.Tensor,
-    # [num_tokens]
-    draft_token_ids: torch.Tensor,
-    # [num_tokens, vocab_size]
-    draft_probs: Optional[torch.Tensor],
-    # [num_tokens, vocab_size]
-    target_probs: torch.Tensor,
+    cu_num_draft_tokens: torch.Tensor,  # shape: (batch_size)
+    draft_token_ids: torch.Tensor,  # shape: (num_tokens)
+    draft_probs: Optional[torch.Tensor],  # shape: (num_tokens, vocab_size)
+    target_probs: torch.Tensor,  # shape: (num_tokens, vocab_size)
     sampling_metadata: SamplingMetadata,
     device: torch.device,
     stream: torch.npu.Stream,
@@ -767,17 +752,12 @@ def compute_probs_and_sample(
 
 
 def simple_verify(
-    # [num_tokens]
-    draft_token_ids: torch.Tensor,
-    # [batch_size]
-    num_draft_tokens: list[int],
+    draft_token_ids: torch.Tensor,  # shape: (num_tokens)
+    num_draft_tokens: list[int],  # shape: (batch_size)
     max_spec_len: int,
-    # [batch_size]
-    cu_num_draft_tokens: torch.Tensor,
-    # [num_tokens, 1]
-    target_token_ids: torch.Tensor,
-    # [batch_size, 1]
-    bonus_token_ids: torch.Tensor,
+    cu_num_draft_tokens: torch.Tensor,  # shape: (batch_size)
+    target_token_ids: torch.Tensor,  # shape: (num_tokens, 1)
+    bonus_token_ids: torch.Tensor,  # shape: (batch_size, 1)
     sampling_metadata: SamplingMetadata,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert draft_token_ids.ndim == 1

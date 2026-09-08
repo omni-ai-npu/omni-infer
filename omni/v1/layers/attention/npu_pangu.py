@@ -3145,7 +3145,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         hidden_states_event.record()
         hidden_states.record_stream(self.side_stream)
 
-        with torch.npu.npugraph_ex.scope.limit_core_num(16,24):
+        with torch.npu.npugraph_ex.scope.limit_core_num(16, 24):
             # Main stream: q_lora
             if split_q_up:
                 # Share q_lora with side stream so q_b_pe_proj can run there.
@@ -3849,7 +3849,7 @@ def npu_pangu_forward(
                 tp_rank = get_tp_group().rank_in_group
                 chunk_size = hidden_states.shape[0] // self.tp_size
                 hidden_states = hidden_states[
-                    chunk_size * tp_rank : chunk_size * (tp_rank + 1)
+                    chunk_size * tp_rank: chunk_size * (tp_rank + 1)
                 ]
         return hidden_states
 

@@ -604,12 +604,13 @@ class QKVParallelFlashCommLinear(ColumnParallelFlashCommLinear):
             set_aclgraph_recapture(True)
 
     # When y_transform = ALL2ALL for the weight_loader, weights must be rearranged.
-    # before rearranged: | q_head1 | q_head2 | q_head3 | q_head4 | q_head5 | q_head6 | q_head7 | q_head8 | k_head1 | k_head2 | k_head3 | k_head4 | v_head1 | v_head2 | v_head3 | v_head4
+    # 下表中 q1..q8 / k1..k4 / v1..v4 分别代表 q_head1..8 / k_head1..4 / v_head1..4
+    # before rearranged: | q1 | q2 | q3 | q4 | q5 | q6 | q7 | q8 | k1 | k2 | k3 | k4 | v1 | v2 | v3 | v4
     # after rearranged:
-    # y_world_size=2: | q_head1 | q_head2 | q_head3 | q_head4 | k_head1 | k_head2 | v_head1 | v_head2 | q_head5 | q_head6 | q_head7 | q_head8 | k_head3 | k_head4 | v_head3 | v_head4
-    # y_world_size=4: | q_head1 | q_head2 | k_head1 | v_head1 | q_head3 | q_head4 | k_head2 | v_head2 | q_head5 | q_head6 | k_head3 | v_head3 | q_head7 | q_head8 | k_head4 | v_head4
-    # y_world_size=8: | q_head1 | k_head1 | v_head1 | q_head2 | k_head1 | v_head1 | q_head3 | k_head2 | v_head2 | q_head4 | k_head2 | v_head2 
-    #                 | q_head5 | k_head3 | v_head3 | q_head6 | k_head3 | v_head3 | q_head7 | k_head4 | v_head4 | q_head8 | k_head4 | v_head4
+    # y_world_size=2:    | q1 | q2 | q3 | q4 | k1 | k2 | v1 | v2 | q5 | q6 | q7 | q8 | k3 | k4 | v3 | v4
+    # y_world_size=4:    | q1 | q2 | k1 | v1 | q3 | q4 | k2 | v2 | q5 | q6 | k3 | v3 | q7 | q8 | k4 | v4
+    # y_world_size=8:    | q1 | k1 | v1 | q2 | k1 | v1 | q3 | k2 | v2 | q4 | k2 | v2
+    #                    | q5 | k3 | v3 | q6 | k3 | v3 | q7 | k4 | v4 | q8 | k4 | v4
     def load_qkv_weights_interleaved(self,
                                      param: Parameter,
                                      loaded_weight: torch.Tensor):

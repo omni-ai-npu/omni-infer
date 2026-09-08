@@ -120,7 +120,7 @@ class NPUOffloadingConnectorScheduler(OffloadingConnectorScheduler):
                 offload_block_ids = group_state.block_ids[
                     start_block_idx * block_size_factor
                     + block_size_factor
-                    - 1 : num_blocks * block_size_factor : block_size_factor
+                    - 1: num_blocks * block_size_factor: block_size_factor
                 ]
                 assert len(offload_keys) == len(offload_block_ids)
 

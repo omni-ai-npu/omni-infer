@@ -318,7 +318,7 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
 
                 # if `max_context_chunk = 256`, `num_chunks = 3`, and
                 #   `num_prefills_with_context = 4`, create a tensor that looks
-                # like [[0, 0, 0, 0], [256, 256, 256, 256], [512, 512, 512, 512]]
+                # whose rows are 0,0,0,0 then 256,256,256,256 then 512,512,512,512
                 # Note(simon): this is done in CPU because of downstream's
                 # of `to_list`.
                 chunk_starts = (

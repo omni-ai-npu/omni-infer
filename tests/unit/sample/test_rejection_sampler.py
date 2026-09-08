@@ -944,3 +944,83 @@ def test_npu_rejection_sampler_forward_skips_rollback_when_all_accepted(
 
     assert torch.equal(out.sampled_token_ids, output_ids)
     assert torch.equal(gen.get_state(), expected_state)
+
+
+def test_npu_rejection_sampler_forward_uses_rejection_sample_with_draft_probs(
+    rejection_mod, monkeypatch
+):
+    """draft_probs != None takes the compute_probs + rejection_sample branch.
+
+    The simple-verify branch is only for ngram spec decode (draft_probs is
+    None); with real draft probabilities the sampler must instead normalize
+    the target logits and run full rejection sampling.
+    """
+    mod, _, _ = rejection_mod
+    rejection = _build_npu_rejection_sampler(mod, monkeypatch)
+    metadata = _build_spec_decode_metadata()
+    output_ids = torch.tensor([[1, mod.PLACEHOLDER_TOKEN_ID]], dtype=torch.int32)
+
+    bonus_output = SimpleNamespace(
+        sampled_token_ids=torch.tensor([[9]], dtype=torch.int32),
+        logprobs_tensors=SimpleNamespace(logprobs=torch.zeros(1, 4)),
+    )
+
+    def _bonus_sampler(*args, **kwargs):
+        return bonus_output
+
+    rejection.sampler = _bonus_sampler
+    monkeypatch.setattr(
+        rejection, "apply_logits_processors", lambda target_logits, sm, md: target_logits
+    )
+
+    compute_probs_calls = []
+
+    def fake_compute_probs(target_logits, cu_num_draft_tokens, sm, use_npu_sample):
+        compute_probs_calls.append((target_logits, cu_num_draft_tokens, use_npu_sample))
+        return target_logits
+
+    monkeypatch.setattr(mod, "compute_probs", fake_compute_probs)
+
+    simple_verify_calls = []
+    monkeypatch.setattr(
+        mod,
+        "simple_verify",
+        lambda *a, **k: simple_verify_calls.append(True),
+    )
+
+    rejection_sample_calls = []
+
+    def fake_rejection_sample(
+        draft_token_ids, num_draft_tokens, max_spec_len, cu_num_draft_tokens,
+        draft_probs, target_probs, bonus_token_ids, sm, dsa_stream,
+    ):
+        rejection_sample_calls.append(
+            SimpleNamespace(draft_probs=draft_probs, target_probs=target_probs)
+        )
+        return output_ids
+
+    monkeypatch.setattr(mod, "rejection_sample", fake_rejection_sample)
+
+    draft_probs = torch.full((1, 4), 0.25, dtype=torch.float32)
+    out = rejection.forward(
+        metadata=metadata,
+        draft_probs=draft_probs,
+        logits=torch.randn(2, 4),
+        sampling_metadata=_ForwardSamplingMetadata(max_num_logprobs=None),
+    )
+
+    # The ngram-only path must not run.
+    assert simple_verify_calls == []
+    # compute_probs is fed the float32 target logits and the cumulative counts.
+    assert len(compute_probs_calls) == 1
+    called_logits, called_cu, called_use_npu = compute_probs_calls[0]
+    assert called_logits.dtype == torch.float32
+    assert torch.equal(called_cu, metadata.cu_num_draft_tokens)
+    assert called_use_npu is rejection.use_npu_sample
+    # rejection_sample receives softmax-normalized target probs and our draft probs.
+    assert len(rejection_sample_calls) == 1
+    call = rejection_sample_calls[0]
+    assert call.draft_probs is draft_probs
+    assert torch.allclose(call.target_probs.sum(dim=-1), torch.ones(1))
+    assert torch.equal(out.sampled_token_ids, output_ids)
+    assert out.logprobs_tensors is None

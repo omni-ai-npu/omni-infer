@@ -213,7 +213,7 @@ class ThinkingBanStateHolder:
         target = target_list if isinstance(target_list, list) else list(target_list)
         n = len(token_ids)
         for i in range(len(target) - n, -1, -1):
-            if target[i : i + n] == token_ids:
+            if target[i: i + n] == token_ids:
                 return i
         return -1
 

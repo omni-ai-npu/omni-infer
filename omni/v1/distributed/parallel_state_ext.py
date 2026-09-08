@@ -79,12 +79,10 @@ _CROSS_ROUND_COMM_LIST = None
 
 # Layer-parallel communication registry (fixed name: _LAYER_COMM_DICT).
 # key: layer name inside a block in layer_parallel_config (e.g., "self_attn.q_proj")
-# value:
-#   {
-#     "parallel_group": GroupCoordinator | None,
-#     "x_transform": dict[str, Any] | None,  # {"type": str, "dim": int, "parallel_group": GroupCoordinator | None}
-#     "y_transform": dict[str, Any] | None,  # {"type": str, "dim": int, "parallel_group": GroupCoordinator | None}
-#   }
+# value: a dict with three keys --
+#   "parallel_group": GroupCoordinator or None
+#   "x_transform"   : dict or None, keys "type" (str), "dim" (int), "parallel_group" (GroupCoordinator or None)
+#   "y_transform"   : same shape as "x_transform"
 _LAYER_COMM_DICT: dict[str, dict[str, Any]] | None = None
 
 # Cache process groups by normalized group_ranks so layers sharing the same
@@ -232,7 +230,7 @@ def initialize_local_comm_group_list(backend) -> None:
     _LOCAL_COMM_LIST = list()
     group_ranks = []
     for i in range(num_local_groups):
-        ranks = logical_ranks[i * local_size : (i + 1) * local_size]
+        ranks = logical_ranks[i * local_size: (i + 1) * local_size]
         group_ranks.append(ranks)
 
     # message queue broadcaster is only used in tensor model parallel group

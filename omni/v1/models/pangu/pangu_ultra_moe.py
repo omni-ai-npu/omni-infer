@@ -195,7 +195,7 @@ class OpenPanguMoE(nn.Module):
         else:
             self.shared_experts = None
 
-        if config.model_type in ("openpangu_v2", "openpangu_mtp","openpangu_v2_vl_moe","openpangu_v2_omni_moe"):
+        if config.model_type in ("openpangu_v2", "openpangu_mtp", "openpangu_v2_vl_moe", "openpangu_v2_omni_moe"):
             self.experts = NPUSharedFusedMoE(
                 shared_experts=self.shared_experts,
                 gate=self.gate,

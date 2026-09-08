@@ -534,7 +534,7 @@ class CacheManager:  # safe in multi-thread
             size = x.size(0) * x.stride(0) * x.element_size()
             if x.is_contiguous():
                 offset = x.data_ptr() - buf.data_ptr()
-                buf = buf[offset : offset + size]
+                buf = buf[offset: offset + size]
             else:  # blocks with stride
                 if not x[0].is_contiguous():
                     raise ValueError("first block must be contiguous")

@@ -35,7 +35,8 @@ def _apply_penalties_v1(logits: torch.Tensor, prompt_mask: torch.Tensor,
 
     if do_repetition_penalties:
         repetition_penalties = (repetition_penalties - 1)[:, None].repeat(1, vocab_size)
-        repetition_penalties = repetition_penalties * (prompt_mask[:num_seqs, :vocab_size] | output_mask[:num_seqs, :vocab_size]) + 1
+        repetition_penalties = repetition_penalties * (
+            prompt_mask[:num_seqs, :vocab_size] | output_mask[:num_seqs, :vocab_size]) + 1
         logits = torch.where(logits > 0, logits / repetition_penalties, logits * repetition_penalties)
 
     if do_frequency_penalties:

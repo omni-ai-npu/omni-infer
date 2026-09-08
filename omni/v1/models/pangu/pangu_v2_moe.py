@@ -380,7 +380,10 @@ class OpenPanguV2MOE(nn.Module):
             self.n_physical_experts = self.n_logical_experts
         self.n_local_physical_experts = self.n_physical_experts // self.ep_size
         if self.enable_eplb:
-            self.experts._expert_map = torch.arange(self.n_physical_experts, dtype=self.experts._expert_map.dtype, device=self.experts._expert_map.device) % self.n_local_physical_experts
+            self.experts._expert_map = torch.arange(
+                self.n_physical_experts,
+                dtype=self.experts._expert_map.dtype,
+                device=self.experts._expert_map.device) % self.n_local_physical_experts
         self.physical_expert_start = self.ep_rank * self.n_local_physical_experts
         self.physical_expert_end = (
             self.physical_expert_start + self.n_local_physical_experts
@@ -535,7 +538,6 @@ class OpenPanguV2MOE(nn.Module):
         shared_input = hidden_states
         use_side_stream = self.side_stream is not None
 
-        # torch.npu.super_kernel_scope_begin(f"moe_{self.layer_idx}")
         with (
             torch.npu.npugraph_ex.scope.limit_core_num(16, 16)
             if self._is_graph_mode
@@ -544,7 +546,8 @@ class OpenPanguV2MOE(nn.Module):
             ENABLE_GMM_FR = hidden_states.shape[0] <= self.gmm_fr_token_threshold
 
             # Step 1: gating_topk - Select top-k experts
-            router_logits, _ = self.gate(hidden_states_fp32) if hidden_states_fp32 is not None else self.gate(hidden_states.to(torch.float32))
+            router_logits, _ = (self.gate(hidden_states_fp32) if hidden_states_fp32 is not None
+                                else self.gate(hidden_states.to(torch.float32)))
             topk_weights, topk_ids, _ = torch_npu.npu_moe_gating_top_k(
                 router_logits.to(torch.float32),
                 k=self.experts.top_k,
@@ -586,7 +589,8 @@ class OpenPanguV2MOE(nn.Module):
 
             if self._is_quant:
                 # Step 2: init_routing - Initialize routing and get sorted tokens
-                sorted_tokens, expanded_x_idx, expert_tokens, expanded_activation_scale = torch_npu.npu_moe_init_routing_v2(
+                (sorted_tokens, expanded_x_idx, expert_tokens,
+                 expanded_activation_scale) = torch_npu.npu_moe_init_routing_v2(
                     hidden_states_int8,
                     topk_ids,
                     scale=pertoken_scale,
@@ -819,14 +823,6 @@ class OpenPanguV2MOE(nn.Module):
                         row_idx_type=0,
                     )
 
-                # Prefetch w2_weight after init_routing, overlapping with gate_up_matmul + swiglu
-                # if use_fetch_stream:
-                #     w2_prefetch_event = torch.npu.Event()
-                #     w2_prefetch_event.record()
-                #     with torch.npu.stream(self.fetch_stream):
-                #         w2_prefetch_event.wait(self.fetch_stream)
-                #         torch_npu.npu_prefetch(self.experts.w2_weight, hidden_states, 10000000)
-
                 gate_up_proj_output = torch_npu.npu_grouped_matmul(
                     [sorted_tokens],
                     [self.experts.w13_weight],
@@ -958,7 +954,8 @@ class OpenPanguV2MOE(nn.Module):
             shared_pre_event.record()
 
         # Step 1: gating_topk - Select top-k experts
-        router_logits, _ = self.gate(hidden_states_fp32) if hidden_states_fp32 is not None else self.gate(hidden_states.to(torch.float32))
+        router_logits, _ = (self.gate(hidden_states_fp32) if hidden_states_fp32 is not None
+                            else self.gate(hidden_states.to(torch.float32)))
         topk_weights, topk_ids, _ = torch_npu.npu_moe_gating_top_k(
             router_logits.to(torch.float32),
             k=self.experts.top_k,
@@ -1084,7 +1081,8 @@ class OpenPanguV2MOE(nn.Module):
         expert_tokens = expert_token_nums.to(torch.int64)
 
         if self.enable_eplb:
-            self.experts.planner.record_activation(self.experts.moe_layer_idx, expert_tokens, support_multi_stream=False)
+            self.experts.planner.record_activation(
+                self.experts.moe_layer_idx, expert_tokens, support_multi_stream=False)
 
         if self._is_quant:
             if dynamic_scale is None:
@@ -1288,7 +1286,8 @@ class OpenPanguV2MOE(nn.Module):
             hidden_states_fp32 = None
         
         # Step 1: gating_topk - Select top-k experts
-        router_logits, _ = self.gate(hidden_states_fp32) if hidden_states_fp32 is not None else self.gate(hidden_states.to(torch.float32))
+        router_logits, _ = (self.gate(hidden_states_fp32) if hidden_states_fp32 is not None
+                            else self.gate(hidden_states.to(torch.float32)))
         topk_weights, topk_ids, _ = torch_npu.npu_moe_gating_top_k(
             router_logits.to(torch.float32),
             k=self.experts.top_k,
@@ -2070,7 +2069,7 @@ class OpenPanguV2DecoderLayer(nn.Module):
         return_h_in_f32: Optional[bool] = False,
         sk_event: Optional[torch.npu.Event] = None,
         defer_side_launch: bool = False,
-    )-> tuple[
+    ) -> tuple[
         torch.Tensor,
         torch.Tensor | None,
         torch.Tensor | None,
@@ -2086,23 +2085,9 @@ class OpenPanguV2DecoderLayer(nn.Module):
             if use_side_stream and sk_event is not None:
                 sk_event.wait(main_stream)
 
-            # hidden_states, residual = torch.ops.custom.npu_ai_infra_mhc_sandwich_norm_post_preonly(
-            #     hidden_states,
-            #     residual,
-            #     h_post,
-            #     h_res,
-            #     pre_mhc_module.phi.weight[:self.mhc_num_stream] * pre_mhc_module.norm_gamma,
-            #     pre_mhc_module.branch_alpha[0],
-            #     pre_mhc_module.branch_beta[:self.mhc_num_stream],
-            #     post_norm_module.weight.float(),
-            #     pre_norm_module.weight.float(),
-            #     gamma_2=block_norm_module.weight.float() if block_norm_module is not None else None,
-            #     norm_eps=pre_mhc_module.norm_eps,
-            #     hc_eps=pre_mhc_module.hc_eps,
-            # )
-
             if return_h_in_f32:
-                hidden_states, residual, hidden_states_fp32 = torch.ops.custom.npu_ai_infra_mhc_sandwich_norm_post_preonly_v2(
+                (hidden_states, residual,
+                 hidden_states_fp32) = torch.ops.custom.npu_ai_infra_mhc_sandwich_norm_post_preonly_v2(
                     hidden_states,
                     residual,
                     h_post,
@@ -2209,7 +2194,8 @@ class OpenPanguV2DecoderLayer(nn.Module):
 
             hidden_states = pre_norm_module(hidden_states)
             if return_h_in_f32:
-                hidden_states = {"hidden_states_bf16": hidden_states, "hidden_states_fp32": hidden_states.to(torch.float32)}
+                hidden_states = {"hidden_states_bf16": hidden_states,
+                                 "hidden_states_fp32": hidden_states.to(torch.float32)}
 
         return hidden_states, residual, h_post, h_res, new_sk_event
 
