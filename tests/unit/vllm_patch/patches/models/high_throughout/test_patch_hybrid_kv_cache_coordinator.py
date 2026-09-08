@@ -26,10 +26,6 @@ _SpecGroup = namedtuple(
 
 
 REPO_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "omni" / "vllm_patches").is_dir())
-BASE_PATCH_PATH = (
-    REPO_ROOT
-    / "omni/vllm_patches/patches/models/pangu_v2_base/patch_hybrid_kv_cache_coordinator.py"
-)
 HYBRID_PATCH_PATH = (
     REPO_ROOT
     / "omni/vllm_patches/patches/models/high_throughout/patch_hybrid_kv_cache_coordinator.py"
@@ -48,14 +44,11 @@ def _exec_patch(path, module_name):
 
 def _load_patch_modules():
     try:
-        from omni_npu.vllm_patches.patches.models.pangu_v2_base import (
-            patch_hybrid_kv_cache_coordinator as loaded_base,
-        )
         from omni_npu.vllm_patches.patches.models.high_throughout import (
-            patch_hybrid_kv_cache_coordinator as loaded_hybrid,
+            patch_hybrid_kv_cache_coordinator as loaded,
         )
 
-        return loaded_base, loaded_hybrid
+        return loaded, loaded
     except Exception:  # noqa: BLE001 - use a direct source load on dev machines
         pass
 
@@ -128,13 +121,10 @@ def _load_patch_modules():
     )
     sys.modules["omni_npu.vllm_patches.core"] = core
     try:
-        loaded_base = _exec_patch(
-            BASE_PATCH_PATH, "_hybrid_apc_connector_patch_under_test"
+        loaded = _exec_patch(
+            HYBRID_PATCH_PATH, "_hybrid_apc_patch_under_test"
         )
-        loaded_hybrid = _exec_patch(
-            HYBRID_PATCH_PATH, "_hybrid_apc_find_longest_hit_patch_under_test"
-        )
-        return loaded_base, loaded_hybrid
+        return loaded, loaded
     finally:
         for name, saved in reversed(saved_modules.items()):
             if saved is None:

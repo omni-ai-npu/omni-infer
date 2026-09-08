@@ -2,27 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-"""Hybrid HBM+DDR joint lookup without forking vLLM ``schedule()``.
-
-Same behaviour as the previous in-tree edits to:
-
-- ``HybridKVCacheCoordinator`` (record the FA group id)
-- ``KVCacheManager`` (per-group connector lookup)
-- ``Scheduler`` (pass ``min(h_g)`` into OffloadingConnector)
-
-``schedule()`` is ~700 lines. Copying it would dwarf the real delta, so this
-patch:
-
-1. makes the hybrid+connector branch in ``schedule()`` fall through to
-   ``get_computed_blocks`` (by replacing the name ``schedule.py`` uses for
-   ``isinstance(..., HybridKVCacheCoordinator)``);
-2. wraps ``get_computed_blocks`` to run the connector lookup + offload
-   ``min(h_g)`` adjustment there.
-
-The real ``HybridKVCacheCoordinator`` class is unchanged; only the symbol
-inside ``vllm.v1.core.sched.scheduler`` is swapped.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -41,7 +20,6 @@ from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.kv_cache_interface import FullAttentionSpec
 from vllm.v1.request import Request
-
 import vllm.v1.core.sched.scheduler as scheduler_mod
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
@@ -154,7 +132,7 @@ class KVCacheManagerOffloadJointLookupPatch(VLLMPatch):
         return blocks, num_local, min(per_group_hits) < num_local
 
     def get_computed_blocks(self, request: Request) -> tuple[KVCacheBlocks, int]:
-        if not getattr(self, "_omni_has_connector", False):
+        if not getattr(self, "_omni_is_offloading_connector", False):
             return KVCacheManagerOffloadJointLookupPatch._upstream_get_computed_blocks(
                 self, request
             )
@@ -177,13 +155,12 @@ class KVCacheManagerOffloadJointLookupPatch(VLLMPatch):
         finally:
             self.log_stats = saved_log
 
-        if getattr(self, "_omni_is_offloading_connector", False):
-            per_group = local_hits_from_blocks(
-                self.kv_cache_config.kv_cache_groups, blocks
-            )
-            if per_group:
-                request.local_computed_tokens_per_group = per_group
-                num_local = min(per_group)
+        per_group = local_hits_from_blocks(
+            self.kv_cache_config.kv_cache_groups, blocks
+        )
+        if per_group:
+            request.local_computed_tokens_per_group = per_group
+            num_local = min(per_group)
 
         self.record_prefix_cache_stats(request, num_local)
         return blocks, num_local
@@ -202,11 +179,13 @@ class SchedulerOffloadJointLookupPatch(VLLMPatch):
 
     def __init__(self, *args, **kwargs):
         SchedulerOffloadJointLookupPatch._upstream__init__(self, *args, **kwargs)
+        is_offload = self._is_offloading_connector()
         mgr = self.kv_cache_manager
         mgr._omni_has_connector = self.connector is not None
-        mgr._omni_is_offloading_connector = self._is_offloading_connector()
+        mgr._omni_is_offloading_connector = is_offload
+        if is_offload:
+            scheduler_mod.HybridKVCacheCoordinator = _SkipHybridConnectorLookup
 
     @classmethod
     def apply(cls):
-        scheduler_mod.HybridKVCacheCoordinator = _SkipHybridConnectorLookup
         cls.apply_bypass_conflict("__init__")

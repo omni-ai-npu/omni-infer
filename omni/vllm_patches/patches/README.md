@@ -48,8 +48,6 @@ patches/
 | `patch_single_type_kv_cache_manager.py` | 注册 `MomeManager` / `ShareKVSlidingWindowManager` 并为 Mome 注入 admission cap；vLLM #52707：`allocate_external_computed_blocks` 在 PD 外部块数量为负时不再调用 `get_new_blocks` |
 | `patch_kv_cache_utils.py` | `HYBRID_ATTN_GROUP_SIZE` 环境变量 override hybrid KV group 分组 |
 | `patch_kv_cache_dtype.py` | 支持 int8/hif8 等 KV cache dtype |
-| `patch_hybrid_kv_cache_coordinator.py` | hybrid APC connector：`find_longest_cache_hit_per_group` 把公共命中长度按 group 重复 |
-| `patch_kv_offload_joint_lookup.py` | hybrid HBM+DDR 联立查询：FA 组 id、connector 按组 lookup、Offloading 把 local 收成 `min(h_g)`。不改 `schedule()` 本体，只绕开 hybrid+connector 专用分支 |
 | `patch_scheduler.py` | PD / reasoning `max_tokens` 排除 thinking |
 | `patch_speculative.py` | MTP / speculative config |
 | `patch_model_arch_config_convertor.py` | Pangu MLA 架构识别 |
@@ -61,12 +59,16 @@ patches/
 |------|------|
 | `patch_sink_attention_spec.py` | 注入 `SinkMLAAttentionSpec` |
 | `patch_static_sink_attention.py` | StaticSink attention |
-| `patch_hybrid_kv_cache_coordinator.py` | hybrid APC `find_longest_cache_hit`：禁止 simple-hybrid 提前退出，并把 FA 命中长度限制在实际持有的 block 上 |
+| `patch_hybrid_kv_cache_coordinator.py` | hybrid APC：`find_longest_cache_hit` 禁止 simple-hybrid 提前退出并 cap 到 FA 实际持有的 block；`find_longest_cache_hit_per_group` 把公共命中长度按 group 重复，给 LLMDataDist fill |
 | `patch_mome_hybrid.py` | Pangu V2 hybrid MoME attention |
 
 ## models/low_latency/
 
-当前无额外 patch 文件。设置 `OMNI_VLLM_PATCHES_DIR=low_latency` 仍会加载 `pangu_v2_base`。
+| 文件 | 作用 |
+|------|------|
+| `patch_kv_offload_joint_lookup.py` | KV Offload 的 hybrid HBM+DDR 联立查询：仅 OffloadingConnector 时绕开 `schedule()` hybrid+connector 分支，按组 lookup 后把 local 收成 `min(h_g)`。无 Offload 时保持上游 `max(FA)` |
+
+设置 `OMNI_VLLM_PATCHES_DIR=low_latency` 仍会加载 `pangu_v2_base`。
 
 ## 加载方式
 

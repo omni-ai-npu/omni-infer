@@ -14,8 +14,8 @@ This patch keeps the stock loop, with two changes:
 2. when FA is skipped as downward-closed, cap ``curr_hit_length`` to the
    tokens those blocks actually hold, so a later Mome revive is pulled back.
 
-The scheduler connector path (``find_longest_cache_hit_per_group``) lives in
-``pangu_base/patch_hybrid_kv_cache_coordinator.py``.
+``find_longest_cache_hit_per_group`` repeats that common length for the
+scheduler connector path.
 
 TODO: remove once vLLM tracks a per-group hit length in the fixed-point loop
 (upstream #50344; v0.27.2+).
@@ -120,3 +120,26 @@ class HybridAPCFindLongestCacheHitPatch(VLLMPatch):
     _attr_names_to_apply = ["find_longest_cache_hit"]
 
     find_longest_cache_hit = find_longest_cache_hit
+
+
+def find_longest_cache_hit_per_group(
+    self: HybridKVCacheCoordinator,
+    block_hashes,
+    max_cache_hit_length: int,
+):
+    """Return the common hybrid hit as a per-group tuple for the scheduler."""
+    # adapt start
+    # Stock looks up each group independently; the scheduler then uses
+    # max(per_group_hits). Repeat the common length instead.
+    blocks, hit_length = self.find_longest_cache_hit(
+        block_hashes, max_cache_hit_length
+    )
+    return blocks, (hit_length,) * len(blocks)
+    # adapt end
+
+
+@register_patch("HybridAPCConnectorHitPatch", HybridKVCacheCoordinator)
+class HybridAPCConnectorHitPatch(VLLMPatch):
+    _attr_names_to_apply = ["find_longest_cache_hit_per_group"]
+
+    find_longest_cache_hit_per_group = find_longest_cache_hit_per_group
