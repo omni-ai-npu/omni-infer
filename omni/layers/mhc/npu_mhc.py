@@ -144,7 +144,7 @@ class NPUmHC(torch.nn.Module):
             dtype = hidden_states.dtype
             hidden_states = hidden_states.view(-1, self.hidden_size * self.num_stream)
             hidden_states = hidden_states.float()
-            rsqrt = torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.norm_eps)
+            rsqrt = torch.rsqrt(hidden_states.square().mean(-1, keepdim=True) + self.hc_eps)
     
             hpre_weight = self.phi(
                 hidden_states *
@@ -155,7 +155,7 @@ class NPUmHC(torch.nn.Module):
             hpre_weight = torch.nn.functional.sigmoid(
                 hpre_weight * self.branch_alpha_pre
                 + self.branch_beta_pre.view(1, self.num_stream)
-            )
+            ) + self.hc_eps
             hpre_weight = hpre_weight.view(-1, self.num_stream, 1)
             hidden_states = hidden_states.view(-1, self.num_stream, self.hidden_size)
             hidden_states = torch.sum(
