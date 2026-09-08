@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 ---
-- name: Run high-layer PanguV2 92B Prefill, Decode, and Omni Proxy services.
+- name: Run PanguV2 92B 4P1D Prefill, Decode, and Omni Proxy services.
   hosts: all
   any_errors_fatal: true
   max_fail_percentage: 0
@@ -19,7 +19,7 @@
 
   vars:
     model: pangu-v2-92b
-    model_path: "/mnt/sfs_turbo/bucket-910c-6055/s00562949/models/openPangu_2.0_Flash_BF16/global_step_26/"
+    model_path: "/mnt/sfs_turbo/bucket-910c-6055/s00562949/models/openPangu_2.0_Flash_INT8/global_step_26-iterative-int8-0626/"
 
     run_docker_profile:
       shm_size: 1600g
@@ -29,7 +29,6 @@
         - /mnt:/mnt
         - /tmp:/tmp
         - /home:/home
-        - /efs_guiyang:/efs_guiyang
 
     sync_code_profile:
       container_copy:
@@ -54,7 +53,7 @@
 
     run_server_prefill_profile:
       kv_offload:
-        enable: false
+        enable: true
         hugepage_enabled: true
         cpu_bytes_to_use: 858993459200
         eviction_policy: arc  # arc or lru
@@ -81,21 +80,23 @@
         export TORCH_COMPILE_DISABLE=1
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
         EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager"
-        EXTRA_ARGS="${EXTRA_ARGS} --max-num-batched-tokens 16384"
+        EXTRA_ARGS="${EXTRA_ARGS} --max-num-batched-tokens 32768"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-expert-parallel --max-num-seqs 12"
         EXTRA_ARGS="${EXTRA_ARGS} --mamba-block-size 128 --enable-prefix-caching --enable-chunked-prefill"
         EXTRA_ARGS="${EXTRA_ARGS} --dtype bfloat16 --enforce-eager"
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-parser pangu"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-auto-tool-choice --tool-call-parser pangu"
+        EXTRA_ARGS="${EXTRA_ARGS} --kv-cache-dtype li_int8_ds_mla"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-lopt --lopt-pool-size 16"
         EXTRA_ARGS="${EXTRA_ARGS} --lopt-chunk-size 4096"
         REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
+        GPU_UTIL=0.9
       args:
         - --max-model-len 524288
         - --served-model-name {{ model | quote }}
         - '--additional-config ''{"enable_low_latency": true}'''
-        - --gpu-util 0.8
+        - --gpu-util "${GPU_UTIL}"
         - --extra-args "${EXTRA_ARGS}"
         - --hccl-buffsize "${HCCL_BUFFSIZE}"
         - --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}"
@@ -147,10 +148,12 @@
         EXTRA_ARGS="${EXTRA_ARGS} --compilation-config ${COMPILATION_CONFIG}"
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-parser pangu"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-auto-tool-choice --tool-call-parser pangu"
+        EXTRA_ARGS="${EXTRA_ARGS} --kv-cache-dtype li_int8_ds_mla"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-lopt --lopt-pool-size 16"
         EXTRA_ARGS="${EXTRA_ARGS} --lopt-chunk-size 4096"
         REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
+        GPU_UTIL=0.82
       args:
         - --max-model-len 524288
         - --served-model-name {{ model | quote }}
@@ -161,7 +164,7 @@
           "npugraph_ex_config":{"enable": true,
           "super_kernel_optimize": false,
           "static_kernel_compile": true}}'
-        - --gpu-util 0.82
+        - --gpu-util "${GPU_UTIL}"
         - --extra-args "${EXTRA_ARGS}"
         - --hccl-buffsize "${HCCL_BUFFSIZE}"
         - --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}"
