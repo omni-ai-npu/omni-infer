@@ -45,10 +45,11 @@ patches/
 | 文件 | 作用 |
 |------|------|
 | `patch_kv_cache_interface.py` | 注入 `MomeSpec` / `DSAAttentionSpec` / `ShareKVSlidingWindowSpec` |
-| `patch_single_type_kv_cache_manager.py` | 注册 `MomeManager` / `ShareKVSlidingWindowManager` 并为 Mome 注入 admission cap |
+| `patch_single_type_kv_cache_manager.py` | 注册 `MomeManager` / `ShareKVSlidingWindowManager` 并为 Mome 注入 admission cap；vLLM #52707：`allocate_external_computed_blocks` 在 PD 外部块数量为负时不再调用 `get_new_blocks` |
 | `patch_kv_cache_utils.py` | `HYBRID_ATTN_GROUP_SIZE` 环境变量 override hybrid KV group 分组 |
 | `patch_kv_cache_dtype.py` | 支持 int8/hif8 等 KV cache dtype |
 | `patch_hybrid_kv_cache_coordinator.py` | hybrid APC connector：`find_longest_cache_hit_per_group` 把公共命中长度按 group 重复 |
+| `patch_kv_offload_joint_lookup.py` | hybrid HBM+DDR 联立查询：FA 组 id、connector 按组 lookup、Offloading 把 local 收成 `min(h_g)`。不改 `schedule()` 本体，只绕开 hybrid+connector 专用分支 |
 | `patch_scheduler.py` | PD / reasoning `max_tokens` 排除 thinking |
 | `patch_speculative.py` | MTP / speculative config |
 | `patch_model_arch_config_convertor.py` | Pangu MLA 架构识别 |

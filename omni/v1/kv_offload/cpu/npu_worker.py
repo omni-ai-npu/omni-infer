@@ -126,6 +126,9 @@ class Transfer:
     job_id: int
     stream: torch.npu.Stream
     end_event: torch.npu.Event
+    start_event: torch.npu.Event | None = None
+    num_bytes: int = 0
+    start_mono: float | None = None
     batch_src: torch.Tensor | None = None
     batch_dst: torch.Tensor | None = None
     batch_sizes: torch.Tensor | None = None
@@ -241,6 +244,37 @@ class NpuSingleDirectionOffloadingHandler:
         self._submit_errors: dict[int, BaseException] = {}
         self._submit_queue: queue.Queue[QueuedJob | None] = queue.Queue()
         self._submit_thread: threading.Thread | None = None
+
+    @staticmethod
+    def _new_timing_event() -> torch.npu.Event:
+        try:
+            return torch.npu.Event(enable_timing=True)
+        except TypeError:
+            return torch.npu.Event()
+
+    def _pop_timing_events(self) -> tuple[torch.npu.Event, torch.npu.Event]:
+        with self._lock:
+            start_event = self._event_pool.pop() if self._event_pool else None
+            end_event = self._event_pool.pop() if self._event_pool else None
+        if start_event is None:
+            start_event = self._new_timing_event()
+        if end_event is None:
+            end_event = self._new_timing_event()
+        return start_event, end_event
+
+    @staticmethod
+    def _transfer_time_s(transfer: Transfer) -> float:
+        start = transfer.start_event
+        if start is not None:
+            try:
+                return float(start.elapsed_time(transfer.end_event)) * 1e-3
+            except (RuntimeError, TypeError, AttributeError):
+                logger.debug(
+                    "NPU event elapsed_time unavailable; fallback to monotonic"
+                )
+        if transfer.start_mono is not None:
+            return max(0.0, time.monotonic() - transfer.start_mono)
+        return 0.0
 
     def _owns_store_block(self, dst_block: int) -> bool:
         """Replicated store rotation: each rank writes CPU blocks it owns."""
@@ -449,9 +483,16 @@ class NpuSingleDirectionOffloadingHandler:
 
     def _recycle_transfer(self, transfer: Transfer) -> TransferResult:
         self._event_pool.append(transfer.end_event)
+        if transfer.start_event is not None:
+            self._event_pool.append(transfer.start_event)
         self._transfer_events.pop(transfer.job_id, None)
         self._transfers_by_id.pop(transfer.job_id, None)
-        return TransferResult(job_id=transfer.job_id, success=True)
+        return TransferResult(
+            job_id=transfer.job_id,
+            success=True,
+            transfer_size=int(transfer.num_bytes),
+            transfer_time=self._transfer_time_s(transfer),
+        )
 
     def submit(
         self, job_id: int, src_spec: LoadStoreSpec, dst_spec: LoadStoreSpec
@@ -570,12 +611,10 @@ class NpuSingleDirectionOffloadingHandler:
             num_dst_blocks,
         )
         num_ops = int(op_sizes.size)
+        num_bytes = int(op_sizes.sum()) if num_ops else 0
 
         stream = self._stream
-        with self._lock:
-            end_event = self._event_pool.pop() if self._event_pool else None
-        if end_event is None:
-            end_event = torch.npu.Event()
+        start_event, end_event = self._pop_timing_events()
 
         wait_compute = int(self.npu_to_cpu)
         if wait_compute:
@@ -628,7 +667,9 @@ class NpuSingleDirectionOffloadingHandler:
                 num_src_blocks, num_dst_blocks, _copy_group,
             )
 
+        start_mono = time.monotonic()
         with torch.npu.stream(stream):
+            start_event.record(stream)
             if num_ops:
                 if swap_fn is not None:
                     batch_src = torch.from_numpy(np.ascontiguousarray(src_ptrs))
@@ -645,6 +686,9 @@ class NpuSingleDirectionOffloadingHandler:
             job_id=job_id,
             stream=stream,
             end_event=end_event,
+            start_event=start_event,
+            num_bytes=num_bytes,
+            start_mono=start_mono,
             batch_src=batch_src,
             batch_dst=batch_dst,
             batch_sizes=batch_sizes,

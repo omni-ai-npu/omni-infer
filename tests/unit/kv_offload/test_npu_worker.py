@@ -392,6 +392,7 @@ def test_handler_transfer_get_finished_wait_shutdown():
 
     end_ev = MagicMock()
     end_ev.query.return_value = True
+    end_ev.elapsed_time.return_value = 5.0  # milliseconds
     stream_ctx = MagicMock()
     stream_ctx.__enter__ = MagicMock(return_value=None)
     stream_ctx.__exit__ = MagicMock(return_value=False)
@@ -406,6 +407,10 @@ def test_handler_transfer_get_finished_wait_shutdown():
     assert len(results) == 1
     assert isinstance(results[0], TransferResult)
     assert results[0].job_id == 7
+    # OffloadingConnectorWorker only records Prometheus stats when both
+    # transfer_size and transfer_time are set.
+    assert results[0].transfer_size == 16  # 2 blocks * 8-byte pages
+    assert results[0].transfer_time == pytest.approx(0.005)
 
     # Wait on missing + present job
     end2 = MagicMock()
@@ -434,6 +439,52 @@ def test_handler_transfer_get_finished_wait_shutdown():
     assert handler._mmap_region is None
 
 
+def test_transfer_time_falls_back_to_monotonic_when_event_fails():
+    start = MagicMock()
+    start.elapsed_time.side_effect = RuntimeError("no timing")
+    transfer = Transfer(
+        job_id=1,
+        stream=MagicMock(),
+        end_event=MagicMock(),
+        start_event=start,
+        start_mono=time.monotonic() - 0.02,
+    )
+    elapsed = NpuSingleDirectionOffloadingHandler._transfer_time_s(transfer)
+    assert elapsed >= 0.01
+    assert NpuSingleDirectionOffloadingHandler._transfer_time_s(
+        Transfer(job_id=2, stream=MagicMock(), end_event=MagicMock())
+    ) == 0.0
+
+
+def test_recycle_transfer_reports_size_and_time_for_prometheus():
+    handler = NpuSingleDirectionOffloadingHandler.__new__(
+        NpuSingleDirectionOffloadingHandler
+    )
+    handler._event_pool = []
+    handler._transfer_events = {3: object()}
+    handler._transfers_by_id = {3: object()}
+    start = MagicMock()
+    start.elapsed_time.return_value = 8.0  # milliseconds
+    end = MagicMock()
+    result = handler._recycle_transfer(
+        Transfer(
+            job_id=3,
+            stream=MagicMock(),
+            end_event=end,
+            start_event=start,
+            num_bytes=4096,
+        )
+    )
+    assert result.job_id == 3
+    assert result.success is True
+    assert result.transfer_size == 4096
+    assert result.transfer_time == pytest.approx(0.008)
+    start.elapsed_time.assert_called_once_with(end)
+    assert handler._event_pool == [end, start]
+    assert 3 not in handler._transfer_events
+    assert 3 not in handler._transfers_by_id
+
+
 def test_handler_transfer_batch_path_and_rotation_skip():
     handler, npu, cpu = _make_handler(
         npu_to_cpu=True, factor=1, rotate=True, tp_size=2, tp_rank=0
@@ -441,8 +492,9 @@ def test_handler_transfer_batch_path_and_rotation_skip():
     swap_fn = MagicMock()
     handler._swap_blocks_batch = swap_fn
     # reuse events from pool
-    pooled = MagicMock()
-    handler._event_pool = [pooled]
+    pooled_start = MagicMock()
+    pooled_end = MagicMock()
+    handler._event_pool = [pooled_start, pooled_end]
 
     ConcreteGPU, ConcreteCPU = _concrete_specs()
     src = ConcreteGPU.__new__(ConcreteGPU)
@@ -558,6 +610,16 @@ def test_worker_init_without_mmap_allocates_cpu():
             mmap_region=None,
         )
     assert handler_cls.call_count == 2
+
+
+def test_new_timing_event_falls_back_without_enable_timing():
+    fallback = object()
+    with patch.object(
+        torch.npu, "Event", side_effect=[TypeError("no timing"), fallback]
+    ) as event_cls:
+        assert NpuSingleDirectionOffloadingHandler._new_timing_event() is fallback
+    event_cls.assert_any_call(enable_timing=True)
+    event_cls.assert_any_call()
 
 
 def _transfer_specs(npu_to_cpu: bool):

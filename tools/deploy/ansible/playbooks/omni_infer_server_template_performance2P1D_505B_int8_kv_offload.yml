@@ -115,7 +115,7 @@
       # activates the configured per-device 50 GiB CPU offload pool.
       kv_offload:
         enable: false
-        hugepage_enabled: true
+        hugepage_enabled: false
         cpu_bytes_to_use: 53687091200  # 50 GiB
         eviction_policy: arc  # arc or lru
       prepare_commands: |-
@@ -142,7 +142,7 @@
         EXTRA_ARGS="${EXTRA_ARGS} --enable-expert-parallel --max-num-seqs 3"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-prompt-tokens-details --enable-chunked-prefill"
         EXTRA_ARGS="${EXTRA_ARGS} --distributed-executor-backend mp --dtype bfloat16"
-        COMPILATION_CONFIG='{"mode": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[4,12], "backend":"", "compile_sizes":[4,12]}'
+        COMPILATION_CONFIG='{"mode": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[12], "backend":"", "compile_sizes":[12]}'
         EXTRA_ARGS="${EXTRA_ARGS} --compilation-config ${COMPILATION_CONFIG}"
         EXTRA_ARGS="${EXTRA_ARGS} --kv-cache-dtype li_int8_ds_mla"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-logging-iteration-details"
@@ -156,9 +156,10 @@
         EXTRA_ARGS="${EXTRA_ARGS} --no-enable-prefix-caching"
         export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_505B_xp1d_d_claw_noapc.json"
         {% endif %}
-        export TORCH_COMPILE_DISABLE=1
+        export TORCH_COMPILE_DISABLE=0
+        export VLLM_DISABLE_COMPILE_CACHE=1
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-        GPU_UTIL=0.95
+        GPU_UTIL=0.97
       args:
         - --max-model-len 262144
         - --served-model-name {{ model | quote }}
@@ -168,7 +169,7 @@
           '{"enable_low_latency": true,
           "npugraph_ex_config":{"enable": true,
           "super_kernel_optimize": false,
-          "static_kernel_compile": false}}'
+          "static_kernel_compile": true}}'
         - --gpu-util "${GPU_UTIL}"
         - --extra-args "${EXTRA_ARGS}"
         - --hccl-buffsize "${HCCL_BUFFSIZE}"
@@ -182,6 +183,8 @@
       prepare_commands: |-
         export PYTHONHASHSEED=1234
         export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+        rm -f "${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log" \
+              "${LOG_PATH}/{{ inventory_hostname }}/nginx_access.log"
       args:
         - --omni-proxy-model-path {{ model_path | quote }}
         - --log-file ${LOG_PATH}/{{ inventory_hostname }}/nginx_error.log

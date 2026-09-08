@@ -15,6 +15,7 @@ The older pangu_v2_hybrid coordinator patch used the deprecated ``use_eagle``
 kwarg and would regress APC if applied on top of modern vLLM.
 """
 
+from vllm.utils.math_utils import cdiv
 from vllm.v1.core import kv_cache_coordinator, single_type_kv_cache_manager
 from vllm.v1.core.block_pool import BlockPool
 from vllm.v1.core.single_type_kv_cache_manager import (
@@ -24,7 +25,14 @@ from vllm.v1.core.single_type_kv_cache_manager import (
     SlidingWindowManager,
     SlidingWindowSpec,
 )
-from vllm.v1.kv_cache_interface import KVCacheSpec, SlidingWindowSpec as SWSpec
+from vllm.v1.kv_cache_interface import (
+    FullAttentionSpec,
+    HiddenStateCacheSpec,
+    KVCacheSpec,
+    MLAAttentionSpec,
+    SlidingWindowSpec as SWSpec,
+    TQFullAttentionSpec,
+)
 from vllm.v1.kv_cache_spec_registry import KVCacheSpecRegistry
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
@@ -138,6 +146,71 @@ class SingleTypeKVCacheManagerPatch(VLLMPatch):
     get_manager_for_kv_cache_spec = get_manager_for_kv_cache_spec
     MomeManager = MomeManager
     ShareKVSlidingWindowManager = ShareKVSlidingWindowManager
+
+
+@register_patch(
+    "SingleTypeKVCacheManagerExternalAllocPatch", SingleTypeKVCacheManager
+)
+class SingleTypeKVCacheManagerExternalAllocPatch(VLLMPatch):
+
+    _attr_names_to_apply = ["allocate_external_computed_blocks"]
+
+    def allocate_external_computed_blocks(
+        self,
+        request_id: str,
+        num_local_computed_tokens: int,
+        num_external_computed_tokens: int,
+    ) -> None:
+        num_total_computed_tokens = (
+            num_local_computed_tokens + num_external_computed_tokens
+        )
+        # Extra reserved is HBM APC retention only. DDR lookup/store still
+        # use the kernel/window, so external fill must not allocate those
+        # extra real pages (they have no offloaded keys).
+        extra = getattr(self, "num_extra_reserved_blocks", 0)
+        if extra and hasattr(self, "kernel_size"):
+            num_skipped_tokens = max(
+                0, num_total_computed_tokens - (self.kernel_size - 1)
+            )
+        elif extra and hasattr(self, "sliding_window"):
+            num_skipped_tokens = max(
+                0, num_total_computed_tokens - (self.sliding_window - 1)
+            )
+        else:
+            num_skipped_tokens = self.get_num_skipped_tokens(
+                num_total_computed_tokens
+            )
+        if num_skipped_tokens > 0:
+            num_external_computed_tokens = min(
+                num_total_computed_tokens - num_skipped_tokens,
+                num_external_computed_tokens,
+            )
+        req_blocks = self.req_to_blocks[request_id]
+        target_blocks = cdiv(num_total_computed_tokens, self.block_size)
+        skipped_blocks = num_skipped_tokens // self.block_size
+        if len(req_blocks) < skipped_blocks:
+            req_blocks.extend(
+                [self._null_block] * (skipped_blocks - len(req_blocks))
+            )
+        if num_external_computed_tokens <= 0:
+            if len(req_blocks) < target_blocks:
+                req_blocks.extend(
+                    [self._null_block] * (target_blocks - len(req_blocks))
+                )
+            return
+
+        # --- omni-npu diff start: vLLM #52707 clamp negative allocation ---
+        num_new_blocks = max(0, target_blocks - len(req_blocks))
+        allocated_blocks = self.block_pool.get_new_blocks(num_new_blocks)
+        # --- omni-npu diff end ---
+        req_blocks.extend(allocated_blocks)
+        if type(self.kv_cache_spec) in (
+            FullAttentionSpec,
+            TQFullAttentionSpec,
+            MLAAttentionSpec,
+            HiddenStateCacheSpec,
+        ):
+            self.new_block_ids.extend(b.block_id for b in allocated_blocks)
 
 
 @register_patch("KVCacheCoordinatorManagerFactoryPatch", kv_cache_coordinator)
