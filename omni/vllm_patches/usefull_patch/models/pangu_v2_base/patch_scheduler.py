@@ -64,6 +64,20 @@ class PanguV2SchedulerPatch(VLLMPatch):
 
         original_max_tokens = request._original_max_tokens
 
+        # Near max_model_len, different DP groups can otherwise disagree on
+        # whether the MTP/EAGLE drafter still fits. Partial drafter execution
+        # hangs MoE deployments that combine expert parallelism with DP.
+        #
+        # The asynchronous scheduling pipeline advances through three spans
+        # of N speculative tokens: the generated-token position lag, the last
+        # valid schedule, and the output currently being processed. Reserve
+        # 3N tokens for those spans and one more token for the length boundary.
+        num_early_skip_tokens = (
+            0
+            if self.vllm_config.speculative_config is None
+            else self.vllm_config.speculative_config.num_speculative_tokens * 3 + 1
+        )
+
         # Append generated tokens and check for stop. Note that if
         # a request is still being prefilled, we expect the model runner
         # to return empty token ids for the request.
@@ -97,7 +111,10 @@ class PanguV2SchedulerPatch(VLLMPatch):
 
             # Check for stop and update request state.
             # This must be called before we make the EngineCoreOutput.
-            stopped = check_stop(request, self.max_model_len)
+            stopped = check_stop(
+                request,
+                self.max_model_len - num_early_skip_tokens,
+            )
             if stopped:
                 request.max_tokens = original_max_tokens
                 del new_token_ids[num_new:]  # Trim new tokens if needed.

@@ -1,11 +1,77 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 import torch
+
+
+def make_recording_event_type(records):
+    """Create a torch.npu.Event test double that appends operations to records."""
+
+    class RecordingEvent:
+        def record(self):
+            records.append("record")
+
+        def wait(self, stream):
+            records.append(("wait", stream))
+
+    return RecordingEvent
+
+
+def make_core_limit_context(records):
+    """Create a core-limit context manager that records requested limits."""
+
+    @contextmanager
+    def limit_core_num(cube, vector):
+        records.append((cube, vector))
+        yield
+
+    return limit_core_num
+
+
+def configure_multistream_npu(monkeypatch, submitted, core_limits, main_stream):
+    """Install the common NPU stream and graph-scope doubles."""
+    monkeypatch.setattr(torch.npu, "Event", make_recording_event_type(submitted))
+
+    def current_stream():
+        return main_stream
+
+    def stream(_stream):
+        return nullcontext()
+
+    monkeypatch.setattr(torch.npu, "current_stream", current_stream)
+    monkeypatch.setattr(torch.npu, "stream", stream)
+    monkeypatch.setattr(
+        torch.npu,
+        "npugraph_ex",
+        SimpleNamespace(
+            scope=SimpleNamespace(
+                limit_core_num=make_core_limit_context(core_limits)
+            )
+        ),
+    )
+
+
+def make_marked_constant(recorder, name, result):
+    """Create a test callback that records its name and returns a fixed result."""
+
+    def callback(*_args, **_kwargs):
+        return recorder(name, result)
+
+    return callback
+
+
+def make_marked_input(recorder, name):
+    """Create a test callback that records its name and returns its first input."""
+
+    def callback(value, *_args, **_kwargs):
+        return recorder(name, value)
+
+    return callback
 
 
 def run_mome_out_partition_case(

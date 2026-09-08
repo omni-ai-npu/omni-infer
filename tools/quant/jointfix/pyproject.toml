@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jointfix"
+version = "0.0.1"
+description = "Multi-model, pluggable-method INT8 quantization toolkit (jointfix + GPTQ, joint (a,b) search, output reconstruction)."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.1",
+    "safetensors>=0.4",
+    "transformers>=4.40",
+    "numpy",
+    "pandas",
+    "pyarrow",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+multimodal = [
+    "pillow>=9",
+    "soundfile>=0.12",
+    "librosa>=0.10",
+]
+
+[project.scripts]
+jointfix = "jointfix.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jointfix*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

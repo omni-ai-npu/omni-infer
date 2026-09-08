@@ -411,6 +411,31 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         self.assertEqual(result.prefill.sink_len, 128)
         self.assertEqual(result.prefill.query_cumlens, [3])
         self.assertEqual(result.prefill.seq_lens, [128])
+        self.assertEqual(result.prefill.query_cumlens_list, [3])
+        self.assertEqual(result.prefill.seq_lens_list, [128])
+
+    def test_builder_build_mixed_batch_uses_prefill_cpu_lists(self):
+        builder, mla_mod = self._new_builder_for_current_build()
+        common_attn_metadata = self._make_common_for_current_build(
+            seq_lens=[1, 3, 5],
+            query_start_loc=[0, 1, 4, 9],
+        )
+
+        with patch.object(
+            mla_mod,
+            "split_decodes_and_prefills",
+            return_value=(1, 2, 1, 8),
+        ):
+            result = builder.build(
+                common_prefix_len=0,
+                common_attn_metadata=common_attn_metadata,
+                fast_build=False,
+            )
+
+        self.assertEqual(result.prefill.query_cumlens, [3, 8])
+        self.assertEqual(result.prefill.seq_lens, [3, 5])
+        self.assertEqual(result.prefill.query_cumlens_list, [3, 8])
+        self.assertEqual(result.prefill.seq_lens_list, [3, 5])
 
     def test_builder_attaches_sp_manager_when_swa_seq_parallel_enabled(self):
         """Prefill metadata stores SPManager when ena_swa_attn_seq_parallel is on."""
@@ -448,14 +473,16 @@ class TestNPUAttentionBackendMLANpuMlaImpl(unittest.TestCase):
         fake_sp.init_sp_attn.assert_called_once()
         self.assertIs(result.prefill.sp_manager, fake_sp)
 
-    def test_builder_uses_seq_lens_cpu_upper_bound_without_legacy_shadow(self):
+    def test_builder_uses_exact_and_upper_bound_cpu_lengths(self):
         with torch.device("cpu"):
             builder, mla_mod = self._new_builder_for_current_build()
             common_attn_metadata = self._make_common_for_current_build(
                 seq_lens=[3],
                 query_start_loc=[0, 3],
-                seq_lens_cpu=object(),
-                seq_lens_cpu_upper_bound=torch.tensor([3], dtype=torch.int32),
+                seq_lens_cpu=torch.tensor([3], dtype=torch.int32),
+                seq_lens_cpu_upper_bound=torch.tensor(
+                    [3], dtype=torch.int32
+                ),
             )
 
             with patch.object(

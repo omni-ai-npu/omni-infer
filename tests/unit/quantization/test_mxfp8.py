@@ -25,7 +25,11 @@ import torch
 _E8M0_SENTINEL = object()
 
 
-def _mock_npu_dynamic_mx_quant(x, dst_type=None):
+def _second_argument(_key, value):
+    return value
+
+
+def _mock_npu_dynamic_mx_quant(x, dst_type=None, scale_alg=None):
     m, k = x.shape[-2], x.shape[-1]
     x_fp8 = torch.zeros(*x.shape, dtype=torch.int8)
     x_scale = torch.zeros(m, k // 32, dtype=torch.uint8)
@@ -50,7 +54,13 @@ def _mock_npu_grouped_matmul(xs, ws, **kwargs):
     return [torch.zeros(m, n, dtype=out_dtype)]
 
 
-def _mock_npu_swiglu_mx_quant(gate_up, group_index=None, activate_left=True, dst_type=None):
+def _mock_npu_swiglu_mx_quant(
+    gate_up,
+    group_index=None,
+    activate_left=True,
+    dst_type=None,
+    scale_alg=None,
+):
     m, two_n = gate_up.shape
     n = two_n // 2
     intermediate = torch.zeros(m, n, dtype=torch.int8)
@@ -501,14 +511,22 @@ class TestMxfp8FCLinearMethod:
         assert fc_layer_created.weight_scale.shape == (128 // 64, 128, 2)
 
     def test_apply_raw_tensor_path(
-        self, mock_torch_npu, fc_linear_method, fc_layer_created
+        self, monkeypatch, mock_torch_npu, fc_linear_method, fc_layer_created
     ):
         fc_linear_method.process_weights_after_loading(fc_layer_created)
+        fc_layer_created.prefix = "layers.0.self_attn.o_proj"
+        cube_side_run = MagicMock(side_effect=_second_argument)
+        cube_side_wait = MagicMock(side_effect=_second_argument)
+        monkeypatch.setattr(torch.ops.vllm, "cube_side_run", cube_side_run)
+        monkeypatch.setattr(torch.ops.vllm, "cube_side_wait", cube_side_wait)
         x = torch.zeros(4, 128, dtype=torch.bfloat16)
         out = fc_linear_method.apply(fc_layer_created, x)
         assert out.shape == (4, 128)
         mock_torch_npu.npu_dynamic_mx_quant.assert_called_once()
         mock_torch_npu.npu_quant_matmul.assert_called_once()
+        cube_side_run.assert_called_once()
+        cube_side_wait.assert_called_once_with(fc_layer_created.prefix, out)
+        assert cube_side_run.call_args.args[0] == fc_layer_created.prefix
 
     def test_apply_prequantised_dict_skips_dynamic_quant(
         self, mock_torch_npu, fc_linear_method, fc_layer_created
@@ -584,7 +602,9 @@ class TestMxfp8MlpMethod:
         x_fp8, x_scale = mlp_method.apply_quant(x)
         assert x_fp8.shape == (4, 128)
         assert x_scale.shape == (4, 128 // 32)
-        mock_torch_npu.npu_dynamic_mx_quant.assert_called_once()
+        mock_torch_npu.npu_dynamic_mx_quant.assert_called_once_with(
+            x, dst_type=torch.float8_e4m3fn, scale_alg=1
+        )
 
     def test_apply_part1_gate_up(self, mlp_method):
         layer = _MockMLPLayer(hidden=128, inter=256)
@@ -595,13 +615,19 @@ class TestMxfp8MlpMethod:
         out = mlp_method.apply_part1_gate_up_on_stream(layer, x)
         assert out.shape == (4, 512)  # inter * 2
 
-    def test_apply_part2_activation(self, mlp_method):
+    def test_apply_part2_activation(self, mock_torch_npu, mlp_method):
         layer = _MockMLPLayer()
         gate_up = torch.zeros(4, 512, dtype=torch.bfloat16)
         out = mlp_method.apply_part2_activation_on_stream(layer, gate_up)
         assert isinstance(out, dict)
         assert "x_mxfp8" in out
         assert out["x_mxfp8"].shape == (4, 256)
+        mock_torch_npu.npu_swiglu_mx_quant.assert_called_once_with(
+            gate_up,
+            activate_left=True,
+            dst_type=torch.float8_e4m3fn,
+            scale_alg=1,
+        )
 
     def test_apply_part3_down(self, mlp_method):
         layer = _MockMLPLayer(hidden=128, inter=256)
@@ -750,6 +776,315 @@ class TestMxfp8MoEMethod:
         layer.ensure_moe_quant_config_init.assert_called_once()
 
 
+# --------------------------------------------------------------------------- #
+# veRL repeated weight loading regression tests
+# --------------------------------------------------------------------------- #
+
+
+def _pattern(shape, dtype, offset):
+    """Return deterministic integer data supported by the CPU FP8 stub."""
+    values = torch.arange(torch.Size(shape).numel(), dtype=torch.int64)
+    return ((values + offset) % 97).reshape(shape).to(dtype)
+
+
+def _copy_weight_loader(param, loaded_weight, *args, **kwargs):
+    """Minimal vLLM-style loader: copy into the exposed checkpoint layout."""
+    assert param.data.shape == loaded_weight.shape
+    param.data.copy_(loaded_weight)
+
+
+def _flashcomm_copy_weight_loader(param, loaded_weight, *args, **kwargs):
+    """Mirror the transpose protocol used by FlashComm linear loaders."""
+    is_weight_transposed = getattr(param, "is_weight_transposed", False)
+    if is_weight_transposed:
+        param.data = param.data.t_()
+    try:
+        assert param.data.shape == loaded_weight.shape
+        param.data.copy_(loaded_weight)
+    finally:
+        if is_weight_transposed:
+            param.data = param.data.t_()
+
+
+def _create_linear_for_reload(method, weight_loader, output_size=64,
+                              input_size=128):
+    layer = torch.nn.Module()
+    method.create_weights(
+        layer,
+        input_size_per_partition=input_size,
+        output_partition_sizes=[output_size],
+        input_size=input_size,
+        output_size=output_size,
+        params_dtype=torch.bfloat16,
+        weight_loader=weight_loader,
+    )
+    return layer
+
+
+def _load_linear_checkpoint(layer, weight, scale):
+    layer.weight.weight_loader(layer.weight, weight)
+    layer.weight_scale.weight_loader(layer.weight_scale, scale)
+
+
+def _assert_reload_matches_fresh(method, weight_loader):
+    output_size, input_size = 64, 128
+    weight_a = _pattern((output_size, input_size), torch.float8_e4m3fn, 3)
+    scale_a = _pattern((output_size, input_size // 32), torch.uint8, 5)
+    weight_b = _pattern((output_size, input_size), torch.float8_e4m3fn, 41)
+    scale_b = _pattern((output_size, input_size // 32), torch.uint8, 53)
+
+    reloaded = _create_linear_for_reload(method, weight_loader)
+    _load_linear_checkpoint(reloaded, weight_a, scale_a)
+    method.process_weights_after_loading(reloaded)
+
+    weight_param_id = id(reloaded.weight)
+    scale_param_id = id(reloaded.weight_scale)
+    weight_data_ptr = reloaded.weight.data_ptr()
+    scale_data_ptr = reloaded.weight_scale.data_ptr()
+
+    _load_linear_checkpoint(reloaded, weight_b, scale_b)
+    # veRL invokes model post-load hooks after updating weights. Packed MXFP8
+    # parameters must not be transformed a second time.
+    method.process_weights_after_loading(reloaded)
+
+    fresh = _create_linear_for_reload(method, weight_loader)
+    _load_linear_checkpoint(fresh, weight_b, scale_b)
+    method.process_weights_after_loading(fresh)
+
+    assert torch.equal(reloaded.weight, fresh.weight)
+    assert torch.equal(reloaded.weight_scale, fresh.weight_scale)
+    assert reloaded.weight.shape == (input_size, output_size)
+    assert reloaded.weight_scale.shape == (input_size // 64, output_size, 2)
+    assert id(reloaded.weight) == weight_param_id
+    assert id(reloaded.weight_scale) == scale_param_id
+    assert reloaded.weight.data_ptr() == weight_data_ptr
+    assert reloaded.weight_scale.data_ptr() == scale_data_ptr
+
+
+class TestMxfp8Reload:
+    def test_replicated_linear_reload_matches_fresh_load(
+        self, mxfp8_module
+    ):
+        method = mxfp8_module.Mxfp8LinearMethod(mxfp8_module.Mxfp8Config())
+        _assert_reload_matches_fresh(method, _copy_weight_loader)
+
+    def test_flashcomm_linear_reload_matches_fresh_load(
+        self, mxfp8_module
+    ):
+        method = mxfp8_module.Mxfp8FCLinearMethod(mxfp8_module.Mxfp8Config())
+        _assert_reload_matches_fresh(method, _flashcomm_copy_weight_loader)
+
+    def test_merged_column_reload_matches_fresh_load(self, mxfp8_module):
+        output_sizes = (32, 32)
+
+        def merged_loader(param, loaded_weight, shard_id):
+            is_transposed = getattr(param, "is_weight_transposed", False)
+            if is_transposed:
+                param.data = param.data.t_()
+            try:
+                offset = sum(output_sizes[:shard_id])
+                target = param.data.narrow(0, offset, output_sizes[shard_id])
+                assert target.shape == loaded_weight.shape
+                target.copy_(loaded_weight)
+            finally:
+                if is_transposed:
+                    param.data = param.data.t_()
+
+        method = mxfp8_module.Mxfp8FCLinearMethod(mxfp8_module.Mxfp8Config())
+
+        def create_layer():
+            layer = torch.nn.Module()
+            method.create_weights(
+                layer,
+                input_size_per_partition=128,
+                output_partition_sizes=list(output_sizes),
+                input_size=128,
+                output_size=sum(output_sizes),
+                params_dtype=torch.bfloat16,
+                weight_loader=merged_loader,
+            )
+            return layer
+
+        def checkpoint(offset):
+            weights = [
+                _pattern((size, 128), torch.float8_e4m3fn, offset + shard)
+                for shard, size in enumerate(output_sizes)
+            ]
+            scales = [
+                _pattern((size, 4), torch.uint8, offset + 10 + shard)
+                for shard, size in enumerate(output_sizes)
+            ]
+            return weights, scales
+
+        def load(layer, values):
+            weights, scales = values
+            for shard_id, (weight, scale) in enumerate(zip(weights, scales)):
+                layer.weight.weight_loader(layer.weight, weight, shard_id)
+                layer.weight_scale.weight_loader(
+                    layer.weight_scale, scale, shard_id,
+                )
+
+        reloaded = create_layer()
+        load(reloaded, checkpoint(3))
+        method.process_weights_after_loading(reloaded)
+        weight_ptr = reloaded.weight.data_ptr()
+        scale_ptr = reloaded.weight_scale.data_ptr()
+        load(reloaded, checkpoint(47))
+        method.process_weights_after_loading(reloaded)
+
+        fresh = create_layer()
+        load(fresh, checkpoint(47))
+        method.process_weights_after_loading(fresh)
+
+        assert torch.equal(reloaded.weight, fresh.weight)
+        assert torch.equal(reloaded.weight_scale, fresh.weight_scale)
+        assert reloaded.weight.data_ptr() == weight_ptr
+        assert reloaded.weight_scale.data_ptr() == scale_ptr
+
+    def test_row_parallel_tp_shard_reload_matches_fresh_load(
+        self, mxfp8_module
+    ):
+        tp_rank = 1
+
+        def row_loader(param, loaded_weight):
+            is_transposed = getattr(param, "is_weight_transposed", False)
+            if is_transposed:
+                param.data = param.data.t_()
+            try:
+                local_size = param.data.shape[1]
+                start = tp_rank * local_size
+                loaded_shard = loaded_weight.narrow(1, start, local_size)
+                assert param.data.shape == loaded_shard.shape
+                param.data.copy_(loaded_shard)
+            finally:
+                if is_transposed:
+                    param.data = param.data.t_()
+
+        method = mxfp8_module.Mxfp8FCLinearMethod(mxfp8_module.Mxfp8Config())
+
+        def checkpoint(offset):
+            return (
+                _pattern((64, 256), torch.float8_e4m3fn, offset),
+                _pattern((64, 8), torch.uint8, offset + 11),
+            )
+
+        reloaded = _create_linear_for_reload(method, row_loader)
+        _load_linear_checkpoint(reloaded, *checkpoint(2))
+        method.process_weights_after_loading(reloaded)
+        weight_ptr = reloaded.weight.data_ptr()
+        scale_ptr = reloaded.weight_scale.data_ptr()
+        _load_linear_checkpoint(reloaded, *checkpoint(37))
+        method.process_weights_after_loading(reloaded)
+
+        fresh = _create_linear_for_reload(method, row_loader)
+        _load_linear_checkpoint(fresh, *checkpoint(37))
+        method.process_weights_after_loading(fresh)
+
+        assert torch.equal(reloaded.weight, fresh.weight)
+        assert torch.equal(reloaded.weight_scale, fresh.weight_scale)
+        assert reloaded.weight.data_ptr() == weight_ptr
+        assert reloaded.weight_scale.data_ptr() == scale_ptr
+
+    def test_moe_expert_weight_and_scale_reload_matches_fresh_load(
+        self, moe_method
+    ):
+        num_experts, hidden_size, intermediate_size = 2, 128, 64
+
+        def expert_loader(param, loaded_weight, weight_name, shard_id,
+                          expert_id, return_success=False):
+            is_transposed = getattr(param, "is_weight_transposed", False)
+            if is_transposed:
+                param.data = param.data.transpose(1, 2)
+            try:
+                target = param.data[expert_id]
+                if "w13" in weight_name:
+                    shard_size = target.shape[0] // 2
+                    target = target.narrow(0, shard_id * shard_size, shard_size)
+                assert target.shape == loaded_weight.shape
+                target.copy_(loaded_weight)
+            finally:
+                if is_transposed:
+                    param.data = param.data.transpose(1, 2)
+            return True if return_success else None
+
+        def create_layer():
+            layer = torch.nn.Module()
+            layer.moe_config = SimpleNamespace()
+            moe_method.create_weights(
+                layer,
+                num_experts=num_experts,
+                hidden_size=hidden_size,
+                intermediate_size_per_partition=intermediate_size,
+                params_dtype=torch.bfloat16,
+                weight_loader=expert_loader,
+            )
+            layer.ensure_moe_quant_config_init = MagicMock()
+            return layer
+
+        def checkpoint(offset):
+            result = []
+            for expert_id in range(num_experts):
+                expert_offset = offset + expert_id * 7
+                result.append((
+                    _pattern((intermediate_size, hidden_size),
+                             torch.float8_e4m3fn, expert_offset),
+                    _pattern((intermediate_size, hidden_size // 32),
+                             torch.uint8, expert_offset + 1),
+                    _pattern((intermediate_size, hidden_size),
+                             torch.float8_e4m3fn, expert_offset + 2),
+                    _pattern((intermediate_size, hidden_size // 32),
+                             torch.uint8, expert_offset + 3),
+                    _pattern((hidden_size, intermediate_size),
+                             torch.float8_e4m3fn, expert_offset + 4),
+                    _pattern((hidden_size, intermediate_size // 32),
+                             torch.uint8, expert_offset + 5),
+                ))
+            return result
+
+        def load(layer, values):
+            for expert_id, (gate, gate_scale, up, up_scale,
+                            down, down_scale) in enumerate(values):
+                for param, loaded, name, shard_id in (
+                    (layer.w13_weight, gate, "w13_weight", 0),
+                    (layer.w13_weight_scale, gate_scale,
+                     "w13_weight_scale", 0),
+                    (layer.w13_weight, up, "w13_weight", 1),
+                    (layer.w13_weight_scale, up_scale,
+                     "w13_weight_scale", 1),
+                    (layer.w2_weight, down, "w2_weight", 0),
+                    (layer.w2_weight_scale, down_scale,
+                     "w2_weight_scale", 0),
+                ):
+                    assert param.weight_loader(
+                        param, loaded, name, shard_id=shard_id,
+                        expert_id=expert_id, return_success=True,
+                    )
+
+        reloaded = create_layer()
+        load(reloaded, checkpoint(4))
+        moe_method.process_weights_after_loading(reloaded)
+        names = (
+            "w13_weight", "w2_weight", "w13_weight_scale", "w2_weight_scale",
+        )
+        param_ids = {name: id(getattr(reloaded, name)) for name in names}
+        data_ptrs = {
+            name: getattr(reloaded, name).data_ptr() for name in names
+        }
+
+        load(reloaded, checkpoint(43))
+        moe_method.process_weights_after_loading(reloaded)
+
+        fresh = create_layer()
+        load(fresh, checkpoint(43))
+        moe_method.process_weights_after_loading(fresh)
+
+        for name in names:
+            reloaded_param = getattr(reloaded, name)
+            assert torch.equal(reloaded_param, getattr(fresh, name))
+            assert id(reloaded_param) == param_ids[name]
+            assert reloaded_param.data_ptr() == data_ptrs[name]
+
+
 class TestMxfp8MoEMethodApplyExperts:
     """Covers the ``apply_experts`` hot path without routing scaffolding."""
 
@@ -793,6 +1128,8 @@ class TestMxfp8MoEMethodApplyExperts:
         # Two grouped matmuls + one swiglu
         assert mock_torch_npu.npu_grouped_matmul.call_count == 2
         mock_torch_npu.npu_swiglu_mx_quant.assert_called_once()
+        _, kwargs = mock_torch_npu.npu_swiglu_mx_quant.call_args
+        assert kwargs["scale_alg"] == 1
 
     def test_apply_experts_dynamic_scale_none_triggers_quant(
         self, mock_torch_npu, moe_method
@@ -803,6 +1140,8 @@ class TestMxfp8MoEMethodApplyExperts:
         )
         assert result.shape == (8, 128)
         mock_torch_npu.npu_dynamic_mx_quant.assert_called_once()
+        _, kwargs = mock_torch_npu.npu_dynamic_mx_quant.call_args
+        assert kwargs["scale_alg"] == 1
 
     def test_apply_experts_flattens_3d_input(self, mock_torch_npu, moe_method):
         layer = self._build_layer(moe_method)

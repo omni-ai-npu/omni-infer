@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
+from collections.abc import Callable
+
 import torch
 import torch_npu
 from torch import nn
@@ -180,9 +182,21 @@ class MomeAttentionMixin:
         kwargs["sink_len"] = self.param_sink_number
         return kwargs
 
-    def _apply_mome(self, x: torch.Tensor, state_indice, get_mome_args):
+    def _apply_mome(
+        self,
+        x: torch.Tensor,
+        state_indice,
+        get_mome_args,
+        inplace: bool = False,
+    ):
         if self.noncontiguous_kv:
-            return self.conv(x, state_indice, **get_mome_args())
+            return self.conv(
+                x,
+                state_indice,
+                inplace=inplace,
+                **get_mome_args(),
+            )
+        assert not inplace, "inplace MoME requires noncontiguous KV"
         conv = [self.qa_conv, self.compresskv_conv, self.o_conv]
         return x + conv[state_indice](x, **get_mome_args())
 
@@ -192,6 +206,17 @@ class MomeAttentionMixin:
     def _maybe_mome_kv(self, kv: torch.Tensor, get_mome_args):
         if self.use_mome:
             L, R = self.kv_lora_rank, self.qk_rope_head_dim
+            if (
+                self.noncontiguous_kv
+                and getattr(self, "use_mome_inplace_update", False)
+            ):
+                self._apply_mome(
+                    kv[:, :L],
+                    1,
+                    get_mome_args,
+                    inplace=True,
+                )
+                return kv
             kv_c, k_pe = kv.split([L, R], dim=-1)
             kv_c = self._apply_mome(kv_c, 1, get_mome_args)
             kv = torch.cat([kv_c, k_pe], dim=-1)
@@ -263,6 +288,21 @@ class MomeAttentionMixin:
                 out = out[self.o_proj.tp_rank].contiguous()
         return out
 
+    def _project_and_split_q(
+        self,
+        q_lora: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run the combined Q-up projection and split its Nope/RoPE parts."""
+        q = self.q_b_proj(q_lora)[0].view(
+            -1, self.num_local_heads, self.qk_head_dim
+        )
+        q_nope, q_pe = torch.split(
+            q,
+            [self.qk_nope_head_dim, self.qk_rope_head_dim],
+            dim=-1,
+        )
+        return q_nope.contiguous(), q_pe.contiguous()
+
     def _decode_attn_epilog(self, out: torch.Tensor, get_mome_args) -> torch.Tensor:
         """Deferred callback, absorb/MoME epilog, and the output projection."""
         self._run_pre_epilog_callback()
@@ -329,7 +369,7 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
             model_extra_config.operator_opt_config.enable_prefill_mla_absorb_pa
             or self.enable_chunked_prefill
             or self.enable_prefix_caching
-        ) and not (self.param_sink_number > 0 and self.on_ascend950)
+        )
         self.use_mome = getattr(config, "use_mome", False)
         self.noncontiguous_kv = model_extra_config.operator_opt_config.use_noncontiguous_kv
         self.enable_decode_multi_stream = model_extra_config.operator_opt_config.enable_multi_stream
@@ -337,6 +377,7 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
             self.enable_decode_multi_stream
             and model_extra_config.operator_opt_config.split_q_up_in_multistream
         )
+        self.use_mome_inplace_update = model_extra_config.operator_opt_config.use_mome_inplace_update
         self.num_spec_tokens = (
             vllm_config.speculative_config.num_speculative_tokens if vllm_config.speculative_config is not None else 0
         )
@@ -526,12 +567,19 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         compilation_config.static_forward_context[prefix] = self
 
         self.post_weight_load()
-        self.side_stream = (
-            named_stream(SIDE_STREAM_NAME)
-            if self.enable_decode_multi_stream
+        self.side_stream = named_stream(SIDE_STREAM_NAME) if self.enable_decode_multi_stream else None
+        self.pre_epilog_callback = None
+
+        self.enable_a5_multistream = (
+            self.enable_decode_multi_stream
+            and self.on_ascend950
+            and self.dtype == torch.bfloat16
+        )
+        self.mla_kv_stream = (
+            named_stream("mla_kv_stream")
+            if self.enable_a5_multistream
             else None
         )
-        self.pre_epilog_callback = None
 
     @staticmethod
     def _to_metadata_pre_tokens(sliding_window: int | None) -> int:
@@ -677,16 +725,20 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
             q = self.q_b_proj(q_lora)[0].view(tok, -1, Q + R)  # TND
             q_nope, q_pe = torch.split(q, [Q, R], dim=-1)  # TND
         q_pe = self._apply_rope(q_pe, cos, sin)  # TND
+        q_nope = self._q_nope_absorb(q_nope)
+        return q_nope, q_pe  # TND, TND
+
+    def _q_nope_absorb(self, q_nope: torch.Tensor) -> torch.Tensor:
+        """Project the non-RoPE query into the latent-KV space."""
         if q_nope.size(1) * q_nope.size(2) < 65536:
             args = {"input": q_nope, "perm_x1": (1, 0, 2)}
-        else:  # perm_x1 only support batch*k < 65536
+        else:  # perm_x1 only supports batch*k < 65536
             args = {"input": q_nope.transpose(0, 1)}
-        q_nope = torch_npu.npu_transpose_batchmatmul(
+        return torch_npu.npu_transpose_batchmatmul(
             **args,  # TND -> NTD
             weight=self.attn.impl.W_UK_T,  # [Q, L]
             perm_y=(1, 0, 2),  # NTD -> TND
         )
-        return q_nope, q_pe  # TND, TND
 
     def _kv_norm_rope_cache(
         self,
@@ -996,6 +1048,8 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         seq_lens,
         block_table: torch.Tensor | None,
         kv_cache: tuple[torch.Tensor] | None,
+        q_cumlens_list: list[int] | None = None,
+        seq_lens_list: list[int] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, list[int] | torch.Tensor | None]:
         if any(x is None for x in (q_cumlens, seq_lens, block_table, kv_cache)):
             return kv_a, k_pe, q_cumlens
@@ -1005,8 +1059,12 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
             "A5 chunked prefill with noncontiguous KV is only supported for SWA layers"
         )
 
-        q_cumlens_list = self._as_cumlens_list(q_cumlens)
-        seq_lens_list = self._as_cumlens_list(seq_lens)
+        # New metadata supplies CPU lists, avoiding a device-to-host sync in
+        # every layer. Keep a fallback for legacy metadata/direct callers.
+        if q_cumlens_list is None:
+            q_cumlens_list = self._as_cumlens_list(q_cumlens)
+        if seq_lens_list is None:
+            seq_lens_list = self._as_cumlens_list(seq_lens)
         if not q_cumlens_list or not seq_lens_list:
             return kv_a, k_pe, q_cumlens
 
@@ -1630,9 +1688,6 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         pd_mixed_flag: int = 0,
     ) -> torch.Tensor:
         assert attn_metadata is not None
-        if self.side_stream is not None:
-            return self._forward_decode_multistream(x, cos, sin, attn_metadata, pd_mixed_flag)
-
         kv_cache = self.attn.kv_cache
 
         def get_mome_args():
@@ -1643,6 +1698,15 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
                     "force_decode": True if pd_mixed_flag == 1 else False,
                     "short_prefill": True if pd_mixed_flag == 2 else False,
                 }
+
+        if self.side_stream is not None:
+            if self.enable_a5_multistream:
+                return self._forward_decode_multistream_a5(
+                    x, cos, sin, attn_metadata, kv_cache, get_mome_args
+                )
+            return self._forward_decode_multistream(
+                x, cos, sin, attn_metadata, kv_cache, get_mome_args
+            )
 
         x = self._maybe_quant(x)
 
@@ -1663,19 +1727,10 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         attn_metadata: "NPUMLADecodeMetadata",
-        pd_mixed_flag: int = 0,
+        kv_cache: tuple[torch.Tensor] | None,  # None for dummy_run
+        get_mome_args: Callable[[], dict[str, bool]],
     ) -> torch.Tensor:
         """Overlap the decode Q path with KV/MoME/cache update on a side stream."""
-        kv_cache = self.attn.kv_cache
-
-        def get_mome_args():
-            if self.noncontiguous_kv:
-                return {}
-            return {
-                "force_decode": pd_mixed_flag == 1,
-                "short_prefill": pd_mixed_flag == 2,
-            }
-
         x = self._maybe_quant(x)
         main_stream = torch.npu.current_stream()
         side_stream = self.side_stream
@@ -1703,16 +1758,7 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
                     -1, self.num_local_heads, self.qk_nope_head_dim
                 )
             else:
-                q = self.q_b_proj(q_lora)[0].view(
-                    -1, self.num_local_heads, self.qk_head_dim
-                )
-                q_nope, q_pe = torch.split(
-                    q,
-                    [self.qk_nope_head_dim, self.qk_rope_head_dim],
-                    dim=-1,
-                )
-                q_nope = q_nope.contiguous()
-                q_pe = q_pe.contiguous()
+                q_nope, q_pe = self._project_and_split_q(q_lora)
                 q_pe_ready = torch.npu.Event()
                 q_pe_ready.record()
                 q_pe.record_stream(side_stream)
@@ -1749,6 +1795,93 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         q_pe.record_stream(main_stream)
         return self._decode_attention(q_nope, q_pe, kv_cache, attn_metadata, get_mome_args)
 
+    def _forward_decode_multistream_a5(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        attn_metadata: "NPUMLADecodeMetadata",
+        kv_cache: tuple[torch.Tensor] | None,  # None for dummy_run
+        get_mome_args: Callable[[], dict[str, bool]],
+    ) -> torch.Tensor:
+        """Run the A5 SWA prolog on Q, KV, and KV-cache streams."""
+        assert self.on_ascend950
+        assert self.mla_kv_stream is not None
+
+        x = self._maybe_quant(x)
+        main_stream = torch.npu.current_stream()
+        side_stream = self.side_stream
+        kv_stream = self.mla_kv_stream
+
+        input_ready = torch.npu.Event()
+        q_side_ready = torch.npu.Event()
+        kv_mome_ready = torch.npu.Event()
+        side_done = torch.npu.Event()
+        kv_cache_done = torch.npu.Event()
+
+        input_ready.record()
+        if isinstance(x, dict):
+            for value in x.values():
+                if isinstance(value, torch.Tensor):
+                    value.record_stream(side_stream)
+        else:
+            x.record_stream(side_stream)
+        for stream in (side_stream, kv_stream):
+            cos.record_stream(stream)
+            sin.record_stream(stream)
+
+        with torch.npu.npugraph_ex.scope.limit_core_num(24, 32):
+            q_lora = self.q_a_proj(x)[0]
+            q_lora = self._maybe_mome_q(q_lora, get_mome_args)
+            q_lora = self.q_a_layernorm(q_lora)
+
+        if self.split_q_up_in_multistream:
+            q_side_ready.record()
+            q_lora.record_stream(side_stream)
+            with torch.npu.npugraph_ex.scope.limit_core_num(24, 16):
+                q_nope = self.q_b_nope_proj(q_lora)[0].view(
+                    -1, self.num_local_heads, self.qk_nope_head_dim
+                )
+                q_nope = self._q_nope_absorb(q_nope)
+        else:
+            with torch.npu.npugraph_ex.scope.limit_core_num(24, 32):
+                q_nope, q_pe = self._project_and_split_q(q_lora)
+                q_pe.record_stream(side_stream)
+                q_side_ready.record()
+                q_nope = self._q_nope_absorb(q_nope)
+
+        with torch.npu.stream(side_stream):
+            input_ready.wait(side_stream)
+            with torch.npu.npugraph_ex.scope.limit_core_num(8, 32):
+                kv = self.kv_a_proj_with_mqa(x)[0]
+                kv = self._maybe_mome_kv(kv, get_mome_args)
+            kv.record_stream(kv_stream)
+            kv_mome_ready.record()
+
+            q_side_ready.wait(side_stream)
+            with torch.npu.npugraph_ex.scope.limit_core_num(8, 16):
+                if self.split_q_up_in_multistream:
+                    q_pe = self.q_b_pe_proj(q_lora)[0].view(
+                        -1, self.num_local_heads, self.qk_rope_head_dim
+                    )
+                q_pe = self._apply_rope(q_pe, cos, sin)
+            side_done.record()
+
+        with torch.npu.stream(kv_stream):
+            kv_mome_ready.wait(kv_stream)
+            with torch.npu.npugraph_ex.scope.limit_core_num(8, 32):
+                self._kv_norm_rope_cache(
+                    kv, cos, sin, attn_metadata, kv_cache
+                )
+            kv_cache_done.record()
+
+        side_done.wait(main_stream)
+        kv_cache_done.wait(main_stream)
+        q_pe.record_stream(main_stream)
+        return self._decode_attention(
+            q_nope, q_pe, kv_cache, attn_metadata, get_mome_args
+        )
+
     def _forward_prefill(
         self,
         x: torch.Tensor,
@@ -1766,7 +1899,7 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         if not self.ena_sp:
             x = self._maybe_quant(x)
         use_prefill_absorb = self.mla_absorb
-        if use_prefill_absorb:
+        if use_prefill_absorb and (not self.on_ascend950 or self.sliding_window is None):
             return self._forward_prefill_absorb_pa(x, cos, sin, get_mome_args, attn_metadata)
         return self._forward_prefill_standard(x, cos, sin, get_mome_args, attn_metadata)
 
@@ -1842,11 +1975,14 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         if attn_metadata:
             q_cumlens = kv_cumlens = attn_metadata.query_cumlens
             kv_cache = self.attn.kv_cache
+            q_cumlens_list = getattr(attn_metadata, "query_cumlens_list", None)
+            seq_lens_list = getattr(attn_metadata, "seq_lens_list", None)
             block_table = getattr(attn_metadata, "block_table", None)
             seq_lens = getattr(attn_metadata, "seq_lens", None)
         else:  # dummy_run
             q_cumlens, kv_cumlens, kv_cache = None, None, None
             block_table, seq_lens = None, None
+            q_cumlens_list, seq_lens_list = None, None
         sink_k_nope, sink_k_pe, sink_v = None, None, None
 
         q = self.q_a_proj(x)[0]  # TD
@@ -1874,7 +2010,14 @@ class NPUDeepseekMLAAttention(MomeAttentionMixin, torch.nn.Module):
         kv_a, k_pe = self._kv_norm_rope_cache(kv, cos, sin, attn_metadata, kv_cache)  # T1D
         kv_a, k_pe = kv_a.squeeze(1), k_pe.squeeze(1)  # TD
         kv_a, k_pe, kv_cumlens = self._prepend_chunked_prefill_context(
-            kv_a, k_pe, q_cumlens, seq_lens, block_table, kv_cache
+            kv_a,
+            k_pe,
+            q_cumlens,
+            seq_lens,
+            block_table,
+            kv_cache,
+            q_cumlens_list,
+            seq_lens_list,
         )
 
         if self.param_sink_number > 0:

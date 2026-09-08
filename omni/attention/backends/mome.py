@@ -103,6 +103,7 @@ class NPUMomeAttentionMetadata:
     query_start_loc: torch.Tensor  # shape: [batch + 1,]
     cache_indices: torch.Tensor  # shape: [batch,] or [batch, max_num_blocks]
     max_query_len: int = 1
+    num_actual_tokens: int = 1
     pad_slot_id: int = PAD_SLOT_ID
     B_size: int = 1  # Mome block size (kv_cache_spec.block_size)
 
@@ -531,12 +532,15 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                 ]
 
         max_query_len = common_attn_metadata.max_query_len
+        query_start_loc_cpu = common_attn_metadata.query_start_loc_cpu
+        num_actual_tokens = int(query_start_loc_cpu[-1].item())
 
         attn_metadata = NPUMomeAttentionMetadata(
             num_prefills=num_prefills,
             num_prefill_tokens=num_prefill_tokens,
             num_decodes=num_decodes,
             num_decode_tokens=num_decode_tokens,
+            num_actual_tokens=num_actual_tokens,
             query_start_loc=common_attn_metadata.query_start_loc,
             cache_indices=cache_indices,
             max_query_len=max_query_len,
@@ -556,6 +560,12 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             prefill_query_start_loc = (
                 common_attn_metadata.query_start_loc[num_decodes:] - common_attn_metadata.query_start_loc[num_decodes]
             )
+            prefill_num_actual_tokens = int(
+                (
+                    query_start_loc_cpu[-1]
+                    - query_start_loc_cpu[num_decodes]
+                ).item()
+            )
             attn_metadata.prefill = NPUMomeAttentionMetadata(
                 num_prefills=num_prefills,
                 num_prefill_tokens=num_prefill_tokens,
@@ -563,6 +573,7 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                 num_decode_tokens=0,
                 num_reqs=num_prefills,
                 query_start_loc=prefill_query_start_loc,
+                num_actual_tokens=prefill_num_actual_tokens,
                 cache_indices=cache_indices[num_decodes:],
                 max_query_len=max_query_len,
                 pad_slot_id=PAD_SLOT_ID,
@@ -581,11 +592,15 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                     cache_indices,
                 )
         else:
+            decode_num_actual_tokens = int(
+                query_start_loc_cpu[num_decodes].item()
+            )
             attn_metadata.decode = NPUMomeAttentionMetadata(
                 num_prefills=0,
                 num_prefill_tokens=0,
                 num_decodes=num_decodes,
                 num_decode_tokens=num_decode_tokens,
+                num_actual_tokens=decode_num_actual_tokens,
                 num_reqs=num_decodes,
                 query_start_loc=common_attn_metadata.query_start_loc[: num_decodes + 1],
                 cache_indices=cache_indices[:num_decodes],

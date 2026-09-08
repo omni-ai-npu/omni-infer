@@ -20,13 +20,18 @@ def use_hifloat8_w8a8(self) -> bool:
 
 
 def use_mxfp8_w8a8(self) -> bool:
-    return self.quant_dtype == "mxfp8"
+    return self.quant_dtype == "mxfp8" and self._w1.dtype == "mxfp8"
+
+
+def use_mxfp4_w4a8(self) -> bool:
+    return self.quant_dtype == "mxfp8" and self._w1.dtype == "mxfp4"
 
 
 FusedMoEQuantConfig.use_int4_w4a8 = property(use_int4_w4a8)
 FusedMoEQuantConfig.use_int8_w8a8 = property(use_int8_w8a8)
 FusedMoEQuantConfig.use_hifloat8_w8a8 = property(use_hifloat8_w8a8)
 FusedMoEQuantConfig.use_mxfp8_w8a8 = property(use_mxfp8_w8a8)
+FusedMoEQuantConfig.use_mxfp4_w4a8 = property(use_mxfp4_w4a8)
 
 
 def int4_w4a8_moe_quant_config(

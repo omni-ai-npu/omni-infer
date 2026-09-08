@@ -37,6 +37,7 @@ def _scheduler(enabled=True, start_ids=None, end_ids=None, kv_role=None):
                 reasoning_start_token_ids=start_ids,
                 reasoning_end_token_ids=end_ids,
             ),
+            speculative_config=None,
         ),
     )
 
@@ -71,3 +72,34 @@ def test_scheduler_marks_reasoning_started_from_output_token_ids():
     assert request.content_generated == 0
     assert request._reasoning_started is True
     assert request.reasoning_ended is False
+
+
+def test_scheduler_reserves_one_extra_token_for_speculative_decode():
+    request = _request(max_tokens=8)
+    scheduler = _scheduler(enabled=False)
+    scheduler.vllm_config.speculative_config = SimpleNamespace(
+        num_speculative_tokens=2
+    )
+    max_lengths = []
+
+    def check_stop(_request, max_model_len):
+        max_lengths.append(max_model_len)
+        return len(_request.output_token_ids) >= 2
+
+    with (
+        patch.object(
+            sched_mod.envs,
+            "OMNI_ENABLE_MAX_TOKENS_EXCLUDE_REASONING",
+            False,
+        ),
+        patch.object(sched_mod, "check_stop", side_effect=check_stop),
+    ):
+        new_tokens, stopped = (
+            sched_mod.PanguV2SchedulerPatch._update_request_with_output(
+                scheduler, request, [11, 12, 13]
+            )
+        )
+
+    assert new_tokens == [11, 12]
+    assert stopped is True
+    assert max_lengths[-1] == 64 - (2 * 3 + 1)

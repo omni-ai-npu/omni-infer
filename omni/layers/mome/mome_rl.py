@@ -3,6 +3,7 @@
 
 import torch
 import torch_npu
+import torch.nn.functional as F
 from omni_npu.v1.utils import on_ascend950
 
 from vllm.distributed import (
@@ -115,6 +116,9 @@ class ColumnParallelMOMERL(torch.nn.Module):
     ) -> torch.Tensor:
         assert mome_metadata.num_computed_tokens is not None
         if self.on_ascend950:
+            num_input_tokens = x.size(0)
+            num_valid_tokens = mome_metadata.num_actual_tokens
+            num_padding_tokens = num_input_tokens - num_valid_tokens
             conv_kwargs = {
                 "query_start_loc": mome_metadata.query_start_loc,
                 "cache_indices": mome_metadata.cache_indices,
@@ -136,12 +140,24 @@ class ColumnParallelMOMERL(torch.nn.Module):
 
             if inplace:
                 return torch_npu.npu_fused_causal_conv1d_v2(
+                    x[:num_valid_tokens], self.weight, conv_states, **conv_kwargs
+                )
+
+            if num_padding_tokens > 0:
+                output = torch_npu.npu_fused_causal_conv1d(
+                    x[:num_valid_tokens], self.weight, conv_states, **conv_kwargs
+                )
+                output = F.pad(
+                    output,
+                    (0, 0, 0, num_padding_tokens),
+                    value=0,
+                )
+            else:
+                output = torch_npu.npu_fused_causal_conv1d(
                     x, self.weight, conv_states, **conv_kwargs
                 )
 
-            return torch_npu.npu_fused_causal_conv1d(
-                x, self.weight, conv_states, **conv_kwargs
-            )
+            return output
 
         enable_precision_strong_consistency = (
             model_extra_config.operator_opt_config.enable_precision_strong_consistency

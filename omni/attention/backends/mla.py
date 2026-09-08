@@ -132,8 +132,13 @@ class NPUMLABackend(MLACommonBackend):
 
 @dataclass
 class NPUMLAPrefillMetadata(MLACommonPrefillMetadata):
-    query_cumlens: list[int] = None
-    seq_lens: list[int] = None
+    query_cumlens: list[int] | torch.Tensor = None
+    seq_lens: list[int] | torch.Tensor = None
+    # CPU lists used by Python-side chunked-prefill control flow. Keep these
+    # separate from the device tensors required by AICPU FA tiling so layers
+    # never need to synchronize the device with .cpu().tolist().
+    query_cumlens_list: list[int] = None
+    seq_lens_list: list[int] = None
     slot_mapping: torch.Tensor = None
     slot_mapping_2d: torch.Tensor = None
     num_tokens: int | None = None
@@ -269,6 +274,16 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
             )
 
             reqs_start = num_decodes  # prefill_start
+
+            cumlens_start = reqs_start + 1
+            cumlens_end = num_reqs + 1
+            prefill_query_cumlens_list = (
+                query_start_loc_cpu[cumlens_start:cumlens_end]
+                - query_start_loc_cpu[reqs_start]
+            ).tolist()
+            prefill_seq_lens_list = common_attn_metadata.seq_lens_cpu[
+                reqs_start:num_reqs
+            ].tolist()
 
             context_lens_cpu = num_computed_tokens_cpu[reqs_start:num_reqs]
             max_context_len_cpu = context_lens_cpu.max().item()
@@ -443,6 +458,8 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
                 query_start_loc=prefill_query_start_loc,
                 max_query_len=max_query_len,
                 chunked_context=chunked_context_metadata,
+                query_cumlens_list=prefill_query_cumlens_list,
+                seq_lens_list=prefill_seq_lens_list,
             )
 
         decode_metadata = None
@@ -521,12 +538,12 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
                 metadata.num_decodes:metadata.num_decodes + metadata.num_prefills
             ]
             if not model_extra_config.operator_opt_config.use_aicpu_fa_tiling:
-                query_cumlens = query_cumlens.cpu().tolist()
-                seq_lens = seq_lens.cpu().tolist()
+                query_cumlens = metadata.prefill.query_cumlens_list
+                seq_lens = metadata.prefill.seq_lens_list
 
             metadata.prefill.query_cumlens = query_cumlens
             metadata.prefill.seq_lens = seq_lens
-            metadata.prefill.num_tokens = query_cumlens[-1]
+            metadata.prefill.num_tokens = metadata.prefill.query_cumlens_list[-1]
 
             if model_extra_config.parall_config.ena_swa_attn_seq_parallel:
                 assert model_extra_config.parall_config.ena_seq_parallel, (
@@ -544,13 +561,14 @@ class NPUMLAMetadataBuilder(MLACommonMetadataBuilder[NPUMLAMetadata]):
 
             if hasattr(self, "sink_len") and self.sink_len > 0:
                 metadata.prefill.sink_len = self.sink_len
+                metadata.prefill.seq_lens_list = [
+                    self.sink_len if seq == 0 else seq
+                    for seq in metadata.prefill.seq_lens_list
+                ]
                 if model_extra_config.operator_opt_config.use_aicpu_fa_tiling:
                     metadata.prefill.seq_lens[metadata.prefill.seq_lens == 0] = self.sink_len
                 else:
-                    metadata.prefill.seq_lens = [
-                        self.sink_len if seq == 0 else seq 
-                        for seq in metadata.prefill.seq_lens
-                    ]
+                    metadata.prefill.seq_lens = metadata.prefill.seq_lens_list
 
         if not metadata.causal and metadata.decode is not None:
             block_start = metadata.decode.seq_lens - metadata.max_query_len

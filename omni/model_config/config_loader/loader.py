@@ -335,6 +335,8 @@ def _resolve_quant_type(hf_config):
             return "hif8"
         if quant_method == 'mxfp8':
             return "mxfp8"
+        if quant_method == 'w4a8_mxfp':
+            return "w4a8_mxfp"
     if hasattr(hf_config, "dtype") and hf_config.dtype in ["float16", "fp16", torch.float16]:
         return "fp16"
     return "bf16"

@@ -101,9 +101,11 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
         b.block_idx_last_scheduled_token = None
 
         # Two decode rows; first request has 0 new tokens (diff segment 0)
+        query_start_loc = torch.tensor([0, 1, 1], dtype=torch.int32)
         common = SimpleNamespace(
             num_reqs=2,
-            query_start_loc=torch.tensor([0, 1, 1], dtype=torch.int32),
+            query_start_loc=query_start_loc,
+            query_start_loc_cpu=query_start_loc.cpu(),
             seq_lens=torch.tensor([1, 0], dtype=torch.int32),
             block_table_tensor=torch.tensor([[42], [43]], dtype=torch.int32),
             max_query_len=1,
@@ -124,6 +126,8 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
 
         self.assertEqual(int(out.cache_indices[0].item()), 42)
         self.assertEqual(int(out.cache_indices[1].item()), int(PAD_SLOT_ID))
+        self.assertEqual(out.num_actual_tokens, 1)
+        self.assertEqual(out.decode.num_actual_tokens, 1)
 
     def test_update_block_table_prefix_caching_full_cudagraph_copies_block_indices(self):
         b = mome_mod.NPUMomeAttentionMetadataBuilder.__new__(
@@ -190,9 +194,18 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
         )
 
         self.assertTrue(torch.equal(out.decode.cache_indices, blk_table))
-        self.assertTrue(torch.equal(out.decode.block_idx_last_computed_token, torch.tensor([0, 1], dtype=torch.int32)))
-        self.assertTrue(torch.equal(out.decode.block_idx_first_scheduled_token, torch.tensor([2, 3], dtype=torch.int32)))
-        self.assertTrue(torch.equal(out.decode.block_idx_last_scheduled_token, torch.tensor([4, 5], dtype=torch.int32)))
+        self.assertTrue(torch.equal(
+            out.decode.block_idx_last_computed_token,
+            torch.tensor([0, 1], dtype=torch.int32),
+        ))
+        self.assertTrue(torch.equal(
+            out.decode.block_idx_first_scheduled_token,
+            torch.tensor([2, 3], dtype=torch.int32),
+        ))
+        self.assertTrue(torch.equal(
+            out.decode.block_idx_last_scheduled_token,
+            torch.tensor([4, 5], dtype=torch.int32),
+        ))
 
     # ---- Tests for _update_cache_indices_for_flashcomm2 ----
 
@@ -407,6 +420,7 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
         common = SimpleNamespace(
             num_reqs=num_reqs,
             query_start_loc=query_start_loc,
+            query_start_loc_cpu=query_start_loc.cpu(),
             seq_lens=seq_lens,
             block_table_tensor=block_table,
             max_query_len=3,
@@ -466,6 +480,7 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
         common = SimpleNamespace(
             num_reqs=num_reqs,
             query_start_loc=query_start_loc,
+            query_start_loc_cpu=query_start_loc.cpu(),
             seq_lens=seq_lens,
             block_table_tensor=block_table,
             max_query_len=3,
@@ -513,6 +528,7 @@ class TestNPUMomeAttentionMetadataBuilder(unittest.TestCase):
             num_reqs=2,
             num_actual_tokens=2,
             query_start_loc=torch.tensor([0, 1, 2], dtype=torch.int32),
+            query_start_loc_cpu=torch.tensor([0, 1, 2], dtype=torch.int32),
             seq_lens=torch.tensor([3, 5], dtype=torch.int32),
             block_table_tensor=torch.randint(0, 10, (2, 2), dtype=torch.int32),
             max_query_len=1,

@@ -10,11 +10,266 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from tests.unit.layers.mome_out_test_utils import (
+    configure_multistream_npu,
+    make_marked_constant,
+    make_marked_input,
+    make_recording_event_type,
+)
+
 MLA_MODULE = "omni_npu.v1.layers.attention.npu_mla"
 
 cfg_i32 = {"device": "cpu", "dtype": torch.int32}
 cfg_i64 = {"device": "cpu", "dtype": torch.int64}
 cfg_bf16 = {"device": "cpu", "dtype": torch.bfloat16}
+
+
+def _identity(value, *_args, **_kwargs):
+    return value
+
+
+def _tuple_identity(value, *_args, **_kwargs):
+    return (value,)
+
+
+def _first_three(*args):
+    return args[:3]
+
+
+def _empty_mome_args():
+    return {}
+
+
+def _virtual_engine_context():
+    return SimpleNamespace(virtual_engine=0)
+
+
+def _make_prefill_attention(attention_cls, sink_count=0):
+    token_count, num_heads = 3, 2
+    rope_dim, nope_dim, kv_rank, value_dim = 1, 4, 5, 3
+    fake = attention_cls.__new__(attention_cls)
+    fake.num_local_heads = num_heads
+    fake.qk_rope_head_dim = rope_dim
+    fake.v_head_dim = value_dim
+    fake.qk_nope_head_dim = nope_dim
+    fake.kv_lora_rank = kv_rank
+    fake.ena_sp = False
+    fake.use_mome = False
+    fake.param_sink_number = sink_count
+    fake.noncontiguous_kv = sink_count > 0
+    fake.split_q_up_in_multistream = False
+    fake.attn = SimpleNamespace(kv_cache=("nope_cache", "rope_cache"))
+    if sink_count:
+        fake.attn.sink_compressed_kv = torch.zeros(sink_count, kv_rank)
+        fake.attn.sink_k_pe = torch.zeros(sink_count, rope_dim)
+
+    fake.q_a_proj = MagicMock(return_value=(torch.zeros(token_count, 6),))
+    fake.q_a_layernorm = _identity
+    fake.q_b_proj = MagicMock(
+        return_value=(torch.zeros(token_count, num_heads * (nope_dim + rope_dim)),)
+    )
+    fake._apply_rope = _identity
+    fake.kv_a_proj_with_mqa = MagicMock(
+        return_value=(torch.zeros(token_count, kv_rank + rope_dim),)
+    )
+    fake._maybe_mome_q = _identity
+    fake._maybe_mome_kv = _identity
+    fake._maybe_mome_out = _identity
+    fake._kv_norm_rope_cache = MagicMock(
+        return_value=(
+            torch.zeros(token_count, 1, kv_rank),
+            torch.zeros(token_count, 1, rope_dim),
+        )
+    )
+    fake._prepend_chunked_prefill_context = MagicMock(side_effect=_first_three)
+
+    def kv_b_proj(kv):
+        return (torch.zeros(kv.size(0), num_heads * (nope_dim + value_dim)),)
+
+    fake.kv_b_proj = MagicMock(side_effect=kv_b_proj)
+    fake._apply_attention = MagicMock(
+        return_value=torch.zeros(token_count, num_heads, value_dim)
+    )
+    fake._apply_o_proj = MagicMock(side_effect=_identity)
+    fake.o_proj = MagicMock(side_effect=_tuple_identity)
+    return fake, (token_count, rope_dim)
+
+
+@pytest.mark.unit
+def test_mome_kv_inplace_reuses_full_projection_buffer():
+    from omni_npu.v1.layers.attention.npu_mla import MomeAttentionMixin
+
+    fake = MomeAttentionMixin()
+    fake.use_mome = True
+    fake.noncontiguous_kv = True
+    fake.use_mome_inplace_update = True
+    fake.kv_lora_rank = 4
+    fake.qk_rope_head_dim = 2
+    calls = []
+
+    def conv(x, state_indice, inplace=False, **kwargs):
+        calls.append((state_indice, inplace, kwargs))
+        x.add_(1)
+        return x
+
+    fake.conv = conv
+    kv = torch.zeros(3, 6)
+    kv[:, 4:] = 7
+    output = MomeAttentionMixin._maybe_mome_kv(
+        fake,
+        kv,
+        lambda: {"force_decode": True},
+    )
+
+    assert output is kv
+    assert torch.equal(output[:, :4], torch.ones(3, 4))
+    assert torch.equal(output[:, 4:], torch.full((3, 2), 7.0))
+    assert calls == [(1, True, {"force_decode": True})]
+
+
+@pytest.mark.unit
+def test_forward_decode_routes_to_a5_multistream_when_stream_is_enabled():
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+
+    fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
+    fake.side_stream = object()
+    fake.enable_a5_multistream = True
+    kv_cache = (object(), object())
+    fake.attn = SimpleNamespace(kv_cache=[kv_cache])
+    fake._forward_decode_multistream_a5 = MagicMock(return_value="a5")
+
+    with patch.object(
+        mla_mod,
+        "get_forward_context",
+        return_value=SimpleNamespace(virtual_engine=0),
+    ):
+        output = NPUDeepseekMLAAttention._forward_decode(
+            fake,
+            x=MagicMock(),
+            cos=MagicMock(),
+            sin=MagicMock(),
+            attn_metadata=MagicMock(),
+            pd_mixed_flag=2,
+        )
+
+    assert output == "a5"
+    fake._forward_decode_multistream_a5.assert_called_once()
+    assert (
+        fake._forward_decode_multistream_a5.call_args.args[4]
+        is fake.attn.kv_cache
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("split_q_up_in_multistream", [True, False])
+def test_forward_decode_a5_multistream_submits_three_stream_pipeline(
+    monkeypatch, split_q_up_in_multistream
+):
+    from omni_npu.v1.layers.attention import npu_mla as mla_mod
+    from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
+
+    submitted = []
+    core_limits = []
+    main_stream = object()
+    side_stream = object()
+    kv_stream = object()
+
+    configure_multistream_npu(monkeypatch, submitted, core_limits, main_stream)
+    monkeypatch.setattr(
+        mla_mod,
+        "get_forward_context",
+        lambda: SimpleNamespace(virtual_engine=0),
+    )
+
+    def mark(name, result):
+        submitted.append(name)
+        return result
+
+    fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
+    fake.on_ascend950 = True
+    fake.use_mome = False
+    fake.noncontiguous_kv = False
+    fake.split_q_up_in_multistream = split_q_up_in_multistream
+    fake.side_stream = side_stream
+    fake.mla_kv_stream = kv_stream
+    fake.num_local_heads = 1
+    fake.qk_nope_head_dim = 4
+    fake.qk_rope_head_dim = 2
+    fake.attn = SimpleNamespace(kv_cache=[(object(), object())])
+    fake._maybe_quant = _identity
+    fake.q_a_proj = make_marked_constant(mark, "q_a", (torch.zeros(2, 3),))
+    fake.kv_a_proj_with_mqa = make_marked_constant(
+        mark, "kv_a", (torch.zeros(2, 5),)
+    )
+    fake._maybe_mome_q = make_marked_input(mark, "q_conv")
+    fake.q_a_layernorm = make_marked_input(mark, "q_norm")
+    fake.q_b_pe_proj = make_marked_constant(
+        mark, "q_b_pe", (torch.zeros(2, 2),)
+    )
+    fake.q_b_nope_proj = make_marked_constant(
+        mark, "q_b_nope", (torch.zeros(2, 4),)
+    )
+    fake.q_b_proj = make_marked_constant(mark, "q_b", (torch.zeros(2, 6),))
+    fake.qk_head_dim = 6
+    fake._maybe_mome_kv = make_marked_input(mark, "kv_conv")
+    fake._kv_norm_rope_cache = make_marked_constant(
+        mark, "kv_rope_cache", None
+    )
+    fake._q_nope_absorb = make_marked_input(mark, "q_absorb")
+    fake._apply_rope = make_marked_input(mark, "q_rope")
+    fake._decode_attention = make_marked_constant(
+        mark, "attention", torch.ones(1)
+    )
+
+    with patch.object(torch.Tensor, "record_stream", return_value=None):
+        output = NPUDeepseekMLAAttention._forward_decode_multistream_a5(
+            fake,
+            x=torch.zeros(2, 4),
+            cos=torch.zeros(2, 1, 1, 2),
+            sin=torch.zeros(2, 1, 1, 2),
+            attn_metadata=object(),
+            kv_cache=fake.attn.kv_cache[0],
+            get_mome_args=_empty_mome_args,
+        )
+
+    assert torch.equal(output, torch.ones(1))
+    q_up_ops = (
+        ["record", "q_b_nope"]
+        if split_q_up_in_multistream
+        else ["q_b", "record"]
+    )
+    q_pe_ops = (
+        ["q_b_pe", "q_rope"]
+        if split_q_up_in_multistream
+        else ["q_rope"]
+    )
+    assert [entry for entry in submitted if isinstance(entry, str)] == [
+        "record",
+        "q_a",
+        "q_conv",
+        "q_norm",
+        *q_up_ops,
+        "q_absorb",
+        "kv_a",
+        "kv_conv",
+        "record",
+        *q_pe_ops,
+        "record",
+        "kv_rope_cache",
+        "record",
+        "attention",
+    ]
+    q_up_core_limit = (
+        (24, 16) if split_q_up_in_multistream else (24, 32)
+    )
+    assert core_limits == [
+        (24, 32),
+        q_up_core_limit,
+        (8, 32),
+        (8, 16),
+        (8, 32),
+    ]
 
 
 @pytest.mark.unit
@@ -462,7 +717,11 @@ def _mock_misc(yarn_get_mscale_ret: float = 1.0):
         patch(f"{MLA_MODULE}.extract_layer_index", return_value=0),
         patch(f"{MLA_MODULE}.get_rope", return_value=None),
         patch(f"{MLA_MODULE}.yarn_get_mscale", return_value=yarn_get_mscale_ret),
-        patch("vllm.model_executor.layers.rotary_embedding.get_rope_wrapper", MagicMock(return_value=None), create=True),
+        patch(
+            "vllm.model_executor.layers.rotary_embedding.get_rope_wrapper",
+            MagicMock(return_value=None),
+            create=True,
+        ),
     ):
         yield
 
@@ -2014,6 +2273,9 @@ def test_prepend_chunked_prefill_context_adds_swa_history_from_paged_cache(monke
     fake.enable_chunked_prefill = True
     fake.noncontiguous_kv = True
     fake.sliding_window = 3
+    fake._as_cumlens_list = MagicMock(
+        side_effect=AssertionError("CPU lists should avoid the D2H fallback")
+    )
 
     L, R = 2, 1
     kv_a = torch.arange(5 * L, dtype=torch.float32).view(5, L)
@@ -2026,6 +2288,7 @@ def test_prepend_chunked_prefill_context_adds_swa_history_from_paged_cache(monke
 
     out_kv, out_rope, out_cumlens = NPUDeepseekMLAAttention._prepend_chunked_prefill_context(
         fake, kv_a, k_pe, q_cumlens, seq_lens, block_table, (nope_cache, rope_cache),
+        [2, 5], [5, 6],
     )
 
     expected_kv = torch.cat([
@@ -2044,6 +2307,7 @@ def test_prepend_chunked_prefill_context_adds_swa_history_from_paged_cache(monke
     assert torch.equal(out_kv, expected_kv)
     assert torch.equal(out_rope, expected_rope)
     assert torch.equal(out_cumlens, torch.tensor([4, 9], dtype=torch.int32))
+    fake._as_cumlens_list.assert_not_called()
 
 
 @pytest.mark.unit
@@ -2126,71 +2390,51 @@ def test_forward_prefill_standard_passes_metadata_to_chunked_context(monkeypatch
     from omni_npu.v1.layers.attention import npu_mla as mla_mod
     from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
-    fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
-    fake.num_local_heads = 2
-    fake.qk_rope_head_dim = 1
-    fake.v_head_dim = 3
-    fake.qk_nope_head_dim = 4
-    fake.kv_lora_rank = 5
-    fake.ena_sp = False
-    fake.use_mome = False
-    fake.param_sink_number = 0
-    fake.split_q_up_in_multistream = False
-    fake.attn = SimpleNamespace(kv_cache=("nope_cache", "rope_cache"))
-
-    T, N, R, QK, L, V = 3, 2, 1, 4, 5, 3
-    fake.q_a_proj = MagicMock(return_value=(torch.zeros(T, 6),))
-    fake.q_a_layernorm = lambda x: x
-    fake.q_b_proj = MagicMock(return_value=(torch.zeros(T, N * (QK + R)),))
-    fake._apply_rope = lambda q_pe, cos, sin: q_pe
-    fake.kv_a_proj_with_mqa = MagicMock(return_value=(torch.zeros(T, L + R),))
-    fake._maybe_mome_q = lambda q, get_mome_args: q
-    fake._maybe_mome_kv = lambda kv, get_mome_args: kv
-    fake._maybe_mome_out = lambda out, get_mome_args: out
-    fake._kv_norm_rope_cache = MagicMock(
-        return_value=(torch.zeros(T, 1, L), torch.zeros(T, 1, R)),
+    fake, (token_count, rope_dim) = _make_prefill_attention(
+        NPUDeepseekMLAAttention
     )
-    fake._prepend_chunked_prefill_context = MagicMock(
-        side_effect=lambda kv_a, k_pe, q_cumlens, seq_lens, block_table, kv_cache: (
-            kv_a, k_pe, q_cumlens,
-        ),
-    )
-    fake.kv_b_proj = MagicMock(
-        side_effect=lambda kv: (torch.zeros(kv.size(0), N * (QK + V)),),
-    )
-    fake._apply_attention = MagicMock(return_value=torch.zeros(T, N, V))
-    fake._apply_o_proj = MagicMock(side_effect=lambda out: out)
-    fake.o_proj = MagicMock(side_effect=lambda out: (out,))
 
     attn_metadata = SimpleNamespace(
-        query_cumlens=torch.tensor([T], dtype=torch.int32),
-        seq_lens=torch.tensor([T + 2], dtype=torch.int32),
+        query_cumlens=torch.tensor([token_count], dtype=torch.int32),
+        query_cumlens_list=[token_count],
+        seq_lens=torch.tensor([token_count + 2], dtype=torch.int32),
+        seq_lens_list=[token_count + 2],
         block_table=torch.zeros(1, 2, dtype=torch.int32),
     )
-    monkeypatch.setattr(
-        mla_mod,
-        "get_forward_context",
-        lambda: SimpleNamespace(virtual_engine=0),
-    )
+    monkeypatch.setattr(mla_mod, "get_forward_context", _virtual_engine_context)
 
     out = NPUDeepseekMLAAttention._forward_prefill_standard(
         fake,
-        torch.zeros(T, 8),
-        torch.zeros(T, 1, 1, R),
-        torch.zeros(T, 1, 1, R),
-        get_mome_args=lambda: {},
+        torch.zeros(token_count, 8),
+        torch.zeros(token_count, 1, 1, rope_dim),
+        torch.zeros(token_count, 1, 1, rope_dim),
+        get_mome_args=_empty_mome_args,
         attn_metadata=attn_metadata,
     )
 
     fake._prepend_chunked_prefill_context.assert_called_once()
-    _, _, passed_q_cumlens, passed_seq_lens, passed_block_table, passed_cache = (
+    (
+        _,
+        _,
+        passed_q_cumlens,
+        passed_seq_lens,
+        passed_block_table,
+        passed_cache,
+        passed_q_cumlens_list,
+        passed_seq_lens_list,
+    ) = (
         fake._prepend_chunked_prefill_context.call_args.args
     )
     assert passed_q_cumlens is attn_metadata.query_cumlens
     assert passed_seq_lens is attn_metadata.seq_lens
     assert passed_block_table is attn_metadata.block_table
     assert passed_cache is fake.attn.kv_cache
-    assert out.shape == (T, N * V)
+    assert passed_q_cumlens_list is attn_metadata.query_cumlens_list
+    assert passed_seq_lens_list is attn_metadata.seq_lens_list
+    assert out.shape == (
+        token_count,
+        fake.num_local_heads * fake.v_head_dim,
+    )
 
 
 @pytest.mark.unit
@@ -2550,66 +2794,33 @@ def test_forward_prefill_standard_noncontiguous_sink_calls_kv_b_proj(monkeypatch
     from omni_npu.v1.layers.attention import npu_mla as mla_mod
     from omni_npu.v1.layers.attention.npu_mla import NPUDeepseekMLAAttention
 
-    fake = NPUDeepseekMLAAttention.__new__(NPUDeepseekMLAAttention)
-    T, N, R, QK, L, V, S = 3, 2, 1, 4, 5, 3, 2
-    fake.num_local_heads = N
-    fake.qk_rope_head_dim = R
-    fake.v_head_dim = V
-    fake.qk_nope_head_dim = QK
-    fake.kv_lora_rank = L
-    fake.ena_sp = False
-    fake.use_mome = False
-    fake.param_sink_number = S
-    fake.noncontiguous_kv = True
-    fake.split_q_up_in_multistream = False
-    fake.attn = SimpleNamespace(
-        kv_cache=("nope_cache", "rope_cache"),
-        sink_compressed_kv=torch.zeros(S, L),
-        sink_k_pe=torch.zeros(S, R),
-    )
-    fake.q_a_proj = MagicMock(return_value=(torch.zeros(T, 6),))
-    fake.q_a_layernorm = lambda x: x
-    fake.q_b_proj = MagicMock(return_value=(torch.zeros(T, N * (QK + R)),))
-    fake._apply_rope = lambda q_pe, cos, sin: q_pe
-    fake.kv_a_proj_with_mqa = MagicMock(return_value=(torch.zeros(T, L + R),))
-    fake._maybe_mome_q = lambda q, get_mome_args: q
-    fake._maybe_mome_kv = lambda kv, get_mome_args: kv
-    fake._maybe_mome_out = lambda out, get_mome_args: out
-    fake._kv_norm_rope_cache = MagicMock(
-        return_value=(torch.zeros(T, 1, L), torch.zeros(T, 1, R)),
-    )
-    fake._prepend_chunked_prefill_context = MagicMock(
-        side_effect=lambda kv_a, k_pe, q_cumlens, seq_lens, block_table, kv_cache: (
-            kv_a, k_pe, q_cumlens,
-        ),
+    fake, (token_count, rope_dim) = _make_prefill_attention(
+        NPUDeepseekMLAAttention,
+        sink_count=2,
     )
     kv_b_calls = []
+    original_kv_b_proj = fake.kv_b_proj.side_effect
 
     def _kv_b_proj(x):
         kv_b_calls.append(x)
-        return (torch.zeros(x.size(0), N * (QK + V)),)
+        return original_kv_b_proj(x)
 
     fake.kv_b_proj = MagicMock(side_effect=_kv_b_proj)
-    fake._apply_attention = MagicMock(return_value=torch.zeros(T, N, V))
-    fake._apply_o_proj = MagicMock(side_effect=lambda out: out)
-    fake.o_proj = MagicMock(side_effect=lambda out: (out,))
 
     attn_metadata = SimpleNamespace(
-        query_cumlens=torch.tensor([T], dtype=torch.int32),
-        seq_lens=torch.tensor([T], dtype=torch.int32),
+        query_cumlens=torch.tensor([token_count], dtype=torch.int32),
+        seq_lens=torch.tensor([token_count], dtype=torch.int32),
         block_table=torch.zeros(1, 2, dtype=torch.int32),
-        query_start_loc=torch.tensor([0, T], dtype=torch.int32),
+        query_start_loc=torch.tensor([0, token_count], dtype=torch.int32),
     )
-    monkeypatch.setattr(
-        mla_mod, "get_forward_context", lambda: SimpleNamespace(virtual_engine=0)
-    )
+    monkeypatch.setattr(mla_mod, "get_forward_context", _virtual_engine_context)
 
     NPUDeepseekMLAAttention._forward_prefill_standard(
         fake,
-        torch.zeros(T, 8),
-        torch.zeros(T, 1, 1, R),
-        torch.zeros(T, 1, 1, R),
-        get_mome_args=lambda: {},
+        torch.zeros(token_count, 8),
+        torch.zeros(token_count, 1, 1, rope_dim),
+        torch.zeros(token_count, 1, 1, rope_dim),
+        get_mome_args=_empty_mome_args,
         attn_metadata=attn_metadata,
     )
 

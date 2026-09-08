@@ -284,6 +284,24 @@ class TestConfigLoaderUnit(unittest.TestCase):
             self.assertEqual(model_name, "openpangu_v2")
             self.assertEqual(quant_type, "fp16", msg=f"dtype={dtype!r}")
 
+    def test_parse_hf_config_w4a8_mxfp(self):
+        """Standalone W4A8 MXFP configs retain their quantization type."""
+        from types import SimpleNamespace
+        from omni_npu.model_config.config_loader.loader import parse_hf_config
+
+        hf_config = SimpleNamespace(
+            model_type="openpangu_v2",
+            quantization_config={
+                "quant_method": "w4a8_mxfp",
+                "group_size": 32,
+            },
+        )
+
+        model_name, quant_type = parse_hf_config(hf_config)
+
+        self.assertEqual(model_name, "openpangu_v2")
+        self.assertEqual(quant_type, "w4a8_mxfp")
+
     @patch('os.path.exists', return_value=True)
     def test_get_best_practice_config_gpt_oss_alias(self, mock_exists):
         """Test low-latency best-practice config lookup for gpt_oss alias."""
@@ -573,10 +591,21 @@ class TestConfigLoaderUnit(unittest.TestCase):
         mock_scheduler_config.enable_chunked_prefill = False
 
         # Mock external dependencies
-        with patch('omni_npu.model_config.config_loader.loader.parse_hf_config', return_value=('deepseek_v3', 'w8a8c16')), \
-             patch('omni_npu.model_config.config_loader.loader.update_task_config') as mock_update, \
-             patch('omni_npu.model_config.config_loader.loader._validate_config') as mock_validate, \
-             patch('omni_npu.model_config.config_loader.loader._print_model_config') as mock_print:
+        with (
+            patch(
+                'omni_npu.model_config.config_loader.loader.parse_hf_config',
+                return_value=('deepseek_v3', 'w8a8c16'),
+            ),
+            patch(
+                'omni_npu.model_config.config_loader.loader.update_task_config'
+            ) as mock_update,
+            patch(
+                'omni_npu.model_config.config_loader.loader._validate_config'
+            ) as mock_validate,
+            patch(
+                'omni_npu.model_config.config_loader.loader._print_model_config'
+            ) as mock_print,
+        ):
 
             load_model_extra_config(mock_model_config, mock_vllm_config, mock_scheduler_config)
 

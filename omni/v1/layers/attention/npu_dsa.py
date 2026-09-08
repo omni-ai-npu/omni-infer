@@ -3,6 +3,8 @@
 
 
 import contextlib
+from collections.abc import Callable
+
 import torch
 import torch_npu
 from torch import nn
@@ -351,9 +353,9 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
             and model_extra_config.operator_opt_config.split_q_up_in_multistream
             and self.q_lora_rank is not None
         )
+        self.use_mome_inplace_update = model_extra_config.operator_opt_config.use_mome_inplace_update
         self.on_ascend950 = on_ascend950()
         self.use_mlaprolog = model_extra_config.operator_opt_config.enable_mlaprolog
-        self.use_omni_cache = model_extra_config.operator_opt_config.use_omni_cache
         self.ena_sp = model_extra_config.parall_config.ena_seq_parallel
         self.ena_cp = model_extra_config.parall_config.ena_context_parallel
         self.ena_kvsp = bool(get_dcp_group().world_size > 1)
@@ -585,6 +587,20 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
             else None
         )
         self.pre_epilog_callback = None
+
+        self.enable_a5_multistream = (
+            self.enable_decode_multi_stream
+            and self.on_ascend950
+            and self.dtype == torch.bfloat16
+            and self.q_lora_rank is not None
+            and not self.skip_topk
+            and not self.ena_kvsp
+        )
+        self.li_stream = (
+            named_stream("dsa_li_stream")
+            if self.enable_a5_multistream
+            else None
+        )
 
         if not self.skip_topk and model_extra_config.operator_opt_config.li_prolog_multi_stream:
             self.wi_stream = named_stream("wi_stream")
@@ -1105,7 +1121,6 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         assert self.q_b_proj.tp_size == 1  # full head required
         assert self.kv_b_proj.tp_size == 1  # full head required
         assert self.ena_sp  # dependency
-        assert not self.use_omni_cache
         """
         SP here refers to standard SP splitting, i.e., splitting tokens with ceil division
         based on sp_size.
@@ -1258,20 +1273,6 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         assert not self.ena_sp  # TODO: support decode sp in the future
         assert not self.sharded_o_proj  # sharded_o_proj is for prefill only
-        use_fused_mla_prolog = self.use_mlaprolog and not self.use_mome and self.param_sink_number == 0
-        can_decode_multistream = self.side_stream is not None and not self.skip_topk
-        if can_decode_multistream and not use_fused_mla_prolog and not self.ena_kvsp:
-            return self._forward_decode_multistream(
-                x, cos, sin, attn_metadata, kv_cache,
-                topk_indices_buffer, pd_mixed_flag,
-            )
-
-        ki_cache = kv_cache[1] if self.noncontiguous_kv else kv_cache[2]
-        q_cumlens = attn_metadata.query_cumlens.to(torch.int32)
-        kv_lens = attn_metadata.seq_lens.to(torch.int32)
-        blk_table = attn_metadata.block_table
-
-        cur_stream = torch.npu.current_stream()
 
         def get_mome_args():
             if self.noncontiguous_kv:
@@ -1282,7 +1283,23 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
                     "short_prefill": True if pd_mixed_flag == 2 else False,
                 }
 
+        use_fused_mla_prolog = self.use_mlaprolog and not self.use_mome and self.param_sink_number == 0
+        can_decode_multistream = self.side_stream is not None and not self.skip_topk
+        if can_decode_multistream and not use_fused_mla_prolog and not self.ena_kvsp:
+            if self.li_stream is not None:
+                return self._forward_decode_multistream_a5(
+                    x, cos, sin, attn_metadata, kv_cache, get_mome_args
+                )
+            return self._forward_decode_multistream(
+                x, cos, sin, attn_metadata, kv_cache,
+                topk_indices_buffer, pd_mixed_flag,
+            )
         ki_cache = kv_cache[1] if self.noncontiguous_kv else kv_cache[2]
+        q_cumlens = attn_metadata.query_cumlens.to(torch.int32)
+        kv_lens = attn_metadata.seq_lens.to(torch.int32)
+        blk_table = attn_metadata.block_table
+
+        cur_stream = torch.npu.current_stream()
 
         if use_fused_mla_prolog:
             q_nope, q_pe, q_lora, *_ = self._mla_prolog(x, cos, sin, kv_cache, attn_metadata)
@@ -1357,6 +1374,7 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         pd_mixed_flag: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Overlap attention Q/KV-cache work with the complete indexer path."""
+
         q_cumlens = attn_metadata.query_cumlens.to(torch.int32)
         kv_lens = attn_metadata.seq_lens.to(torch.int32)
         block_table = attn_metadata.block_table
@@ -1445,6 +1463,25 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
             self._kv_norm_rope_cache(kv, cos, sin, attn_metadata, kv_cache)
         side_done.wait(main_stream)
         topk_idx.record_stream(main_stream)
+
+        return self._finish_multistream_decode(
+            q_nope, q_pe, topk_idx, q_cumlens, kv_lens, block_table,
+            kv_cache, attn_metadata, get_mome_args,
+        )
+
+    def _finish_multistream_decode(
+        self,
+        q_nope: torch.Tensor,
+        q_pe: torch.Tensor,
+        topk_idx: torch.Tensor,
+        q_cumlens: torch.Tensor,
+        kv_lens: torch.Tensor,
+        block_table: torch.Tensor,
+        kv_cache: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        attn_metadata: NPUDSAMetadata,
+        get_mome_args: Callable[[], dict[str, bool]],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Apply the common top-k bookkeeping and attention decode epilog."""
         next_topk_indices_buffer = topk_idx
         topk_idx = self._apply_sink_offset(topk_idx)
 
@@ -1461,6 +1498,188 @@ class NPUDeepseekSparseAttention(MomeAttentionMixin, torch.nn.Module):
         return (
             self._decode_attn_epilog(out, get_mome_args),
             next_topk_indices_buffer,
+        )
+
+    @staticmethod
+    def _is_mxfp8_fc_linear(layer: torch.nn.Module) -> bool:
+        """Return whether ``layer`` consumes pre-quantized MXFP8 inputs."""
+        quant_method = getattr(layer, "quant_method", None)
+        return getattr(quant_method, "input_quant_format", None) == "mxfp8"
+
+    @classmethod
+    def _should_share_mxfp8_input(
+        cls, consumers: tuple[torch.nn.Module, ...]
+    ) -> bool:
+        """Only pre-quantize when it replaces at least two quant kernels."""
+        return sum(cls._is_mxfp8_fc_linear(layer) for layer in consumers) >= 2
+
+    @staticmethod
+    def _quantize_mxfp8_input(x: torch.Tensor) -> dict[str, torch.Tensor]:
+        x_mxfp8, pertoken_scale = torch_npu.npu_dynamic_mx_quant(
+            x, dst_type=torch.float8_e4m3fn, scale_alg=1
+        )
+        return {
+            "x_mxfp8": x_mxfp8,
+            "pertoken_scale": pertoken_scale,
+        }
+
+    def _forward_decode_multistream_a5(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        attn_metadata: NPUDSAMetadata,
+        kv_cache: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        get_mome_args: Callable[[], dict[str, bool]],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Pack the A5 attention prolog across three streams before LI.
+
+        时间从上到下，三条流上的执行及大致掩盖关系如下。括号内为
+        ``limit_core_num(Cube, Vector)``；横向相邻的算子可并行执行。
+
+        .. code-block:: text
+
+            main stream                 LI side stream              KV/weight side stream
+            ------------------------    -------------------------   -------------------------
+            q_a_proj (24, 48)       |   wk (8, 32)                  wait q_a_proj + wk
+            q_mome + q_norm (8, 32) |   k_norm/rope/cache (8, 32)   weights_proj (32, 32) + kv_a_proj (32, 32)
+            wq_b (24, 48)           |   q_b_pe if split (8, 16)     kv_mome
+            q_b_nope/q_b (32, 32)   |   indexer_q rope (16, 32)     kv_norm/rope/cache
+            q_nope absorb           |   q_pe rope (16, 32)          (16, 32)
+                    \\_________________________|___________________________/
+                                              |
+                                  lightning indexer (32, 64)
+                                              |
+                                      attention + epilog
+
+        ``q_a_proj`` 与 ``wk`` 首先并行；随后两条侧流主要掩盖主流上的
+        Q/MoME、Q up 和 absorb 路径。LI 是这段 prolog 的关键路径汇合点，
+        因此 main stream 在 LI 前等待两个侧流的最终 event，使 LI 独占完整
+        Cube/Vector 资源，避免与仍在执行的 vector/cache 算子争核。
+        """
+        assert self.on_ascend950
+        assert self.li_stream is not None
+
+        q_cumlens = attn_metadata.query_cumlens.to(torch.int32)
+        kv_lens = attn_metadata.seq_lens.to(torch.int32)
+        block_table = attn_metadata.block_table
+        ki_cache = kv_cache[1] if self.noncontiguous_kv else kv_cache[2]
+
+        main_stream = torch.npu.current_stream()
+        side_stream = self.side_stream
+        li_stream = self.li_stream
+
+        input_ready = torch.npu.Event()
+        q_a_cube_done = torch.npu.Event()
+        q_side_ready = torch.npu.Event()
+        wq_b_ready = torch.npu.Event()
+        q_pe_ready = torch.npu.Event()
+        attn_kv_ready = torch.npu.Event()
+
+        input_ready.record()
+        for stream in (side_stream, li_stream):
+            x.record_stream(stream)
+            cos.record_stream(stream)
+            sin.record_stream(stream)
+
+        # q_a -> q_b_nope/q_b -> absorb is the longest attention-Q path and
+        # stays on main. wk starts concurrently on the LI stream.
+        share_x_mxfp8 = self._should_share_mxfp8_input(
+            (self.q_a_proj, self.kv_a_proj_with_mqa)
+        )
+        with torch.npu.npugraph_ex.scope.limit_core_num(24, 48):
+            shared_x = (
+                self._quantize_mxfp8_input(x) if share_x_mxfp8 else x
+            )
+            q_lora = self.q_a_proj(shared_x)[0]
+        if share_x_mxfp8:
+            for value in shared_x.values():
+                value.record_stream(side_stream)
+        else:
+            shared_x.record_stream(side_stream)
+        q_a_cube_done.record()
+        with torch.npu.npugraph_ex.scope.limit_core_num(8, 32):
+            q_lora = self._maybe_mome_q(q_lora, get_mome_args)
+            q_lora = self.q_a_layernorm(q_lora)
+
+        if self.split_q_up_in_multistream:
+            q_side_ready.record()
+            q_lora.record_stream(li_stream)
+        with torch.npu.npugraph_ex.scope.limit_core_num(24, 48):
+            indexer_q = self.indexer.wq_b(q_lora)[0].view(
+                -1, self.indexer.n_head, self.indexer.head_dim
+            )
+        indexer_q.record_stream(li_stream)
+        wq_b_ready.record()
+        with torch.npu.npugraph_ex.scope.limit_core_num(32, 32):
+            if self.split_q_up_in_multistream:
+                q_nope = self.q_b_nope_proj(q_lora)[0].view(
+                    -1, self.num_local_heads, self.qk_nope_head_dim
+                )
+            else:
+                q_nope, q_pe = self._project_and_split_q(q_lora)
+                q_pe.record_stream(li_stream)
+                q_side_ready.record()
+            q_nope = self._q_nope_absorb(q_nope)
+
+        with torch.npu.stream(li_stream):
+            input_ready.wait(li_stream)
+            with torch.npu.npugraph_ex.scope.limit_core_num(8, 32):
+                indexer_k = self.indexer.wk(x)[0]
+                indexer_k = self.indexer.k_norm(indexer_k).view(
+                    -1, 1, self.indexer.head_dim
+                )
+                indexer_k = self.indexer._apply_rope(indexer_k, cos, sin)
+                self.indexer._update_cache(indexer_k, attn_metadata, ki_cache)
+            q_side_ready.wait(li_stream)
+            if self.split_q_up_in_multistream:
+                with torch.npu.npugraph_ex.scope.limit_core_num(8, 16):
+                    q_pe = self.q_b_pe_proj(q_lora)[0].view(
+                        -1, self.num_local_heads, self.qk_rope_head_dim
+                    )
+            wq_b_ready.wait(li_stream)
+            with torch.npu.npugraph_ex.scope.limit_core_num(16, 32):
+                indexer_q = self.indexer._apply_rope(indexer_q, cos, sin)
+                q_pe = self._apply_rope(q_pe, cos, sin)
+            indexer_q.record_stream(main_stream)
+            q_pe.record_stream(main_stream)
+            q_pe_ready.record()
+
+        with torch.npu.stream(side_stream):
+            q_a_cube_done.wait(side_stream)
+            with torch.npu.npugraph_ex.scope.limit_core_num(32, 32):
+                indexer_weights = self.indexer.weights_proj(x)[0]
+                if (
+                    model_extra_config.operator_opt_config.enable_precision_strong_consistency
+                ):
+                    indexer_weights = (
+                        indexer_weights
+                        * self.indexer.weights_scale
+                        * self.indexer.softmax_scale
+                    )
+                kv = self.kv_a_proj_with_mqa(shared_x)[0]
+            indexer_weights.record_stream(main_stream)
+            with torch.npu.npugraph_ex.scope.limit_core_num(16, 32):
+                kv = self._maybe_mome_kv(kv, get_mome_args)
+                self._kv_norm_rope_cache(
+                    kv, cos, sin, attn_metadata, kv_cache
+                )
+            attn_kv_ready.record()
+
+        q_pe_ready.wait(main_stream)
+        attn_kv_ready.wait(main_stream)
+        topk_idx = self.indexer._apply_lightning_indexer(
+            indexer_weights,
+            indexer_q,
+            ki_cache,
+            q_cumlens,
+            kv_lens,
+            block_table,
+        )
+
+        return self._finish_multistream_decode(
+            q_nope, q_pe, topk_idx, q_cumlens, kv_lens, block_table,
+            kv_cache, attn_metadata, get_mome_args,
         )
 
 

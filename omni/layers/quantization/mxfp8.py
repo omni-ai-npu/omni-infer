@@ -2,6 +2,7 @@
 import os
 import re
 from contextlib import nullcontext
+from functools import partial
 from typing import Optional
 
 import torch
@@ -48,6 +49,159 @@ _MX_SCALE_PAIR = 2
 # Resolve torch_npu dtype symbols with graceful fallback if the runtime is
 # missing them (older torch_npu releases).
 _FLOAT8_E8M0FNU_DTYPE = getattr(torch_npu, "float8_e8m0fnu", None)
+
+
+def _reshape_mxfp_scale_pairs(pertoken_scale: torch.Tensor) -> torch.Tensor:
+    """Fold adjacent MXFP block scales into the pair layout used by NPU kernels."""
+    num_tokens, num_blocks = pertoken_scale.shape
+    if num_blocks % _MX_SCALE_PAIR != 0:
+        raise ValueError(
+            f"num_blocks ({num_blocks}) must be even to fold scales into pairs"
+        )
+    return pertoken_scale.reshape(
+        num_tokens,
+        num_blocks // _MX_SCALE_PAIR,
+        _MX_SCALE_PAIR,
+    )
+
+
+def _prepare_mxfp_expert_inputs(prepare_permute_result, quantize):
+    """Normalize routed expert inputs and their per-token MXFP scales."""
+    hidden_states = prepare_permute_result.hidden_states_sorted_by_experts
+    if hidden_states.dim() > 2:
+        hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+
+    pertoken_scale = prepare_permute_result.dynamic_scale
+    if pertoken_scale is None:
+        hidden_states, pertoken_scale = quantize(hidden_states)
+    if pertoken_scale.dim() == 2:
+        pertoken_scale = _reshape_mxfp_scale_pairs(pertoken_scale)
+    return hidden_states, prepare_permute_result.expert_tokens, pertoken_scale
+
+
+def _activate_shared_expert_if_scheduled(
+    stream,
+    layer,
+    prepare_permute_result,
+    quantize,
+):
+    """Start the shared expert side stream when it overlaps routed experts."""
+    operator_config = model_extra_config.operator_opt_config
+    enabled = (
+        operator_config.shared_expert_multi_stream
+        and operator_config.shared_expert_parallel_schedule
+        == "with_routed_experts_cv"
+    )
+    if not enabled:
+        return False, None, None
+    activation, scale = activate_shared_expert_on_side_stream(
+        stream,
+        layer,
+        prepare_permute_result,
+        quantize,
+    )
+    return True, activation, scale
+
+
+def _apply_mxfp8_grouped_matmul(
+    activation,
+    weight,
+    weight_scale,
+    pertoken_scale,
+    expert_tokens,
+    group_list_type,
+):
+    return torch_npu.npu_grouped_matmul(
+        [activation],
+        [weight],
+        bias=None,
+        scale=[weight_scale],
+        per_token_scale=[pertoken_scale],
+        group_list=expert_tokens,
+        split_item=3,
+        output_dtype=torch.bfloat16,
+        group_type=0,
+        scale_dtype=torch_npu.float8_e8m0fnu,
+        per_token_scale_dtype=torch_npu.float8_e8m0fnu,
+        group_list_type=group_list_type,
+    )[0]
+
+
+def apply_mxfp_experts(
+    method,
+    layer,
+    prepare_permute_result,
+    quantize,
+    grouped_matmul,
+    swiglu_quant,
+    use_grouped_matmul_finalize_routing,
+    *,
+    swiglu_scale_alg=None,
+    reshape_swiglu_scale=False,
+):
+    """Run the shared MXFP expert pipeline with a format-specific GEMM."""
+    moe_parallel_config = getattr(layer, "moe_parallel_config", None)
+    group_list_type = int(getattr(moe_parallel_config, "use_ep", True))
+    hidden_states, expert_tokens, pertoken_scale = _prepare_mxfp_expert_inputs(
+        prepare_permute_result,
+        quantize,
+    )
+    run_shared, shared_act, shared_scale = _activate_shared_expert_if_scheduled(
+        method.shared_experts_stream,
+        layer,
+        prepare_permute_result,
+        quantize,
+    )
+
+    gate_up_proj = grouped_matmul(
+        hidden_states,
+        layer.w13_weight,
+        layer.w13_weight_scale,
+        pertoken_scale,
+        expert_tokens,
+        group_list_type,
+    )
+
+    shared_results = None
+    if run_shared:
+        torch.npu.current_stream().wait_stream(method.shared_experts_stream)
+        method.shared_experts_stream.wait_stream(torch.npu.current_stream())
+        with torch.npu.stream(method.shared_experts_stream):
+            shared_results = layer.shared_experts.down_proj(
+                {"x_mxfp8": shared_act, "pertoken_scale": shared_scale}
+            )
+
+    swiglu_options = {}
+    if swiglu_scale_alg is not None:
+        swiglu_options["scale_alg"] = swiglu_scale_alg
+    intermediate, pertoken_scale = swiglu_quant(
+        gate_up_proj,
+        group_index=None,
+        activate_left=True,
+        dst_type=torch.float8_e4m3fn,
+        **swiglu_options,
+    )
+    if reshape_swiglu_scale and pertoken_scale.dim() == 2:
+        pertoken_scale = _reshape_mxfp_scale_pairs(pertoken_scale)
+    if run_shared:
+        torch.npu.current_stream().wait_stream(method.shared_experts_stream)
+    if use_grouped_matmul_finalize_routing:
+        return intermediate, pertoken_scale
+
+    layer_key = getattr(layer, "layer_name", "") or ""
+    intermediate = torch.ops.vllm.cube_side_run(layer_key, intermediate)
+    routed_results = grouped_matmul(
+        intermediate,
+        layer.w2_weight,
+        layer.w2_weight_scale,
+        pertoken_scale,
+        expert_tokens,
+        group_list_type,
+    )
+    routed_results = torch.ops.vllm.cube_side_wait(layer_key, routed_results)
+    if shared_results is not None:
+        return routed_results, shared_results
+    return routed_results
 
 
 def _is_layer_ignored(prefix: str, ignored_layers: list[str]) -> bool:
@@ -107,6 +261,82 @@ def _pack_mxfp8_expert_weight(weight: torch.Tensor,
     return weight, scale
 
 
+def _unpack_mxfp8_scale(scale: torch.Tensor) -> torch.Tensor:
+    """Restore a linear scale from kernel layout to checkpoint layout."""
+    num_block_pairs, out_size, _ = scale.shape
+    return scale.transpose(0, 1).reshape(
+        out_size, num_block_pairs * _MX_SCALE_PAIR
+    ).contiguous()
+
+
+def _unpack_mxfp8_expert_scale(scale: torch.Tensor) -> torch.Tensor:
+    """Restore an MoE scale from kernel layout to checkpoint layout."""
+    num_experts, num_block_pairs, out_size, _ = scale.shape
+    return scale.transpose(1, 2).reshape(
+        num_experts, out_size, num_block_pairs * _MX_SCALE_PAIR,
+    ).contiguous()
+
+
+def _pack_mxfp8_scale(scale: torch.Tensor) -> torch.Tensor:
+    out_size, num_blocks = scale.shape
+    assert num_blocks % _MX_SCALE_PAIR == 0
+    return scale.reshape(
+        out_size, num_blocks // _MX_SCALE_PAIR, _MX_SCALE_PAIR
+    ).transpose(0, 1).contiguous()
+
+
+def _pack_mxfp8_expert_scale(scale: torch.Tensor) -> torch.Tensor:
+    num_experts, out_size, num_blocks = scale.shape
+    assert num_blocks % _MX_SCALE_PAIR == 0
+    return scale.reshape(
+        num_experts, out_size, num_blocks // _MX_SCALE_PAIR, _MX_SCALE_PAIR
+    ).transpose(1, 2).contiguous()
+
+
+def _mxfp8_linear_weight_loader(original_weight_loader,
+                                 param: torch.nn.Parameter,
+                                 loaded_weight: torch.Tensor,
+                                 *args, **kwargs):
+    """Reload a regular vLLM linear weight after MXFP8 kernel packing."""
+    if not getattr(param, "is_mxfp8_packed", False):
+        return original_weight_loader(param, loaded_weight, *args, **kwargs)
+
+    packed_storage = param.data
+    had_transposed_attr = hasattr(param, "is_weight_transposed")
+    transposed_attr = getattr(param, "is_weight_transposed", None)
+    param.data = packed_storage.transpose(0, 1)
+    param.is_weight_transposed = False
+    try:
+        return original_weight_loader(param, loaded_weight, *args, **kwargs)
+    finally:
+        param.data = packed_storage
+        if had_transposed_attr:
+            param.is_weight_transposed = transposed_attr
+        else:
+            delattr(param, "is_weight_transposed")
+
+
+def _mxfp8_scale_weight_loader(original_weight_loader, expert: bool,
+                                param: torch.nn.Parameter,
+                                loaded_weight: torch.Tensor, *args, **kwargs):
+    """Reload a packed scale through its original checkpoint-layout loader."""
+    if not getattr(param, "is_mxfp8_scale_packed", False):
+        return original_weight_loader(param, loaded_weight, *args, **kwargs)
+
+    packed_storage = param.data
+    unpack = _unpack_mxfp8_expert_scale if expert else _unpack_mxfp8_scale
+    pack = _pack_mxfp8_expert_scale if expert else _pack_mxfp8_scale
+    param.data = unpack(packed_storage)
+    try:
+        result = original_weight_loader(param, loaded_weight, *args, **kwargs)
+        repacked = pack(param.data)
+        assert repacked.shape == packed_storage.shape
+        packed_storage.copy_(repacked)
+    finally:
+        param.data = packed_storage
+    return result
+
+
 def mxfp8_moe_quant_config(
     w1_scale: torch.Tensor,
     w2_scale: torch.Tensor,
@@ -148,7 +378,7 @@ class Mxfp8Config(QuantizationConfig):
     @classmethod
     def get_min_capability(cls) -> int:
         raise NotImplementedError(
-            "NPU hardware dose not support \"get_min_capability\" feature.")
+            "NPU hardware does not support \"get_min_capability\" feature.")
 
     @classmethod
     def get_config_filenames(cls) -> list[str]:
@@ -191,7 +421,8 @@ class Mxfp8Config(QuantizationConfig):
 
 
 def _create_mxfp8_linear_weights(layer, output_size_per_partition,
-                                 input_size_per_partition, weight_loader):
+                                 input_size_per_partition, weight_loader,
+                                 wrap_weight_loader=False):
     """Register ``weight`` and ``weight_scale`` for MXFP8 linear layers.
 
     Shapes follow the on-disk format so safetensor keys (``*.weight`` and
@@ -206,22 +437,31 @@ def _create_mxfp8_linear_weights(layer, output_size_per_partition,
     )
     num_blocks = input_size_per_partition // MX_BLOCK_SIZE
 
+    runtime_weight_loader = (
+        partial(_mxfp8_linear_weight_loader, weight_loader)
+        if wrap_weight_loader and weight_loader is not None else weight_loader
+    )
     weight = ModelWeightParameter(
         data=torch.empty(output_size_per_partition, input_size_per_partition,
                          dtype=torch.float8_e4m3fn),
-        input_dim=1, output_dim=0, weight_loader=weight_loader,
+        input_dim=1, output_dim=0, weight_loader=runtime_weight_loader,
     )
     layer.register_parameter("weight", weight)
 
+    scale_weight_loader = (
+        partial(_mxfp8_scale_weight_loader, weight_loader, False)
+        if weight_loader is not None else None
+    )
     weight_scale = ModelWeightParameter(
         data=torch.empty(output_size_per_partition, num_blocks, dtype=torch.uint8),
-        input_dim=1, output_dim=0, weight_loader=weight_loader,
+        input_dim=1, output_dim=0, weight_loader=scale_weight_loader,
     )
     layer.register_parameter("weight_scale", weight_scale)
 
 
-class Mxfp8LinearMethod(LinearMethodBase):
-    """MXFP8 quantization method for vLLM LinearBase layers on NPU."""
+class _Mxfp8LinearMethodMixin:
+
+    _wrap_weight_loader = False
 
     def __init__(self, quant_config: Mxfp8Config):
         self.quant_config = quant_config
@@ -235,13 +475,27 @@ class Mxfp8LinearMethod(LinearMethodBase):
         layer.orig_dtype = params_dtype
 
         _create_mxfp8_linear_weights(layer, output_size_per_partition,
-                                     input_size_per_partition, weight_loader)
+                                     input_size_per_partition, weight_loader,
+                                     wrap_weight_loader=self._wrap_weight_loader)
 
     def process_weights_after_loading(self, layer):
+        if getattr(layer.weight, "is_mxfp8_packed", False):
+            return
         weight, scale = _pack_mxfp8_weight(layer.weight.data,
                                            layer.weight_scale.data)
-        layer.weight = torch.nn.Parameter(weight, requires_grad=False)
-        layer.weight_scale = torch.nn.Parameter(scale, requires_grad=False)
+        layer.weight.data = weight
+        layer.weight_scale.data = scale
+        set_weight_attrs(layer.weight, {
+            "is_weight_transposed": True,
+            "is_mxfp8_packed": True,
+        })
+        set_weight_attrs(layer.weight_scale, {"is_mxfp8_scale_packed": True})
+
+
+class Mxfp8LinearMethod(_Mxfp8LinearMethodMixin, LinearMethodBase):
+    """MXFP8 quantization method for vLLM LinearBase layers on NPU."""
+
+    _wrap_weight_loader = True
 
     def apply(self, layer, x, bias=None):
         layer_key = getattr(layer, "prefix", "") or ""
@@ -251,7 +505,7 @@ class Mxfp8LinearMethod(LinearMethodBase):
             x_fp8 = x.get('x_mxfp8')
             x_scale = x.get('pertoken_scale')
         else:
-            x_fp8, x_scale = torch_npu.npu_dynamic_mx_quant(x, dst_type=torch.float8_e4m3fn)
+            x_fp8, x_scale = torch_npu.npu_dynamic_mx_quant(x, dst_type=torch.float8_e4m3fn, scale_alg=1)
 
         # Cube-side overlap (opaque to Dynamo): if a task was registered
         # under layer_key, fire it on the cube-side stream now.
@@ -270,28 +524,10 @@ class Mxfp8LinearMethod(LinearMethodBase):
         return y
 
 
-class Mxfp8FCLinearMethod(FlashCommLinearMethodBase):
+class Mxfp8FCLinearMethod(_Mxfp8LinearMethodMixin, FlashCommLinearMethodBase):
     """MXFP8 quantization for FlashComm LinearBase layers."""
 
-    def __init__(self, quant_config: Mxfp8Config):
-        self.quant_config = quant_config
-
-    def create_weights(self, layer, input_size_per_partition, output_partition_sizes,
-                       input_size, output_size, params_dtype, **extra_weight_attrs):
-        output_size_per_partition = sum(output_partition_sizes)
-        weight_loader = extra_weight_attrs.get("weight_loader")
-        layer.input_size_per_partition = input_size_per_partition
-        layer.output_size_per_partition = output_size_per_partition
-        layer.orig_dtype = params_dtype
-
-        _create_mxfp8_linear_weights(layer, output_size_per_partition,
-                                     input_size_per_partition, weight_loader)
-
-    def process_weights_after_loading(self, layer):
-        weight, scale = _pack_mxfp8_weight(layer.weight.data,
-                                           layer.weight_scale.data)
-        layer.weight = torch.nn.Parameter(weight, requires_grad=False)
-        layer.weight_scale = torch.nn.Parameter(scale, requires_grad=False)
+    input_quant_format = MXFP8
 
     def apply(self, layer, x, bias=None, x_transform=None, x_dim=0, throw_dequant=False):
         from omni_npu.v1.distributed.communication_op_ext import (
@@ -299,13 +535,14 @@ class Mxfp8FCLinearMethod(FlashCommLinearMethodBase):
             layer_parallel_all2all_single,
         )
 
+        layer_key = getattr(layer, "prefix", "") or ""
         if bias is not None:
             bias = bias.to(torch.float32)
         if isinstance(x, dict):
             x_scale = x.get('pertoken_scale', None)
             x_fp8 = x.get('x_mxfp8', None)
         else:
-            x_fp8, x_scale = torch_npu.npu_dynamic_mx_quant(x, dst_type=torch.float8_e4m3fn)
+            x_fp8, x_scale = torch_npu.npu_dynamic_mx_quant(x, dst_type=torch.float8_e4m3fn, scale_alg=1)
 
         if x_transform == "AllGather":
             x_scale = layer_parallel_all_gather(x_scale, layer.layer_name_inside_block, "x", x_dim)
@@ -314,7 +551,14 @@ class Mxfp8FCLinearMethod(FlashCommLinearMethodBase):
             x_scale = layer_parallel_all2all_single(x_scale, layer.layer_name_inside_block, "x", x_dim)
             x_fp8 = layer_parallel_all2all_single(x_fp8, layer.layer_name_inside_block, "x", x_dim)
 
-        return torch_npu.npu_quant_matmul(
+        # FlashComm linears need the same Cube-side task hooks as regular
+        # Mxfp8LinearMethod. In particular, attention o_proj is a
+        # RowParallelFlashCommLinear, so without these hooks its registered
+        # MHC Sinkhorn task is never overlapped with the quantized matmul and
+        # falls back to synchronous execution in mhc_fetch.
+        x_fp8 = torch.ops.vllm.cube_side_run(layer_key, x_fp8)
+
+        y = torch_npu.npu_quant_matmul(
             x_fp8, layer.weight, layer.weight_scale,
             pertoken_scale=x_scale,
             pertoken_scale_dtype=_FLOAT8_E8M0FNU_DTYPE,
@@ -322,6 +566,8 @@ class Mxfp8FCLinearMethod(FlashCommLinearMethodBase):
             group_sizes=[1, 1, 32],
             output_dtype=layer.orig_dtype, bias=bias,
         )
+
+        return torch.ops.vllm.cube_side_wait(layer_key, y)
 
 
 class Mxfp8MlpMethod(FusedMLPMethodBase):
@@ -350,7 +596,7 @@ class Mxfp8MlpMethod(FusedMLPMethodBase):
 
         with get_npu_execution_type(stream_label):
             with core_limit_ctx:
-                x_fp8, x_scale = torch_npu.npu_dynamic_mx_quant(x, dst_type=torch.float8_e4m3fn)
+                x_fp8, x_scale = torch_npu.npu_dynamic_mx_quant(x, dst_type=torch.float8_e4m3fn, scale_alg=1)
         return x_fp8, x_scale
 
     def apply_part1_gate_up_on_stream(self, layer, x, stream_label=None):
@@ -375,7 +621,8 @@ class Mxfp8MlpMethod(FusedMLPMethodBase):
                 x_fp8, x_scale = torch_npu.npu_swiglu_mx_quant(
                     gate_up,
                     activate_left=True,
-                    dst_type=torch.float8_e4m3fn
+                    dst_type=torch.float8_e4m3fn,
+                    scale_alg=1
                 )
             x = {"x_mxfp8": x_fp8, "pertoken_scale": x_scale}
         return x
@@ -463,9 +710,15 @@ class Mxfp8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
             requires_grad=False,
         )
         layer.register_parameter("w2_weight_scale", w2_weight_scale)
-        extra_weight_attrs.update({"quant_method": FusedMoeWeightScaleSupported.CHANNEL.value})
-        set_weight_attrs(w13_weight_scale, extra_weight_attrs)
-        set_weight_attrs(w2_weight_scale, extra_weight_attrs)
+        scale_weight_attrs = dict(extra_weight_attrs)
+        scale_weight_loader = scale_weight_attrs.get("weight_loader")
+        if scale_weight_loader is not None:
+            scale_weight_attrs["weight_loader"] = partial(
+                _mxfp8_scale_weight_loader, scale_weight_loader, True,
+            )
+        scale_weight_attrs["quant_method"] = FusedMoeWeightScaleSupported.CHANNEL.value
+        set_weight_attrs(w13_weight_scale, scale_weight_attrs)
+        set_weight_attrs(w2_weight_scale, scale_weight_attrs)
 
         # Activations are dynamically quantized each forward.
         layer.w13_input_scale = None
@@ -494,16 +747,27 @@ class Mxfp8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
         )
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        if getattr(layer.w13_weight, "is_mxfp8_packed", False):
+            return
         w13_weight, w13_scale = _pack_mxfp8_expert_weight(
             layer.w13_weight.data, layer.w13_weight_scale.data,
         )
         w2_weight, w2_scale = _pack_mxfp8_expert_weight(
             layer.w2_weight.data, layer.w2_weight_scale.data,
         )
-        layer.w13_weight = torch.nn.Parameter(w13_weight, requires_grad=False)
-        layer.w2_weight = torch.nn.Parameter(w2_weight, requires_grad=False)
-        layer.w13_weight_scale = torch.nn.Parameter(w13_scale, requires_grad=False)
-        layer.w2_weight_scale = torch.nn.Parameter(w2_scale, requires_grad=False)
+        layer.w13_weight.data = w13_weight
+        layer.w2_weight.data = w2_weight
+        layer.w13_weight_scale.data = w13_scale
+        layer.w2_weight_scale.data = w2_scale
+        weight_attrs = {
+            "is_weight_transposed": True,
+            "is_mxfp8_packed": True,
+        }
+        set_weight_attrs(layer.w13_weight, weight_attrs)
+        set_weight_attrs(layer.w2_weight, weight_attrs)
+        scale_attrs = {"is_mxfp8_scale_packed": True}
+        set_weight_attrs(layer.w13_weight_scale, scale_attrs)
+        set_weight_attrs(layer.w2_weight_scale, scale_attrs)
         layer.ensure_moe_quant_config_init()
 
     def apply(
@@ -683,104 +947,18 @@ class Mxfp8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
         activation: str = "silu",
         use_grouped_matmul_finalize_routing: bool = False,
     ) -> torch.Tensor:
-        hidden_states = prepare_permute_result.hidden_states_sorted_by_experts
-        expert_tokens = prepare_permute_result.expert_tokens
-        moe_parallel_config = getattr(layer, "moe_parallel_config", None)
-        use_ep = getattr(moe_parallel_config, "use_ep", True)
-        group_list_type = int(use_ep)
-        avg_tokens_per_expert = prepare_permute_result.avg_tokens_per_expert or [0]
-        pertoken_scale = prepare_permute_result.dynamic_scale
-
-        if hidden_states.dim() > 2:
-            hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
-
-        # Upstream permute paths may hand us either an already-MXFP8-quantised
-        # tensor + its E8M0 scale, or the raw bf16 permuted activations. In the
-        # latter case we do the dynamic mxfp8 quant here.
-        if pertoken_scale is None:
-            hidden_states, pertoken_scale = torch_npu.npu_dynamic_mx_quant(
-                hidden_states, dst_type=torch.float8_e4m3fn,
-            )
-
-        # npu_grouped_matmul wants per-token scale in (M, K//64, 2) layout;
-        # npu_dynamic_mx_quant / dispatch produce it as (M, K//32).
-        if pertoken_scale.dim() == 2:
-            m, num_blocks = pertoken_scale.shape
-            assert num_blocks % _MX_SCALE_PAIR == 0, (
-                f"num_blocks ({num_blocks}) must be even to fold scales into pairs"
-            )
-            pertoken_scale = pertoken_scale.reshape(
-                m, num_blocks // _MX_SCALE_PAIR, _MX_SCALE_PAIR,
-            )
-
-        run_shared_with_cv = (
-            model_extra_config.operator_opt_config.shared_expert_multi_stream
-            and model_extra_config.operator_opt_config.shared_expert_parallel_schedule == "with_routed_experts_cv"
-        )
-
-        if run_shared_with_cv:
-            shared_expert_act, shared_expert_pertoken_scale = activate_shared_expert_on_side_stream(
-                self.shared_experts_stream, layer, prepare_permute_result,
-                lambda act: torch_npu.npu_dynamic_mx_quant(act, dst_type=torch.float8_e4m3fn),
-            )
-
-        gate_up_proj = torch_npu.npu_grouped_matmul(
-            [hidden_states], [layer.w13_weight],
-            bias=None,
-            scale=[layer.w13_weight_scale],
-            per_token_scale=[pertoken_scale],
-            group_list=expert_tokens,
-            split_item=3, output_dtype=torch.bfloat16, group_type=0,
-            scale_dtype=torch_npu.float8_e8m0fnu,
-            per_token_scale_dtype=torch_npu.float8_e8m0fnu,
-            group_list_type=group_list_type,
-        )[0]
-
-        shared_expert_results = None
-        if run_shared_with_cv:
-            torch.npu.current_stream().wait_stream(self.shared_experts_stream)
-
-            self.shared_experts_stream.wait_stream(torch.npu.current_stream())
-            with torch.npu.stream(self.shared_experts_stream):
-                shared_expert_results = layer.shared_experts.down_proj({
-                    'x_mxfp8': shared_expert_act,
-                    'pertoken_scale': shared_expert_pertoken_scale,
-                })
-
-        # SwiGLU + requantize to mxfp8 for the second GEMM.
-        intermediate_hidden_states, pertoken_scale = torch_npu.npu_swiglu_mx_quant(
-            gate_up_proj,
-            group_index=None,
-            activate_left=True,
+        quantize = partial(
+            torch_npu.npu_dynamic_mx_quant,
             dst_type=torch.float8_e4m3fn,
+            scale_alg=1,
         )
-
-        if run_shared_with_cv:
-            torch.npu.current_stream().wait_stream(self.shared_experts_stream)
-        if use_grouped_matmul_finalize_routing:
-            return intermediate_hidden_states, pertoken_scale
-
-        layer_key = getattr(layer, "layer_name", "") or ""
-        intermediate_hidden_states = torch.ops.vllm.cube_side_run(
-            layer_key, intermediate_hidden_states,
+        return apply_mxfp_experts(
+            self,
+            layer,
+            prepare_permute_result,
+            quantize,
+            _apply_mxfp8_grouped_matmul,
+            torch_npu.npu_swiglu_mx_quant,
+            use_grouped_matmul_finalize_routing,
+            swiglu_scale_alg=1,
         )
-
-        hidden_states_experts = torch_npu.npu_grouped_matmul(
-            [intermediate_hidden_states], [layer.w2_weight],
-            scale=[layer.w2_weight_scale],
-            per_token_scale=[pertoken_scale],
-            bias=None,
-            group_list=expert_tokens,
-            split_item=3, output_dtype=torch.bfloat16, group_type=0,
-            scale_dtype=torch_npu.float8_e8m0fnu,
-            per_token_scale_dtype=torch_npu.float8_e8m0fnu,
-            group_list_type=group_list_type
-        )[0]
-
-        hidden_states_experts = torch.ops.vllm.cube_side_wait(
-            layer_key, hidden_states_experts,
-        )
-
-        if shared_expert_results is not None:
-            return hidden_states_experts, shared_expert_results
-        return hidden_states_experts

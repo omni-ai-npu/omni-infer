@@ -34,6 +34,16 @@ from omni_npu.v1.distributed.parallel_state_ext import (
 logger = init_logger(__name__)
 
 
+def _uses_mxfp_activation(moe_quant_config) -> bool:
+    return bool(
+        moe_quant_config
+        and (
+            getattr(moe_quant_config, "use_mxfp8_w8a8", False)
+            or getattr(moe_quant_config, "use_mxfp4_w4a8", False)
+        )
+    )
+
+
 @dataclass(kw_only=True)
 class PreparePermuteResult:
     hidden_states_sorted_by_experts: torch.Tensor
@@ -151,8 +161,8 @@ class All2AllPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
         topk_ids = topk_ids.int()
         max_num_deployed_expert = layer.routed_experts.w13_weight.shape[0] * self.ep_size
         moe_quant_config = getattr(layer.routed_experts.quant_method, "moe_quant_config", None)
-        use_mxfp8 = bool(moe_quant_config and getattr(moe_quant_config, "use_mxfp8_w8a8", False))
-        # MXFP8: route bf16 (the in-routing MX scale path of
+        use_mxfp8 = _uses_mxfp_activation(moe_quant_config)
+        # MXFP: route bf16 (the in-routing MX scale path of
         # npu_moe_init_routing_v2 is buggy on current torch_npu) and quantize
         # the expanded output to FP8 after re-routing.
         quant_mode = 1 if layer.routed_experts.quant_config is not None else -1
@@ -206,7 +216,7 @@ class All2AllPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
 
         if use_mxfp8:
             hidden_states_sorted_by_experts, gathered_pertoken_scale = torch_npu.npu_dynamic_mx_quant(
-                hidden_states_sorted_by_experts, dst_type=torch.float8_e4m3fn,
+                hidden_states_sorted_by_experts, dst_type=torch.float8_e4m3fn, scale_alg=1
             )
 
         return All2AllPreparePermuteResult(
@@ -322,8 +332,8 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
                 x_hif8 = torch_npu.npu_dtype_cast(x, torch_npu.hifloat8)
                 x_quant = x_hif8.view(dtype=torch.int8)
                 x_scale = None
-            elif moe_quant_config and getattr(moe_quant_config, "use_mxfp8_w8a8", False):
-                # OCP MXFP8: route bf16 first, quant the expanded output below.
+            elif _uses_mxfp_activation(moe_quant_config):
+                # MXFP: route bf16 first, quant the expanded output below.
                 # The mxfp8 scale path through npu_moe_init_routing_v2 is broken
                 # on current torch_npu (see kernel_example/mxfp8_moe_init_routing.py),
                 # so we keep the pre-routing tensor in bf16 and call
@@ -393,13 +403,14 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
                     # the pre-allgather (local) tokens. Feeding the post-allgather
                     # x_quant here would produce (ep_size * local_N, H) rows,
                     # mismatching the routed path's post-reduce-scatter shape.
-                    if moe_quant_config and getattr(moe_quant_config, "use_mxfp8_w8a8", False):
+                    if _uses_mxfp_activation(moe_quant_config):
                         # x_quant_local is still bf16 here (mxfp8 routing-scale
                         # is buggy so we route bf16 and quant after); quant once
                         # on the side stream for shared_experts.gate_up_proj.
                         shared_x_fp8, shared_x_scale = torch_npu.npu_dynamic_mx_quant(
                             x_quant_local,
                             dst_type=torch.float8_e4m3fn,
+                            scale_alg=1
                         )
                         shared_expert_gate_up = layer._shared_experts._layer.gate_up_proj(
                             {
@@ -432,13 +443,14 @@ class AGRSPrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFinalize):
                 row_idx_type=row_idx_type,
             )
         moe_quant_config = getattr(layer.routed_experts.quant_method, "moe_quant_config", None)
-        if moe_quant_config is not None and getattr(moe_quant_config, "use_mxfp8_w8a8", False):
+        if _uses_mxfp_activation(moe_quant_config):
             # npu_moe_init_routing_v2 mxfp8 scale handling is buggy on current
             # torch_npu, so we routed bf16 above and quant the expanded output
             # here.
             expanded_x, dynamic_scale = torch_npu.npu_dynamic_mx_quant(
                 expanded_x,
                 dst_type=torch.float8_e4m3fn,
+                scale_alg=1
             )
         if moe_quant_config is not None and getattr(moe_quant_config, "use_hifloat8_w8a8", False):
             # init routing output dirty dynamic_scale even its input scale=None
@@ -695,7 +707,7 @@ class DispatchCombinePrepPmtAndUnpmtFinal(FusedMoEPreparePermuteAndUnpermuteFina
     ) -> DispatchCombinePreparePermuteResult:
         quant_mode = 2 if layer.routed_experts.quant_config is not None else 0
         moe_quant_config = getattr(layer.routed_experts.quant_method, "moe_quant_config", None)
-        use_mxfp8 = bool(moe_quant_config and getattr(moe_quant_config, "use_mxfp8_w8a8", False))
+        use_mxfp8 = _uses_mxfp_activation(moe_quant_config)
 
         if use_mxfp8:
             quant_mode = 0

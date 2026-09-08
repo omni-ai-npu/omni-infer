@@ -8,6 +8,7 @@ import asyncio
 import os
 import sys
 import time
+from unittest import mock
 
 from omni_npu.diagnostics.dump import exit_dump
 
@@ -62,4 +63,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with mock.patch.object(
+        exit_dump.hardware_probe,
+        "_collect_device_mem",
+        return_value={"free_bytes": 1, "total_bytes": 1},
+    ):
+        main()

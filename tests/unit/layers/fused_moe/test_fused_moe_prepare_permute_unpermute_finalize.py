@@ -238,6 +238,25 @@ def prepare_module(monkeypatch):
     return module, stubs
 
 
+def _set_all2all_routing_results(stubs, dynamic_scale):
+    expanded_x = torch.arange(6, dtype=torch.float32).view(2, 3)
+    stubs.torch_npu.npu_moe_init_routing_v2.return_value = (
+        expanded_x,
+        torch.tensor([0, 1], dtype=torch.int32),
+        torch.tensor([1, 0, 1, 0], dtype=torch.int32),
+        dynamic_scale,
+    )
+    sorted_states = torch.full((2, 3), 2.0)
+    tokens_per_local_expert = torch.tensor([1, 1], dtype=torch.int32)
+    stubs.torch_npu.npu_moe_re_routing.return_value = (
+        sorted_states,
+        None,
+        torch.tensor([1, 0], dtype=torch.int32),
+        tokens_per_local_expert,
+    )
+    return sorted_states, tokens_per_local_expert
+
+
 def test_all2all_prepare_permute_no_quant(prepare_module):
     module, stubs = prepare_module
     layer = _moe_layer(
@@ -251,23 +270,8 @@ def test_all2all_prepare_permute_no_quant(prepare_module):
         quant_config=None,
         w13_weight=torch.zeros(2, 1, 1),
     )
-    expanded_x = torch.arange(6, dtype=torch.float32).view(2, 3)
-    expanded_row_idx = torch.tensor([0, 1], dtype=torch.int32)
-    tokens_per_expert = torch.tensor([1, 0, 1, 0], dtype=torch.int32)
-    stubs.torch_npu.npu_moe_init_routing_v2.return_value = (
-        expanded_x,
-        expanded_row_idx,
-        tokens_per_expert,
-        None,
-    )
-    sorted_states = torch.full((2, 3), 2.0)
-    gathered_idxs_unsort = torch.tensor([1, 0], dtype=torch.int32)
-    tokens_per_local_expert = torch.tensor([1, 1], dtype=torch.int32)
-    stubs.torch_npu.npu_moe_re_routing.return_value = (
-        sorted_states,
-        None,
-        gathered_idxs_unsort,
-        tokens_per_local_expert,
+    sorted_states, tokens_per_local_expert = _set_all2all_routing_results(
+        stubs, None
     )
 
     handler = module.All2AllPrepPmtAndUnpmtFinal(layer)
@@ -285,7 +289,15 @@ def test_all2all_prepare_permute_no_quant(prepare_module):
     assert stubs.torch_npu.npu_moe_init_routing_v2.call_args.kwargs["quant_mode"] == -1
 
 
-def test_all2all_prepare_permute_mxfp8_routes_bf16_then_quants_sorted(prepare_module):
+@pytest.mark.parametrize(
+    ("use_mxfp8_w8a8", "use_mxfp4_w4a8"),
+    [(True, False), (False, True)],
+)
+def test_all2all_prepare_permute_mxfp_routes_bf16_then_quants_sorted(
+    prepare_module,
+    use_mxfp8_w8a8,
+    use_mxfp4_w4a8,
+):
     module, stubs = prepare_module
     layer = _moe_layer(
         global_num_experts=4,
@@ -293,7 +305,8 @@ def test_all2all_prepare_permute_mxfp8_routes_bf16_then_quants_sorted(prepare_mo
         ep_size=stubs.ep_group.world_size,
         quant_method=SimpleNamespace(
             moe_quant_config=SimpleNamespace(
-                use_mxfp8_w8a8=True,
+                use_mxfp8_w8a8=use_mxfp8_w8a8,
+                use_mxfp4_w4a8=use_mxfp4_w4a8,
                 num_of_redundant_experts=0,
             ),
             num_of_redundant_experts=0,
@@ -301,24 +314,7 @@ def test_all2all_prepare_permute_mxfp8_routes_bf16_then_quants_sorted(prepare_mo
         quant_config=object(),
         w13_weight=torch.zeros(2, 1, 1),
     )
-    expanded_x = torch.arange(6, dtype=torch.float32).view(2, 3)
-    expanded_row_idx = torch.tensor([0, 1], dtype=torch.int32)
-    tokens_per_expert = torch.tensor([1, 0, 1, 0], dtype=torch.int32)
-    stubs.torch_npu.npu_moe_init_routing_v2.return_value = (
-        expanded_x,
-        expanded_row_idx,
-        tokens_per_expert,
-        torch.ones(2),
-    )
-    sorted_states = torch.full((2, 3), 2.0)
-    gathered_idxs_unsort = torch.tensor([1, 0], dtype=torch.int32)
-    tokens_per_local_expert = torch.tensor([1, 1], dtype=torch.int32)
-    stubs.torch_npu.npu_moe_re_routing.return_value = (
-        sorted_states,
-        None,
-        gathered_idxs_unsort,
-        tokens_per_local_expert,
-    )
+    sorted_states, _ = _set_all2all_routing_results(stubs, torch.ones(2))
     sorted_fp8 = torch.zeros(2, 3, dtype=torch.int8)
     sorted_scale = torch.ones(2, 1, dtype=torch.uint8)
     stubs.torch_npu.npu_dynamic_mx_quant.return_value = (sorted_fp8, sorted_scale)
@@ -710,9 +706,29 @@ def test_agrs_prepare_permute_cv_unsupported_quant_raises(prepare_module, monkey
         handler.prepare_permute(layer=layer, x=x, topk_ids=topk_ids)
 
 
-def test_agrs_prepare_permute_quant_decode_on_a2_sets_row_idx_type(prepare_module):
+@pytest.mark.parametrize(
+    ("device_name", "moe_quant_config", "expected_row_idx_type"),
+    [
+        ("Ascend910B", None, 1),
+        (
+            "Ascend950",
+            SimpleNamespace(
+                use_hifloat8_w8a8=False,
+                use_mxfp8_w8a8=False,
+                use_mxfp4_w4a8=True,
+            ),
+            0,
+        ),
+    ],
+)
+def test_agrs_prepare_permute_quant_decode_sets_row_idx_type(
+    prepare_module,
+    device_name,
+    moe_quant_config,
+    expected_row_idx_type,
+):
     module, stubs = prepare_module
-    stubs.torch_npu.npu.get_device_name = lambda _: "Ascend910B"
+    stubs.torch_npu.npu.get_device_name = MagicMock(return_value=device_name)
     stubs.context_holder.attn_metadata = {0: SimpleNamespace(num_prefills=0)}
     layer = _moe_layer(
         global_num_experts=4,
@@ -720,13 +736,17 @@ def test_agrs_prepare_permute_quant_decode_on_a2_sets_row_idx_type(prepare_modul
         ep_size=stubs.ep_group.world_size,
         quant_config=object(),
         top_k=1,
-        quant_method=SimpleNamespace(moe_quant_config=None),
+        quant_method=SimpleNamespace(moe_quant_config=moe_quant_config),
         w13_weight=torch.zeros(2, 1, 1),
     )
     x = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
     stubs.torch_npu.npu_dynamic_quant.return_value = (
         x.to(torch.int8),
         torch.tensor([0.1, 0.2], dtype=torch.float32),
+    )
+    stubs.torch_npu.npu_dynamic_mx_quant.return_value = (
+        x.to(torch.int8),
+        torch.ones(2, 1, dtype=torch.uint8),
     )
     stubs.torch_npu.npu_moe_init_routing_v2.return_value = (
         torch.ones(2, 2, dtype=torch.float32),
@@ -742,9 +762,12 @@ def test_agrs_prepare_permute_quant_decode_on_a2_sets_row_idx_type(prepare_modul
         topk_ids=torch.zeros(2, 1, dtype=torch.int32),
     )
 
-    assert result.row_idx_type == 1
+    assert result.row_idx_type == expected_row_idx_type
     assert torch.equal(result.expanded_row_idx, torch.tensor([-3, 5], dtype=torch.int32))
-    assert stubs.torch_npu.npu_moe_init_routing_v2.call_args.kwargs["row_idx_type"] == 1
+    assert (
+        stubs.torch_npu.npu_moe_init_routing_v2.call_args.kwargs["row_idx_type"]
+        == expected_row_idx_type
+    )
 
 
 def test_all2all_unpermute_finalize_reorders_and_finalizes(prepare_module):
@@ -868,14 +891,25 @@ def test_dispatch_prepare_permute_passes_quant_mode_and_mask(prepare_module):
     assert torch.equal(kwargs["x_active_mask"], torch.tensor([1, 0], dtype=torch.bool))
 
 
-def test_dispatch_prepare_permute_mxfp8_disables_dispatch_quant(prepare_module):
+@pytest.mark.parametrize(
+    ("use_mxfp8_w8a8", "use_mxfp4_w4a8"),
+    [(True, False), (False, True)],
+)
+def test_dispatch_prepare_permute_mxfp_disables_dispatch_quant(
+    prepare_module,
+    use_mxfp8_w8a8,
+    use_mxfp4_w4a8,
+):
     module, stubs = prepare_module
     layer = _moe_layer(
         global_num_experts=4,
         local_num_experts=2,
         quant_config=object(),
         quant_method=SimpleNamespace(
-            moe_quant_config=SimpleNamespace(use_mxfp8_w8a8=True),
+            moe_quant_config=SimpleNamespace(
+                use_mxfp8_w8a8=use_mxfp8_w8a8,
+                use_mxfp4_w4a8=use_mxfp4_w4a8,
+            ),
         ),
     )
     stubs.context_holder.attn_metadata = {

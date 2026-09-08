@@ -9,11 +9,295 @@ from unittest.mock import MagicMock, patch
 import torch
 import pytest
 
+from tests.unit.layers.mome_out_test_utils import (
+    configure_multistream_npu,
+    make_marked_constant,
+    make_marked_input,
+    make_recording_event_type,
+)
+
 DSA_MODULE = "omni_npu.v1.layers.attention.npu_dsa"
 
 cfg_i32 = {"device": "cpu", "dtype": torch.int32}
 cfg_i64 = {"device": "cpu", "dtype": torch.int64}
 cfg_bf16 = {"device": "cpu", "dtype": torch.bfloat16}
+
+
+def _return_query_key(query, key, *_args, **_kwargs):
+    return query, key
+
+
+def _short_prefill_args():
+    return {"short_prefill": True}
+
+
+@pytest.mark.unit
+def test_indexer_rope_fusion_uses_apply_rotary_pos_emb():
+    from omni_npu.v1.layers.attention import npu_dsa as dsa_mod
+    from omni_npu.v1.layers.attention.npu_dsa import Indexer
+
+    indexer = Indexer.__new__(Indexer)
+    indexer.rope_dim = 2
+    indexer.head_dim = 4
+    indexer.use_rope_fusion_op = True
+    x = torch.zeros(2, 3, 4)
+    cos = torch.zeros(2, 1, 1, 2)
+    sin = torch.zeros_like(cos)
+    fused = MagicMock(side_effect=_return_query_key)
+
+    with patch.object(dsa_mod.torch_npu, "npu_apply_rotary_pos_emb", fused):
+        output = Indexer._apply_rope(indexer, x, cos, sin)
+
+    assert output.shape == x.shape
+    fused.assert_called_once()
+
+
+@pytest.mark.unit
+def test_forward_decode_routes_to_a5_multistream_when_eligible():
+    from omni_npu.v1.layers.attention.npu_dsa import (
+        NPUDeepseekSparseAttention,
+    )
+
+    fake = NPUDeepseekSparseAttention.__new__(NPUDeepseekSparseAttention)
+    fake.ena_sp = False
+    fake.sharded_o_proj = False
+    fake.noncontiguous_kv = True
+    fake.side_stream = object()
+    fake.li_stream = object()
+    fake.skip_topk = False
+    fake.ena_kvsp = False
+    fake.use_mlaprolog = False
+    fake.use_mome = True
+    fake.param_sink_number = 0
+    fake._forward_decode_multistream_a5 = MagicMock(return_value="a5")
+    kv_cache = (MagicMock(), MagicMock(), MagicMock())
+    metadata = MagicMock()
+    x = MagicMock()
+    cos = MagicMock()
+    sin = MagicMock()
+
+    output = NPUDeepseekSparseAttention._forward_decode(
+        fake,
+        x=x,
+        cos=cos,
+        sin=sin,
+        attn_metadata=metadata,
+        kv_cache=kv_cache,
+        pd_mixed_flag=2,
+    )
+
+    assert output == "a5"
+    fake._forward_decode_multistream_a5.assert_called_once()
+    args = fake._forward_decode_multistream_a5.call_args.args
+    assert args[:5] == (x, cos, sin, metadata, kv_cache)
+    assert args[5]() == {}
+
+
+@pytest.mark.unit
+def test_a5_multistream_shares_only_reused_mxfp8_inputs(monkeypatch):
+    from omni_npu.v1.layers.attention import npu_dsa as dsa_mod
+    from omni_npu.v1.layers.attention.npu_dsa import (
+        NPUDeepseekSparseAttention,
+    )
+
+    mxfp8_method = SimpleNamespace(input_quant_format="mxfp8")
+    mxfp8_a = SimpleNamespace(quant_method=mxfp8_method)
+    mxfp8_b = SimpleNamespace(quant_method=mxfp8_method)
+    bf16 = SimpleNamespace(quant_method=object())
+    raw = torch.zeros(2, 4)
+    x_mxfp8 = torch.ones(2, 4, dtype=torch.float8_e4m3fn)
+    scale = torch.ones(2, 1, dtype=torch.uint8)
+    dynamic_quant = MagicMock(return_value=(x_mxfp8, scale))
+    monkeypatch.setattr(
+        dsa_mod.torch_npu, "npu_dynamic_mx_quant", dynamic_quant
+    )
+
+    assert not NPUDeepseekSparseAttention._should_share_mxfp8_input(
+        (mxfp8_a, bf16)
+    )
+    assert NPUDeepseekSparseAttention._should_share_mxfp8_input(
+        (mxfp8_a, mxfp8_b, bf16)
+    )
+
+    shared = NPUDeepseekSparseAttention._quantize_mxfp8_input(raw)
+    assert shared["x_mxfp8"] is x_mxfp8
+    assert shared["pertoken_scale"] is scale
+    dynamic_quant.assert_called_once_with(
+        raw, dst_type=torch.float8_e4m3fn, scale_alg=1
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("split_q_up_in_multistream", [True, False])
+def test_forward_decode_a5_multistream_runs_three_stream_pipeline(
+    monkeypatch, split_q_up_in_multistream
+):
+    from omni_npu.v1.layers.attention import npu_dsa as dsa_mod
+    from omni_npu.v1.layers.attention.npu_dsa import (
+        NPUDeepseekSparseAttention,
+    )
+
+    submitted = []
+    core_limits = []
+    main_stream = object()
+    side_stream = object()
+    li_stream = object()
+
+    configure_multistream_npu(monkeypatch, submitted, core_limits, main_stream)
+    monkeypatch.setattr(
+        dsa_mod,
+        "model_extra_config",
+        SimpleNamespace(
+            operator_opt_config=SimpleNamespace(
+                enable_precision_strong_consistency=True,
+            ),
+        ),
+    )
+
+    def mark(name, result):
+        submitted.append(name)
+        return result
+
+    indexer = SimpleNamespace(
+        n_head=1,
+        head_dim=3,
+        wq_b=make_marked_constant(mark, "indexer_q", (torch.zeros(2, 3),)),
+        wk=make_marked_constant(mark, "indexer_k", (torch.zeros(2, 3),)),
+        k_norm=make_marked_input(mark, "indexer_k_norm"),
+        _apply_rope=make_marked_input(mark, "indexer_rope"),
+        _update_cache=make_marked_constant(mark, "indexer_cache", None),
+        weights_proj=make_marked_constant(
+            mark, "indexer_weights", (torch.ones(2, 1),)
+        ),
+        weights_scale=2.0,
+        softmax_scale=0.5,
+        _apply_lightning_indexer=make_marked_constant(
+            mark,
+            "lightning_indexer",
+            torch.zeros(2, 1, 2, dtype=torch.int32),
+        ),
+    )
+
+    fake = NPUDeepseekSparseAttention.__new__(NPUDeepseekSparseAttention)
+    fake.on_ascend950 = True
+    fake.use_mome = False
+    fake.split_q_up_in_multistream = split_q_up_in_multistream
+    fake.noncontiguous_kv = False
+    fake.side_stream = side_stream
+    fake.li_stream = li_stream
+    fake.num_local_heads = 1
+    fake.qk_nope_head_dim = 4
+    fake.qk_rope_head_dim = 2
+    fake.indexer = indexer
+    fake.q_a_proj = make_marked_constant(mark, "q_a", (torch.zeros(2, 3),))
+    fake._maybe_mome_q = make_marked_input(mark, "q_mome")
+    fake.q_a_layernorm = make_marked_input(mark, "q_norm")
+    fake.q_b_nope_proj = make_marked_constant(
+        mark, "q_b_nope", (torch.zeros(2, 4),)
+    )
+    fake.q_b_proj = make_marked_constant(mark, "q_b", (torch.zeros(2, 6),))
+    fake.qk_head_dim = 6
+    fake._q_nope_absorb = make_marked_input(mark, "q_absorb")
+    fake.q_b_pe_proj = make_marked_constant(
+        mark, "q_b_pe", (torch.zeros(2, 2),)
+    )
+    fake._apply_rope = make_marked_input(mark, "q_rope")
+    fake.kv_a_proj_with_mqa = make_marked_constant(
+        mark, "kv_a", (torch.zeros(2, 6),)
+    )
+    fake._maybe_mome_kv = make_marked_input(mark, "kv_mome")
+    fake._kv_norm_rope_cache = make_marked_constant(
+        mark, "kv_rope_cache", None
+    )
+    fake._apply_sink_offset = make_marked_input(mark, "sink_offset")
+    fake._apply_attn_absorb = make_marked_constant(
+        mark,
+        "attention",
+        torch.ones(2, 1, 4),
+    )
+    fake._decode_attn_epilog = make_marked_input(mark, "epilog")
+
+    metadata = SimpleNamespace(
+        query_cumlens=torch.tensor([0, 1, 2], dtype=torch.int64),
+        seq_lens=torch.tensor([8, 9], dtype=torch.int64),
+        block_table=torch.zeros(2, 1, dtype=torch.int32),
+    )
+    kv_cache = (object(), object(), object())
+
+    with patch.object(torch.Tensor, "record_stream", return_value=None):
+        output, next_topk_indices = (
+            NPUDeepseekSparseAttention._forward_decode_multistream_a5(
+                fake,
+                x=torch.zeros(2, 4),
+                cos=torch.zeros(2, 1, 1, 2),
+                sin=torch.zeros(2, 1, 1, 2),
+                attn_metadata=metadata,
+                kv_cache=kv_cache,
+                get_mome_args=_short_prefill_args,
+            )
+        )
+
+    assert torch.equal(output, torch.ones(2, 1, 4))
+    assert torch.equal(
+        next_topk_indices,
+        torch.zeros(2, 1, 2, dtype=torch.int32),
+    )
+    q_up_ops = (
+        ["record", "indexer_q", "record", "q_b_nope"]
+        if split_q_up_in_multistream
+        else ["indexer_q", "record", "q_b", "record"]
+    )
+    q_pe_ops = (
+        ["q_b_pe", "indexer_rope", "q_rope"]
+        if split_q_up_in_multistream
+        else ["indexer_rope", "q_rope"]
+    )
+    assert [entry for entry in submitted if isinstance(entry, str)] == [
+        "record",
+        "q_a",
+        "record",
+        "q_mome",
+        "q_norm",
+        *q_up_ops,
+        "q_absorb",
+        "indexer_k",
+        "indexer_k_norm",
+        "indexer_rope",
+        "indexer_cache",
+        *q_pe_ops,
+        "record",
+        "indexer_weights",
+        "kv_a",
+        "kv_mome",
+        "kv_rope_cache",
+        "record",
+        "lightning_indexer",
+        "sink_offset",
+        "attention",
+        "epilog",
+    ]
+    indexer_cache_pos = submitted.index("indexer_cache")
+    li_sync_ops = [("wait", li_stream)]
+    if split_q_up_in_multistream:
+        li_sync_ops.append("q_b_pe")
+    li_sync_ops.append(("wait", li_stream))
+    assert submitted[
+        indexer_cache_pos + 1:indexer_cache_pos + 1 + len(li_sync_ops)
+    ] == li_sync_ops
+    q_pe_core_limit = (
+        [(8, 16)] if split_q_up_in_multistream else []
+    )
+    assert core_limits == [
+        (24, 48),
+        (8, 32),
+        (24, 48),
+        (32, 32),
+        (8, 32),
+        *q_pe_core_limit,
+        (16, 32),
+        (32, 32),
+        (16, 32),
+    ]
 
 
 @pytest.mark.unit
@@ -154,7 +438,11 @@ def _mock_misc(yarn_get_mscale_ret: float = 1.0):
             "omni_npu.v1.layers.attention.npu_mla.get_layer_parallel_group",
             return_value=None,
         ),
-        patch("vllm.model_executor.layers.rotary_embedding.get_rope_wrapper", MagicMock(return_value=None), create=True),
+        patch(
+            "vllm.model_executor.layers.rotary_embedding.get_rope_wrapper",
+            MagicMock(return_value=None),
+            create=True,
+        ),
     ):
         yield
 
@@ -1881,6 +2169,39 @@ def test_npu_dsa_forward_fake_returns_matching_hidden_and_topk_shapes():
     assert out.dtype == hidden.dtype
     assert out_topk.shape == topk.shape
     assert out_topk.dtype == topk.dtype
+
+
+@pytest.mark.unit
+def test_prefill_cp_allows_omnicache_before_building_cp_metadata():
+    from omni_npu.v1.layers.attention import npu_dsa as dsa_mod
+    from omni_npu.v1.layers.attention.npu_dsa import NPUDeepseekSparseAttention
+
+    fake = NPUDeepseekSparseAttention.__new__(NPUDeepseekSparseAttention)
+    fake.q_b_proj = SimpleNamespace(tp_size=1)
+    fake.kv_b_proj = SimpleNamespace(tp_size=1)
+    fake.ena_sp = True
+    fake.noncontiguous_kv = False
+    fake.use_omni_cache = True
+
+    sp_manager = SimpleNamespace(
+        cp_attn_meta=MagicMock(side_effect=RuntimeError("entered cp path"))
+    )
+    attn_metadata = SimpleNamespace(sp_manager=sp_manager)
+
+    with (
+        patch.object(dsa_mod, "DummySPManager", return_value=object()),
+        pytest.raises(RuntimeError, match="entered cp path"),
+    ):
+        NPUDeepseekSparseAttention._forward_prefill_cp(
+            fake,
+            torch.zeros(1, 1),
+            torch.zeros(1, 1),
+            torch.zeros(1, 1),
+            attn_metadata,
+            (None, None, None),
+        )
+
+    sp_manager.cp_attn_meta.assert_called_once()
 
 
 # Allow running directly

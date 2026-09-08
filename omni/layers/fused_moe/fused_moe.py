@@ -103,8 +103,17 @@ def fused_experts_tp(
         pertoken_scale = None
     else:
         moe_quant_config = getattr(experts.quant_method, "moe_quant_config", None)
-        if moe_quant_config and getattr(moe_quant_config, "use_mxfp8_w8a8", False) is True:
-            sorted_tokens, pertoken_scale = torch_npu.npu_dynamic_mx_quant(sorted_tokens, dst_type=torch.float8_e4m3fn)
+        use_mxfp = bool(moe_quant_config and (
+                getattr(moe_quant_config, "use_mxfp8_w8a8", False) is True
+                or getattr(moe_quant_config, "use_mxfp4_w4a8", False) is True
+            )
+        )
+        if use_mxfp:
+            sorted_tokens, pertoken_scale = torch_npu.npu_dynamic_mx_quant(
+                sorted_tokens,
+                dst_type=torch.float8_e4m3fn,
+                scale_alg=1
+            )
         else:
             sorted_tokens, pertoken_scale = torch_npu.npu_dynamic_quant(sorted_tokens)
 

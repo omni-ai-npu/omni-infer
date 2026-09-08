@@ -27,6 +27,7 @@ def fused_module(monkeypatch):
     torch_npu.npu_moe_init_routing = MagicMock()
     torch_npu.npu_moe_compute_expert_tokens = MagicMock()
     torch_npu.npu_dynamic_quant = MagicMock()
+    torch_npu.npu_dynamic_mx_quant = MagicMock()
 
     platforms_module = types.ModuleType("vllm.platforms")
     platforms_module.current_platform = SimpleNamespace(device_type="cpu")
@@ -214,4 +215,47 @@ def test_fused_experts_tp_with_quant(fused_module):
 
     layer.quant_method.apply_experts.assert_called_once()
     stubs.torch_npu.npu_dynamic_quant.assert_called_once()
+    assert torch.equal(output, torch.full((3, 2), 6.0))
+
+
+@pytest.mark.unit
+def test_fused_experts_tp_with_mxfp_quant(fused_module):
+    """MXFP8 activations use the training-aligned scale algorithm."""
+    module, stubs = fused_module
+    experts = _moe_layer(
+        global_num_experts=4,
+        quant_config=object(),
+        quant_method=MagicMock(),
+    )
+    layer = SimpleNamespace(routed_experts=experts)
+    experts.quant_method.moe_quant_config.use_mxfp8_w8a8 = True
+    sorted_tokens = torch.ones(3, 2)
+    expanded_src_to_dst_row = torch.zeros(3, 1, dtype=torch.int32)
+    expanded_expert_idx = torch.zeros(3, 1, dtype=torch.int32)
+    stubs.torch_npu.npu_moe_init_routing.return_value = (
+        sorted_tokens,
+        expanded_src_to_dst_row,
+        expanded_expert_idx,
+    )
+    stubs.torch_npu.npu_moe_compute_expert_tokens.return_value = torch.tensor([1, 2])
+    stubs.torch_npu.npu_dynamic_mx_quant.return_value = (
+        sorted_tokens,
+        torch.ones(3),
+    )
+    experts.quant_method.apply_experts.return_value = torch.full((3, 2), 5.0)
+    stubs.torch_npu.npu_moe_finalize_routing.side_effect = None
+    stubs.torch_npu.npu_moe_finalize_routing.return_value = torch.full((3, 2), 6.0)
+
+    output = module.fused_experts_tp(
+        layer=layer,
+        x=torch.ones(3, 2),
+        topk_ids=torch.zeros(3, 1, dtype=torch.int32),
+        topk_weights=torch.ones(3, 1),
+    )
+
+    experts.quant_method.apply_experts.assert_called_once()
+    stubs.torch_npu.npu_dynamic_mx_quant.assert_called_once()
+    _, kwargs = stubs.torch_npu.npu_dynamic_mx_quant.call_args
+    assert kwargs["scale_alg"] == 1
+    stubs.torch_npu.npu_dynamic_quant.assert_not_called()
     assert torch.equal(output, torch.full((3, 2), 6.0))
