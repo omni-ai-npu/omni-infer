@@ -5,20 +5,13 @@ import argparse
 
 from vllm import EngineArgs
 from vllm.config import ModelConfig
-from vllm.entrypoints.generate.base.serving import GenerateBaseServing as OpenAIServing
 from vllm.logger import init_logger
+from vllm.renderers.base import BaseRenderer
 import vllm.tokenizers as _vllm_tokenizers_module
 
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 logger = init_logger(__name__)
-# ────────────────────────────────────────────────────────────
-# save originals before patching (Module-level fallbacks)
-# NOTE: These are captured at import time, before any patches are
-# applied.  For methods that must chain through *previously applied*
-# patches (e.g. add_cli_args), the per-patch apply() override
-# captures the upstream version at apply-time.
-# ────────────────────────────────────────────────────────────
 _original_ea_create_model_config = EngineArgs.create_model_config
 
 
@@ -64,17 +57,7 @@ class EngineArgsLoptPatch(VLLMPatch):
         Capture the upstream (already-patched) versions at apply-time so the
         chain stays intact.
         """
-        target = cls._target
-
-        # Save the currently-active (possibly already patched) versions
-        cls._upstream_add_cli_args = target.add_cli_args
-        cls._upstream_from_cli_args = target.from_cli_args.__func__
-
-        for name in cls._attr_names_to_apply:
-            if name in cls.__dict__:
-                setattr(target, name, cls.__dict__[name])
-
-        logger.info("patch applied: %s => %s (bypass-conflict)", cls.__name__, target.__name__)
+        cls.apply_bypass_conflict("add_cli_args", "from_cli_args")
 
     @staticmethod
     def add_cli_args(parser):
@@ -121,100 +104,91 @@ class EngineArgsLoptPatch(VLLMPatch):
 
 
 # ────────────────────────────────────────────────────────────
-# Patch 3: OpenAIServing — init LoPT tokenizer + use in normalize
+# Patch 3: BaseRenderer — use LoPT in the shared text tokenization path
 # ────────────────────────────────────────────────────────────
-@register_patch("OpenAIServingLoptPatch", OpenAIServing)
-class OpenAIServingLoptPatch(VLLMPatch):
+@register_patch("BaseRendererLoptPatch", BaseRenderer)
+class BaseRendererLoptPatch(VLLMPatch):
     _attr_names_to_apply = [
-        "__init__",
-        "_normalize_prompt_text_to_input",
+        "_tokenize_prompt",
     ]
 
     @classmethod
     def apply(cls):
-        """Override to avoid _omni_npu_applied_patches conflict with other
-        patches that may also override __init__ or _normalize_prompt_text_to_input.
+        """Capture the current tokenizer hook so LoPT can safely fall back.
+
+        Current vLLM routes OpenAI completion/chat prompt preprocessing through
+        BaseRenderer. Patching the shared tokenizer hook covers both paths and
+        avoids depending on the removed OpenAIServing class.
         """
-        target = cls._target
+        cls.apply_bypass_conflict("_tokenize_prompt")
 
-        cls._upstream_os_init = target.__init__
-        cls._upstream_os_normalize = target._normalize_prompt_text_to_input
-
-        for name in cls._attr_names_to_apply:
-            if name in cls.__dict__:
-                setattr(target, name, cls.__dict__[name])
-
-        logger.info("patch applied: %s => %s (bypass-conflict)", cls.__name__, target.__name__)
-
-    def __init__(
-        self,
-        engine_client,
-        models,
-        *,
-        request_logger=None,
-        return_tokens_as_token_ids=False,
-        log_error_stack=False,
-    ):
-        OpenAIServingLoptPatch._upstream_os_init(
-            self,
-            engine_client,
-            models,
-            request_logger=request_logger,
-            return_tokens_as_token_ids=return_tokens_as_token_ids,
-            log_error_stack=log_error_stack,
-        )
-
+    @staticmethod
+    def _get_lopt_tokenizer(self):
         model_config = self.model_config
-        self.enable_lopt = getattr(model_config, "enable_lopt", False)
-        self.lopt_tokenizer = None
+        if not getattr(model_config, "enable_lopt", False):
+            return None
 
-        if self.enable_lopt:
+        if hasattr(self, "_omni_lopt_tokenizer"):
+            return self._omni_lopt_tokenizer
+
+        from omni_npu.lopt import maybe_get_lopt_tokenizer
+
+        tokenizer_path = (
+            getattr(model_config, "tokenizer", None) or model_config.model
+        )
+        self._omni_lopt_tokenizer = maybe_get_lopt_tokenizer(
+            model_path=tokenizer_path,
+            enable_lopt=True,
+            lopt_pool_size=getattr(model_config, "lopt_pool_size", 16),
+            lopt_chunk_size=getattr(model_config, "lopt_chunk_size", 4096),
+        )
+        if self._omni_lopt_tokenizer is not None:
             logger.warning(
-                "Lossless Parallel Tokenizer Enabled! "
-                "pool size=%s, chunk length=%s.",
+                "Lossless Parallel Tokenizer enabled. pool size=%s, "
+                "chunk length=%s, tokenizer=%s.",
                 getattr(model_config, "lopt_pool_size", 16),
                 getattr(model_config, "lopt_chunk_size", 4096),
+                tokenizer_path,
             )
-            from omni_npu.lopt import maybe_get_lopt_tokenizer
+        return self._omni_lopt_tokenizer
 
-            self.lopt_tokenizer = maybe_get_lopt_tokenizer(
-                model_path=model_config.model,
-                enable_lopt=True,
-                lopt_pool_size=getattr(model_config, "lopt_pool_size", 16),
-                lopt_chunk_size=getattr(model_config, "lopt_chunk_size", 4096),
-            )
-        else:
-            logger.warning(
-                "Lossless Parallel Tokenizer is Not Enabled! "
-                "enable_lopt=%s",
-                self.enable_lopt,
+    def _tokenize_prompt(self, prompt, params):
+        # return_token_offsets eventually maps to the native offsets path.
+        want_offsets = self._wants_offsets(prompt, params)
+        if want_offsets:
+            return BaseRendererLoptPatch._upstream_tokenize_prompt(
+                self, prompt, params
             )
 
-    async def _normalize_prompt_text_to_input(
-        self,
-        request,
-        prompt,
-        tokenizer,
-        add_special_tokens,
-    ):
-        if self.enable_lopt and self.lopt_tokenizer is not None:
-            encoded = self.lopt_tokenizer(prompt, add_special_tokens)
-            lopt_input_ids = encoded.input_ids
+        kwargs = params.get_encode_kwargs()
+        if kwargs.get("return_offsets_mapping"):
+            logger.debug_once(
+                "Bypassing LoPT tokenizer because return_offsets_mapping is "
+                "not supported.",
+                scope="local",
+            )
+            return BaseRendererLoptPatch._upstream_tokenize_prompt(
+                self, prompt, params
+            )
 
-            truncate_prompt_tokens = getattr(request, "truncate_prompt_tokens", None)
-            if truncate_prompt_tokens is not None:
-                if truncate_prompt_tokens < 0:
-                    lopt_input_ids = lopt_input_ids[: self.max_model_len]
-                else:
-                    lopt_input_ids = lopt_input_ids[
-                        : min(truncate_prompt_tokens, self.max_model_len)
-                    ]
+        lopt_tokenizer = BaseRendererLoptPatch._get_lopt_tokenizer(self)
+        if lopt_tokenizer is None:
+            return BaseRendererLoptPatch._upstream_tokenize_prompt(
+                self, prompt, params
+            )
 
-            return self._validate_input(request, lopt_input_ids, prompt)
+        try:
+            encoding = lopt_tokenizer(
+                prompt["prompt"],
+                add_special_tokens=kwargs.get("add_special_tokens", False),
+            )
+        except Exception:
+            logger.exception("LoPT tokenization failed; using native tokenizer.")
+            return BaseRendererLoptPatch._upstream_tokenize_prompt(
+                self, prompt, params
+            )
 
-        return await OpenAIServingLoptPatch._upstream_os_normalize(
-            self, request, prompt, tokenizer, add_special_tokens
-        )
+        return self._build_tokens_prompt(encoding["input_ids"], prompt)
 
 
 # ────────────────────────────────────────────────────────────

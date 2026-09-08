@@ -7,7 +7,7 @@ eager mode; NPUModelRunnerV2.prepare_attn then keeps the slot mappings at the
 unpadded count so len(slot_mapping) == num_actual_tokens still holds.
 
 Upstream callees are stubbed, so these run without a device. The MRv1
-counterpart lives in tests/unit/vllm_patch/common/test_dp_utils_patch.py.
+counterpart lives in tests/unit/vllm_patch/patches/common/test_dp_utils_patch.py.
 """
 
 from __future__ import annotations

@@ -14,7 +14,8 @@
 #     tokenization (the token-only path is NOT equivalent to the text path for
 #     several mm models, which mutate ids in _apply_hf_processor_tokens_only).
 #   * Requests with truncate_prompt_tokens fall back (truncation-side handling).
-#   * max_model_len validation still runs (via self._validate_input).
+#   * max_model_len validation runs afterwards in _create_chat_completion via
+#     get_max_tokens.
 #   * Tool-call request adjustment still runs; tool-output parsing is unaffected.
 #
 # Gating: OMNI_PIGGYBACK_INPUT_IDS (default "0"); set "1" to enable. The patch is a
@@ -26,45 +27,49 @@
 # if both must be active, compose them via a relay patch (see patch_serving_apc.py).
 
 import difflib
-from typing import Any, Callable, List, Optional
+from typing import Any, List, Optional
 
 from vllm.entrypoints.chat_utils import (
-    ChatCompletionMessageParam,
     ChatTemplateContentFormatOption,
+    ConversationMessage,
 )
 
 # These helpers build the conversation + multimodal data on the fast path. Import
 # defensively: the loader (import_patches_from_dir) has no error handling, so a
 # missing symbol here would abort the whole common-patch sweep. If absent, the fast
 # path is simply disabled and every request falls back to normal tokenization.
+# v0.25.1: parse_chat_messages_futures → parse_chat_messages (sync), moved from
+# vllm.entrypoints.chat_utils.  resolve_chat_template_content_format moved from
+# chat_utils → vllm.renderers.hf.  Both return (conv, mm_data, mm_uuids) directly;
+# mm_data is a resolved dict, not a Future.
 try:
-    from vllm.entrypoints.chat_utils import (
-        parse_chat_messages_futures,
-        resolve_chat_template_content_format,
-    )
-except Exception:  # noqa: BLE001
-    parse_chat_messages_futures = None
+    from vllm.entrypoints.chat_utils import parse_chat_messages
+except ImportError:  # noqa: BLE001
+    parse_chat_messages = None
+
+# resolve_chat_template_content_format moved from chat_utils to renderers.hf in v0.25.1
+try:
+    from vllm.renderers.hf import resolve_chat_template_content_format
+except ImportError:  # noqa: BLE001
     resolve_chat_template_content_format = None
 
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
-from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
-from vllm.entrypoints.serve.engine.typing import ChatLikeRequest
-from vllm.inputs.data import TokensPrompt
-from vllm.tokenizers import TokenizerLike
-from vllm.tool_parsers import ToolParser
+from vllm.inputs import EngineInput, tokens_input
 from vllm.logger import init_logger
+from vllm.parser import Parser
+from vllm.renderers.online_renderer import OnlineRenderer
+from vllm.utils.mistral import is_mistral_tokenizer, is_mistral_tool_parser
 
 from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
-from omni_npu.vllm_patches.patches.common.patch_prefilled_token_skip_tokenize import (
-    OpenAIServingChatPreprocessPatch as _PrefilledPreprocessPatch,
-)
 
 logger = init_logger(__name__)
 
-# Captured at import (before any patch is applied) = the original / inherited method.
-_prefilled_preprocess_chat = _PrefilledPreprocessPatch._preprocess_chat
+# Capture the original method before any patch is applied.  In v0.25.1 the
+# relay chain (InputIdsPiggyback → PrefilledTokenSkip → upstream) lives on
+# OnlineRenderer.preprocess_chat() rather than OpenAIServingChat._preprocess_chat().
+_original_preprocess_chat = OnlineRenderer.preprocess_chat
 
 
 def _register_input_ids_field() -> bool:
@@ -98,7 +103,7 @@ logger.info(
     int(envs.OMNI_PIGGYBACK_INPUT_IDS),
     int(envs.OMNI_VALIDATE_PIGGYBACK_INPUT_IDS),
     _FIELD_REGISTERED,
-    parse_chat_messages_futures is not None,
+    parse_chat_messages is not None,
 )
 
 
@@ -123,31 +128,27 @@ def _has_multimodal(messages) -> bool:
     return False
 
 
-@register_patch("InputIdsPiggyback", OpenAIServingChat)
+@register_patch("InputIdsPiggyback", OnlineRenderer)
 class InputIdsPiggybackPatch(VLLMPatch):
     """Skip chat-template expansion + tokenization when the caller
     piggybacks pre-tokenized input_ids on a text-only
     ChatCompletionRequest.
     """
 
-    _attr_names_to_apply = ["_preprocess_chat"]
+    _attr_names_to_apply = ["preprocess_chat"]
 
-    async def _preprocess_chat(
-        self,
-        request: ChatLikeRequest | ResponsesRequest,
-        tokenizer: TokenizerLike | None,
-        messages: list[ChatCompletionMessageParam],
-        chat_template: str | None,
-        chat_template_content_format: ChatTemplateContentFormatOption,
-        add_generation_prompt: bool = True,
-        continue_final_message: bool = False,
-        tool_dicts: list[dict[str, Any]] | None = None,
-        documents: list[dict[str, str]] | None = None,
-        chat_template_kwargs: dict[str, Any] | None = None,
-        default_chat_template_kwargs: dict[str, Any] | None = None,
-        tool_parser: Callable[[TokenizerLike], ToolParser] | None = None,
-        add_special_tokens: bool = False,
-    ):
+    async def preprocess_chat(
+            self,
+            request: Any,
+            messages: list[Any],
+            default_template: str | None,
+            default_template_content_format: ChatTemplateContentFormatOption,
+            default_template_kwargs: dict[str, Any] | None,
+            tool_dicts: list[dict[str, Any]] | None = None,
+            parser: type[Parser] | None = None,
+            *,
+            skip_mm_cache: bool = False,
+    ) -> tuple[list[ConversationMessage], list[EngineInput]]:
         enabled = envs.OMNI_PIGGYBACK_INPUT_IDS
         if enabled:
             assert not envs.OMNI_SKIP_DECODE_TOKENIZE, (
@@ -160,15 +161,17 @@ class InputIdsPiggybackPatch(VLLMPatch):
         caller_ids = _caller_input_ids(request) if enabled else None
 
         is_fast_path_candidate = (
-            caller_ids
-            and tokenizer is not None
-            and parse_chat_messages_futures is not None
-            and isinstance(request, ChatCompletionRequest)
-            and getattr(request, "truncate_prompt_tokens", None) is None
-            and not _has_multimodal(messages)
+                caller_ids is not None
+                and parse_chat_messages is not None
+                and resolve_chat_template_content_format is not None
+                and isinstance(request, ChatCompletionRequest)
+                and getattr(request, "truncate_prompt_tokens", None) is None
+                and not _has_multimodal(messages)
         )
 
         if is_fast_path_candidate:
+            tokenizer = self.renderer.tokenizer
+
             # Materialise any ValidatorIterator fields (e.g. tool_calls) so
             # they survive multiple iterations over the same messages list.
             if validate_enabled:
@@ -178,28 +181,33 @@ class InputIdsPiggybackPatch(VLLMPatch):
                         msg["tool_calls"] = list(tc)
 
             resolved = resolve_chat_template_content_format(
-                chat_template,
+                default_template,
                 tool_dicts,
-                chat_template_content_format,
+                default_template_content_format,
                 tokenizer,
                 model_config=self.model_config,
             )
-            conversation, mm_future, _mm_uuids = parse_chat_messages_futures(
+
+            conversation, mm_data, _mm_uuids = parse_chat_messages(
                 messages, self.model_config, content_format=resolved
             )
-            mm_data = await mm_future
 
             if mm_data is None:
 
                 if validate_enabled:
-                    _orig_conversation, orig_prompts = await _prefilled_preprocess_chat(
-                        self, request, tokenizer, messages, chat_template,
-                        chat_template_content_format, add_generation_prompt,
-                        continue_final_message, tool_dicts, documents,
-                        chat_template_kwargs, default_chat_template_kwargs,
-                        tool_parser, add_special_tokens
+                    # Run the full original path to get vLLM's token ids for comparison.
+                    _orig_conversation, orig_engine_inputs = await _original_preprocess_chat(
+                        self,
+                        request,
+                        messages,
+                        default_template,
+                        default_template_content_format,
+                        default_template_kwargs,
+                        tool_dicts=tool_dicts,
+                        parser=parser,
+                        skip_mm_cache=skip_mm_cache,
                     )
-                    vllm_ids = orig_prompts[0].get("prompt_token_ids", [])
+                    vllm_ids = orig_engine_inputs[0].get("prompt_token_ids", [])
 
                     if caller_ids != vllm_ids:
                         caller_tokens = (
@@ -241,38 +249,53 @@ class InputIdsPiggybackPatch(VLLMPatch):
                             "See logs for detailed diff."
                         )
 
-                if tool_parser is not None and (
-                    getattr(request, "tool_choice", None) != "none"
-                ):
-                    request = tool_parser(tokenizer).adjust_request(request=request)
+                # Tool parsing — same logic as the original OnlineRenderer.preprocess_chat.
+                if parser is not None:
+                    tool_parser = parser.tool_parser_cls
+                    tool_choice = getattr(request, "tool_choice", "none")
+                    is_mistral_grammar_eligible = (
+                            tool_parser is not None
+                            and is_mistral_tool_parser(tool_parser)
+                            and is_mistral_tokenizer(tokenizer)
+                            and getattr(tokenizer, "supports_grammar", False)
+                    )
+                    should_adjust_request = (
+                            parser.reasoning_parser_cls is not None
+                            or tool_choice != "none"
+                            or is_mistral_grammar_eligible
+                    )
+                    if should_adjust_request:
+                        if not isinstance(request, ChatCompletionRequest | ResponsesRequest):
+                            msg = (
+                                "Tool usage is only supported "
+                                "for Chat Completions API or Responses API requests, "
+                                f"but got {type(request).__name__}"
+                            )
+                            raise NotImplementedError(msg)
+                        chat_template_kwargs = request.build_chat_params(
+                            default_template, default_template_content_format
+                        ).with_defaults(default_template_kwargs or {}).chat_template_kwargs
+                        request = parser(
+                            tokenizer,
+                            request.tools,
+                            model_config=self.model_config,
+                            chat_template_kwargs=chat_template_kwargs,
+                        ).adjust_request(request=request)
 
-                prompt_inputs = self._validate_input(request, caller_ids, "")
-                engine_prompt = TokensPrompt(
-                    prompt_token_ids=prompt_inputs["prompt_token_ids"]
-                )
-                if getattr(request, "mm_processor_kwargs", None) is not None:
-                    engine_prompt["mm_processor_kwargs"] = request.mm_processor_kwargs
-                if getattr(request, "cache_salt", None) is not None:
-                    engine_prompt["cache_salt"] = request.cache_salt
+                # Build engine_input directly from piggybacked ids.
+                # tokens_input() produces TokensInput(type="token", prompt_token_ids=...)
+                # which is accepted by _create_chat_completion downstream.
+                # max_model_len validation runs later in get_max_tokens().
+                cache_salt = getattr(request, "cache_salt", None)
+                engine_input = tokens_input(caller_ids, cache_salt=cache_salt)
 
-                logger.debug(
-                    "<<< InputIdsPiggyback: ACTIVE (Validation=%s) — reusing piggybacked input_ids",
-                    validate_enabled,
-                )
-                return conversation, [engine_prompt]
+                return conversation, [engine_input]
 
-        if enabled and caller_ids:
-            logger.debug(
-                "<<< InputIdsPiggyback: input_ids present (%d) but NOT reused -> normal tokenization",
-                len(caller_ids),
-            )
-
-        # Relay chain fallback: delegate to prefilled_token_skip_tokenize's
-        # preprocess (which calls the true original then applies prefilled reuse).
-        return await _prefilled_preprocess_chat(
-            self, request, tokenizer, messages, chat_template,
-            chat_template_content_format, add_generation_prompt,
-            continue_final_message, tool_dicts, documents,
-            chat_template_kwargs, default_chat_template_kwargs,
-            tool_parser, add_special_tokens,
+        # Fallback: delegate to the original OnlineRenderer.preprocess_chat
+        # (which itself may be wrapped by other patches in the relay chain).
+        return await _original_preprocess_chat(
+            self, request, messages, default_template,
+            default_template_content_format, default_template_kwargs,
+            tool_dicts=tool_dicts, parser=parser,
+            skip_mm_cache=skip_mm_cache,
         )

@@ -103,7 +103,7 @@ def _get_manual_patches_dir_env() -> str:
 
 def auto_import_patches():
     """
-    Load the curated usefull_patch tree:
+    Load the curated patches tree:
         1. common/ is always imported
         2. models/<dir> is imported only when named in OMNI_VLLM_PATCHES_DIR
            (comma-separated). ``high_throughout`` / ``low_latency`` also
@@ -112,33 +112,33 @@ def auto_import_patches():
     Files within each directory are sorted by filename.
     """
     vllm_patches_root = Path(__file__).parent
-    usefull_patch_dir = vllm_patches_root / "usefull_patch"
-    base_pkg = "omni_npu.vllm_patches.usefull_patch"
-    models_root = usefull_patch_dir / "models"
+    patches_dir = vllm_patches_root / "patches"
+    base_pkg = "omni_npu.vllm_patches.patches"
+    models_root = patches_dir / "models"
 
-    if not usefull_patch_dir.exists():
+    if not patches_dir.exists():
         logger.warning(
-            "usefull_patch directory not found: %s", usefull_patch_dir
+            "patches directory not found: %s", patches_dir
         )
         return
 
-    common_dir = usefull_patch_dir / "common"
+    common_dir = patches_dir / "common"
     if common_dir.exists():
         import_patches_from_dir(common_dir, f"{base_pkg}.common")
         logger.info("loaded patches from %s", common_dir)
     else:
-        logger.warning("usefull_patch common directory not found: %s", common_dir)
+        logger.warning("patches common directory not found: %s", common_dir)
 
     model_type = _get_manual_patches_dir_env()
     if not model_type:
         logger.info(
-            "OMNI_VLLM_PATCHES_DIR is unset; skip usefull_patch/models/"
+            "OMNI_VLLM_PATCHES_DIR is unset; skip patches/models/"
         )
         return
 
     if not models_root.exists():
         logger.warning(
-            "usefull_patch models directory not found: %s", models_root
+            "patches models directory not found: %s", models_root
         )
         return
 
@@ -153,12 +153,12 @@ manager = PatchManager()
 
 
 def apply_patches():
-    # auto import and register patches from usefull_patch only
+    # auto import and register patches from patches/ only
     auto_import_patches()
 
     manager.apply_patches()
 
     # Run dynamic trace wrapping after normal patches are applied, so namelist
     # targets wrap the final patched methods instead of earlier implementations.
-    from omni_npu.vllm_patches.usefull_patch.common.patch_trace import ProfilerDynamicPatch
+    from omni_npu.vllm_patches.patches.common.patch_trace import ProfilerDynamicPatch
     ProfilerDynamicPatch()

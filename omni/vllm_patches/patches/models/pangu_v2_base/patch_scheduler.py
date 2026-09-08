@@ -1,27 +1,15 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-import time
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from vllm.distributed.ec_transfer.ec_connector.base import (
-    ECConnectorMetadata,
-    ECConnectorRole,
-)
 from vllm.logger import init_logger
-from vllm.v1.core.kv_cache_manager import KVCacheBlocks
-from vllm.v1.core.sched.output import SchedulerOutput
-from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_queue
 from vllm.v1.core.sched.scheduler import Scheduler
-from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
-from vllm.v1.engine import EngineCoreEventType
-from vllm.v1.request import Request, RequestStatus
-from vllm.v1.core.sched.output import (
-    NewRequestData,
-    SchedulerOutput,
-)
-from vllm.v1.utils import record_function_or_nullcontext
+from vllm.v1.request import Request
 
+from vllm.v1.core.sched.utils import check_stop
+
+from omni_npu import envs
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
-from omni_npu.vllm_patches.patches.common.patch_user_repetition_detection import check_stop
 
 logger = init_logger(__name__)
 
@@ -36,33 +24,45 @@ class PanguV2SchedulerPatch(VLLMPatch):
         self, request: Request, new_token_ids: list[int]
     ) -> tuple[list[int], bool]:
 
-        # With drafter enabled, input_fits_in_drafter may fail inconsistently
-        # across DP groups near max_model_len due to different batch
-        # compositions. MTP/EAGLE/EAGLE3 must execute the drafter on all DP
-        # groups; partial execution causes service hang in MoE + expert
-        # parallel + DP mode. Terminate requests early to avoid this.
-        #
-        # The *3 margin also prevents a skip-one-step issue in async scheduling
-        # near max_model_len: num_computed_tokens is updated one step behind
-        # (in _update_after_schedule), which can cause the scheduler to skip
-        # a step and re-schedule the request in the next step with stale spec
-        # token placeholders.
-        #
-        # The *3 margin accounts for the async scheduling pipeline:
-        #
-        #   Token p is generated when computing token p-1 (position lag = 1).
-        #   The last valid schedule covers positions
-        #     [M-1-2N, M-1-N] (1+N tokens: 1 real + N spec).
-        #   At that point, update_request_with_output is processing
-        #     tokens on positions [M-1-3N, M-1-2N].
-        #   Positions referenced: M = max_model_len, N = num_speculative_tokens.
-        #
-        # Without the *3 margin, the drafter's input_fits_in_drafter check
-        # sees max_seq_len that has already advanced past the boundary,
-        # causing some DP groups to skip the drafter while others run it.
-        num_early_skip_tokens = 0 \
-            if self.vllm_config.speculative_config is None \
-            else self.vllm_config.speculative_config.num_speculative_tokens * 3
+        # PD disaggregation: the prefill (kv_producer) node must stop after
+        # exactly `original_max_tokens` (1 token) via FINISHED_LENGTH_CAPPED
+        kv_transfer_config = getattr(self.vllm_config, "kv_transfer_config", None)
+        is_p_node = bool(
+            kv_transfer_config is not None
+            and getattr(kv_transfer_config, "kv_role", None) == "kv_producer"
+        )
+
+        # Get start_token_id and end_token_id for reasoning end detection.
+        # vLLM 0.25.1 initializes these IDs on reasoning_config.
+        start_token_id = end_token_id = None
+        reasoning_config = getattr(self.vllm_config, "reasoning_config", None)
+        reasoning_enabled = (
+            reasoning_config is not None and reasoning_config.enabled
+        )
+        if (
+            not is_p_node
+            and envs.OMNI_ENABLE_MAX_TOKENS_EXCLUDE_REASONING
+            and reasoning_enabled
+        ):
+            start_token_ids = reasoning_config.reasoning_start_token_ids
+            end_token_ids = reasoning_config.reasoning_end_token_ids
+            if start_token_ids:
+                start_token_id = start_token_ids[-1]
+            if end_token_ids:
+                end_token_id = end_token_ids[-1]
+
+        if not hasattr(request, "content_generated"):
+            request.reasoning_ended = end_token_id is None
+            request.content_generated = (
+                request.num_output_tokens if request.reasoning_ended else 0
+            )
+            request._original_max_tokens = request.max_tokens
+            request._reasoning_started = start_token_id is None or (
+                start_token_id in (request.prompt_token_ids or [])
+                or start_token_id in request.output_token_ids
+            )
+
+        original_max_tokens = request._original_max_tokens
 
         # Append generated tokens and check for stop. Note that if
         # a request is still being prefilled, we expect the model runner
@@ -71,10 +71,35 @@ class PanguV2SchedulerPatch(VLLMPatch):
         for num_new, output_token_id in enumerate(new_token_ids, 1):
             request.append_output_token_ids(output_token_id)
 
+            was_reasoning_ended = request.reasoning_ended
+            if end_token_id is not None and output_token_id == end_token_id:
+                request.reasoning_ended = True
+                request._reasoning_started = True
+            if start_token_id is not None and output_token_id == start_token_id:
+                request._reasoning_started = True
+            if was_reasoning_ended:
+                request.content_generated += 1
+
+            if not request._reasoning_started:
+                # Reasoning hasn't started yet (and we can still detect its
+                # start): bound total output normally.
+                request.max_tokens = original_max_tokens
+            elif not request.reasoning_ended:
+                # Reasoning in progress: lift the cap so check_stop's
+                # max_tokens comparison can't trigger on it.
+                request.max_tokens = self.max_model_len
+            else:
+                # Reasoning ended: only content tokens should count. check_stop compares
+                # the real (total) request.num_output_tokens against request.max_tokens.
+                request.max_tokens = original_max_tokens + (
+                    request.num_output_tokens - request.content_generated
+                )
+
             # Check for stop and update request state.
             # This must be called before we make the EngineCoreOutput.
-            stopped = check_stop(request, self.max_model_len - num_early_skip_tokens)
+            stopped = check_stop(request, self.max_model_len)
             if stopped:
+                request.max_tokens = original_max_tokens
                 del new_token_ids[num_new:]  # Trim new tokens if needed.
                 break
         return new_token_ids, stopped

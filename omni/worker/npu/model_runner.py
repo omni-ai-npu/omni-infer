@@ -36,7 +36,7 @@ class NPUModelRunnerV2(GPUModelRunner):
         torch.cuda.Stream on its third line. They stay here rather than in a
         patch because rewriting torch.cuda is global and MRv1 must not get it;
         the module patches themselves are applied by the plugin (see
-        omni/vllm_patches/usefull_patch/common/patch_mrv2_*.py).
+        omni/vllm_patches/patches/common/patch_mrv2_*.py).
         """
         install_torch_cuda_aliases()
         from omni_npu.compilation.npugraph_ex_config import init_aclgraph_config

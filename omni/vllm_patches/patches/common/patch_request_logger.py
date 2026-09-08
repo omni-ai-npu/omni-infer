@@ -6,7 +6,7 @@ import copy
 from typing import Any
 
 import torch
-from vllm.entrypoints.logger import RequestLogger
+from vllm.entrypoints.serve.utils.request_logger import RequestLogger
 from vllm.lora.request import LoRARequest
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import BeamSearchParams, SamplingParams

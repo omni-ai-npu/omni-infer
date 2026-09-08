@@ -42,7 +42,7 @@ pytestmark = pytest.mark.skipif(
 def _mome_available() -> bool:
     """MomeAttention is injected into vllm.model_executor.layers.npumome by
     patch_mome_hybrid (patch_mome.py / patch_mome_hybrid.py), which has not
-    been migrated to the usefull_patch directory yet. Without it, npu_dsa.py /
+    been migrated to the patches directory yet. Without it, npu_dsa.py /
     npu_mla.py raise NameError on the high-performance construction path."""
     try:
         from vllm.model_executor.layers.npumome import MomeAttention  # noqa: F401
@@ -59,7 +59,7 @@ def _mome_available() -> bool:
 MOME_MISSING = pytest.mark.skipif(
     not _mome_available(),
     reason="MomeAttention not registered: patch_mome / patch_mome_hybrid not yet "
-           "migrated to usefull_patch",
+           "migrated to patches",
 )
 
 from . import pangu_attention_st_common as H  # noqa: E402

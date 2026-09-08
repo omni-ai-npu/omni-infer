@@ -41,7 +41,7 @@ def test_get_patch_dir_names_legacy_comma_separated_aliases_are_expanded():
 
 
 def test_find_patch_dir_exact_high_throughout_includes_pangu_v2_base():
-    models_root = Path(vllm_patches.__file__).parent / "usefull_patch" / "models"
+    models_root = Path(vllm_patches.__file__).parent / "patches" / "models"
 
     patch_dirs = vllm_patches._find_patch_dir_exact("high_throughout", models_root)
 
@@ -52,7 +52,7 @@ def test_find_patch_dir_exact_high_throughout_includes_pangu_v2_base():
 
 
 def test_find_patch_dir_exact_low_latency_includes_pangu_v2_base():
-    models_root = Path(vllm_patches.__file__).parent / "usefull_patch" / "models"
+    models_root = Path(vllm_patches.__file__).parent / "patches" / "models"
 
     patch_dirs = vllm_patches._find_patch_dir_exact("low_latency", models_root)
 
@@ -63,7 +63,7 @@ def test_find_patch_dir_exact_low_latency_includes_pangu_v2_base():
 
 
 def test_find_patch_dir_exact_legacy_pangu_v2_hybrid():
-    models_root = Path(vllm_patches.__file__).parent / "usefull_patch" / "models"
+    models_root = Path(vllm_patches.__file__).parent / "patches" / "models"
 
     patch_dirs = vllm_patches._find_patch_dir_exact("pangu_v2_hybrid", models_root)
 
@@ -74,7 +74,7 @@ def test_find_patch_dir_exact_legacy_pangu_v2_hybrid():
 
 
 def test_find_patch_dir_exact_legacy_pangu_v2_moe():
-    models_root = Path(vllm_patches.__file__).parent / "usefull_patch" / "models"
+    models_root = Path(vllm_patches.__file__).parent / "patches" / "models"
 
     patch_dirs = vllm_patches._find_patch_dir_exact("pangu_v2_moe", models_root)
 

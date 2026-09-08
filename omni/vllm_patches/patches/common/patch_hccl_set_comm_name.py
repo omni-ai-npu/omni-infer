@@ -32,32 +32,22 @@ class InitProcessGroupHCCLPatch(VLLMPatch):
         pg_options: Optional[Any] = None,
         device_id: Optional[Union[torch.device, int]] = None,
     ) -> None:
-        #####patch start
         if backend == "hccl":
             import torch_npu
-            options = torch_npu._C._distributed_c10d.ProcessGroupHCCL.Options()
-            options.hccl_config = {"group_name": "init_distributed_environment"}
-            _original_init_process_group(
-                backend=backend,
-                init_method=init_method,
-                timeout=timeout,
-                world_size=world_size,
-                rank=rank,
-                store=store,
-                group_name=group_name,
-                pg_options=options,
-                device_id=device_id
-            )
-        #####patch end
-        else:
-            _original_init_process_group(
-                backend=backend,
-                init_method=init_method,
-                timeout=timeout,
-                world_size=world_size,
-                rank=rank,
-                store=store,
-                group_name=group_name,
-                pg_options=pg_options,
-                device_id=device_id
-            )
+            if pg_options is None:
+                pg_options = torch_npu._C._distributed_c10d.ProcessGroupHCCL.Options()
+            if not hasattr(pg_options, "hccl_config"):
+                pg_options.hccl_config = {}
+            pg_options.hccl_config["group_name"] = "init_distributed_environment"
+
+        _original_init_process_group(
+            backend=backend,
+            init_method=init_method,
+            timeout=timeout,
+            world_size=world_size,
+            rank=rank,
+            store=store,
+            group_name=group_name,
+            pg_options=pg_options,
+            device_id=device_id
+        )

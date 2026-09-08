@@ -228,7 +228,7 @@ env_variables: Dict[str, Callable[[], Any]] = {
     #      OMNI_TRACE_OUTPUT_DIRECTORY and independent of (A).
     # =========================================================================
 
-    # Enables the usefull_patch omni-trace path and selects the directory for
+    # Enables the patches omni-trace path and selects the directory for
     # per-process trace logs. Unset/None preserves its disabled-by-default
     # behavior; patch_trace also treats an empty or whitespace-only value as
     # disabled. Consumers capture the value when patch_trace.py and
@@ -301,7 +301,7 @@ env_variables: Dict[str, Callable[[], Any]] = {
     # place, or leaves the feature disabled when no CLI value was supplied (no
     # raise -- a bad env var must not take down a node that was otherwise
     # launched correctly, whereas a bad CLI value does fail the launch).
-    # Consumers: usefull_patch/common/patch_repetition_detection_config.py,
+    # Consumers: patches/common/patch_repetition_detection_config.py,
     # patches/common/patch_user_repetition_detection.py:131-155 (superseded).
     "OMNI_REPETITION_DETECTION_CONFIG":
     lambda: get_env_with_fallback(
@@ -354,7 +354,7 @@ env_variables: Dict[str, Callable[[], Any]] = {
     # behavior to preserve the pre-OMNI contract of
     # ENABLE_MAX_TOKENS_EXCLUDE_REASONING; other values leave the default
     # (total-output) max_tokens accounting unchanged.
-    # Consumers: usefull_patch/models/pangu_v2_hybrid/patch_scheduler.py.
+    # Consumers: patches/models/pangu_v2_base/patch_scheduler.py.
     "OMNI_ENABLE_MAX_TOKENS_EXCLUDE_REASONING":
     lambda: get_env_with_fallback(
         "OMNI_ENABLE_MAX_TOKENS_EXCLUDE_REASONING",
@@ -490,14 +490,11 @@ env_variables: Dict[str, Callable[[], Any]] = {
         "OMNI_VLLM_PATCHES", ["OMNI_NPU_VLLM_PATCHES"], ""),
 
     # Comma-separated list of model patch directories under
-    # vllm_patches/usefull_patch/models/ (and the legacy
-    # vllm_patches/patches/models/ mapping table). Empty skips model-specific
-    # usefull_patch dirs and only loads usefull_patch/common/.
-    # Example: "high_throughout" (also loads pangu_v2_base) or
-    # "low_latency" (also loads pangu_v2_base).
+    # vllm_patches/patches/models/. Empty skips model-specific dirs and only
+    # loads patches/common/. Example: "high_throughout" (also loads
+    # pangu_v2_base) or "low_latency" (also loads pangu_v2_base).
     # Also consumed by layers/__init__.py:28-36 (decides whether to load
-    # mhc/mome modules), worker/npu_model_runner.py:458-462 (pangu_v2_hybrid
-    # KV cache spec branch), and pangu_v2_hybrid/patch_speculative.py:66.
+    # mhc/mome modules).
     "OMNI_VLLM_PATCHES_DIR":
     lambda: get_env_with_fallback(
         "OMNI_VLLM_PATCHES_DIR", ["OMNI_NPU_PATCHES_DIR"], ""),
