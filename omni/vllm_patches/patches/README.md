@@ -59,7 +59,7 @@ patches/
 |------|------|
 | `patch_sink_attention_spec.py` | 注入 `SinkMLAAttentionSpec` |
 | `patch_static_sink_attention.py` | StaticSink attention |
-| `patch_hybrid_kv_cache_coordinator.py` | hybrid APC：`find_longest_cache_hit` 禁止 simple-hybrid 提前退出并 cap 到 FA 实际持有的 block；`find_longest_cache_hit_per_group` 把公共命中长度按 group 重复，给 LLMDataDist fill |
+| `patch_hybrid_kv_cache_coordinator.py` | hybrid APC：`find_longest_cache_hit_per_group` 把公共命中长度按 group 重复，给 LLMDataDist fill |
 | `patch_mome_hybrid.py` | Pangu V2 hybrid MoME attention |
 
 ## models/low_latency/

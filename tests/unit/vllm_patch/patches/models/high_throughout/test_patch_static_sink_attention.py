@@ -37,20 +37,20 @@ def _vllm_config(block_size=16, max_model_len=64, max_num_seqs=4):
     )
 
 
-def _patch_model_extra_config(monkeypatch, *, use_noncontiguous_kv):
+def _patch_model_extra_config(monkeypatch, *, use_noncontiguous_kv, dtype=torch.bfloat16):
     # Import the module object so pytest does not walk omni_npu.model_config.*.
     import omni_npu.model_config.config_loader.loader as loader_mod
+    import omni_npu.vllm_patches.patches.models.high_throughout.patch_static_sink_attention as sink_mod
 
-    monkeypatch.setattr(
-        loader_mod,
-        "model_extra_config",
-        SimpleNamespace(
-            operator_opt_config=SimpleNamespace(
-                use_noncontiguous_kv=use_noncontiguous_kv
-            )
+    extra = SimpleNamespace(
+        dtype=dtype,
+        operator_opt_config=SimpleNamespace(
+            use_noncontiguous_kv=use_noncontiguous_kv
         ),
-        raising=False,
     )
+    # get_kv_cache_spec reads the name bound in the patch module.
+    monkeypatch.setattr(loader_mod, "model_extra_config", extra, raising=False)
+    monkeypatch.setattr(sink_mod, "model_extra_config", extra, raising=False)
 
 
 def _static_sink_mla_spec(
@@ -60,6 +60,7 @@ def _static_sink_mla_spec(
     use_sparse,
     indexer=None,
     sink_len=None,
+    sliding_window=None,
     vllm_config=None,
 ):
     from vllm.v1 import kv_cache_interface
@@ -75,6 +76,12 @@ def _static_sink_mla_spec(
     # injects them. raising=False lets setattr create the missing names.
     monkeypatch.setattr(
         kv_cache_interface, "DSAAttentionSpec", kv_mod.DSAAttentionSpec, raising=False
+    )
+    monkeypatch.setattr(
+        kv_cache_interface,
+        "ShareKVSlidingWindowSpec",
+        kv_mod.ShareKVSlidingWindowSpec,
+        raising=False,
     )
     # SinkMLAAttentionSpec is defined/registered by the high_throughout patch,
     # not pangu_v2_base, so source it from sink_spec_mod.
@@ -95,7 +102,7 @@ def _static_sink_mla_spec(
     )
     attn.kv_cache_dtype = "auto"
     attn.use_sparse = use_sparse
-    attn.sliding_window = None
+    attn.sliding_window = sliding_window
     attn.indexer = indexer
     attn.head_size = 576
     if sink_len is not None:
@@ -103,7 +110,12 @@ def _static_sink_mla_spec(
     if vllm_config is None:
         vllm_config = SimpleNamespace(
             model_config=SimpleNamespace(hf_config=SimpleNamespace(index_head_dim=128)),
-            cache_config=SimpleNamespace(block_size=16, cache_dtype="auto"),
+            cache_config=SimpleNamespace(
+                block_size=16,
+                cache_dtype="auto",
+                mamba_page_size_padded=4096,
+            ),
+            quant_config=None,
         )
     spec = StaticSinkAttentionPatch.StaticSinkMLAAttention.get_kv_cache_spec(
         attn, vllm_config
@@ -197,8 +209,75 @@ def test_static_sink_mla_get_kv_cache_spec_uses_sink_mla_otherwise(monkeypatch):
         sink_len=128,
         vllm_config=SimpleNamespace(
             model_config=SimpleNamespace(),
-            cache_config=SimpleNamespace(block_size=16, cache_dtype="auto"),
+            cache_config=SimpleNamespace(
+                block_size=16,
+                cache_dtype="auto",
+                mamba_page_size_padded=2048,
+            ),
         ),
     )
     assert isinstance(spec, sink_spec_mod.SinkMLAAttentionSpec)
     assert spec.sink_len == 128
+    assert spec.page_size_padded == 2048
+
+
+@pytest.mark.unit
+def test_static_sink_mla_get_kv_cache_spec_uses_share_kv_swa(monkeypatch):
+    spec, kv_mod, _sink_spec_mod = _static_sink_mla_spec(
+        monkeypatch,
+        use_noncontiguous_kv=True,
+        use_sparse=False,
+        sliding_window=4096,
+        vllm_config=SimpleNamespace(
+            model_config=SimpleNamespace(),
+            cache_config=SimpleNamespace(
+                block_size=16,
+                cache_dtype="auto",
+                mamba_page_size_padded=1024,
+            ),
+            quant_config=None,
+        ),
+    )
+    assert isinstance(spec, kv_mod.ShareKVSlidingWindowSpec)
+    assert spec.block_size == 16
+    assert spec.head_size == 576
+    assert spec.sliding_window == 2048
+    assert spec.page_size_padded == 1024
+    assert spec.dtype == torch.bfloat16
+
+
+@pytest.mark.unit
+def test_static_sink_mla_share_kv_swa_halves_block_size_when_sparse_quant(
+    monkeypatch,
+):
+    spec, kv_mod, _sink_spec_mod = _static_sink_mla_spec(
+        monkeypatch,
+        use_noncontiguous_kv=True,
+        use_sparse=True,
+        sliding_window=2048,
+        indexer=SimpleNamespace(head_dim=128),
+        vllm_config=SimpleNamespace(
+            model_config=SimpleNamespace(),
+            cache_config=SimpleNamespace(
+                block_size=16,
+                cache_dtype="auto",
+                mamba_page_size_padded=1024,
+            ),
+            quant_config=object(),
+        ),
+    )
+    assert isinstance(spec, kv_mod.ShareKVSlidingWindowSpec)
+    assert spec.block_size == 8
+
+
+@pytest.mark.unit
+def test_static_sink_mla_noncontiguous_dense_stays_sink_mla(monkeypatch):
+    spec, _kv_mod, sink_spec_mod = _static_sink_mla_spec(
+        monkeypatch,
+        use_noncontiguous_kv=True,
+        use_sparse=False,
+        sink_len=64,
+    )
+    assert isinstance(spec, sink_spec_mod.SinkMLAAttentionSpec)
+    assert spec.sink_len == 64
+    assert spec.page_size_padded == 4096

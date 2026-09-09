@@ -296,6 +296,14 @@ def _gated_apply_setup(layer_module, monkeypatch, router_gating_in_fp32):
     return method, _ep_layer(gate=_recording_gate(gate_calls)), gate_calls
 
 
+def _make_single_card_apply_method(layer_module, monkeypatch, *, on_ascend950):
+    module, _, context_holder = layer_module
+    context_holder.attn_metadata = {}
+    method = _make_unquantized_apply_method(module, monkeypatch)
+    method.on_ascend950 = on_ascend950
+    return module, method
+
+
 @pytest.mark.unit
 def test_select_experts_profile_mode(layer_module):
     module, _, context_holder = layer_module
@@ -334,13 +342,13 @@ def test_select_experts_grouped_topk_requires_group_args(layer_module):
 def test_apply_experts_uses_grouped_matmul_twice(layer_module):
     module, torch_npu, _ = layer_module
     method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
-    w13 = torch.ones(2, 4, 4)
-    w2 = torch.ones(2, 4, 4)
+    w13_experts = torch.ones(2, 4, 4)
+    w2_experts = torch.ones(2, 4, 4) * 2
     parallel = SimpleNamespace(use_ep=True)
     layer = SimpleNamespace(
-        routed_experts=SimpleNamespace(w13_weight=w13, w2_weight=w2),
-        w13_weight=w13,
-        w2_weight=w2,
+        routed_experts=SimpleNamespace(w13_weight=w13_experts, w2_weight=w2_experts),
+        w13_weight=torch.ones(2, 4, 4) * 9,
+        w2_weight=torch.ones(2, 4, 4) * 9,
         moe_config=SimpleNamespace(moe_parallel_config=parallel),
         moe_parallel_config=parallel,
         _shared_experts=None,
@@ -355,6 +363,8 @@ def test_apply_experts_uses_grouped_matmul_twice(layer_module):
     out = method.apply_experts(layer, prepare_result)
     assert out.shape == (3, 4)
     assert torch_npu.npu_grouped_matmul.call_count == 2
+    assert torch_npu.npu_grouped_matmul.call_args_list[0].args[1][0] is w13_experts
+    assert torch_npu.npu_grouped_matmul.call_args_list[1].args[1][0] is w2_experts
 
 
 @pytest.mark.unit
@@ -568,6 +578,42 @@ def test_weight_loader_handles_transposed_weights(layer_module, monkeypatch):
 
 
 @pytest.mark.unit
+def test_weight_loader_nz_converts_and_requests_aclgraph_recapture(
+    layer_module, monkeypatch
+):
+    module, torch_npu, _ = layer_module
+    recapture = MagicMock()
+    monkeypatch.setattr(module, "set_aclgraph_recapture", recapture)
+    super_weight_loader = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        module.RoutedExperts, "weight_loader", super_weight_loader, raising=False
+    )
+    experts = _bare_experts(module)
+    experts.enable_eplb = False
+
+    param = torch.nn.Parameter(torch.arange(24, dtype=torch.float32).view(2, 3, 4))
+    setattr(param, "is_weight_transposed", False)
+    setattr(param, "is_weight_nz", True)
+    result = experts.weight_loader(
+        param=param,
+        loaded_weight=torch.zeros(2, 3, 4),
+        weight_name="w13_weight",
+        shard_id="0",
+        expert_id=0,
+        return_success=True,
+    )
+
+    assert result is True
+    assert torch_npu.npu_format_cast.call_count == 2
+    assert torch_npu.npu_format_cast.call_args_list[0].args[1] == torch_npu.Format.ND
+    assert (
+        torch_npu.npu_format_cast.call_args_list[1].args[1] == torch_npu.Format.FRACTAL_NZ
+    )
+    recapture.assert_called_once_with(True)
+    super_weight_loader.assert_called_once()
+
+
+@pytest.mark.unit
 def test_forward_uses_expert_mask_when_rocm_enabled(layer_module, monkeypatch):
     module, _, _ = layer_module
     fused = _bare_runner(module)
@@ -674,89 +720,40 @@ def test_apply_slice_path_without_padding_slices_router_logits(layer_module, mon
 
 
 @pytest.mark.unit
-def test_apply_single_card_a5_shared_experts_returns_shared_and_routed(layer_module, monkeypatch):
-    """A5 single-card: stream sync + shared expert handling, returns (shared, routed+shared)."""
-    module, _, context_holder = layer_module
-    context_holder.attn_metadata = {}
-    method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
-    method.tp_size = 1
-    method.tp_rank = 0
-    method.on_ascend950 = True
-    method.sub_stream = _DummyStream()
-    method.model_prefetch = MagicMock()
-    method.select_communication_strategy = MagicMock(return_value=("all2all", _DummyStrategy()))
-    monkeypatch.setattr(
-        module.NPUFusedMoE,
-        "select_experts",
-        MagicMock(
-            return_value=(
-                torch.full((2, 1), 0.5, dtype=torch.float32),
-                torch.ones(2, 1, dtype=torch.int32),
-            )
-        ),
+def test_apply_single_card_a5_uses_fused_experts_tp_with_shared(layer_module, monkeypatch):
+    """A5 TP-only path returns whatever fused_experts_tp_with_shared produces."""
+    module, method = _make_single_card_apply_method(
+        layer_module, monkeypatch, on_ascend950=True,
     )
-    routed_mock = MagicMock(return_value=torch.full((2, 4), 2.0))
-    monkeypatch.setattr(module, "fused_experts_tp", routed_mock)
-    monkeypatch.setattr(
-        sys.modules["omni_npu.layers.fused_moe.fused_moe"],
-        "fused_experts_tp",
-        routed_mock,
-    )
-    shared = MagicMock(return_value=torch.full((2, 4), 5.0))
+    shared = MagicMock()
+    shared_out = torch.full((2, 4), 5.0)
+    routed_out = torch.full((2, 4), 7.0)
+    with_shared = MagicMock(return_value=(shared_out, routed_out))
+    monkeypatch.setattr(module, "fused_experts_tp_with_shared", with_shared)
     layer = _ep_layer(shared_experts=shared, use_ep=False)
 
-    shared_output, routed_output = method.apply(
-        layer=layer,
-        hidden_states=torch.ones(2, 4),
-        router_logits=torch.zeros(2, 3),
-        top_k=1,
-        renormalize=False,
-    )
+    result = _apply(method, layer, torch.ones(2, 4), torch.zeros(2, 3))
 
-    routed_mock.assert_called_once()
-    shared.assert_called_once()
-    assert torch.equal(shared_output, torch.full((2, 4), 5.0))
-    assert torch.equal(routed_output, torch.full((2, 4), 7.0))
+    with_shared.assert_called_once()
+    assert with_shared.call_args.args[0] is layer
+    assert with_shared.call_args.args[4] is shared
+    shared.assert_not_called()
+    shared_output, routed_output = result
+    assert torch.equal(shared_output, shared_out)
+    assert torch.equal(routed_output, routed_out)
 
 
 @pytest.mark.unit
 def test_apply_single_card_a5_no_shared_experts_returns_routed(layer_module, monkeypatch):
-    """A5 single-card without shared experts: returns routed output directly."""
-    module, _, context_holder = layer_module
-    context_holder.attn_metadata = {}
-    method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
-    method.tp_size = 1
-    method.tp_rank = 0
-    method.on_ascend950 = True
-    method.sub_stream = _DummyStream()
-    method.model_prefetch = MagicMock()
-    method.select_communication_strategy = MagicMock(return_value=("all2all", _DummyStrategy()))
-    monkeypatch.setattr(
-        module.NPUFusedMoE,
-        "select_experts",
-        MagicMock(
-            return_value=(
-                torch.full((2, 1), 0.5, dtype=torch.float32),
-                torch.ones(2, 1, dtype=torch.int32),
-            )
-        ),
+    """A5 single-card without shared experts: fused_experts_tp_with_shared returns routed."""
+    module, method = _make_single_card_apply_method(
+        layer_module, monkeypatch, on_ascend950=True,
     )
     routed_mock = MagicMock(return_value=torch.full((2, 4), 3.0))
-    monkeypatch.setattr(module, "fused_experts_tp", routed_mock)
-    monkeypatch.setattr(
-        sys.modules["omni_npu.layers.fused_moe.fused_moe"],
-        "fused_experts_tp",
-        routed_mock,
-    )
+    monkeypatch.setattr(module, "fused_experts_tp_with_shared", routed_mock)
     layer = _ep_layer(use_ep=False)
 
-    output = method.apply(
-        layer=layer,
-        hidden_states=torch.ones(2, 4),
-        router_logits=torch.zeros(2, 3),
-        top_k=1,
-        renormalize=False,
-    )
+    output = _apply(method, layer, torch.ones(2, 4), torch.zeros(2, 3))
 
     routed_mock.assert_called_once()
     assert not isinstance(output, tuple)
@@ -766,37 +763,15 @@ def test_apply_single_card_a5_no_shared_experts_returns_routed(layer_module, mon
 @pytest.mark.unit
 def test_apply_single_card_non_a5_returns_routed_directly(layer_module, monkeypatch):
     """Non-A5 single-card: falls back to original fused_experts_tp() return, ignores shared_experts."""
-    module, _, context_holder = layer_module
-    context_holder.attn_metadata = {}
-    method = module.NPUUnquantizedFusedMoEMethod.__new__(module.NPUUnquantizedFusedMoEMethod)
-    method.tp_size = 1
-    method.tp_rank = 0
-    method.on_ascend950 = False
-    method.sub_stream = _DummyStream()
-    method.model_prefetch = MagicMock()
-    method.select_communication_strategy = MagicMock(return_value=("all2all", _DummyStrategy()))
-    monkeypatch.setattr(
-        module.NPUFusedMoE,
-        "select_experts",
-        MagicMock(
-            return_value=(
-                torch.full((2, 1), 0.5, dtype=torch.float32),
-                torch.ones(2, 1, dtype=torch.int32),
-            )
-        ),
+    module, method = _make_single_card_apply_method(
+        layer_module, monkeypatch, on_ascend950=False,
     )
     routed_mock = MagicMock(return_value=torch.full((2, 4), 4.0))
     monkeypatch.setattr(module, "fused_experts_tp", routed_mock)
     shared = MagicMock(return_value=torch.full((2, 4), 9.0))
     layer = _ep_layer(shared_experts=shared, use_ep=False)
 
-    output = method.apply(
-        layer=layer,
-        hidden_states=torch.ones(2, 4),
-        router_logits=torch.zeros(2, 3),
-        top_k=1,
-        renormalize=False,
-    )
+    output = _apply(method, layer, torch.ones(2, 4), torch.zeros(2, 3))
 
     routed_mock.assert_called_once()
     shared.assert_not_called()
@@ -829,7 +804,7 @@ def test_process_weights_after_loading_transposes_and_marks(layer_module, monkey
 
 
 @pytest.mark.unit
-def test_fused_moe_init_sets_gate_and_strategy_selector(layer_module, monkeypatch):
+def test_fused_moe_factory_sets_gate_and_routed_experts_cls(layer_module, monkeypatch):
     module, _, _ = layer_module
     gate_obj = object()
     fused = module.NPUFusedMoE(gate=gate_obj)
@@ -839,18 +814,15 @@ def test_fused_moe_init_sets_gate_and_strategy_selector(layer_module, monkeypatc
     assert fused.routed_experts_cls is module.NPURoutedExperts
 
     selector_mock = MagicMock()
-    # Selector is wired in NPUFusedMoERunner.__init__, not NPURoutedExperts.
-    runner = module.NPUFusedMoERunner.__new__(module.NPUFusedMoERunner)
-    experts = SimpleNamespace(
-        quant_method=SimpleNamespace(
-            make_communication_strategy_selector=selector_mock
-        )
+    experts = module.NPURoutedExperts.__new__(module.NPURoutedExperts)
+    experts.quant_method = SimpleNamespace(
+        make_communication_strategy_selector=selector_mock
     )
-    object.__setattr__(runner, "routed_experts", experts)
-    object.__setattr__(runner, "_modules", {"routed_experts": experts})
-    monkeypatch.setattr(module.MoERunner, "__init__", lambda *a, **k: None, raising=False)
-    module.NPUFusedMoERunner.__init__(runner)
-    selector_mock.assert_called_once_with(runner)
+    monkeypatch.setattr(
+        module.RoutedExperts, "__init__", lambda *a, **k: None, raising=False
+    )
+    module.NPURoutedExperts.__init__(experts)
+    selector_mock.assert_called_once_with(experts)
 
 
 @pytest.mark.unit

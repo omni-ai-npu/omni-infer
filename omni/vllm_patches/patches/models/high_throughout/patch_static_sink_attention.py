@@ -36,6 +36,9 @@ from vllm.model_executor.layers.attention.static_sink_attention import (
     get_attn_backend,
 )
 from vllm.model_executor.custom_op import CustomOp
+
+from omni_npu.model_config.config_loader.loader import model_extra_config
+
 from omni_npu.vllm_patches.core import VLLMPatch, register_patch
 
 
@@ -66,10 +69,6 @@ class create_static_sink_attention_backendPatch(VLLMPatch):
                 device: torch.device,
             ):
                 super().__init__(kv_cache_spec, layer_names, vllm_config, device)
-                from omni_npu.model_config.config_loader.loader import (
-                    model_extra_config,
-                )
-
                 model_config = vllm_config.model_config
                 scheduler_config = vllm_config.scheduler_config
                 self.sink_len = sink_len
@@ -291,8 +290,6 @@ class StaticSinkAttentionPatch(VLLMPatch):
             return super().forward(*args, **kwargs)
 
         def populate_sink_kv(self, k_nope_cache: torch.Tensor, k_pe_cache: torch.Tensor):
-            from omni_npu.model_config.config_loader.loader import model_extra_config
-
             if model_extra_config.operator_opt_config.use_noncontiguous_kv:
                 # Sinks go to the kernels as tensors there, and blocks 1..N are
                 # ordinary blocks a request may already own - writing into them
@@ -322,46 +319,45 @@ class StaticSinkAttentionPatch(VLLMPatch):
         def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec:
             from vllm.v1.kv_cache_interface import (
                 DSAAttentionSpec,
+                ShareKVSlidingWindowSpec,
                 SinkMLAAttentionSpec,
             )
 
-            from omni_npu.model_config.config_loader.loader import model_extra_config
-
-            kv_dtype = kv_cache_dtype_str_to_dtype(
+            kv_cache_dtype = kv_cache_dtype_str_to_dtype(
                 self.kv_cache_dtype, vllm_config.model_config
             )
-            if (
-                model_extra_config.operator_opt_config.use_noncontiguous_kv
-                and self.use_sparse
-                and not self.sliding_window
-            ):
-                # The sparse (DSA) cache also stores the top-k indexer ki
-                # (index_head_dim) per token; see
-                # NPUDSABackend._reshape_kv_cache_noncontiguous (shapes
-                # ((576,), (128,))). Without it the raw buffer is small.
-                # skip_topk / indexer_types=="shared" layers still use this
-                # DSA layout but never construct Indexer, so indexer is None.
-                indexer_head_dim = getattr(self.indexer, "head_dim", None)
-                if indexer_head_dim is None:
-                    indexer_head_dim = getattr(
-                        vllm_config.model_config.hf_config,
-                        "index_head_dim",
-                        0,
+            if model_extra_config.operator_opt_config.use_noncontiguous_kv:
+                if self.sliding_window:
+                    block_size = vllm_config.cache_config.block_size
+                    if self.use_sparse and vllm_config.quant_config is not None:
+                        block_size = block_size // 2
+                    return ShareKVSlidingWindowSpec(
+                        block_size=block_size,
+                        num_kv_heads=1,
+                        head_size=self.head_size,
+                        dtype=model_extra_config.dtype,
+                        sliding_window=2048,
+                        page_size_padded=(
+                            vllm_config.cache_config.mamba_page_size_padded
+                        ),
                     )
-                return DSAAttentionSpec(
-                    block_size=vllm_config.cache_config.block_size,
-                    num_kv_heads=1,
-                    head_size=self.head_size + indexer_head_dim,
-                    dtype=kv_dtype,
-                    cache_dtype_str=vllm_config.cache_config.cache_dtype,
-                )
+
+                if self.use_sparse:
+                    return DSAAttentionSpec(
+                        block_size=vllm_config.cache_config.block_size,
+                        num_kv_heads=1,
+                        head_size=self.head_size + self.indexer.head_dim,
+                        dtype=kv_cache_dtype,
+                        cache_dtype_str=vllm_config.cache_config.cache_dtype,
+                    )
             return SinkMLAAttentionSpec(
                 block_size=vllm_config.cache_config.block_size,
                 num_kv_heads=1,
                 head_size=self.head_size,
-                dtype=kv_dtype,
+                dtype=kv_cache_dtype,
                 cache_dtype_str=vllm_config.cache_config.cache_dtype,
                 sink_len=self.sink_len,
+                page_size_padded=vllm_config.cache_config.mamba_page_size_padded,
             )
 
     static_sink_attention.PanguSinkAttentionBase = PanguSinkAttentionBase

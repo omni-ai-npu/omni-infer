@@ -237,6 +237,11 @@ def layer_module(monkeypatch):
 
     fused_moe_omni_module = _ensure_module(monkeypatch, "omni_npu.layers.fused_moe.fused_moe")
     fused_moe_omni_module.fused_experts_tp = MagicMock()
+    fused_moe_omni_module.fused_experts_tp_with_shared = MagicMock()
+    compilation_pkg = _ensure_module(monkeypatch, "omni_npu.compilation")
+    compilation_pkg.__path__ = []
+    acl_graph_module = _ensure_module(monkeypatch, "omni_npu.compilation.acl_graph")
+    acl_graph_module.set_aclgraph_recapture = MagicMock()
     method_base_module = _ensure_module(
         monkeypatch, "omni_npu.layers.fused_moe.fused_moe_method_base")
 
@@ -543,46 +548,34 @@ def test_npu_shared_fused_moe_passes_routed_experts_cls(layer_module):
 
 
 @pytest.mark.unit
-def test_moe_enable_eplb_reads_layer_attr_then_config(layer_module):
-    """_moe_enable_eplb prefers the layer flag, then moe_config, else False."""
-    module = layer_module
-    assert module._moe_enable_eplb(SimpleNamespace(enable_eplb=True)) is True
-    assert module._moe_enable_eplb(
-        SimpleNamespace(
-            enable_eplb=None,
-            moe_config=SimpleNamespace(
-                moe_parallel_config=SimpleNamespace(enable_eplb=True)
-            ),
-        )
-    ) is True
-    assert module._moe_enable_eplb(SimpleNamespace(enable_eplb=None, moe_config=None)) is False
-
-
-@pytest.mark.unit
 def test_npu_moe_forward_and_shared_dispatch(layer_module, monkeypatch):
     """npu_moe_forward / npu_moe_forward_shared both call _npu_moe_apply."""
     module = layer_module
     hidden = torch.ones(2, 4)
     logits = torch.zeros(2, 3)
     applied = MagicMock(return_value=torch.full((2, 4), 7.0))
-    layer = SimpleNamespace(
-        shared_experts=None,
+    experts = SimpleNamespace(
         quant_method=SimpleNamespace(apply=applied),
         top_k=1,
         renormalize=False,
         use_grouped_topk=False,
         global_num_experts=3,
         expert_map=None,
-        rocm_aiter_fmoe_enabled=False,
         topk_group=None,
         num_expert_group=None,
         custom_routing_function=None,
         scoring_func="softmax",
         routed_scaling_factor=1.0,
         e_score_correction_bias=None,
-        activation="silu",
+        activation=SimpleNamespace(value="silu"),
         apply_router_weight_on_input=False,
-        enable_eplb=False,
+    )
+    layer = SimpleNamespace(
+        shared_experts=None,
+        routed_experts=experts,
+        moe_config=SimpleNamespace(
+            moe_parallel_config=SimpleNamespace(enable_eplb=False)
+        ),
     )
 
     def _get_forward_context():
@@ -596,6 +589,8 @@ def test_npu_moe_forward_and_shared_dispatch(layer_module, monkeypatch):
 
     out = module.npu_moe_forward(hidden, logits, "moe.0")
     assert torch.equal(out, torch.full((2, 4), 7.0))
+    assert applied.call_args.kwargs["layer"] is layer
+    assert applied.call_args.kwargs["enable_eplb"] is False
 
     layer.shared_experts = object()
     shared_out = module.npu_moe_forward_shared(hidden, logits, "moe.0")
@@ -616,41 +611,20 @@ def test_npu_moe_forward_fake_shapes(layer_module):
 
 
 @pytest.mark.unit
-def test_runner_getattr_delegates_to_routed_experts_and_config(layer_module):
+def test_routed_experts_init_wires_communication_strategy_selector(
+    layer_module, monkeypatch
+):
     module = layer_module
-    runner = module.NPUFusedMoERunner.__new__(module.NPUFusedMoERunner)
-    experts = SimpleNamespace(w13_weight="w13", moe_config=SimpleNamespace(ep_size=8))
-    runner._modules = {"routed_experts": experts}
-
-    assert runner.w13_weight == "w13"
-    assert runner.ep_size == 8
-    with pytest.raises(AttributeError, match="__deepcopy__"):
-        _ = runner.__deepcopy__
-    with pytest.raises(AttributeError, match="missing"):
-        _ = runner.missing
-
-
-@pytest.mark.unit
-def test_runner_shared_experts_unwraps_vllm_container(layer_module, monkeypatch):
-    module = layer_module
-    runner = module.NPUFusedMoERunner.__new__(module.NPUFusedMoERunner)
-    inner = object()
-
-    class SharedExperts:
-        def __init__(self, layer):
-            self._layer = layer
-
-    monkeypatch.setitem(
-        sys.modules,
-        "vllm.model_executor.layers.fused_moe.runner.shared_experts",
-        SimpleNamespace(SharedExperts=SharedExperts),
+    selector = MagicMock()
+    experts = module.NPURoutedExperts.__new__(module.NPURoutedExperts)
+    experts.quant_method = SimpleNamespace(
+        make_communication_strategy_selector=selector
     )
-    runner._shared_experts = SharedExperts(inner)
-    assert runner.shared_experts is inner
-
-    runner.shared_experts = "plain"
-    assert runner._shared_experts == "plain"
-    assert runner.shared_experts == "plain"
+    monkeypatch.setattr(
+        module.RoutedExperts, "__init__", lambda *a, **k: None, raising=False
+    )
+    module.NPURoutedExperts.__init__(experts)
+    selector.assert_called_once_with(experts)
 
 
 @pytest.mark.unit
@@ -685,4 +659,38 @@ def test_weight_loader_eplb_remaps_local_expert(layer_module):
     assert result is True
     assert load_calls
     assert load_calls[0]["shard_dim"] == 1
+
+
+@pytest.mark.unit
+def test_weight_loader_nz_roundtrips_and_requests_recapture(layer_module, monkeypatch):
+    """NZ weights are cast to ND for loading, then back to NZ with ACL recapture."""
+    module = layer_module
+    recapture = MagicMock()
+    monkeypatch.setattr(module, "set_aclgraph_recapture", recapture)
+    casts = []
+
+    def _cast(tensor, fmt):
+        casts.append(fmt)
+        return tensor
+
+    monkeypatch.setattr(module.torch_npu, "npu_format_cast", _cast)
+    super_cls = module.NPURoutedExperts.__mro__[1]
+    monkeypatch.setattr(super_cls, "weight_loader", lambda *_a, **_k: True)
+    experts, load_calls = _make_experts(module)
+    param = torch.nn.Parameter(torch.arange(24, dtype=torch.float32).view(2, 3, 4))
+    setattr(param, "is_weight_transposed", False)
+    setattr(param, "is_weight_nz", True)
+
+    result = _load_aux_weight(
+        experts,
+        param=param,
+        loaded_weight=torch.ones(2, 3, 4),
+        weight_name="w13_weight",
+        expert_id=0,
+    )
+
+    assert result is True
+    assert load_calls == []
+    assert casts == [module.torch_npu.Format.ND, module.torch_npu.Format.FRACTAL_NZ]
+    recapture.assert_called_once_with(True)
 
