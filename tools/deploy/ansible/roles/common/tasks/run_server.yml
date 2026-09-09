@@ -88,6 +88,7 @@
       - resolved_run_server_prefill_profile.workdir | length > 0
       - resolved_run_server_prefill_profile.docker_envs is mapping
       - resolved_run_server_prefill_profile.kv_offload is mapping
+      - resolved_run_server_prefill_profile.kv_pool is mapping
       - resolved_run_server_prefill_profile.prepare_commands is string
       - resolved_run_server_prefill_profile.args is sequence
       - resolved_run_server_prefill_profile.args is not string
@@ -127,6 +128,31 @@
   vars:
     server_offset_dict: "{{ DECODE_SERVER_OFFSET_BY_GROUP }}"
   when: "'D' in group_names"
+  tags: run_server
+
+- name: Install the kv_pool module when the mooncake master is enabled.
+  # Must run before the Prefill containers start: engine init resolves
+  # NPUMooncakeStoreConnector -> kv_pool at import time.
+  ansible.builtin.include_tasks: "{{ kv_pool_repo_root }}/kv_pool/deploy/install_kv_pool.yml"
+  when:
+    - enable_kv_pool | default(false) | bool
+    - "'P' in group_names"
+  tags: run_server
+
+- name: Render the kv_pool runtime fragment from the kv_pool checkout.
+  # The fragment (mooncake.json / HugePage reservation / KV_TRANSFER_CONFIG)
+  # is owned by the kv_pool module (kv_pool/deploy/ in the Pangu-FusionComm
+  # checkout) so the runtime contract evolves together with the connector.
+  # Rendered to $SCRIPTS_PATH and sourced by vllm_run_for_p.sh at container
+  # start — ansible's jinja include cannot reach outside its template search
+  # path, hence the separate render + source mechanism.
+  ansible.builtin.template:
+    src: "{{ kv_pool_repo_root }}/kv_pool/deploy/_kv_pool_runtime.sh.j2"
+    dest: "$SCRIPTS_PATH/kv_pool_runtime.sh"
+    mode: '0750'
+  when:
+    - enable_kv_pool | default(false) | bool
+    - "'P' in group_names"
   tags: run_server
 
 - name: Start a multi-node Prefill instance.

@@ -24,7 +24,7 @@
       {% endfor %}
       {% for mount in extra_mounts %}-v {{ mount }}
       {% endfor %}
-  when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+  when: "'P' in group_names or 'D' in group_names or 'C' in group_names or 'M' in group_names"
 
 - name: Check whether the container exists.
   ansible.builtin.shell: |

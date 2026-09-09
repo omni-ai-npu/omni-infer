@@ -6,7 +6,8 @@
     ACTUAL_DOCKER_NAME_P: "{{ ansible_env.DOCKER_NAME_P }}_{{ inventory_hostname }}"
     ACTUAL_DOCKER_NAME_D: "{{ ansible_env.DOCKER_NAME_D }}_{{ inventory_hostname }}"
     ACTUAL_DOCKER_NAME_C: "{{ ansible_env.DOCKER_NAME_C }}_{{ inventory_hostname }}"
-  when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+    ACTUAL_DOCKER_NAME_M: "{{ ansible_env.DOCKER_NAME_M }}_{{ inventory_hostname }}"
+  when: "'P' in group_names or 'D' in group_names or 'C' in group_names or 'M' in group_names"
   tags: always
 
 # Keep this resolved_docker_run_cmd definition identical to
@@ -32,7 +33,7 @@
       {% endfor %}
       {% for mount in extra_mounts %}-v {{ mount }}
       {% endfor %}
-  when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+  when: "'P' in group_names or 'D' in group_names or 'C' in group_names or 'M' in group_names"
   tags: run_docker
 
 - name: Check and delete Prefill/Decode group Docker containers.
@@ -98,6 +99,40 @@
     - run_docker
     - clean_up
 
+# The mooncake master container is PERSISTENT: it is created only if absent and
+# never deleted here, so the shared KV pool survives P/D/C redeploys. (The
+# mooncake_master binary is baked into the image — verified identical in a
+# fresh container on 2026-09-08 — so recreation would also work, but a restart
+# still clears segment/key metadata and forces clients to re-register.)
+# Contrast with P/D/C, which are recreated on every run_docker.
+- name: Check whether the mooncake master container exists.
+  ansible.builtin.shell: |
+    docker inspect --format='{{"{{.Name}}"}}' \
+    $DOCKER_NAME_M \
+    2>/dev/null | grep -v '^$'
+  register: existing_master_containers
+  environment:
+    DOCKER_NAME_M: "{{ ACTUAL_DOCKER_NAME_M }}"
+  failed_when: false
+  changed_when: false
+  when: "'M' in group_names and (enable_kv_pool | default(false) | bool)"
+  tags: run_docker
+
+- name: Show generated mooncake master container name.
+  ansible.builtin.debug:
+    msg: "Generated container name: {{ existing_master_containers.stdout_lines }}"
+  when: "'M' in group_names and (enable_kv_pool | default(false) | bool)"
+  tags: run_docker
+
+- name: Run container for mooncake master (only when absent, so manual deps persist).
+  ansible.builtin.command: bash -c "{{ start_docker_cmd_m }}"
+  environment:
+    DOCKER_NAME_M: "{{ ACTUAL_DOCKER_NAME_M }}"
+  when: >-
+    'M' in group_names and (enable_kv_pool | default(false) | bool)
+    and existing_master_containers.stdout == ''
+  tags: run_docker
+
 - name: Run container for prefill instances.
   ansible.builtin.command: bash -c "{{ start_docker_cmd_p }}"
   environment:
@@ -124,5 +159,5 @@
   ansible.builtin.file:
     path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
     state: directory
-  when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+  when: "'P' in group_names or 'D' in group_names or 'C' in group_names or 'M' in group_names"
   tags: run_docker

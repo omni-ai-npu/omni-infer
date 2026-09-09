@@ -2,6 +2,7 @@
 {% set common_profile = run_server_common_profile_defaults | combine(run_server_common_profile, recursive=true) -%}
 {% set kv_offload_config = profile.get('kv_offload', {}) -%}
 {% set kv_offload_enable = kv_offload_config.get('enable', false) | bool -%}
+{% set kv_pool_enable = enable_kv_pool | default(false) | bool -%}
 #!/bin/bash
 
 . ~/.bashrc
@@ -12,8 +13,18 @@ unset http_proxy
 unset proxy
 
 {{ profile.prepare_commands }}
+{% if kv_pool_enable %}
+# KV-pool runtime fragment (mooncake.json / HugePage / KV_TRANSFER_CONFIG) is
+# owned by the kv_pool module checkout (kv_pool/deploy/) and rendered by
+# run_server.yml. NB: $SCRIPTS_PATH is a HOST-side variable only — the
+# container does not export it — so the rendered literal path is used here
+# (the mount is same-path: /tmp/scripts_path:/tmp/scripts_path).
+if [ -f "{{ ansible_env.SCRIPTS_PATH }}/kv_pool_runtime.sh" ]; then
+  . "{{ ansible_env.SCRIPTS_PATH }}/kv_pool_runtime.sh"
+fi
+{% endif %}
 
-kv_role="kv_producer"
+kv_role="{{ profile.kv_role | default('kv_producer') }}"
 {% if kv_offload_enable %}
 {% set kv_offload_role = 'kv_producer' -%}
 {% set kv_offload_rank = kv_rank | int -%}
@@ -52,14 +63,14 @@ bash {{ profile.workdir }}/{{ profile.runner }} \
   --tp ${PREFILL_TENSOR_PARALLEL_SIZE} \
   --ascend-rt-visible-devices {{ ascend_rt_visible_devices | quote }} \
   --use-inventory-devices 1 \
-{% if kv_offload_enable -%}
+{% if kv_pool_enable or kv_offload_enable -%}
 {{ '  ' }}--kv-transfer-config "${KV_TRANSFER_CONFIG}" \
 {% else -%}
 {{ '  ' }}--kv-role ${kv_role} \
   --kv-rank {{ kv_rank | quote }} \
   --kv-engine-id {{ kv_rank | quote }} \
   --kv-parallel-size ${KV_PARALLEL_SIZE} \
-  --kv-connector {{ common_profile.kv_connector }} \
+  --kv-connector {{ profile.kv_connector | default(common_profile.kv_connector) }} \
 {% endif -%}
 {% for argument in profile.args -%}
 {{ '  ' }}{{ argument }} \

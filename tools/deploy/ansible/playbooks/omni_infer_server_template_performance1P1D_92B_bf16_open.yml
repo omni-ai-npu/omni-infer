@@ -2,7 +2,10 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 ---
 - name: Run high-layer PanguV2 92B Prefill, Decode, and Omni Proxy services.
-  hosts: all
+  # The dedicated mooncake master (group M) is DISABLED by default; enable it
+  # with `-e enable_kv_pool=true`. When disabled, m0 is excluded from
+  # the play entirely (all:!M) and the P workers run without the KV pool.
+  hosts: "{{ 'all' if enable_kv_pool | default(false) | bool else 'all:!M' }}"
   any_errors_fatal: true
   max_fail_percentage: 0
   gather_facts: true
@@ -15,11 +18,16 @@
     DOCKER_NAME_P: "docker_name_p"
     DOCKER_NAME_D: "docker_name_d"
     DOCKER_NAME_C: "docker_name_c"
+    DOCKER_NAME_M: "docker_name_m"
     SCRIPTS_PATH: /tmp/scripts_path
 
   vars:
     model: pangu-v2-92b
     model_path: "/mnt/sfs_turbo/bucket-910c-6055/s00562949/models/openPangu_2.0_Flash_BF16/global_step_26/"
+
+    # Default OFF. `-e enable_kv_pool=true` deploys the dedicated
+    # mooncake master container (group M) and enables the P-side KV pool.
+    enable_kv_pool: false
 
     run_docker_profile:
       shm_size: 1600g
@@ -58,6 +66,10 @@
         hugepage_enabled: true
         cpu_bytes_to_use: 858993459200
         eviction_policy: arc  # arc or lru
+      # 由 enable_kv_pool=true 控制（M 组部署 + install_kv_pool +
+      # kv_pool_runtime fragment）。
+      kv_pool:
+        global_segment_size_gb: 64
       prepare_commands: |-
         export SERVER_IP_LIST={{ DECODE_SERVER_IP_LIST_ALL | replace(' ', '') | trim | quote }}
         export OMNI_LLMDATADIST_LINK_RECYCLE_DELAY=3600
@@ -79,6 +91,8 @@
         export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_92B_xp1d_p_open.json"
         export OMNI_PANGU_TOOL_CALL_ENDS_THINKING=1
         export TORCH_COMPILE_DISABLE=1
+        export ASCEND_CONNECT_TIMEOUT=180000
+        export ASCEND_TRANSFER_TIMEOUT=180000
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
         EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager"
         EXTRA_ARGS="${EXTRA_ARGS} --max-num-batched-tokens 16384"
