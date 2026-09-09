@@ -394,6 +394,101 @@ def test_quant_ffn_chains_grouped_matmul_and_swiglu(monkeypatch):
     assert calls == [torch.int32, torch.bfloat16]
 
 
+def _w4a8_experts(*, asymmetric):
+    """Fake routed-experts object carrying the W4A8 int4_scale tensors.
+
+    ``quant_method`` is intentionally absent: the W4A8 TBO path must not rely on
+    ``quant_method.gmm_autotiling`` (regression for the missing-attribute crash).
+    """
+    experts = SimpleNamespace(
+        w13_weight=torch.zeros(2, 2, dtype=torch.int8),
+        w13_weight_bias=torch.zeros(4),
+        w13_weight_int4_scale=torch.ones(2, 1, 4, dtype=torch.int64),
+        w2_weight=torch.zeros(2, 2, dtype=torch.int8),
+        w2_weight_bias=torch.zeros(2),
+        w2_weight_int4_scale=torch.ones(2, 1, 2, dtype=torch.int64),
+    )
+    if asymmetric:
+        experts.w13_weight_offset = torch.ones(2, 1, 4)
+        experts.w2_weight_offset = torch.ones(2, 1, 2)
+    else:
+        experts.w13_weight_offset = None
+        experts.w2_weight_offset = None
+    return experts
+
+
+def _patch_w4a8_ops(monkeypatch):
+    """Fake the NPU W4A8 ops and record every grouped-matmul call."""
+    calls = []
+
+    def fake_gmm(*args, **kwargs):
+        calls.append(kwargs)
+        tokens = args[0][0]
+        return [torch.ones(tokens.size(0), 3, dtype=torch.bfloat16)]
+
+    def fake_swiglu(x, **kwargs):
+        return (
+            torch.zeros(x.size(0), 2, dtype=torch.int8),
+            torch.ones(x.size(0), dtype=torch.float32),
+        )
+
+    monkeypatch.setattr(pangu_utils.torch_npu, "npu_grouped_matmul", fake_gmm)
+    monkeypatch.setattr(
+        pangu_utils.torch_npu, "npu_dequant_swiglu_quant", fake_swiglu
+    )
+    custom = MagicMock()
+    monkeypatch.setattr(
+        pangu_utils.torch.ops, "custom", custom, raising=False
+    )
+    return calls, custom
+
+
+def test_quant_ffn_w4a8_runs_npu_grouped_matmul_without_quant_method(monkeypatch):
+    """W4A8 int4 experts use npu_grouped_matmul, never the autotiling custom op."""
+    calls, custom = _patch_w4a8_ops(monkeypatch)
+
+    experts = _w4a8_experts(asymmetric=False)
+    x_i8 = torch.zeros(3, 2, dtype=torch.int8)
+    x_sc = torch.ones(3, dtype=torch.float32)
+    hist = torch.tensor([1, 2], dtype=torch.int32)
+
+    out = pangu_utils.quant_ffn(experts, x_i8, x_sc, hist)
+
+    assert tuple(out.shape) == (3, 3)
+    assert out.dtype == torch.bfloat16
+    assert len(calls) == 2
+    for call in calls:
+        assert call["output_dtype"] == torch.bfloat16
+        assert "tuning_config" not in call
+    assert calls[0]["scale"][0] is experts.w13_weight_int4_scale
+    assert calls[1]["scale"][0] is experts.w2_weight_int4_scale
+    assert calls[0]["offset"] is None
+    assert calls[1]["offset"] is None
+    assert calls[0]["per_token_scale"][0] is x_sc
+    assert not custom.npu_ai_infra_grouped_matmul.called
+
+
+def test_quant_ffn_w4a8_asymmetric_forwards_offsets(monkeypatch):
+    """Asymmetric W4A8 weights forward per-token offsets to grouped matmul."""
+    calls, custom = _patch_w4a8_ops(monkeypatch)
+
+    experts = _w4a8_experts(asymmetric=True)
+    x_i8 = torch.zeros(3, 2, dtype=torch.int8)
+    x_sc = torch.ones(3, dtype=torch.float32)
+    hist = torch.tensor([1, 2], dtype=torch.int32)
+
+    out = pangu_utils.quant_ffn(experts, x_i8, x_sc, hist)
+
+    assert tuple(out.shape) == (3, 3)
+    assert len(calls) == 2
+    assert calls[0]["offset"][0] is experts.w13_weight_offset
+    assert calls[1]["offset"][0] is experts.w2_weight_offset
+    torch.testing.assert_close(
+        calls[0]["per_token_scale"][0], x_sc.unsqueeze(-1)
+    )
+    assert not custom.npu_ai_infra_grouped_matmul.called
+
+
 def test_finalize_routing_forwards_drop_pad_mode(monkeypatch):
     """finalize_routing wraps npu_moe_finalize_routing with drop_pad_mode=2."""
     captured = {}
