@@ -545,6 +545,48 @@ class TestOpenPanguV2DecoderAndMoE(unittest.TestCase):
         self.assertEqual(chunks, [2, 2])
         self.assertEqual(tuple(out.shape), (4, 3))
 
+    def test_dispatch_combine_force_load_balance_overrides_topk_ids(self):
+        """use_moe_force_load_balance replaces gating ids with round-robin ids."""
+        moe = model_mod.OpenPanguV2MOE.__new__(model_mod.OpenPanguV2MOE)
+        moe.ep_comm_name = "ep"
+        moe.side_stream = None
+        moe.gate = MagicMock(return_value=(torch.zeros(4, 2), None))
+        moe.experts = SimpleNamespace(top_k=1, topk_group=1, num_expert_group=1)
+        moe.e_score_correction_bias = None
+        moe.routed_scaling_factor = 1.0
+        moe.n_routed_experts = 2
+        moe.use_moe_force_load_balance = True
+        moe.aux_load_balance_tensor = torch.arange(2, dtype=torch.int32).unsqueeze(0)
+        moe.enable_eplb = False
+        moe._is_quant = False
+        moe.moe_dispatch_combine_max_batch_size = 8
+        moe.shared_experts = MagicMock(return_value=torch.ones(4, 3))
+
+        seen = {}
+
+        def fake_single(hidden, topk_weights, topk_ids, *_args, **_kwargs):
+            seen["topk_ids"] = topk_ids
+            return torch.zeros(hidden.shape[0], 3)
+
+        moe._dispatch_combine_single_batch = fake_single
+        moe._get_mc2_mask = MagicMock(return_value=None)
+        with patch.object(
+            model_mod.torch_npu,
+            "npu_moe_gating_top_k",
+            return_value=(
+                torch.ones(4, 1),
+                torch.full((4, 1), 9, dtype=torch.int32),
+                None,
+            ),
+        ):
+            out = moe._forward_dispatch_combine(torch.zeros(4, 3))
+
+        ids = seen["topk_ids"]
+        self.assertEqual(tuple(ids.shape), (4, 1))
+        # The gating stub returned expert 9 everywhere; the override wins.
+        self.assertTrue(torch.equal(ids, torch.tensor([[0], [1], [0], [1]], dtype=torch.int32)))
+        self.assertEqual(tuple(out.shape), (4, 3))
+
 
 def _bare_swa_attention(**attrs):
     """Build an uninitialized NPUPanguSparseAttention with SWA SP defaults."""

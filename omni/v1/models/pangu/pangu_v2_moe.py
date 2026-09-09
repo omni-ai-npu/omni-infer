@@ -156,6 +156,7 @@ try:
 except ImportError as e:
     logger.warning(f"Failed to import omni_custom_ops: {e}")
 
+
 def check_ffn_act_fn(act_fn: str) -> None:
     """Validate FFN activation function.
 
@@ -434,11 +435,10 @@ class OpenPanguV2MOE(nn.Module):
             chunks = hidden_states.split(self.moe_seq_split_length, dim=0)
         else:
             # Dict case: split every value, then zip the pieces back together.
+            split_values = (v.split(self.moe_seq_split_length, dim=0) for v in hidden_states.values())
             chunks = [
                 dict(zip(hidden_states.keys(), pieces))
-                for pieces in zip(
-                    *(v.split(self.moe_seq_split_length, dim=0) for v in hidden_states.values())
-                )
+                for pieces in zip(*split_values)
             ]
 
         # 4. Forward each chunk and concat along dim 0.
@@ -563,7 +563,7 @@ class OpenPanguV2MOE(nn.Module):
             # forced load balance
             if self.use_moe_force_load_balance: 
                 force_k = (topk_ids.shape[0] * self.experts.top_k) // self.n_routed_experts
-                topk_ids = self.aux_load_balance_tensor.repeat(force_k+1, 1) \
+                topk_ids = self.aux_load_balance_tensor.repeat(force_k + 1, 1) \
                             .view(-1, self.experts.top_k)[:topk_ids.shape[0]]
 
 
@@ -971,7 +971,7 @@ class OpenPanguV2MOE(nn.Module):
         # forced load balance
         if self.use_moe_force_load_balance:
             force_k = (topk_ids.shape[0] * self.experts.top_k) // self.n_routed_experts
-            topk_ids = self.aux_load_balance_tensor.repeat(force_k+1, 1) \
+            topk_ids = self.aux_load_balance_tensor.repeat(force_k + 1, 1) \
                         .view(-1, self.experts.top_k)[:topk_ids.shape[0]]
 
         elif self.enable_eplb:
@@ -1071,7 +1071,7 @@ class OpenPanguV2MOE(nn.Module):
             ep_world_size=self.ep_size,
             ep_rank_id=self.ep_rank,
             x_active_mask=x_active_mask, # (MC2 mask, set None for now)
-            comm_alg = "fullmesh_v2",
+            comm_alg="fullmesh_v2",
         )
  
         # Unpack dispatch output
@@ -1303,7 +1303,7 @@ class OpenPanguV2MOE(nn.Module):
         # forced load balance
         if self.use_moe_force_load_balance:
             force_k = (topk_ids.shape[0] * self.experts.top_k) // self.n_routed_experts
-            topk_ids = self.aux_load_balance_tensor.repeat(force_k+1, 1) \
+            topk_ids = self.aux_load_balance_tensor.repeat(force_k + 1, 1) \
                         .view(-1, self.experts.top_k)[:topk_ids.shape[0]]
         elif self.enable_eplb:
             _, topk_ids, _ = self.experts.planner.plan(

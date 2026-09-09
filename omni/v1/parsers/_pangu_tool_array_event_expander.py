@@ -239,7 +239,7 @@ class PanguToolArrayEventExpander:
                 )
                 events.extend(self._end_tool())
             return events
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except (TypeError, ValueError):
             return [self._content(closed=closed)]
 
     def expand(

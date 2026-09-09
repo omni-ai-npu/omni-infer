@@ -241,7 +241,7 @@ class ModelExtraConfig:
     dtype: torch.dtype = torch.bfloat16
     parall_config: ModelParallelConfig = field(default_factory=ModelParallelConfig)
     operator_opt_config: ModelOperatorOptConfig = field(default_factory=ModelOperatorOptConfig)
-    task_config: TaskConfig = field(default_factory = TaskConfig)
+    task_config: TaskConfig = field(default_factory=TaskConfig)
 
 
 model_extra_config = ModelExtraConfig()

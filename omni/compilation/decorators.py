@@ -46,7 +46,7 @@ def _wrap_call(original_call):
             if isinstance(hidden_states, list) and \
                     len(hidden_states) == 1 and \
                     isinstance(hidden_states[0], torch.Tensor):
-                    hidden_states = hidden_states[0]
+                hidden_states = hidden_states[0]
             return hidden_states
         else:
             return model_output

@@ -15,6 +15,14 @@ from vllm.distributed.device_communicators.cuda_communicator import CudaCommunic
 logger = init_logger(__name__)
 
 
+_MOE_MODULE_NAMES = (
+    "MoERunner",
+    "NPUFusedMoERunner",
+    "NPUFusedMoE",
+    "NPUSharedFusedMoE",
+)
+
+
 class NPUCommunicator(CudaCommunicator):
     """
     Device communicator for NPU using torch.distributed with HCCL backend.
@@ -45,12 +53,7 @@ class NPUCommunicator(CudaCommunicator):
 
         moe_modules = [
             module for module in model.modules()
-            if module.__class__.__name__ in [
-                "MoERunner",
-                "NPUFusedMoERunner",
-                "NPUFusedMoE",
-                "NPUSharedFusedMoE",
-            ]
+            if module.__class__.__name__ in _MOE_MODULE_NAMES
         ]
         for module in moe_modules:
             module.maybe_init_modular_kernel()

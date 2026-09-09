@@ -567,3 +567,72 @@ def test_forward_all2allv_w8a8_path():
     assert captured[0]["scale"] is None
     assert torch.equal(captured[1]["scale"][0], moe.experts.w2_weight_scale.to(torch.bfloat16))
     moe.shared_experts.assert_called_once()
+
+
+def _enable_force_load_balance(moe):
+    """Turn on the forced-load-balance override the same way __init__ does."""
+    moe.use_moe_force_load_balance = True
+    moe.aux_load_balance_tensor = torch.arange(
+        NUM_EXPERTS, dtype=torch.int32
+    ).unsqueeze(0)
+    return moe
+
+
+def _captured_topk_ids():
+    """Record the topk_ids handed to init_routing so the override is visible."""
+    seen = {}
+
+    def _spy(hidden_states, *args, **kwargs):
+        # allgather passes topk_ids positionally, all2allv as expert_idx=.
+        seen["topk_ids"] = kwargs["expert_idx"] if "expert_idx" in kwargs else args[0]
+        return _init_routing_result()
+
+    return seen, _spy
+
+
+def test_forward_allgather_force_load_balance_overrides_topk_ids():
+    """With the override on, gating output is replaced by the round-robin ids."""
+    moe = _enable_force_load_balance(_make_moe(w4a8=False))
+    seen, spy = _captured_topk_ids()
+    captured = []
+    with ExitStack() as stack:
+        _patch_common_npu(stack)
+        _patch_grouped_matmul(stack, captured)
+        stack.enter_context(
+            patch.object(model_mod.torch_npu, "npu_moe_init_routing_v2", side_effect=spy)
+        )
+        _patch_finalize_routing(stack)
+        out = moe._forward_allgather(moe._hidden, use_allreduce=True)
+
+    ids = seen["topk_ids"]
+    assert tuple(ids.shape) == (TOKENS, TOP_K)
+    # Every token is spread across all experts in order -> perfectly balanced.
+    expected = torch.arange(NUM_EXPERTS, dtype=torch.int32).repeat(TOKENS, 1)
+    assert torch.equal(ids, expected)
+    assert out.shape == (TOKENS, HIDDEN)
+
+
+def test_forward_all2allv_force_load_balance_overrides_topk_ids():
+    """The all-to-all path applies the same override."""
+    moe = _enable_force_load_balance(_make_moe(w4a8=False))
+    seen, spy = _captured_topk_ids()
+    routing = _init_routing_result()
+    resorted = _resorted_result(routing)
+    captured = []
+    with ExitStack() as stack:
+        _patch_common_npu(stack)
+        _patch_grouped_matmul(stack, captured)
+        stack.enter_context(
+            patch.object(model_mod.torch_npu, "npu_moe_init_routing_v2", side_effect=spy)
+        )
+        _patch_re_routing(stack, resorted)
+        _patch_all_to_all_single(stack)
+        _patch_finalize_routing(stack)
+        out = moe._forward_all2allv(moe._hidden)
+
+    ids = seen["topk_ids"]
+    assert tuple(ids.shape) == (TOKENS, TOP_K)
+    assert torch.equal(
+        ids, torch.arange(NUM_EXPERTS, dtype=torch.int32).repeat(TOKENS, 1)
+    )
+    assert out.shape == (TOKENS, HIDDEN)

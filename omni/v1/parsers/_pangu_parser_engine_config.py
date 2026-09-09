@@ -60,7 +60,7 @@ def pangu_tool_arg_converter(raw_args: str, partial: bool) -> str:
             return ""
         try:
             parsed, _ = partial_json_loads(text, Allow.ALL)
-        except (json.JSONDecodeError, ValueError, TypeError):
+        except (ValueError, TypeError):
             return ""
 
     if not isinstance(parsed, dict):

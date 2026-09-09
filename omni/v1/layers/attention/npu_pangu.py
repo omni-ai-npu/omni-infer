@@ -779,7 +779,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         if self.is_cp_layer:
             max_num_reqs = vllm_config.scheduler_config.max_num_seqs
             self.num_computed_for_cp = torch.zeros(
-                (max_num_reqs*2, ), 
+                (max_num_reqs * 2, ),
                 device="npu", 
                 dtype=torch.int32, 
             )
@@ -1073,7 +1073,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
 
         attn_kwargs = {
             "num_heads": self.num_local_heads,
-            "scale":  self.scaling,
+            "scale": self.scaling,
             "qk_nope_head_dim": self.qk_nope_head_dim,
             "qk_rope_head_dim": self.qk_rope_head_dim,
             "v_head_dim": self.v_head_dim,
@@ -1592,7 +1592,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             "input_layout": "TND_NTD",
             "atten_mask": self.attn.impl.SHARE_MASK_TRIL_SPARSE,
             "sparse_mode": 4,
-            "pre_tokens": self.sliding_window-1,
+            "pre_tokens": self.sliding_window - 1,
             "next_tokens": 0,
             "block_table": attn_metadata.decode.block_table,
             "block_size": self.block_size,
@@ -1782,8 +1782,8 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 block_table=block_table,
                 actual_seq_lengths_query=actual_seq_lengths_query,
                 actual_seq_lengths_kv=actual_seq_lengths_kv,
-                pre_tokens=(1<<63)-1,
-                next_tokens=(1<<63)-1,
+                pre_tokens=(1 << 63) - 1,
+                next_tokens=(1 << 63) - 1,
                 attention_mode=2,
                 layout_query="TND",
                 layout_kv="PA_BSND",
@@ -2349,7 +2349,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 )
             if need_all_gather:
                 tp_rank = tp_group.rank_in_group
-                attn_output = attn_output[tp_rank * local_tokens: min((tp_rank+1) * local_tokens, num_actual_tokens)]
+                attn_output = attn_output[tp_rank * local_tokens: min((tp_rank + 1) * local_tokens, num_actual_tokens)]
                 if attn_output.size(0) < local_tokens:
                     attn_output = F.pad(attn_output, (0, 0, 0, local_tokens - attn_output.size(0)))
             # NOTE: if not self.use_mome, one could in theory use all-to-all
@@ -2549,7 +2549,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                     "input_layout": "TND",
                     "softmax_scale": self.scaling,
                     "sparse_mode": 4,
-                    "pre_tokens": self.sliding_window-1,
+                    "pre_tokens": self.sliding_window - 1,
                     "next_tokens": 0,
                     "atten_mask": self.attn.impl.SHARE_MASK_TRIL_SPARSE,
                     "softmax_lse_flag": False,
@@ -2572,7 +2572,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                     "input_layout": "TND",
                     "scale": self.scaling,
                     "sparse_mode": 4,
-                    "pre_tokens": self.sliding_window-1,
+                    "pre_tokens": self.sliding_window - 1,
                     "next_tokens": 0,
                     "atten_mask": self.attn.impl.SHARE_MASK_TRIL_SPARSE,
                     "softmax_lse_flag": False,
@@ -2593,7 +2593,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 "atten_mask": self.attn.impl.SHARE_MASK_TRIL_SPARSE,
                 "sparse_mode": 4,
                 "softmax_scale": self.scaling,
-                "pre_tokens": self.sliding_window-1,
+                "pre_tokens": self.sliding_window - 1,
                 "next_tokens": 0,
                 "actual_seq_qlen": attn_metadata.prefill.query_cumlens,
                 "actual_seq_kvlen": attn_metadata.prefill.query_cumlens,
@@ -2722,8 +2722,8 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 block_table=metadata.block_table,
                 actual_seq_lengths_query=metadata.query_cumlens,
                 actual_seq_lengths_kv=metadata.seq_lens,
-                pre_tokens=(1<<63)-1,
-                next_tokens=(1<<63)-1,
+                pre_tokens=(1 << 63) - 1,
+                next_tokens=(1 << 63) - 1,
                 attention_mode=2,
                 layout_query="TND",
                 layout_kv="PA_BSND",
@@ -3197,7 +3197,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         # Side stream: KV + q_pe rope (runs in parallel with main stream absorb)
         with torch.npu.stream(self.side_stream):
             hidden_states_event.wait(self.side_stream)
-            with torch.npu.npugraph_ex.scope.limit_core_num(8,24):
+            with torch.npu.npugraph_ex.scope.limit_core_num(8, 24):
                 kv = self._kv_down_mome(hidden_states, attn_metadata, mome_metadata)
                 new_kv_cache = torch.ops.vllm.npu_pangu_kv_cache_update(
                     kv, kv_cache[0], kv_cache[1], cos, sin, self.prefix,
@@ -3242,7 +3242,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         hidden_states_event.record()
         hidden_states.record_stream(self.side_stream)
 
-        with torch.npu.npugraph_ex.scope.limit_core_num(16,24):
+        with torch.npu.npugraph_ex.scope.limit_core_num(16, 24):
             # Main stream: q_lora
             # SK: q_a→MOME→RMS; Event stays outside.
             # tokens < 16: no fusion gain, skip SuperKernel.
@@ -3290,7 +3290,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         with torch.npu.stream(self.side_stream):
             hidden_states_event.wait(self.side_stream)
 
-            with torch.npu.npugraph_ex.scope.limit_core_num(8,24):
+            with torch.npu.npugraph_ex.scope.limit_core_num(8, 24):
                 # KV down (independent of q_lora)
                 kv = self._kv_down_mome(hidden_states, attn_metadata, mome_metadata)
 
@@ -3366,7 +3366,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             side_done_event = torch.npu.Event()
             side_done_event.record()
 
-        with torch.npu.npugraph_ex.scope.limit_core_num(12,24):
+        with torch.npu.npugraph_ex.scope.limit_core_num(12, 24):
             # Main stream: full Q path
             # SK: only q_b (DynQ→QBMM). Absorb+RoPE stay outside the scope.
             with sk_scope(f"dsa_main_q_{self.layer_idx}"):

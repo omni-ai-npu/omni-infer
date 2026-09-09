@@ -81,8 +81,7 @@ class NPUCompressedTensorsW8A8Int8MoEMethod(CompressedTensorsW8A8Int8MoEMethod, 
 
         NPUFusedMoEMethodBase.__init__(self)
 
-        # TODO: eplb need to be supported
-        # self.init_eplb(layer)
+        # NOTE: eplb need to be supported
         # apply() reads self.enable_eplb on every call, so the attribute has to
         # exist anyway; False is what "not yet supported" means here.
         self.enable_eplb = False

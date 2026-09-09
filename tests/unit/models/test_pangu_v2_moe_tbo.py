@@ -249,3 +249,40 @@ def test_forward_tbo_rest_wave_and_dict_input():
         out = moe._forward_tbo(hidden_states, quant_combine=False)
     assert tuple(out.shape) == (tokens, hidden_size)
     assert len(moe.shared_calls) == 1
+
+
+def test_forward_splits_dict_hidden_states_over_threshold():
+    """A dict input longer than moe_seq_split_length is split per value and
+    the pieces are zipped back into one dict per chunk.
+    """
+    moe = _make_moe(tokens=4, top_k=2, hidden_size=4)
+    moe.moe_tbo_threshold = -1          # keep TBO out of the way
+    moe.moe_seq_split_length = 2        # 4 rows -> two chunks of 2
+
+    seen = []
+
+    def fake_single(chunk):
+        seen.append(chunk)
+        rows = next(iter(chunk.values())).shape[0]
+        return torch.zeros(rows, 4)
+
+    moe._forward_single = fake_single
+    hidden_states = {
+        "hidden_states_bf16": torch.ones(4, 4, dtype=torch.bfloat16),
+        "hidden_states_fp32": torch.ones(4, 4, dtype=torch.float32),
+    }
+
+    with patch.object(
+        model_mod, "get_tp_group", return_value=SimpleNamespace(world_size=1)
+    ):
+        out = moe.forward(hidden_states)
+
+    assert len(seen) == 2
+    # Every chunk keeps the original keys and is 2 rows tall.
+    for chunk in seen:
+        assert list(chunk.keys()) == list(hidden_states.keys())
+        assert all(v.shape[0] == 2 for v in chunk.values())
+    # Per-key dtypes survive the split (the zip must not cross keys).
+    assert seen[0]["hidden_states_bf16"].dtype == torch.bfloat16
+    assert seen[0]["hidden_states_fp32"].dtype == torch.float32
+    assert tuple(out.shape) == (4, 4)

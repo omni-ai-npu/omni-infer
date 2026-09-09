@@ -1367,7 +1367,7 @@ def conv_sp(
     workspace = x.new_empty(batch_size * state_len + sum(recv_split), dim)
     workspace[: batch_size * state_len] = select_dim0(cache, init_idx).view(-1, dim)
     torch.distributed.all_to_all_single(
-        workspace[batch_size * state_len :],
+        workspace[batch_size * state_len:],
         x[send_idx],
         recv_split,
         send_split,

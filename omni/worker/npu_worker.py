@@ -218,9 +218,7 @@ class NPUWorker(Worker):
             self._init_token_profiler_state()
             self._init_profiler()
 
-        # TODO: eplb feature need to adapt vllm 0.25.1
-        # from omni_placement.utils import _init_omni_eplb_configs
-        # _init_omni_eplb_configs(self.vllm_config, self.local_rank)
+        # NOTE: eplb feature need to adapt vllm 0.25.1
 
     @torch.inference_mode()
     @determine_memory_decorator
