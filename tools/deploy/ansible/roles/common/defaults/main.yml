@@ -72,6 +72,10 @@ run_server_prefill_profile_defaults:
     hugepage_enabled: true
     cpu_bytes_to_use: 858993459200
     eviction_policy: arc
+  kv_pool:
+    global_segment_size_gb: 32
+    local_buffer_size_gb: 8
+    hugepage_enabled: true
   # 加载容器 .bashrc 后、调用 runner 前原样执行的 Bash 命令。
   prepare_commands: ""
   # 多节点 Prefill 使用的执行后端；null 表示不追加后端参数。

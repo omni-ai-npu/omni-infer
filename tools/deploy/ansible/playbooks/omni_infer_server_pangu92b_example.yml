@@ -17,6 +17,7 @@
     DOCKER_NAME_P: "docker_name_p"
     DOCKER_NAME_D: "docker_name_d"
     DOCKER_NAME_C: "docker_name_c"
+    DOCKER_NAME_M: "docker_name_m"
     SCRIPTS_PATH: /tmp/scripts_path
 
   vars:
