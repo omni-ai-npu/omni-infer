@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 ---
-- name: Run PanguV2 505B INT8 2P1D Prefill with KV offload, Decode, and Omni Proxy services.
+- name: Run PanguV2 505B INT8 4P1D Prefill with KV offload, Decode, and Omni Proxy services.
   hosts: all
   any_errors_fatal: true
   max_fail_percentage: 0
   gather_facts: true
   # 当前 Ansible 的配置与使用说明请参见 tools/deploy/ansible/README.md。
+  # 搭配 inventories/omni_infer_inventory_used_for_4P8_1D16.yml 拓扑模板使用。
   environment:
     LOG_PATH: /data/log_path
     LOG_PATH_IN_EXECUTOR: /data/log_path_in_executor
@@ -55,7 +56,7 @@
           "${DOCKER_NAME_D}:{{ container_workspace }}/omniinfer/"
 
     run_server_prefill_profile:
-      # Prefill enables a 1 TiB CPU offload pool in this 2P1D scenario.
+      # Each Prefill enables a 1 TiB CPU offload pool in this 4P1D scenario.
       kv_offload:
         enable: true
         hugepage_enabled: true
