@@ -1,0 +1,212 @@
+ARG BASE_IMAGE
+####################### whl BUILD IMAGE ######################
+FROM ${BASE_IMAGE} AS whl_builder
+
+ARG HTTP_PROXY
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+ARG BRANCH
+ARG IS_BRANCH_AFTER_050
+ARG CUSTOM_OPS
+ARG NPU_PLATFORM
+ARG INSTALL_MODULES
+ARG SKIP_PULL
+ARG VLLM_VERSION
+ARG OMNI_BUILD_NETWORK=green
+
+WORKDIR /workspace
+# If CUSTOM_OPS is provided (a comma-separated list or install script), iterate
+# over each name and attempt to run matching .sh scripts.
+COPY codes /workspace/dist/codes/
+COPY requirements /workspace/dist/requirements
+COPY retry.sh /usr/local/bin/retry.sh
+
+# Install packages for build whl
+RUN export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    . /usr/local/bin/retry.sh && \
+    retry pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --no-cache-dir \
+        --retries 10 --timeout 120 -r /workspace/dist/requirements/common.txt && \
+    retry bash -c 'yum install -y git gcc g++ make cmake zlib-devel pcre-devel openssl-devel wget curl tar zip rpm-build etcd libuuid-devel python3-devel grep ffmpeg cppzmq-devel || (yum clean all; false)'
+
+# Install Rust before building omni-proxy.
+RUN set -eux; \
+    case "${OMNI_BUILD_NETWORK}" in \
+        green) \
+            (printf 'search openstacklocal\nnameserver 7.192.144.229\nnameserver 100.125.243.9\nnameserver 100.125.243.10\n' > /etc/resolv.conf || \
+                echo "Warning: /etc/resolv.conf is read-only; configure Docker build DNS outside the Dockerfile."); \
+            unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; \
+            export RUSTUP_UPDATE_ROOT=http://rust.inhuawei.com/rustup-static/rustup; \
+            export RUSTUP_DIST_SERVER=http://rust.inhuawei.com/rustup-static; \
+            curl -sSf http://rust.inhuawei.com/rustup-static/rustup-init.sh | sh -s -- -y; \
+            . "$HOME/.cargo/env"; \
+            mkdir -p "$HOME/.cargo"; \
+            printf '%s\n' \
+                "[source.crates-io]" \
+                "replace-with = 'mirror'" \
+                "" \
+                "[source.mirror]" \
+                'registry = "sparse+http://mirrors.tools.huawei.com/cargo/"' \
+                "" \
+                "[net]" \
+                "git-fetch-with-cli = true" \
+                "" \
+                "[http]" \
+                "check-revoke = false" \
+                "multiplexing = false" \
+                > "$HOME/.cargo/config.toml"; \
+            ;; \
+        blue) \
+            export RUSTUP_DIST_SERVER=https://rsproxy.cn; \
+            export RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup; \
+            curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | sh -s -- -y; \
+            . "$HOME/.cargo/env"; \
+            mkdir -p "$HOME/.cargo"; \
+            printf '%s\n' \
+                "[source.crates-io]" \
+                "replace-with = 'rsproxy-sparse'" \
+                "" \
+                "[source.rsproxy-sparse]" \
+                'registry = "sparse+https://rsproxy.cn/index/"' \
+                "" \
+                "[net]" \
+                "git-fetch-with-cli = true" \
+                > "$HOME/.cargo/config.toml"; \
+            ;; \
+        *) \
+            echo "Unsupported OMNI_BUILD_NETWORK=${OMNI_BUILD_NETWORK}. Use green or blue." >&2; \
+            exit 1; \
+            ;; \
+    esac; \
+    touch "$HOME/.bashrc"; \
+    (grep -qxF '. "$HOME/.cargo/env"' "$HOME/.bashrc" || echo '. "$HOME/.cargo/env"' >> "$HOME/.bashrc"); \
+    cargo --version
+
+
+
+RUN export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    . /usr/local/bin/retry.sh && \
+    if [ -f /workspace/dist/codes/build_info.txt ]; then \
+        if [ -f /workspace/build_info.txt ]; then \
+            cat /workspace/dist/codes/build_info.txt >> /workspace/build_info.txt; \
+        else \
+            cp /workspace/dist/codes/build_info.txt /workspace/build_info.txt; \
+        fi; \
+    fi && \
+    if ls /workspace/dist/codes/*/obsutil* >/dev/null 2>&1; then \
+        mv /workspace/dist/codes/*/obsutil* /workspace && \
+        chmod +x /workspace/obsutil*; \
+    fi && \
+    echo "export HCCL_IF_BASE_PORT=59000" >> ~/.bashrc; \
+    echo "export HCCL_OP_RETRY_ENABLE=\"L0:0, L1:0, L2:0\"" >> ~/.bashrc; \
+    source ~/.bashrc && \
+    if [ -n "${CUSTOM_OPS}" ]; then \
+        retry pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} \
+            --retries 10 --timeout 120 \
+            google==3.0.0 expecttest==0.1.6 hypothesis==6.82.0 psutil==7.0.0 scipy==1.15.3 \
+            attrs==25.3.0 numpy==2.2.6 protobuf==4.25.8 PyYAML decorator build && \
+        echo "CUSTOM_OPS specified: ${CUSTOM_OPS}"; \
+        # Split on commas and iterate; trim whitespace from each entry.
+        echo "${CUSTOM_OPS}" | tr ',' '\n' | while IFS= read -r op; do \
+            # trim leading/trailing whitespace
+            op="$(echo "$op" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"; \
+            [ -z "$op" ] && continue; \
+            echo "Processing custom op: $op"; \
+            found=0; \
+            # Run a matching script from the legacy root or ops_build_images.
+            for script in /workspace/dist/codes/"$op".sh /workspace/dist/codes/ops_build_images/"$op".sh; do \
+                    if [ -f "$script" ]; then \
+                    found=1; echo "Running $script"; chmod +x "$script" && /bin/bash "$script" --npu-platform "${NPU_PLATFORM}" || { echo "Error: failed to run $script"; exit 1; }; break; \
+                fi; \
+            done; \
+            # Final fallback: warn user
+            if [ $found -eq 0 ]; then \
+                echo "Error: no matching script found for custom op: $op"; exit 1; \
+            fi; \
+        done; \
+    fi && \
+    bash /workspace/dist/codes/install_ops_by_whl.sh
+
+
+# Download source code and build whl
+COPY build_whl.sh /workspace/
+RUN source ~/.bashrc && bash build_whl.sh && \
+    (rm -f /workspace/omniinfer/.gitmodules /workspace/dist/codes/omniinfer/.gitmodules || true) && \
+    mkdir -p /workspace/omniinfer/build/lib
+
+ARG DEFAULT_USER=""
+
+# 创建默认用户
+RUN . /usr/local/bin/retry.sh && \
+    if [ -n "$DEFAULT_USER" ]; then \
+    retry bash -c 'yum install -y shadow-utils sudo || (yum clean all; false)' && yum clean all; \
+    useradd -m -s /bin/bash $DEFAULT_USER; \
+    usermod -aG wheel $DEFAULT_USER 2>/dev/null || echo "Could not add $DEFAULT_USER to wheel group"; \
+    mkdir -p /etc/sudoers.d && chmod 750 /etc/sudoers.d; \
+    echo "$DEFAULT_USER ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$DEFAULT_USER; \
+    chmod 440 /etc/sudoers.d/$DEFAULT_USER; \
+    if ! grep -q "^#includedir.*sudoers.d" /etc/sudoers; then \
+        echo "#includedir /etc/sudoers.d" >> /etc/sudoers; \
+    fi; \
+    if [ "$DEFAULT_USER" != "root" ]; then \
+        mkdir -p /home/$DEFAULT_USER; \
+        if [ -f /root/.bashrc ]; then \
+            cp /root/.bashrc /home/$DEFAULT_USER/.bashrc; \
+        else \
+            touch /home/$DEFAULT_USER/.bashrc; \
+        fi; \
+        chown -R $DEFAULT_USER:$DEFAULT_USER /home/$DEFAULT_USER; \
+    fi; \
+    fi
+
+USER $DEFAULT_USER
+
+WORKDIR /home/$DEFAULT_USER
+
+ENTRYPOINT ["bash"]
+####################### whl BUILD IMAGE ######################
+
+###################### OPENAI API SERVER #####################
+# base openai image with additional requirements, for any subsequent openai-style images
+FROM whl_builder AS omininfer_openai
+
+USER root
+
+ARG HTTP_PROXY
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+
+# /workspace/dist/codes: optional cann-hixl*.run; optional moxing_framework*.whl (then append MOX_OBS_SIGNATURE to bashrc)
+# Install high version of hf_xet 1.1.10 to solve the problem of downloading the HF model.
+RUN export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    . /usr/local/bin/retry.sh && \
+    retry pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --retries 10 --timeout 120 numba && \
+    retry pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --retries 10 --timeout 120 vllm[audio] && \
+    retry pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --retries 10 --timeout 120 ffmpeg-python fastapi==0.136.3 xgrammar==0.2.3 pytest-asyncio && \
+    retry pip install --retries 10 --timeout 120 -U hf_xet && \
+    cd /workspace/dist/codes && \
+    if [ -f ./cann-hixl*.run ]; then \
+        echo "Installing CANN HiXL" && \
+        chmod +x ./cann-hixl*.run && \
+        ./cann-hixl*.run --full --quiet --pylocal || exit 1; \
+    fi && \
+    if [ -f ./moxing_framework*.whl ]; then \
+        echo "Installing moxing_framework" && \
+        retry pip install -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} \
+            --retries 10 --timeout 120 \
+            ./moxing_framework*.whl || exit 1; \
+        echo 'export MOX_OBS_SIGNATURE=obs' >> ~/.bashrc; \
+    fi && \
+    pip cache purge
+
+# Example config to run api_server
+# NOTE: environment variable defaults moved into /usr/local/bin/start_server.sh
+
+COPY start_server.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/start_server.sh
+
+ENTRYPOINT ["start_server.sh"]
+
+###################### OPENAI API SERVER #####################

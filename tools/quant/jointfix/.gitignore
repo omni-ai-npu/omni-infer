@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+*.safetensors
+*.parquet
+# but DO track the bundled default calib set (inline comments are NOT allowed here)
+!examples/data/*.parquet
+*.log
+.DS_Store
+# internal-only working area (monolith baseline, equivalence harness, work-process docs)
+_private/

@@ -1,0 +1,25 @@
+{
+    "model_parallel_config": {
+        "layer_parallel_config": {
+            "self_attn.qkv_proj": {
+                "x_transform": {
+                    "type": "NoOp"
+                },
+                "y_transform": {
+                    "type": "NoOp"
+                }
+            },
+            "self_attn.o_proj": {
+                "x_transform": {
+                    "type": "NoOp"
+                },
+                "y_transform": {
+                    "type": "AllReduce"
+                }
+            }
+        }
+    },
+    "operator_optimization_config": {
+        "decode_moe_dispatch_combine": true
+    }
+}

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 
 import contextvars
@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 import socket
 import requests
+
+from omni_npu import envs
 
 
 _trace_mm_hash_to_req_id: contextvars.ContextVar[dict[str, str] | None] = (
@@ -72,4 +74,4 @@ def get_ip():
         return f"Error getting local IP: {e}"
 
 ip_str = get_ip()
-trace_output_directory = os.getenv("TRACE_OUTPUT_DIRECTORY", "/tmp/trace_output_directory")
+trace_output_directory = envs.OMNI_TRACE_OUTPUT_DIRECTORY

@@ -1,0 +1,8 @@
+{
+    "model_parallel_config": {
+    },
+    "operator_optimization_config": {
+        "decode_moe_dispatch_combine": false,
+        "enable_kv_rmsnorm_rope_cache": true
+    }
+}

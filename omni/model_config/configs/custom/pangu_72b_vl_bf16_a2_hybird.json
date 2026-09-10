@@ -1,0 +1,7 @@
+{
+    "model_parallel_config": {
+    },
+    "operator_optimization_config": {
+        "omni_disable_npu_add_rms_norm": true
+    }
+}

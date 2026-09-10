@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+epd_profile_defaults:
+  enabled: true
+  connector_type: SharedMemConnector
+  mm_feature_transfer_port: 5555
+  mm_feature_storage_root: /tmp/omni_epd_mm_features
+  ec_cache_max_gb: 50
+  load_ec_async: true
+epd_profile: {}
+
+# Model limits, media preprocessing and performance flags belong to the playbook.
+run_server_encode_profile_defaults:
+  workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
+  docker_envs: {}
+  prepare_commands: ""
+  args: []
+run_server_encode_profile: {}

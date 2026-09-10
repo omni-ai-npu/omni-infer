@@ -1,0 +1,21 @@
+# Normalize line endings to LF for all text files
+* text=auto eol=lf
+
+# Explicit rules for common file types
+*.py    text eol=lf
+*.sh    text eol=lf
+*.json  text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.ini   text eol=lf
+*.cpp   text eol=lf
+*.patch text eol=lf
+
+# Binary files - no line ending conversion
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.whl   binary
+*.zip   binary

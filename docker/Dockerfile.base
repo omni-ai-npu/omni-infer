@@ -1,0 +1,172 @@
+# The Dockerfile is used to construct base image with CANN and PyTorch.
+# Requires L0 image (Dockerfile.system) as base.
+
+ARG BASE_IMAGE
+
+#################### BASE IMAGE ####################
+FROM ${BASE_IMAGE} AS base
+#################### BASE IMAGE ####################
+
+#################### CANN Pytorch IMAGE ####################
+FROM base AS cann_pytorch
+
+ARG HTTP_PROXY
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+ARG CANN_INSTALL_MODE
+ARG ARCHITECTURE
+
+RUN mkdir -p /workspace/copy_data && \
+    mkdir -p /usr/local/Ascend/driver
+
+# Copy Ascend files
+COPY copy_data /workspace/copy_data/
+COPY retry.sh /usr/local/bin/retry.sh
+
+# Install PyTorch according to architecture
+RUN cd /workspace/copy_data && \
+    export http_proxy=${HTTP_PROXY} && \
+    export https_proxy=${HTTP_PROXY} && \
+    . /usr/local/bin/retry.sh && \
+    if [ -f build_info.txt ]; then \
+    mv build_info.txt /workspace/build_info.txt; \
+    fi && \
+    printf '%s\n' \
+    'if [ -z "${OMNIINFER_BUILD_INFO_PRINTED:-}" ] && [ -f /workspace/build_info.txt ]; then' \
+    '    export OMNIINFER_BUILD_INFO_PRINTED=1' \
+    '    echo "===== build_info.txt ====="' \
+    '    cat /workspace/build_info.txt' \
+    '    echo "=========================="' \
+    'fi' \
+    >> ~/.bashrc && \
+    if [ "$ARCHITECTURE" = "x86_64" ]; then \
+    echo "Building for x86_64, installing torch and torch_npu from local WHLs..."; \
+    TORCH_FILE=$(find . -type f -name "torch-*x86_64.whl" | head -n 1); \
+    TORCHNPU_FILE=$(find . -maxdepth 1 -type f -name "torch_npu-*x86_64.whl" | head -n 1); \
+    TORCHVISION_FILE=$(find . -maxdepth 1 -type f -name "torchvision-*x86_64.whl" | head -n 1); \
+    retry pip install --no-cache-dir "$TORCH_FILE" "$TORCHNPU_FILE" "$TORCHVISION_FILE";  \
+    elif [ "$ARCHITECTURE" = "aarch64" ]; then \
+    echo "Building for aarch64, installing torch and torch_npu from local WHLs..."; \
+    TORCHNPU_FILE=$(find . -maxdepth 1 -type f -name "torch_npu-*aarch64.whl" | head -n 1); \
+    TORCHVISION_FILE=$(find . -maxdepth 1 -type f -name "torchvision-*aarch64.whl" | head -n 1); \
+    retry pip install --no-cache-dir "$TORCHNPU_FILE" "$TORCHVISION_FILE"; \
+    else \
+    echo "ERROR: Unsupported ARCHITECTURE='$ARCHITECTURE'. Only 'aarch64' or 'x86_64' allowed."; \
+    exit 1; \
+    fi && \
+    pip cache purge && \
+    retry bash -c 'yum -y install sudo util-linux diffutils hostname net-tools dos2unix iproute wget vim git rpm-build grep || (yum clean all; false)' && \
+    yum clean all && \
+    rm -rf /var/cache/yum
+
+
+# Install CANN packages
+RUN cd /workspace/copy_data && \
+    . /usr/local/bin/retry.sh && \
+    chmod +x *.run && \
+    if [ "$CANN_INSTALL_MODE" = "split" ]; then \
+    FWKPLUGIN=$(find ./ -name "tfadapter*" -type f) && \
+    if [ -f "$FWKPLUGIN" ]; then \
+    tar -zxvf /workspace/copy_data/tfadapter*; \
+    retry pip install fwkplugin/bin/npu_*; \
+    fi; \
+    if [ -f ./CANN-runtime-*.run ]; then \
+    echo y | ./CANN-runtime-*.run --full; \
+    fi; \
+    if [ -f ./CANN-opp-*.run ]; then \
+    echo y | ./CANN-opp-*.run --full; \
+    fi; \
+    if [ -f ./CANN-toolkit-*.run ]; then \
+    echo y | ./CANN-toolkit-*.run --full --pylocal; \
+    fi; \
+    if [ -f ./CANN-compiler-*.run ]; then \
+    echo y | ./CANN-compiler-*.run --full --pylocal; \
+    fi; \
+    if [ -f ./CANN-hccl-*.run ]; then \
+    echo y | ./CANN-hccl-*.run --full --pylocal; \
+    fi; \
+    if [ -f ./CANN-aoe-*.run ]; then \
+    echo y | ./CANN-aoe-*.run --full; \
+    fi; \
+    if [ -f ./Ascend*-opp_kernel-*.run ]; then \
+    echo y | ./Ascend*-opp_kernel-*.run --full; \
+    fi && \
+    echo "export ASCEND_TOOLKIT_HOME=/usr/local/Ascend/latest" >> ~/.bashrc && \
+    echo "source /usr/local/Ascend/latest/bin/setenv.bash" >> ~/.bashrc && \
+    source ~/.bashrc && \
+    if [ -f ./Ascend-cann-nnal*.run ]; then \
+    echo Y | ./Ascend-cann-nnal*.run --install && \
+    echo "source /usr/local/Ascend/nnal/atb/set_env.sh" >> ~/.bashrc; \
+    fi && \
+    echo 'export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/driver:$LD_LIBRARY_PATH' >> ~/.bashrc && \
+    echo 'export HCCL_OP_RETRY_ENABLE="L0:0, L1:0, L2:0"' >> ~/.bashrc && \
+    source ~/.bashrc; \
+    else \
+    TOOLKITFILE=$(find ./ -name "Ascend-cann-toolkit_*.run" -type f) && \
+    echo y | ./$TOOLKITFILE --full && \
+    echo 'source /usr/local/Ascend/ascend-toolkit/set_env.sh' >> ~/.bashrc && \
+    source ~/.bashrc && \
+    KERNELFILE=$(find ./ -name "A*-ops*.run" -type f) && \
+    if [ -n "$KERNELFILE" ]; then \
+    echo "Found ops package: $KERNELFILE, installing..." && \
+    echo y | ./$KERNELFILE --install && \
+    echo 'source /usr/local/Ascend/cann/set_env.sh' >> ~/.bashrc && \
+    source ~/.bashrc; \
+    else \
+    KERNELFILE=$(find ./ -name "A*-cann-kernels*.run" -type f) && \
+    if [ -n "$KERNELFILE" ]; then \
+    echo "Found kernels package: $KERNELFILE, installing..." && \
+    echo y | ./$KERNELFILE --install; \
+    else \
+    echo "No kernel package found, skipping kernel installation."; \
+    fi; \
+    fi && \
+    NNALFILE=$(find ./ -name "Ascend-cann-nnal*.run" -type f) && \
+    if [ -n "$NNALFILE" ]; then \
+    echo "Found NNAL package: $NNALFILE, installing..." && \
+    echo y | ./$NNALFILE --install && \
+    echo "source /usr/local/Ascend/nnal/atb/set_env.sh" >> ~/.bashrc \
+    else \
+    echo "NNAL package not found, skipping installation."; \
+    fi && \
+    if [ -f /usr/local/Ascend/driver/bin/setenv.bash ]; then \
+    echo 'source /usr/local/Ascend/driver/bin/setenv.bash' >> ~/.bashrc; \
+    else \
+    DRIVER_LIB_PATH="/usr/local/Ascend/driver/lib64/driver" && \
+    TOOLKIT_RUNTIME_LIB_PATH="/usr/local/Ascend/ascend-toolkit/latest/runtime/lib64/stub" && \
+    echo "export LD_LIBRARY_PATH=$DRIVER_LIB_PATH:\$LD_LIBRARY_PATH:$TOOLKIT_RUNTIME_LIB_PATH/" >> ~/.bashrc; \
+    fi \
+    fi && \
+    if [ -n "$EXECUTE_CMD" ]; then sh -c "$EXECUTE_CMD"; fi && \
+    sed -i '/TMOUT=/d' /etc/bashrc && \
+    rm -rf /workspace/copy_data && \
+    chmod -R 755 /usr/local/Ascend/
+
+ARG DEFAULT_USER=""
+
+# 创建默认用户
+RUN . /usr/local/bin/retry.sh && \
+    if [ -n "$DEFAULT_USER" ]; then \
+    retry bash -c 'yum install -y shadow-utils sudo || (yum clean all; false)' && yum clean all; \
+    useradd -m -s /bin/bash $DEFAULT_USER; \
+    usermod -aG wheel $DEFAULT_USER 2>/dev/null || echo "Could not add $DEFAULT_USER to wheel group"; \
+    mkdir -p /etc/sudoers.d && chmod 750 /etc/sudoers.d; \
+    echo "$DEFAULT_USER ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$DEFAULT_USER; \
+    chmod 440 /etc/sudoers.d/$DEFAULT_USER; \
+    if ! grep -q "^#includedir.*sudoers.d" /etc/sudoers; then \
+        echo "#includedir /etc/sudoers.d" >> /etc/sudoers; \
+    fi; \
+    if [ "$DEFAULT_USER" != "root" ]; then \
+        mkdir -p /home/$DEFAULT_USER; \
+        if [ -f /root/.bashrc ]; then \
+            cp /root/.bashrc /home/$DEFAULT_USER/.bashrc; \
+        else \
+            touch /home/$DEFAULT_USER/.bashrc; \
+        fi; \
+        chown -R $DEFAULT_USER:$DEFAULT_USER /home/$DEFAULT_USER; \
+    fi; \
+    fi
+
+WORKDIR /home/$DEFAULT_USER
+
+#################### CANN Pytorch IMAGE ####################

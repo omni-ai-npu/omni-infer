@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: The executor synchronizes code to all instances.
+  ansible.builtin.synchronize:
+    src: "{{ resolved_sync_code_profile.host_sync.source }}"
+    dest: "{{ resolved_sync_code_profile.host_sync.destination }}"
+  vars:
+    resolved_sync_code_profile: >-
+      {{
+        sync_code_profile_defaults
+        | combine(sync_code_profile | default({}, true), recursive=true)
+      }}
+  when: "('P' in group_names or 'D' in group_names) and existing_containers.stdout == ''"
+
+- name: Copy the code from the host machine into the container (prefill).
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_container_copy_profile.get('prefill') }}"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  vars:
+    resolved_container_copy_profile: >-
+      {{
+        (
+          sync_code_profile_defaults
+          | combine(sync_code_profile | default({}, true), recursive=true)
+        ).get('container_copy')
+        | default({}, true)
+      }}
+  when:
+    - "'P' in group_names and existing_containers.stdout == ''"
+    - resolved_container_copy_profile.get('prefill') is string
+    - resolved_container_copy_profile.get('prefill') | length > 0
+
+- name: Copy the code from the host machine into the container (decode).
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_container_copy_profile.get('decode') }}"
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  vars:
+    resolved_container_copy_profile: >-
+      {{
+        (
+          sync_code_profile_defaults
+          | combine(sync_code_profile | default({}, true), recursive=true)
+        ).get('container_copy')
+        | default({}, true)
+      }}
+  when:
+    - "'D' in group_names and existing_containers.stdout == ''"
+    - resolved_container_copy_profile.get('decode') is string
+    - resolved_container_copy_profile.get('decode') | length > 0
+
+- name: docker_update_prefill_code_cmd.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_pip_install_profile.get('prefill') }}"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  vars:
+    resolved_pip_install_profile: >-
+      {{ pip_install_profile | default({}, true) }}
+  when:
+    - "'P' in group_names and existing_containers.stdout == ''"
+    - resolved_pip_install_profile.get('prefill') is string
+    - resolved_pip_install_profile.get('prefill') | length > 0
+
+- name: docker_update_decode_code_cmd.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_pip_install_profile.get('decode') }}"
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  vars:
+    resolved_pip_install_profile: >-
+      {{ pip_install_profile | default({}, true) }}
+  when:
+    - "'D' in group_names and existing_containers.stdout == ''"
+    - resolved_pip_install_profile.get('decode') is string
+    - resolved_pip_install_profile.get('decode') | length > 0

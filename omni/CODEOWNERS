@@ -1,0 +1,11 @@
+# The CODEOWNERS file is used to define the maintainer of a specific file or directory in the code repository.
+# Its main purpose is to automatically request designated maintainer to conduct code review in Pull Request (PR),
+# in order to clarify code ownership, improve code quality, and accelerate the review process.
+
+# The rules are applied from top to bottom, and the last matching rule will take effect.
+
+# 所有文件默认由 omni-infer-reviewers 团队评审
+# * @octol @caicongzhi @yuxianzhiyuxianzhi @dawncc022  @jacklee0575 @ryan_lan @tony39 @pan-yinfei @zhengjinhuan01 @jarr0d @he-bin-17 @yyaoaj @ding-yi-bin @zhangweixi @immrz @ming-zhenyu @hjxcoder @lijun609 @daylight21 @yizhao94 @kevinning @lumin17 @yongfengli1832 @cyyzyk
+ 
+# 但 .codeowners 文件例外，仅由指定人员评审 
+# CODEOWNERS @octol @caicongzhi

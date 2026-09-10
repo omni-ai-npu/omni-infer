@@ -1,7 +1,7 @@
 # 简介
 本[Optiquant](#optiquant)工具支持deepseek/kimi k2/pangu 718B/qwen 235B/gpt-oss的量化，其他Omni-infer中使用的量化权重由[Modelslim](#modelslim)生成。
 
-## Optiquant
+## 一、Optiquant
 ### 编译步骤  
 进入python目录下执行： python setup.py bdist_wheel  
 进入dist目录下执行: pip install *.whl --force-reinstall  
@@ -50,7 +50,7 @@ python quant_deepseek_kimi2.py --input-bf16-hf-path {bf16权重路径} --output-
 --w4                   int4量化标识, 不加该参数时为int8量化  
 --pangu-mode           pangu量化标识, 开启时量化pangu 718B权重
 
-## Modelslim
+## 二、Modelslim
 ### Modelslim支持的权重
 [Modelslim](https://gitcode.com/Ascend/msmodelslim)是一款开源昇腾模型压缩工具，Optiquant的部分功能已经合入该工具。以下模型可以一键生成与Omni-infer推理框架兼容的权重：
 
@@ -119,3 +119,128 @@ docker run -itd -u root \
 参照对应的[量化教程](#modelslim支持的权重)进行权重的量化
 
 
+## 三、PanguV2 W4A8 Quick Start
+
+使用 `quant_pangu_v2.py` 将 Pangu V2 的 BF16 Hugging Face 权重量化为 W4A8 Dynamic 权重。
+
+### 1、输入要求
+
+原始权重必须是 Hugging Face Safetensors 格式，输入目录根路径下必须包含：
+
+```text
+config.json
+model.safetensors.index.json
+*.safetensors
+```
+
+此外需满足：
+
+- `model.safetensors.index.json` 引用的权重分片均存在。
+- 输出目录具有足够磁盘空间。
+- 输出路径必须位于输入路径外部，建议使用不存在的新目录。
+- `flash` 与 `pro` 模型的层数及跳过量化的权重不同，必须正确设置 `--model-variant`。
+
+### 2、使用 `start.sh` 量化
+
+编辑 `start.sh` 中的配置：
+
+```bash
+# SSZ 优化迭代步数
+NUM_STEP=10
+
+# BF16 Hugging Face 原始权重目录
+BASE_PATH=/path/to/bf16_hf_model
+
+# 量化权重输出目录
+QUANT_PATH=/path/to/output_quant_model
+
+# 使用的 NPU 卡号
+DEVICE_IDS=0
+```
+
+确认脚本中的 `--model-variant` 与模型匹配，然后执行：
+
+```bash
+bash start.sh
+```
+
+`start.sh` 默认执行 W4A8 Dynamic 非对称量化。
+
+### 3、手工执行非对称量化
+
+先设置参数：
+
+```bash
+export BASE_PATH=/path/to/bf16_hf_model
+export QUANT_PATH=/path/to/output_quant_model
+export DEVICE_IDS=0
+export NUM_STEP=10
+```
+
+执行量化：
+
+```bash
+python quant_pangu_v2.py \
+    --input-bf16-hf-path "${BASE_PATH}" \
+    --output-path "${QUANT_PATH}" \
+    --device "${DEVICE_IDS}" \
+    --w4 \
+    --pangu-mode \
+    --model-name panguv2 \
+    --num-step "${NUM_STEP}" \
+    --model-variant flash \
+    --group-size 0 \
+    --clip-ratio 0.9 \
+    --num-bits 4 \
+    --asymmetric
+```
+
+设备参数说明：
+
+- 单卡可填写 `0` 或 `npu:0`。
+- W4A8 量化支持逗号分隔的 NPU 卡号。
+- `cpu` 仅支持单设备量化。
+
+### 4、手工执行对称量化
+
+去掉 `--asymmetric` 即可使用对称量化：
+
+```bash
+python quant_pangu_v2.py \
+    --input-bf16-hf-path "${BASE_PATH}" \
+    --output-path "${QUANT_PATH}" \
+    --device "${DEVICE_IDS}" \
+    --w4 \
+    --pangu-mode \
+    --model-name panguv2 \
+    --num-step "${NUM_STEP}" \
+    --model-variant flash \
+    --group-size 0 \
+    --num-bits 4
+```
+
+### 5、Pangu V2 参数说明
+
+- `--w4`：非共享 MoE expert 的 `up_proj`、`gate_proj` 和 `down_proj` 权重使用 INT4，其余目标权重使用 INT8，激活使用动态 INT8；最终配置标记为 `w4a8_dynamic`。
+- `--asymmetric`：对上述 INT4 expert 权重启用非对称量化；不指定时使用对称量化。
+- `--clip-ratio`：非对称 INT4 裁剪比例，默认值为 `0.95`，`start.sh` 使用 `0.9`。
+- `--num-step`：SSZ 优化步数，默认值为 `50`。
+- `--group-size 0`：使用 per-channel 权重量化。
+- `--model-variant flash|pro`：选择 Pangu V2 模型变体，默认值为 `pro`。
+
+模型变体对应关系：
+
+- `flash`：按 49 层模型生成跳过量化列表。
+- `pro`：按 53 层模型生成跳过量化列表。
+
+### 6、检查量化结果
+
+量化完成后，确认输出目录至少包含：
+
+```text
+config.json
+model.safetensors.index.json
+*.safetensors
+```
+
+脚本会自动向输出目录的 `config.json` 写入 `quantization_config`。检查方法：

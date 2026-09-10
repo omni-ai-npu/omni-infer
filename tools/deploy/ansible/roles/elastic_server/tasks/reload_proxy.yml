@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: Resolve the run_proxy profile for reload.
+  ansible.builtin.set_fact:
+    resolved_run_proxy_profile: >-
+      {{ run_proxy_profile_defaults | combine(run_proxy_profile, recursive=true) }}
+  when: "'C' in group_names"
+  tags:
+    - never
+    - reload_proxy
+
+- name: Generate the Proxy reload script.
+  ansible.builtin.template:
+    src: reload_proxy.sh.j2
+    dest: "$SCRIPTS_PATH/reload_proxy_server.sh"
+    mode: '0750'
+  when: "'C' in group_names"
+  tags:
+    - never
+    - reload_proxy
+
+- name: Reload the Proxy.
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - -c
+      - >-
+        {{ docker_exec_cmd }}
+        -d $DOCKER_NAME_C
+        /bin/bash -c $SCRIPTS_PATH/reload_proxy_server.sh
+  environment:
+    DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+  when: "'C' in group_names"
+  tags:
+    - never
+    - reload_proxy

@@ -1,0 +1,160 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: Resolve the Decode inventory groups.
+  ansible.builtin.set_fact:
+    decode_inventory_groups: >-
+      {%- set candidates={} -%}
+      {%- for decode_group in groups.keys() -%}
+        {%- set suffix=decode_group[1:] -%}
+        {%- if decode_group.startswith('D') and suffix | length > 0 and (suffix | int | string) == suffix -%}
+          {%- set _=candidates.update({suffix | int: decode_group}) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- set result=[] -%}
+      {%- for _, decode_group in candidates | dictsort -%}
+        {%- set _=result.append(decode_group) -%}
+      {%- endfor -%}
+      {{ result }}
+  tags: always
+
+- name: Resolve the current Decode inventory scope.
+  ansible.builtin.set_fact:
+    decode_inventory_scope_groups: >-
+      {%- set result=[] -%}
+      {%- if decode_inventory_groups | length > 0 -%}
+        {%- for decode_group in decode_inventory_groups -%}
+          {%- if decode_group in group_names -%}
+            {%- set _=result.append(decode_group) -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- else -%}
+        {%- set _=result.append('D') -%}
+      {%- endif -%}
+      {{ result }}
+  tags: always
+
+- name: Register the deployment topology.
+  ansible.builtin.set_fact:
+    PREFILL_API_SERVER_LIST: >-
+      {%- set result=[] -%}
+      {%- for host in groups['P'] | default([]) -%}
+        {%- set h=hostvars.get(host,{}) -%}
+        {%- set ip=h.ansible_host | default('') -%}
+        {%- set host_ip=h.host_ip | default('') -%}
+        {%- set port=h.api_port | default('9000') -%}
+        {%- if ip and host_ip and ip == host_ip -%}
+          {%- set entry=ip~':'~port -%}
+          {%- if entry not in result -%}{%- set _=result.append(entry) -%}{%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ result | join(',') }}
+    DECODE_API_SERVER_LIST: &decode_api_server_list >-
+      {%- set result=[] -%}
+      {%- for host in groups['D'] | default([]) -%}
+        {%- set h=hostvars.get(host,{}) -%}
+        {%- set ip=h.ansible_host | default('') -%}
+        {%- set port=h.api_port | default('9100') -%}
+        {%- set num=h.ascend_rt_visible_devices.count(',') | default('0') -%}
+        {%- if ip -%}
+          {%- set entry=ip~':'~port~'@'~num -%}
+          {%- if entry not in result -%}{%- set _=result.append(entry) -%}{%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ result | join(',') }}
+    DECODE_API_SERVER_LIST_ALL: *decode_api_server_list
+    OMNI_PD_PREFILL_POD_NUM: >-
+      {{ groups['P'] | map('extract', hostvars) | map(attribute='host_ip') | unique | length }}
+    OMNI_PD_DECODE_POD_NUM: >-
+      {{ groups['D'] | map('extract', hostvars) | map(attribute='host_ip') | unique | length }}
+    DECODE_SERVER_IP_LIST: &decode_server_ip_list >-
+      {%- set result=[] -%}
+      {%- for host in groups['D'] | default([]) -%}
+        {%- set h=hostvars[host] -%}
+        {%- if h.host_ip == h.ansible_host -%}
+          {%- set _=result.insert(0, h.ansible_host) -%}
+        {%- else -%}
+          {%- set _=result.append(h.ansible_host) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ result | join(',') }}
+    DECODE_SERVER_IP_LIST_ALL: *decode_server_ip_list
+    DECODE_SERVER_IP_LIST_BY_GROUP: >-
+      {%- set result=[] -%}
+      {%- for decode_group in decode_inventory_scope_groups -%}
+        {%- for host in groups.get(decode_group, []) -%}
+          {%- set h=hostvars[host] -%}
+          {%- if h.host_ip == h.ansible_host -%}
+            {%- set _=result.insert(0, h.ansible_host) -%}
+          {%- else -%}
+            {%- set _=result.append(h.ansible_host) -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ result | join(',') }}
+    DECODE_SERVER_ALL: >-
+      {{ groups['D'] | map('extract', hostvars) | map(attribute='ascend_rt_visible_devices') | select('defined') | join(',') }}
+    DECODE_SERVER_BY_GROUP: >-
+      {%- set result=[] -%}
+      {%- for decode_group in decode_inventory_scope_groups -%}
+        {%- for host in groups.get(decode_group, []) -%}
+          {%- set _=result.append(hostvars[host].ascend_rt_visible_devices) -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ result | join(',') }}
+    DECODE_SERVER_OFFSET: >-
+      {%- set offsets={} -%}{%- set ns=namespace(count=0) -%}
+      {%- for host in groups['D'] | default([]) -%}
+        {%- set _=offsets.update({host: ns.count}) -%}
+        {%- set ns.count=ns.count + (hostvars[host].ascend_rt_visible_devices.count(',') | int) + 1 -%}
+      {%- endfor -%}{{ offsets }}
+    DECODE_SERVER_OFFSET_BY_GROUP: >-
+      {%- set offsets={} -%}{%- set ns=namespace(count=0) -%}
+      {%- for decode_group in decode_inventory_scope_groups -%}
+        {%- for host in groups.get(decode_group, []) -%}
+          {%- set _=offsets.update({host: ns.count}) -%}
+          {%- set ns.count=ns.count + (hostvars[host].ascend_rt_visible_devices.count(',') | int) + 1 -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ offsets }}
+    DECODE_SERVER_OFFSET_ALL: >-
+      {%- set offsets={} -%}
+      {%- set decode_groups=decode_inventory_groups if decode_inventory_groups | length > 0 else ['D'] -%}
+      {%- for decode_group in decode_groups -%}
+        {%- set ns=namespace(count=0) -%}
+        {%- for host in groups.get(decode_group, []) -%}
+          {%- set _=offsets.update({host: ns.count}) -%}
+          {%- set ns.count=ns.count + (hostvars[host].ascend_rt_visible_devices.count(',') | int) + 1 -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ offsets }}
+  delegate_to: localhost
+  tags: always
+
+- name: Register the local Prefill topology.
+  ansible.builtin.set_fact:
+    NODE_IP_LIST: >-
+      {{ groups['P'] | map('extract', hostvars) | selectattr('host_ip', '==', host_ip) | map(attribute='ansible_host') | unique | join(',') }}
+    NNODES: >-
+      {{ groups['P'] | map('extract', hostvars) | selectattr('host_ip', '==', host_ip) | list | length }}
+  when: "'P' in group_names"
+  tags: always
+
+- name: Display the deployment topology.
+  ansible.builtin.debug:
+    msg: |
+      PREFILL_API_SERVER_LIST: {{ PREFILL_API_SERVER_LIST }}
+      DECODE_API_SERVER_LIST: {{ DECODE_API_SERVER_LIST }}
+      DECODE_SERVER_IP_LIST: {{ DECODE_SERVER_IP_LIST }}
+      DECODE_SERVER_IP_LIST_BY_GROUP: {{ DECODE_SERVER_IP_LIST_BY_GROUP }}
+      OMNI_PD_PREFILL_POD_NUM: {{ OMNI_PD_PREFILL_POD_NUM }}
+      OMNI_PD_DECODE_POD_NUM: {{ OMNI_PD_DECODE_POD_NUM }}
+      DECODE_SERVER_ALL: {{ DECODE_SERVER_ALL }}
+      DECODE_SERVER_BY_GROUP: {{ DECODE_SERVER_BY_GROUP }}
+      DECODE_SERVER_OFFSET: {{ DECODE_SERVER_OFFSET }}
+      DECODE_SERVER_OFFSET_BY_GROUP: {{ DECODE_SERVER_OFFSET_BY_GROUP }}
+      DECODE_SERVER_OFFSET_ALL: {{ DECODE_SERVER_OFFSET_ALL }}
+      NODE_IP_LIST: {{ NODE_IP_LIST | default('') }}
+      NNODES: {{ NNODES | default('') }}
+  delegate_to: localhost
+  tags: always

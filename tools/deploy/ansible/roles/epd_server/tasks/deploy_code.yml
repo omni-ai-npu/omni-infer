@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# Keep common's existing sync_code / pip_install stage boundary.
+- name: Synchronize code for Encoder hosts.
+  when:
+    - epd_is_encoder_host | bool
+    - resolved_epd_profile.connector_type == 'NetworkConnector'
+  vars:
+    epd_sync_code_profile: >-
+      {{ sync_code_profile_defaults | combine(sync_code_profile | default({}, true), recursive=true) }}
+    epd_container_copy_profile: >-
+      {{ epd_sync_code_profile.get('container_copy') | default({}, true) }}
+    epd_encoder_host_sync_owner: >-
+      {%- set ns=namespace(owner='') -%}
+      {%- for candidate in groups.get('E', []) -%}
+        {%- if not ns.owner and (hostvars[candidate].ansible_host | default(candidate)) == (ansible_host | default(inventory_hostname)) -%}
+          {%- set ns.owner=candidate -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ ns.owner }}
+  block:
+    - name: Validate the Encoder code synchronization profile.
+      ansible.builtin.assert:
+        that:
+          - epd_sync_code_profile.host_sync.enabled is boolean
+          - epd_sync_code_profile.host_sync.source is string
+          - epd_sync_code_profile.host_sync.destination is string
+          - epd_sync_code_profile.host_sync.delete is boolean
+          - epd_sync_code_profile.host_sync.recursive is boolean
+          - epd_sync_code_profile.host_sync.rsync_opts is sequence
+          - epd_sync_code_profile.host_sync.throttle | int >= 0
+          - >-
+            epd_container_copy_profile.get('encode') is none or
+            epd_container_copy_profile.get('encode') is string
+        fail_msg: The Encoder host synchronization or container copy profile is invalid.
+      tags: sync_code
+
+    - name: Create the host code directory.
+      ansible.builtin.file:
+        path: "{{ ansible_env.CODE_PATH }}"
+        state: directory
+        mode: '0750'
+      when:
+        - epd_sync_code_profile.host_sync.enabled | bool
+        - inventory_hostname == epd_encoder_host_sync_owner
+      tags: sync_code
+
+    - name: Synchronize code from the executor.
+      ansible.builtin.synchronize:
+        src: "{{ epd_sync_code_profile.host_sync.source }}"
+        dest: "{{ epd_sync_code_profile.host_sync.destination }}"
+        delete: "{{ epd_sync_code_profile.host_sync.delete | bool }}"
+        recursive: "{{ epd_sync_code_profile.host_sync.recursive | bool }}"
+        rsync_opts: "{{ epd_sync_code_profile.host_sync.rsync_opts }}"
+      # Block variables are available on every host when the scheduler resolves throttle.
+      throttle: "{{ epd_sync_code_profile.host_sync.throttle | int }}"
+      when:
+        - epd_sync_code_profile.host_sync.enabled | bool
+        - inventory_hostname == epd_encoder_host_sync_owner
+      tags: sync_code
+
+    - name: Copy the code into the Encoder container.
+      ansible.builtin.command:
+        argv:
+          - bash
+          - -c
+          - "{{ epd_container_copy_profile.get('encode') }}"
+      environment:
+        DOCKER_NAME_E: "{{ epd_encoder_container_name }}"
+      when:
+        - epd_container_copy_profile.get('encode') is string
+        - epd_container_copy_profile.get('encode') | length > 0
+      tags: sync_code
+
+
+- name: Update code in Encoder containers.
+  when:
+    - epd_is_encoder_host | bool
+    - resolved_epd_profile.connector_type == 'NetworkConnector'
+  vars:
+    epd_pip_install_profile: "{{ pip_install_profile | default({}, true) }}"
+  block:
+    - name: Validate the Encoder container update profile.
+      ansible.builtin.assert:
+        that:
+          - >-
+            epd_pip_install_profile.get('encode') is none or
+            epd_pip_install_profile.get('encode') is string
+        fail_msg: pip_install_profile.encode must be a command string or null.
+      tags: pip_install
+
+    - name: Update code in the Encoder container.
+      ansible.builtin.command:
+        argv:
+          - bash
+          - -c
+          - "{{ epd_pip_install_profile.get('encode') }}"
+      environment:
+        DOCKER_NAME_E: "{{ epd_encoder_container_name }}"
+      when:
+        - epd_pip_install_profile.get('encode') is string
+        - epd_pip_install_profile.get('encode') | length > 0
+      tags: pip_install
+
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: deploy_code

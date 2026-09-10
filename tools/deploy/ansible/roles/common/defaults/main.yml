@@ -1,0 +1,175 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# common owns the generic Docker execution primitives consumed by its stages.
+# Family-specific or fixed playbooks may still override these variables.
+
+container_workspace: /workspace
+
+docker_run_base_envs:
+  - LOG_PATH=$LOG_PATH
+
+docker_run_base_mounts:
+  - /data:/data
+  - /usr/local/Ascend/driver:/usr/local/Ascend/driver
+  - /usr/local/dcmi:/usr/local/dcmi
+  - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
+  - /etc/ascend_install.info:/etc/ascend_install.info
+  - /usr/local/sbin:/usr/local/sbin
+  - /etc/hccn.conf:/etc/hccn.conf
+  - /usr/bin/hccn_tool:/usr/bin/hccn_tool
+  - '$LOG_PATH:$LOG_PATH'
+  - '{{ model_path }}:{{ model_path }}'
+  - '$SCRIPTS_PATH:$SCRIPTS_PATH'
+  - /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime
+
+# run_docker_profile：控制 Prefill、Decode 和 Proxy 容器的公共创建参数。
+run_docker_profile_defaults:
+  # Docker 共享内存大小，对应 docker run --shm-size。
+  shm_size: 500g
+  # 创建容器时通过 -e 传入的 NAME=value 环境变量列表。
+  envs: []
+  # 追加到公共挂载后的 source:destination 挂载列表。
+  extra_mounts: []
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+run_docker_profile: {}
+
+# sync_code_profile：控制执行机到远端宿主机的同步，以及宿主机到容器的复制。
+sync_code_profile_defaults:
+  # 执行机到远端宿主机的 rsync 配置。
+  host_sync:
+    # 是否执行宿主机代码同步。
+    enabled: true
+    # rsync 源路径；默认取执行机环境中的 CODE_PATH。
+    source: "{{ ansible_env.CODE_PATH }}/"
+    # rsync 目标路径；默认取远端宿主机环境中的 CODE_PATH。
+    destination: "{{ ansible_env.CODE_PATH }}/"
+    # 是否删除目标端中源端不存在的文件。
+    delete: true
+    # 是否递归同步目录。
+    recursive: true
+    # 传给 rsync 的额外参数列表。
+    rsync_opts: []
+    # 同步任务的并发上限；0 表示使用 Ansible 默认值。
+    throttle: 0
+# 还可配置 container_copy.prefill、decode、proxy；值为宿主机执行的完整命令或 null。
+sync_code_profile: {}
+
+# pip_install_profile 不设置公共默认值，仅在需要安装或编译时声明。
+# prefill、decode、proxy 分别是宿主机执行的完整命令；缺省或为 null 时跳过。
+
+# run_server_prefill_profile：控制 Prefill 启动脚本的生成与执行。
+run_server_prefill_profile_defaults:
+  # workdir 下执行的 Prefill runner 文件名。
+  runner: pd_run.sh
+  # runner 在容器内的工作目录。
+  workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
+  # 通过 docker exec -e 注入启动进程的环境变量字典。
+  docker_envs: {}
+  # KV CPU offload 默认关闭；启用时使用 HugePage 和 800 GiB CPU 容量。
+  kv_offload:
+    enable: false
+    hugepage_enabled: true
+    cpu_bytes_to_use: 858993459200
+    eviction_policy: arc
+  kv_pool:
+    global_segment_size_gb: 32
+    local_buffer_size_gb: 8
+    hugepage_enabled: true
+  # 加载容器 .bashrc 后、调用 runner 前原样执行的 Bash 命令。
+  prepare_commands: ""
+  # 多节点 Prefill 使用的执行后端；null 表示不追加后端参数。
+  multi_node_backend: ray
+  # 按列表顺序追加到 runner 的 CLI 参数。
+  args: []
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+run_server_prefill_profile: {}
+
+# run_server_decode_profile：控制 Decode 启动脚本的生成与执行。
+run_server_decode_profile_defaults:
+  # workdir 下执行的 Decode runner 文件名。
+  runner: pd_run.sh
+  # runner 在容器内的工作目录。
+  workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
+  # 通过 docker exec -e 注入启动进程的环境变量字典。
+  docker_envs: {}
+  # KV CPU offload 默认关闭；启用时使用 HugePage 和 50 GiB CPU 容量。
+  kv_offload:
+    enable: false
+    hugepage_enabled: true
+    cpu_bytes_to_use: 53687091200
+    eviction_policy: arc
+  # 加载容器 .bashrc 后、调用 runner 前原样执行的 Bash 命令。
+  prepare_commands: ""
+  # 按列表顺序追加到 runner 的 CLI 参数。
+  args: []
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+run_server_decode_profile: {}
+
+# run_server_common_profile：控制 Prefill 和 Decode 之间的等待及联动行为。
+run_server_common_profile_defaults:
+  # Prefill 和 Decode 共用的 KV Connector。
+  kv_connector: LLMDataDistConnector
+  # 多节点 Prefill 启动后、启动 Decode 前的等待秒数。
+  multi_node_prefill_wait_seconds: 20
+  # Decode 启动后、启动单节点 Prefill 前的等待秒数。
+  single_node_prefill_wait_seconds: 0
+  # elastic_server 执行 run_server 时是否同时重启 Proxy。
+  restart_proxy: false
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+run_server_common_profile: {}
+
+# run_proxy_profile：控制 Omni Proxy 的启动方式。
+run_proxy_profile_defaults:
+  # 加载容器 .bashrc 后、启动或 reload Proxy 前原样执行的 Bash 命令。
+  prepare_commands: ""
+  # Omni Proxy 在容器内的工作目录。
+  workdir: "{{ container_workspace }}/omniinfer/components/omni-proxy/omni_proxy/"
+  # 在 workdir 中执行的主命令。
+  command: bash omni_proxy.sh
+  # 按列表顺序追加到主命令的 CLI 参数。
+  args: []
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+run_proxy_profile: {}
+
+# fetch_log_profile：控制执行机日志目录创建和远端日志拉取。
+fetch_log_profile_defaults:
+  # 是否在执行机创建每个 inventory host 对应的日志目录。
+  create_directory: true
+  # 是否从远端宿主机拉取日志到执行机。
+  fetch: true
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+fetch_log_profile: {}
+
+# proc_bind_profile：控制 Prefill 和 Decode 服务启动后的 CPU 绑核。
+proc_bind_profile_defaults:
+  # 是否等待服务就绪并执行 bind_cpu.sh。
+  enabled: false
+# Playbook 只需在该字典中覆盖与默认值不同的字段。
+proc_bind_profile: {}
+
+docker_exec_cmd: 'docker exec \
+
+  '
+
+start_docker_cmd_p: '{{ resolved_docker_run_cmd }} -d --name $DOCKER_NAME_P $DOCKER_IMAGE_ID
+
+  '
+start_docker_cmd_d: '{{ resolved_docker_run_cmd }} -d --name $DOCKER_NAME_D $DOCKER_IMAGE_ID
+
+  '
+start_docker_cmd_c: '{{ resolved_docker_run_cmd }} -e PROXY_NODE_PORT=$NODE_PORT -d --name $DOCKER_NAME_C $DOCKER_IMAGE_ID
+
+  '
+
+# ---------------------------------------------------------------------------
+# mooncake KV pool（-e enable_kv_pool=true 启用）
+# ---------------------------------------------------------------------------
+# 独立 mooncake master 默认不部署；使能后 m0 进入 play、创建容器并启动
+# master，P worker 侧开启 KV 池。M 组容器创建归 omni 编排；其余部署逻辑
+# （模块安装、运行时配置、master 启动）由 kv_pool_repo_root 指向的
+# Pangu-FusionComm 检出的 kv_pool/deploy/ 提供。
+enable_kv_pool: false
+start_docker_cmd_m: '{{ resolved_docker_run_cmd }} -d --name $DOCKER_NAME_M $DOCKER_IMAGE_ID'
+# 控制节点上 Pangu-FusionComm 检出路径，可用 -e kv_pool_repo_root=... 覆盖。
+kv_pool_repo_root: "{{ playbook_dir }}/../../../../../Pangu-FusionComm"

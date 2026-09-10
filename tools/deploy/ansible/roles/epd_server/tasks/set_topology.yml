@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: Resolve the EPD profile and transport mode.
+  vars:
+    epd_config: "{{ epd_profile_defaults | combine(epd_profile, recursive=true) }}"
+  ansible.builtin.set_fact:
+    resolved_epd_profile: "{{ epd_config }}"
+    epd_network_mode: "{{ epd_config.enabled and epd_config.connector_type == 'NetworkConnector' }}"
+  tags: always
+
+- name: Validate the E inventory group for NetworkConnector.
+  ansible.builtin.assert:
+    that:
+      - groups.get('E', []) | length > 0
+    fail_msg: NetworkConnector with Encoder enabled requires a nonempty E group.
+  when: epd_network_mode
+  tags: always
+
+- name: Register the EPD topology.
+  tags: always
+  vars:
+    epd_encoder_hosts: "{{ groups.get('E', []) if epd_network_mode else (groups['P'] if resolved_epd_profile.enabled else []) }}"
+    # Only endpoint lists need information from other inventory hosts.
+    epd_encoder_endpoints: >-
+      {%- set endpoints = [] -%}
+      {%- for host in epd_encoder_hosts -%}
+        {%- set h = hostvars[host] -%}
+        {%- set ip = h.get('host_ip', h.ansible_host) -%}
+        {%- set port = h.get('api_port' if epd_network_mode else 'e_api_port') | int -%}
+        {%- set _ = endpoints.append({'endpoint': ip ~ ':' ~ port, 'host_ip': ip,
+          'ec_port': h.ec_port | int if epd_network_mode else none}) -%}
+      {%- endfor -%}
+      {{ endpoints }}
+    epd_mm_endpoints: >-
+      {%- set endpoints = [] -%}
+      {%- for host in (groups['P'] + groups['D'] if epd_network_mode else groups['D']) -%}
+        {%- set h = hostvars[host] -%}
+        {%- set port = h.get('mm_feature_transfer_port', resolved_epd_profile.mm_feature_transfer_port) | int -%}
+        {%- set _ = endpoints.append('tcp://' ~ h.get('host_ip', h.ansible_host) ~ ':' ~ port) -%}
+      {%- endfor -%}
+      {{ endpoints }}
+    epd_shared_ec_extra: "{{ {'ec_shared_memory_max_bytes': resolved_epd_profile.ec_cache_max_gb} }}"
+    epd_ec_consumer: >-
+      {{ {'ec_connector': 'ECNetworkConnector', 'ec_role': 'ec_consumer',
+          'ec_ip': epd_encoder_endpoints | map(attribute='host_ip') | join(','),
+          'ec_port': epd_encoder_endpoints[0].ec_port,
+          'ec_connector_extra_config': {'ec_ports': epd_encoder_endpoints | map(attribute='ec_port') | join(','),
+                                        'load_ec_async': resolved_epd_profile.load_ec_async}}
+         if epd_network_mode else
+         {'ec_connector': 'ECSharedMemoryConnector', 'ec_role': 'ec_consumer', 'ec_connector_extra_config': epd_shared_ec_extra} }}
+    epd_mm_disk:
+      connector_type: DiskMMFeatureConnector
+      storage_path: "{{ resolved_epd_profile.mm_feature_storage_root.rstrip('/') }}/{{ inventory_hostname }}"
+    epd_mm_producer:
+      connector_type: NetworkMMFeatureConnector
+      remote_endpoints: "{{ epd_mm_endpoints }}"
+    epd_mm_receiver:
+      connectors:
+        local: "{{ epd_mm_disk }}"
+        remote:
+          connector_type: NetworkMMFeatureConnector
+          is_producer: false
+          local_endpoint: "tcp://0.0.0.0:{{ mm_feature_transfer_port | default(resolved_epd_profile.mm_feature_transfer_port) | int }}"
+  block:
+    - name: Register the local EPD transport configuration.
+      ansible.builtin.set_fact:
+        epd_is_encoder_host: "{{ inventory_hostname in epd_encoder_hosts }}"
+        epd_topology_config:
+          encode_endpoints: "{{ epd_encoder_endpoints | map(attribute='endpoint') | list }}"
+          prefill: >-
+            {{ {'ec_config': epd_ec_consumer if resolved_epd_profile.enabled else none,
+                'mm_config': epd_mm_receiver if epd_network_mode else
+                             (epd_mm_disk | combine({'is_producer': false}) if resolved_epd_profile.enabled else
+                              epd_mm_producer | combine({'exclude_fields': ''}))}
+               if 'P' in group_names else {} }}
+          decode: "{{ {'mm_config': epd_mm_receiver} if 'D' in group_names else {} }}"
+
+    - name: Register the local Encoder topology.
+      ansible.builtin.set_fact:
+        epd_encoder_container_name: >-
+          {{ (ansible_env.DOCKER_NAME_P ~ '_' ~ inventory_hostname)
+             if resolved_epd_profile.connector_type == 'SharedMemConnector'
+             else ((ansible_env.DOCKER_NAME_E | default('omni-infer-encode')) ~ '_' ~ inventory_hostname) }}
+        epd_encoder_device_list: "{{ ascend_rt_visible_devices.split(',') }}"
+        epd_encoder_api_port: "{{ (api_port if epd_network_mode else e_api_port) | int }}"
+        epd_encoder_host_ip: "{{ host_ip | default(ansible_host) }}"
+        epd_encoder_ec_config: >-
+          {{ {'ec_connector': 'ECNetworkConnector' if epd_network_mode else 'ECSharedMemoryConnector',
+              'ec_role': 'ec_producer',
+              'ec_connector_extra_config': {'ec_cache_max_gb': resolved_epd_profile.ec_cache_max_gb} if epd_network_mode else epd_shared_ec_extra}
+             | combine({'ec_port': ec_port | int} if epd_network_mode else {}) }}
+        epd_encoder_mm_config: "{{ epd_mm_producer if epd_network_mode else {'connectors': {'local': epd_mm_disk, 'remote': epd_mm_producer}} }}"
+      when: epd_is_encoder_host
+
+# Model profiles may reference runtime facts generated by the common topology.
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: set_topology

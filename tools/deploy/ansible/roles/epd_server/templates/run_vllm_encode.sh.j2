@@ -1,0 +1,28 @@
+{% set profile = resolved_run_server_encode_profile -%}
+{% set log_dir = ansible_env.LOG_PATH ~ '/' ~ inventory_hostname ~
+  ('/encode' if resolved_epd_profile.connector_type == 'SharedMemConnector' else '') -%}
+#!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+
+exec > {{ (log_dir ~ '/server_0.log') | quote }} 2>&1
+. ~/.bashrc
+set -eo pipefail
+unset https_proxy http_proxy proxy HTTPS_PROXY HTTP_PROXY ALL_PROXY
+
+export ASCEND_RT_VISIBLE_DEVICES={{ epd_encoder_device_list | join(',') | quote }}
+export HOST_IP={{ epd_encoder_host_ip | quote }}
+export API_PORT={{ epd_encoder_api_port | quote }}
+export ENCODE_TENSOR_PARALLEL_SIZE={{ epd_encoder_device_list | length }}
+
+{{ profile.prepare_commands }}
+
+cd {{ profile.workdir | quote }}
+exec vllm serve {{ model_path | quote }} \
+  --host {{ epd_encoder_host_ip | quote }} \
+  --port {{ epd_encoder_api_port | quote }} \
+  --tensor-parallel-size {{ epd_encoder_device_list | length }} \
+  --data-parallel-size 1 \
+  --ec-transfer-config {{ epd_encoder_ec_config | to_json(separators=(',', ':')) | quote }} \
+  --mm-feature-transfer-config {{ epd_encoder_mm_config | to_json(separators=(',', ':')) | quote }}{% for argument in profile.args %} \
+  {{ argument }}{% endfor %}

@@ -1,0 +1,21 @@
+{
+    "model_parallel_config": {
+        "ena_seq_parallel": true,
+        "layer_parallel_config": {
+            "self_attn.o_proj": {
+                "y_transform": {"type": "ReduceScatter", "dim": 0}
+            },
+            "mlp.gate_up_proj": {
+                "x_transform": {"type": "AllGather", "dim": 0}
+            },
+            "mlp.down_proj": {
+                "y_transform": {"type": "ReduceScatter", "dim": 0}
+            }
+        }
+    },
+    "operator_optimization_config": {
+        "moe_multi_stream_tune": true,
+        "enable_agrs_finalize_metadata_overlap": true,
+        "kv_nz": true
+    }
+}

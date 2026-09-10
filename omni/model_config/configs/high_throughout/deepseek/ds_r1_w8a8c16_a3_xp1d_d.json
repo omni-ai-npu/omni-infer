@@ -1,0 +1,41 @@
+{
+    "model_parallel_config": {
+        "layer_parallel_config": {
+            "self_attn.o_proj": {
+                "tp_size_or_ranks": 1,
+                "x_transform": {
+                    "type": "None"
+                },
+                "y_transform": {
+                    "type": "AllReduce",
+                    "tp_size_or_ranks": 1
+                }
+            },
+            "mlp.gate_up_proj": {
+                "tp_size_or_ranks": 4
+            },
+            "mlp.down_proj": {
+                "tp_size_or_ranks": 4,
+                "x_transform": {
+                    "type": "None"
+                },
+                "y_transform": {
+                    "type": "AllReduce",
+                    "tp_size_or_ranks": 4
+                }
+            }
+        }
+    },
+    "operator_optimization_config": {
+        "enable_kv_rmsnorm_rope_cache": true,
+        "use_aicpu_fa_tiling": true,
+        "moe_multi_stream_tune": true,
+        "decode_moe_dispatch_combine": true,
+        "enable_super_kernel": false,
+        "enable_mlaprolog": false,
+        "enable_prefetch": false,
+        "expert_gate_up_prefetch": 50,
+        "expert_down_prefetch": 0,
+        "attn_prefetch": 32
+    }
+}
