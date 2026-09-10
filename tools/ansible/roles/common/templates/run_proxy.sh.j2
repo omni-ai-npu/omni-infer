@@ -1,0 +1,42 @@
+{% set proxy_type = resolved_run_proxy_profile.type -%}
+{% set proxy = resolved_run_proxy_profile[proxy_type] -%}
+{% if proxy_type == 'omni-proxy' -%}
+{% set prefill_option = '--prefill-endpoints' -%}
+{% set decode_option = '--decode-endpoints' -%}
+{% else -%}
+{% set prefill_option = '--prefill-servers-list' -%}
+{% set decode_option = '--decode-servers-list' -%}
+{% endif -%}
+#!/bin/bash
+. ~/.bashrc
+
+{{ resolved_run_proxy_profile.prepare_commands }}
+
+prefill_result="{{ PREFILL_API_SERVER_LIST }}"
+prefill_result=`echo "$prefill_result" | awk '$1=$1'`
+
+decode_result=""
+decode_api_servers="{{ DECODE_API_SERVER_LIST }}"
+decode_api_servers=`echo "$decode_api_servers" | awk '$1=$1'`
+decode_array=(${decode_api_servers//,/ })
+for var in ${decode_array[@]}; do
+  address=${var%@*}
+  ip=${address%:*}
+  port=${address#*:}
+  num=${var#*@}
+  for ((i=0; i<=$num;i++)); do
+    if [[ -z ${decode_result} ]]; then
+      decode_result="$ip:$port"
+    else
+      decode_result="${decode_result},$ip:$port"
+    fi
+    ((port++))
+  done
+done
+
+cd {{ proxy.workdir }}
+{{ proxy.command }} \
+    --listen-port "$PROXY_NODE_PORT" \
+    {{ prefill_option }} "$prefill_result" \
+    {{ decode_option }} "$decode_result"{% for argument in proxy.args %} \
+    {{ argument }}{% endfor %}

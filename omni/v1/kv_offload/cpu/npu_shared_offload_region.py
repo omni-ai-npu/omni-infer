@@ -213,31 +213,31 @@ class NPUSharedOffloadRegion:
             prot=mmap.PROT_READ | mmap.PROT_WRITE,
         )
 
-        populate_write_fn = _get_populate_write_fn(self.mmap_obj)
-
-        if rank is not None:
-            # Populate only this worker's pages (one slot per block row).
-            worker_offset = rank * cpu_page_size
-            _t0 = time.perf_counter()
-            page_size = self.page_size
-            for block in range(num_blocks):
-                raw_offset = block * self._row_stride + worker_offset
-                aligned_offset = (raw_offset // page_size) * page_size
-                end = raw_offset + cpu_page_size
-                aligned_length = end - aligned_offset
-                populate_write_fn(self.mmap_obj, aligned_offset, aligned_length)
-            logger.info(
-                "mmap prefault worker slots: %d blocks in %.3f s",
-                num_blocks,
-                time.perf_counter() - _t0,
-            )
-        else:
-            # No rank — populate the entire shared region in one call.
-            _t0 = time.perf_counter()
-            populate_write_fn(self.mmap_obj, 0, self.mmap_size)
-            logger.info(
-                "mmap prefault entire region: %.3f s", time.perf_counter() - _t0
-            )
+        if os.getenv("enable_kv_offload_write", "true") == "true":
+            populate_write_fn = _get_populate_write_fn(self.mmap_obj)
+            if rank is not None:
+                # Populate only this worker's pages (one slot per block row).
+                worker_offset = rank * cpu_page_size
+                _t0 = time.perf_counter()
+                page_size = self.page_size
+                for block in range(num_blocks):
+                    raw_offset = block * self._row_stride + worker_offset
+                    aligned_offset = (raw_offset // page_size) * page_size
+                    end = raw_offset + cpu_page_size
+                    aligned_length = end - aligned_offset
+                    populate_write_fn(self.mmap_obj, aligned_offset, aligned_length)
+                logger.debug(
+                    "mmap prefault worker slots: %d blocks in %.3f s",
+                    num_blocks,
+                    time.perf_counter() - _t0,
+                )
+            else:
+                # No rank — populate the entire shared region in one call.
+                _t0 = time.perf_counter()
+                populate_write_fn(self.mmap_obj, 0, self.mmap_size)
+                logger.debug(
+                    "mmap prefault entire region: %.3f s", time.perf_counter() - _t0
+                )
 
         self._base = torch.frombuffer(memoryview(self.mmap_obj), dtype=torch.int8)
         self._views: list[torch.Tensor] = []
