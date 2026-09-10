@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# SharedMem Encoder processes are stopped with Prefill by common below.
+- name: Stop Encoder processes.
+  when:
+    - epd_is_encoder_host | bool
+    - resolved_epd_profile.connector_type == 'NetworkConnector'
+  tags: stop_server
+  block:
+    - name: Generate a script to kill all Python processes in the container.
+      ansible.builtin.copy:
+        content: |
+          #!/bin/bash
+
+          ps aux | grep "VLLM" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+          ps aux | grep "vllm" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+          ps aux | grep "python" | grep -v "grep" | awk '{print $2}' | xargs kill -9
+        dest: "$SCRIPTS_PATH/kill_python_processes.sh"
+        mode: '0750'
+
+    - name: Kill all Python processes in the container of encoder.
+      ansible.builtin.command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_E /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
+      environment:
+        DOCKER_NAME_E: "{{ epd_encoder_container_name }}"
+      failed_when: false
+      no_log: true
+
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: stop_server
+  tags: stop_server

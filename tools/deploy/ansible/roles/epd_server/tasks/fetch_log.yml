@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# Shared-memory Encoder logs are included in the following common Prefill log pull.
+- name: Fetch logs from Encoder hosts.
+  when:
+    - epd_is_encoder_host | bool
+    - resolved_epd_profile.connector_type == 'NetworkConnector'
+  vars:
+    epd_fetch_log_profile: >-
+      {{ fetch_log_profile_defaults | combine(fetch_log_profile | default({}, true), recursive=true) }}
+  tags: fetch_log
+  block:
+    - name: Create a directory on the executor to store the log.
+      ansible.builtin.file:
+        path: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}"
+        state: directory
+        mode: '0750'
+      delegate_to: localhost
+      when: epd_fetch_log_profile.create_directory | bool
+
+    - name: Forward logs from all machines to the executor.
+      ansible.builtin.synchronize:
+        mode: pull
+        src: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}/"
+        dest: "{{ ansible_env.LOG_PATH_IN_EXECUTOR }}/{{ inventory_hostname }}/"
+      when: epd_fetch_log_profile.fetch | bool
+
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: fetch_logs

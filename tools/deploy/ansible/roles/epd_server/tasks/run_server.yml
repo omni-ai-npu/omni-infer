@@ -1,0 +1,150 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# Check Encoder placement before cleaning shared runtime files.
+- name: Prepare the Encoder service.
+  any_errors_fatal: true
+  when:
+    - epd_is_encoder_host | bool
+  tags: run_server
+  block:
+    - name: Resolve the Encoder run_server profile.
+      ansible.builtin.set_fact:
+        resolved_run_server_encode_profile: "{{ run_server_encode_profile_defaults | combine(run_server_encode_profile, recursive=true) }}"
+
+    - name: Validate the Encoder launch profile.
+      ansible.builtin.assert:
+        that:
+          - resolved_run_server_encode_profile.workdir is string
+          - resolved_run_server_encode_profile.workdir | length > 0
+          - resolved_run_server_encode_profile.docker_envs is mapping
+          - resolved_run_server_encode_profile.prepare_commands is string
+          - resolved_run_server_encode_profile.args is sequence
+          - resolved_run_server_encode_profile.args is not string
+          - resolved_run_server_encode_profile.args | select('string') | list | length == resolved_run_server_encode_profile.args | length
+        fail_msg: "Configure run_server_encode_profile in the model playbook."
+
+    - name: Check whether the Encoder container is running.
+      ansible.builtin.command:
+        argv:
+          - docker
+          - inspect
+          - --format
+          - "{{ '{{.State.Running}}' }}"
+          - "{{ epd_encoder_container_name }}"
+      register: epd_encoder_container_state
+      changed_when: false
+      failed_when: >-
+        epd_encoder_container_state.rc != 0 or
+        epd_encoder_container_state.stdout | trim != 'true'
+
+    - name: Check whether the Encoder HTTP port is available.
+      ansible.builtin.wait_for:
+        host: "{{ epd_encoder_host_ip }}"
+        port: "{{ epd_encoder_api_port | int }}"
+        state: stopped
+        connect_timeout: 1
+        timeout: 1
+        msg: >-
+          Encoder port {{ epd_encoder_host_ip }}:{{ epd_encoder_api_port }} is already
+          in use. Run stop_server before run_server and check for an unrelated listener.
+
+- name: Prepare service containers.
+  vars:
+    epd_service_containers: >-
+      {{ ([{'name': epd_encoder_container_name,
+            'shm_prefixes': [resolved_run_server_encode_profile.docker_envs.get('VLLM_OBJECT_STORAGE_SHM_BUFFER_NAME', '')]}]
+          if epd_network_mode and epd_is_encoder_host else []) +
+         ([{'name': ACTUAL_DOCKER_NAME_P,
+            'shm_prefixes': [(run_server_prefill_profile_defaults.docker_envs | combine(run_server_prefill_profile.get('docker_envs', {}))).get('VLLM_OBJECT_STORAGE_SHM_BUFFER_NAME', '')] +
+              ([resolved_run_server_encode_profile.docker_envs.get('VLLM_OBJECT_STORAGE_SHM_BUFFER_NAME', '')] if epd_is_encoder_host else [])}]
+          if 'P' in group_names else []) +
+         ([{'name': ACTUAL_DOCKER_NAME_D,
+            'shm_prefixes': [(run_server_decode_profile_defaults.docker_envs | combine(run_server_decode_profile.get('docker_envs', {}))).get('VLLM_OBJECT_STORAGE_SHM_BUFFER_NAME', '')]}]
+          if 'D' in group_names else []) }}
+    epd_mm_storage_path: "{{ resolved_epd_profile.mm_feature_storage_root.rstrip('/') }}/{{ inventory_hostname }}"
+  tags: run_server
+  block:
+    # SharedMem E/P reuse one container and MM directory; clean both before E starts.
+    - name: Clean object storage shm buffers and multimodal files in service containers.
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ item.name }}"
+          - /bin/bash
+          - -c
+          - |
+            set -e
+            for prefix in {{ item.shm_prefixes | map('quote') | join(' ') }}; do
+              case "$prefix" in ''|*/*) continue ;; esac
+              rm -f -- "/dev/shm/$prefix"*
+            done
+            if [ -d {{ epd_mm_storage_path | quote }} ]; then
+              find {{ epd_mm_storage_path | quote }} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+            fi
+      loop: "{{ epd_service_containers }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Configure network socket buffers in service containers.
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ item.name }}"
+          - sysctl
+          - -w
+          - net.core.wmem_max=16777216
+          - net.core.rmem_max=16777216
+          - net.core.wmem_default=16777216
+          - net.core.rmem_default=16777216
+      loop: "{{ epd_service_containers }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: epd_network_mode
+
+# Launch E before the common P/D stage; startup remains asynchronous.
+- name: Start the Encoder service.
+  any_errors_fatal: true
+  when:
+    - epd_is_encoder_host | bool
+  tags: run_server
+  block:
+    - name: Generate the Encoder launch script.
+      ansible.builtin.template:
+        src: run_vllm_encode.sh.j2
+        dest: "{{ ansible_env.SCRIPTS_PATH }}/vllm_run_for_e_{{ inventory_hostname }}.sh"
+        mode: '0750'
+
+    - name: Save the Encoder launch script to run_encode.log.
+      ansible.builtin.copy:
+        src: "{{ ansible_env.SCRIPTS_PATH }}/vllm_run_for_e_{{ inventory_hostname }}.sh"
+        dest: >-
+          {{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}{{
+            '/encode' if resolved_epd_profile.connector_type == 'SharedMemConnector' else '' }}/run_encode.log
+        remote_src: true
+        mode: '0644'
+
+    - name: Detect the service communication interface.
+      ansible.builtin.shell: ip -4 route list 0/0 | awk '{print $5}' | head -1
+      register: epd_encoder_interface
+      changed_when: false
+
+    - name: Start an Encoder instance.
+      ansible.builtin.command:
+        argv: "{{ epd_encoder_exec_argv }}"
+      vars:
+        epd_encoder_exec_argv: >-
+          {%- set ns=namespace(args=['docker', 'exec', '-d',
+            '-e', 'LOG_PATH=' ~ ansible_env.LOG_PATH,
+            '-e', 'SOCKET_IFNAME=' ~ epd_encoder_interface.stdout | trim]) -%}
+          {%- for name, value in resolved_run_server_encode_profile.docker_envs.items() -%}
+            {%- set ns.args=ns.args + ['-e', name ~ '=' ~ value] -%}
+          {%- endfor -%}
+          {{ ns.args + [epd_encoder_container_name, '/bin/bash',
+            ansible_env.SCRIPTS_PATH ~ '/vllm_run_for_e_' ~ inventory_hostname ~ '.sh'] }}
+
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: run_server

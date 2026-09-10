@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# SharedMem Encoder reuses the Prefill container.
+- name: Prepare container for encoder instances.
+  when:
+    - epd_is_encoder_host | bool
+    - resolved_epd_profile.connector_type == 'NetworkConnector'
+  block:
+    - name: Check and delete containers used for Encoder server.
+      block:
+        - name: Check whether the container exists.
+          ansible.builtin.shell: |
+            docker inspect --format='{{"{{.Name}}"}}' \
+            "$DOCKER_NAME_E" \
+            2>/dev/null | grep -v '^$'
+          register: epd_encoder_existing_container
+          environment:
+            DOCKER_NAME_E: "{{ epd_encoder_container_name }}"
+          failed_when: false
+          changed_when: false
+
+        - name: Show generated container name.
+          ansible.builtin.debug:
+            msg: "Generated container name: {{ epd_encoder_existing_container.stdout_lines }}"
+
+        - name: Stop containers.
+          ansible.builtin.command: |
+            /bin/bash -c "docker stop {{ epd_encoder_existing_container.stdout_lines | join(' ') }}"
+          when: epd_encoder_existing_container.stdout != ""
+
+        - name: Delete containers.
+          ansible.builtin.command: |
+            /bin/bash -c "docker rm -f {{ epd_encoder_existing_container.stdout_lines | join(' ') }}"
+          when: epd_encoder_existing_container.stdout != ""
+      tags:
+        - run_docker
+        - clean_up
+
+    - name: Run container for encoder instances.
+      ansible.builtin.command: bash -c {{ start_docker_cmd_e | quote }}
+      environment:
+        DOCKER_NAME_E: "{{ epd_encoder_container_name }}"
+      vars:
+        start_docker_cmd_e: >-
+          {%- set shm_size = run_docker_profile.shm_size | default(run_docker_profile_defaults.shm_size) -%}
+          {%- set envs = run_docker_profile.envs | default(run_docker_profile_defaults.envs) -%}
+          {%- set extra_mounts = run_docker_profile.extra_mounts | default(run_docker_profile_defaults.extra_mounts) -%}
+          docker run -it --shm-size={{ shm_size | quote }}
+          {% for environment in docker_run_base_envs + envs %}-e {{ environment | replace('$LOG_PATH', ansible_env.LOG_PATH) | replace('$SCRIPTS_PATH', ansible_env.SCRIPTS_PATH) | quote }}
+          {% endfor %}
+          --net=host
+          --privileged=true
+          -u root
+          -w /data
+          --device=/dev/davinci_manager
+          --device=/dev/hisi_hdc
+          --device=/dev/devmm_svm
+          --entrypoint=bash
+          {% for mount in docker_run_base_mounts + extra_mounts %}-v {{ mount | replace('$LOG_PATH', ansible_env.LOG_PATH) | replace('$SCRIPTS_PATH', ansible_env.SCRIPTS_PATH) | quote }}
+          {% endfor %}
+          -d --name "$DOCKER_NAME_E" "$DOCKER_IMAGE_ID"
+      tags: run_docker
+
+- name: Create a directory to store the log.
+  ansible.builtin.file:
+    path: >-
+      {{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}{{
+        '/encode' if resolved_epd_profile.connector_type == 'SharedMemConnector' else '' }}
+    state: directory
+  when: epd_is_encoder_host | bool
+  tags: run_docker
+
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: run_docker

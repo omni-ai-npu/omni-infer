@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# EPD stages import common locally; stages without Encoder additions reuse it directly.
+# Static imports preserve task/tag visibility and execute each stage once.
+- ansible.builtin.import_tasks: set_topology.yml
+- ansible.builtin.import_tasks: run_docker.yml
+- ansible.builtin.import_tasks: deploy_code.yml
+- ansible.builtin.import_tasks: stop_server.yml
+- ansible.builtin.import_tasks: run_server.yml
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: bind_cpus
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: run_proxy
+- ansible.builtin.import_tasks: fetch_log.yml
