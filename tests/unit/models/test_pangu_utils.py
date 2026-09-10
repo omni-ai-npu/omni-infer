@@ -509,3 +509,64 @@ def test_finalize_routing_forwards_drop_pad_mode(monkeypatch):
     assert captured["drop_pad_mode"] == 2
     assert captured["scales"] is scales
     assert captured["expanded_src_to_dst_row"] is reorg
+
+
+def test_check_ffn_act_fn_accepts_silu_only():
+    """The NPU fused FFN kernels are wired for SiLU and nothing else."""
+    assert pangu_utils.check_ffn_act_fn("silu") is None
+    with pytest.raises(ValueError, match="Unsupported activation"):
+        pangu_utils.check_ffn_act_fn("gelu")
+
+
+def test_normalize_rope_parameters_fills_deepseek_defaults():
+    """A `default` rope type becomes deepseek_yarn with the yarn defaults."""
+    config = SimpleNamespace(rope_parameters={"rope_type": "default"})
+
+    pangu_utils._normalize_rope_parameters(config, max_position_embeddings=4096)
+
+    assert config.rope_parameters == {
+        "rope_type": "deepseek_yarn",
+        "factor": 1.0,
+        "original_max_position_embeddings": 4096,
+        "apply_yarn_scaling": False,
+    }
+
+
+def test_normalize_rope_parameters_keeps_caller_supplied_values():
+    """Existing keys win; only the missing ones are defaulted."""
+    config = SimpleNamespace(
+        rope_parameters={"rope_type": "default", "factor": 8.0}
+    )
+
+    pangu_utils._normalize_rope_parameters(config, max_position_embeddings=4096)
+
+    assert config.rope_parameters["factor"] == 8.0
+    assert config.rope_parameters["rope_type"] == "deepseek_yarn"
+
+
+@pytest.mark.parametrize(
+    "rope_parameters",
+    [None, {"rope_type": "deepseek_yarn"}],
+)
+def test_normalize_rope_parameters_leaves_other_configs_alone(rope_parameters):
+    """Non-dict or already-concrete rope parameters are returned untouched."""
+    config = SimpleNamespace(rope_parameters=rope_parameters)
+
+    pangu_utils._normalize_rope_parameters(config, max_position_embeddings=4096)
+
+    assert config.rope_parameters == rope_parameters
+
+
+def test_has_mla_config_requires_every_mla_field():
+    """MLA is only claimed when all four MLA-specific fields exist."""
+    fields = {
+        "qk_nope_head_dim": 1,
+        "qk_rope_head_dim": 1,
+        "v_head_dim": 1,
+        "kv_lora_rank": 1,
+    }
+
+    assert pangu_utils._has_mla_config(SimpleNamespace(**fields))
+    for missing in fields:
+        partial = {k: v for k, v in fields.items() if k != missing}
+        assert not pangu_utils._has_mla_config(SimpleNamespace(**partial))

@@ -78,6 +78,9 @@ from omni_npu.v1.layers.vocab_parallel_embedding import NPUParallelLMHead, NPUVo
 from omni_npu.v1.utils import on_ascend910b, on_ascend950
 
 from .utils import (
+    _has_mla_config,
+    _normalize_rope_parameters,
+    check_ffn_act_fn,
     no_aiv,
     record_event,
     named_stream,
@@ -155,50 +158,6 @@ try:
     import omni_custom_ops
 except ImportError as e:
     logger.warning(f"Failed to import omni_custom_ops: {e}")
-
-
-def check_ffn_act_fn(act_fn: str) -> None:
-    """Validate FFN activation function.
-
-    Note: current NPU fused kernels only support SiLU in this implementation.
-    """
-    if act_fn != "silu":
-        raise ValueError(
-            f"Unsupported activation: {act_fn}. Only silu is supported for now."
-        )
-
-
-def _normalize_rope_parameters(
-    config: PretrainedConfig, *, max_position_embeddings: int
-) -> None:
-    """Normalize rope parameters in-place for compatibility.
-
-    Some upstream configs may use `rope_type="default"`. For DeepSeek-style MLA,
-    vLLM expects a concrete rope type; we map it to `deepseek_yarn` and fill
-    commonly-required defaults.
-    """
-    rope_params = getattr(config, "rope_parameters", None)
-    if not isinstance(rope_params, dict):
-        return
-
-    if rope_params.get("rope_type") != "default":
-        return
-
-    # Mutate in-place on purpose: vLLM/hf_config is treated as a shared config.
-    rope_params["rope_type"] = "deepseek_yarn"
-    rope_params.setdefault("factor", 1.0)
-    rope_params.setdefault("original_max_position_embeddings", max_position_embeddings)
-    rope_params.setdefault("apply_yarn_scaling", False)
-
-
-def _has_mla_config(config: PretrainedConfig) -> bool:
-    """Whether the config contains required MLA fields used by this model."""
-    return (
-        hasattr(config, "qk_nope_head_dim")
-        and hasattr(config, "qk_rope_head_dim")
-        and hasattr(config, "v_head_dim")
-        and hasattr(config, "kv_lora_rank")
-    )
 
 
 class OpenPanguV2MLP(nn.Module):
@@ -2085,39 +2044,37 @@ class OpenPanguV2DecoderLayer(nn.Module):
             if use_side_stream and sk_event is not None:
                 sk_event.wait(main_stream)
 
+            # Both branches call the fusion op with the same operands; only the
+            # third output is consumed differently.
+            args_for_sandwich_norm_post_preonly_v2 = (
+                hidden_states,
+                residual,
+                h_post,
+                h_res,
+                pre_mhc_module.phi_weight_pre,
+                pre_mhc_module.branch_alpha_pre,
+                pre_mhc_module.branch_beta_pre,
+                post_norm_module.weight_fp32,
+                pre_norm_module.weight_fp32,
+            )
+            kwargs_for_sandwich_norm_post_preonly_v2 = {
+                "gamma_2": block_norm_module.weight_fp32 if block_norm_module is not None else None,
+                "norm_eps": pre_mhc_module.norm_eps,
+                "hc_eps": pre_mhc_module.hc_eps,
+                "return_h_in_f32": return_h_in_f32,
+            }
+
             if return_h_in_f32:
                 (hidden_states, residual,
                  hidden_states_fp32) = torch.ops.custom.npu_ai_infra_mhc_sandwich_norm_post_preonly_v2(
-                    hidden_states,
-                    residual,
-                    h_post,
-                    h_res,
-                    pre_mhc_module.phi_weight_pre,
-                    pre_mhc_module.branch_alpha_pre,
-                    pre_mhc_module.branch_beta_pre,
-                    post_norm_module.weight_fp32,
-                    pre_norm_module.weight_fp32,
-                    gamma_2=block_norm_module.weight_fp32 if block_norm_module is not None else None,
-                    norm_eps=pre_mhc_module.norm_eps,
-                    hc_eps=pre_mhc_module.hc_eps,
-                    return_h_in_f32=return_h_in_f32,
+                    *args_for_sandwich_norm_post_preonly_v2,
+                    **kwargs_for_sandwich_norm_post_preonly_v2,
                 )
                 hidden_states = {"hidden_states_bf16": hidden_states, "hidden_states_fp32": hidden_states_fp32}
             else:
                 hidden_states, residual, _ = torch.ops.custom.npu_ai_infra_mhc_sandwich_norm_post_preonly_v2(
-                    hidden_states,
-                    residual,
-                    h_post,
-                    h_res,
-                    pre_mhc_module.phi_weight_pre,
-                    pre_mhc_module.branch_alpha_pre,
-                    pre_mhc_module.branch_beta_pre,
-                    post_norm_module.weight_fp32,
-                    pre_norm_module.weight_fp32,
-                    gamma_2=block_norm_module.weight_fp32 if block_norm_module is not None else None,
-                    norm_eps=pre_mhc_module.norm_eps,
-                    hc_eps=pre_mhc_module.hc_eps,
-                    return_h_in_f32=return_h_in_f32,
+                    *args_for_sandwich_norm_post_preonly_v2,
+                    **kwargs_for_sandwich_norm_post_preonly_v2,
                 )
 
             if use_side_stream and sk_event is not None:
@@ -2829,7 +2786,12 @@ class OpenPanguV2ForCausalLM(
         num_physical_experts: int,
         num_local_physical_experts: int,
     ) -> None:
-        assert self.num_local_physical_experts == num_local_physical_experts
+        if self.num_local_physical_experts != num_local_physical_experts:
+            raise ValueError(
+                "EPLB rebalance must keep the per-device expert count: got "
+                f"{num_local_physical_experts}, model was built with "
+                f"{self.num_local_physical_experts}."
+            )
         self.num_physical_experts = num_physical_experts
         self.num_local_physical_experts = num_local_physical_experts
         self.num_redundant_experts = num_physical_experts - self.num_logical_experts

@@ -9,6 +9,7 @@ import torch.distributed as dist
 from types import SimpleNamespace
 from collections import defaultdict
 
+from transformers import PretrainedConfig
 from vllm.distributed import GroupCoordinator
 from omni_npu.layers.fused_moe.layer import NPUSharedFusedMoE
 
@@ -436,4 +437,48 @@ def finalize_routing(
         expanded_src_to_dst_row=reorg,
         export_for_source_row=None,
         drop_pad_mode=2,
+    )
+
+
+def check_ffn_act_fn(act_fn: str) -> None:
+    """Validate FFN activation function.
+
+    Note: current NPU fused kernels only support SiLU in this implementation.
+    """
+    if act_fn != "silu":
+        raise ValueError(
+            f"Unsupported activation: {act_fn}. Only silu is supported for now."
+        )
+
+
+def _normalize_rope_parameters(
+    config: PretrainedConfig, *, max_position_embeddings: int
+) -> None:
+    """Normalize rope parameters in-place for compatibility.
+
+    Some upstream configs may use `rope_type="default"`. For DeepSeek-style MLA,
+    vLLM expects a concrete rope type; we map it to `deepseek_yarn` and fill
+    commonly-required defaults.
+    """
+    rope_params = getattr(config, "rope_parameters", None)
+    if not isinstance(rope_params, dict):
+        return
+
+    if rope_params.get("rope_type") != "default":
+        return
+
+    # Mutate in-place on purpose: vLLM/hf_config is treated as a shared config.
+    rope_params["rope_type"] = "deepseek_yarn"
+    rope_params.setdefault("factor", 1.0)
+    rope_params.setdefault("original_max_position_embeddings", max_position_embeddings)
+    rope_params.setdefault("apply_yarn_scaling", False)
+
+
+def _has_mla_config(config: PretrainedConfig) -> bool:
+    """Whether the config contains required MLA fields used by this model."""
+    return (
+        hasattr(config, "qk_nope_head_dim")
+        and hasattr(config, "qk_rope_head_dim")
+        and hasattr(config, "v_head_dim")
+        and hasattr(config, "kv_lora_rank")
     )

@@ -282,7 +282,11 @@ class MomeAttention(MambaBase):
         # vLLM resolves this during MambaModelConfig verification (including a
         # user-provided --mamba-block-size). Do not derive it a second time.
         mamba_block_size = vllm_config.cache_config.mamba_block_size
-        assert mamba_block_size is not None
+        if mamba_block_size is None:
+            raise ValueError(
+                "cache_config.mamba_block_size is unset; vLLM resolves it "
+                "during MambaModelConfig verification."
+            )
         mamba_cache_mode = vllm_config.cache_config.mamba_cache_mode
         if mamba_cache_mode == "align":
             raise NotImplementedError(
