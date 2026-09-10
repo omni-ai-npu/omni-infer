@@ -226,7 +226,7 @@ class NPUSharedOffloadRegion:
                 end = raw_offset + cpu_page_size
                 aligned_length = end - aligned_offset
                 populate_write_fn(self.mmap_obj, aligned_offset, aligned_length)
-            logger.debug(
+            logger.info(
                 "mmap prefault worker slots: %d blocks in %.3f s",
                 num_blocks,
                 time.perf_counter() - _t0,
@@ -235,7 +235,7 @@ class NPUSharedOffloadRegion:
             # No rank — populate the entire shared region in one call.
             _t0 = time.perf_counter()
             populate_write_fn(self.mmap_obj, 0, self.mmap_size)
-            logger.debug(
+            logger.info(
                 "mmap prefault entire region: %.3f s", time.perf_counter() - _t0
             )
 

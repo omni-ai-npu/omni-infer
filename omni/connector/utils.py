@@ -71,7 +71,7 @@ def start_daemon(task, feedback=None):
     return feedback
 
 
-def calm_down(case, interval=0.05, tol=0.99):
+def calm_down(case, interval=0.01, tol=0.99):
     if not hasattr(calm_down, "_ts"):
         calm_down._ts = {}
         calm_down._lock = threading.Lock()

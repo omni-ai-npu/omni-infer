@@ -372,6 +372,310 @@ class TestTPConvertor:
         mock_convertor2.token_reorg.assert_called_once()
         mock_convertor3.token_reorg.assert_not_called()
 
+    @patch("omni_npu.connector.utils.get_tp_group")
+    def test_extract_kv_rejects_bad_tensor(self, mock_get_tp_group):
+        with pytest.raises(TypeError, match="Expected torch.Tensor"):
+            TP_Convertor.extract_kv(["not-a-tensor"], 0, (0, 1))
+        bad = torch.randn(4, 8)
+        with pytest.raises(ValueError, match="Expected 3D tensor"):
+            TP_Convertor.extract_kv([bad], 0, (0, 1))
+
+    @patch("omni_npu.connector.utils.get_tp_group")
+    def test_store_kv_rejects_mismatched_inputs(self, mock_get_tp_group):
+        k = torch.zeros(2, 8, 4)
+        v = torch.zeros(2, 8, 4)
+        with pytest.raises(ValueError, match="Expected 3D tensor"):
+            TP_Convertor.store_kv(torch.zeros(2, 2), [k, v], 0, (0, 2))
+        with pytest.raises(ValueError, match=r"x.size\(0\) mismatch"):
+            TP_Convertor.store_kv(torch.zeros(3, 2, 4), [k, v], 0, (0, 2))
+        with pytest.raises(ValueError, match=r"x.size\(1\) mismatch"):
+            TP_Convertor.store_kv(torch.zeros(2, 3, 4), [k, v], 0, (0, 2))
+        with pytest.raises(TypeError, match="Expected torch.Tensor"):
+            TP_Convertor.store_kv(torch.zeros(2, 1, 4), ["bad"], 0, (0, 2))
+        with pytest.raises(ValueError, match="Expected 3D tensor"):
+            TP_Convertor.store_kv(torch.zeros(2, 1, 4), [torch.zeros(8, 4)], 0, (0, 2))
+        with pytest.raises(ValueError, match="D size mismatch"):
+            TP_Convertor.store_kv(torch.zeros(2, 1, 4), [torch.zeros(2, 8, 8)], 0, (0, 2))
+
+    @patch("omni_npu.connector.utils.get_tp_group")
+    def test_a2a_mapper_unbalanced_raises(self, mock_get_tp_group):
+        with pytest.raises(RuntimeError, match="a2a_mapper failed"):
+            TP_Convertor.a2a_mapper([3, 0])
+
+    @patch("omni_npu.connector.utils.get_tp_group")
+    def test_tail_blk_num_requires_decode_ge_prefill(self, mock_get_tp_group):
+        with pytest.raises(ValueError, match="must be >="):
+            TP_Convertor.tail_blk_num(8, 0, 2, 4, 128)
+
+
+def test_get_local_ip_closes_socket():
+    from omni_npu.connector.utils import get_local_ip
+
+    mock_sock = MagicMock()
+    mock_sock.getsockname.return_value = ("10.1.2.3", 0)
+    with patch("omni_npu.connector.utils.socket.socket", return_value=mock_sock):
+        assert get_local_ip() == "10.1.2.3"
+    mock_sock.connect.assert_called_once()
+    mock_sock.close.assert_called_once()
+
+
+def test_start_daemon_puts_feedback():
+    from omni_npu.connector.utils import start_daemon
+
+    def task(fb):
+        fb.put("ready")
+
+    fb = start_daemon(task)
+    assert fb.get(timeout=2) == "ready"
+
+
+def test_calm_down_default_interval_sleeps():
+    from omni_npu.connector.utils import calm_down
+
+    if hasattr(calm_down, "_ts"):
+        calm_down._ts.pop("default-interval", None)
+    times = iter([100.0, 100.001])
+    sleeps = []
+    with patch("omni_npu.connector.utils.time.time", side_effect=lambda: next(times)):
+        with patch("omni_npu.connector.utils.time.sleep", side_effect=sleeps.append):
+            calm_down("default-interval")
+            calm_down("default-interval")
+    assert len(sleeps) == 1
+    assert sleeps[0] == pytest.approx(0.009)
+
+
+class TestParallelDesc:
+    def test_from_list_and_rank(self):
+        from omni_npu.connector.utils import ParallelDesc
+
+        desc = ParallelDesc([2, 2, 1, 4, 1], rank=5)
+        assert desc.to_list() == [2, 2, 1, 4, 1]
+        assert desc.size == 16
+        assert desc.rank == 5
+        assert desc.pp_rank == 0
+        assert desc.dp_rank == 1
+        assert desc.pcp_rank == 0
+        assert desc.tp_rank == 1
+        assert desc.dcp_rank == 0
+
+    def test_invalid_inputs(self):
+        from omni_npu.connector.utils import ParallelDesc
+
+        with pytest.raises(ValueError, match="5 dims"):
+            ParallelDesc([1, 2, 3])
+        with pytest.raises(ValueError, match="positive int"):
+            ParallelDesc([1, 2, 1, 0, 1])
+        with pytest.raises(ValueError, match="invalid parallel"):
+            ParallelDesc("bad")
+        with pytest.raises(ValueError, match="invalid rank"):
+            ParallelDesc([1, 1, 1, 1, 1], rank=2)
+
+    def test_from_parallel_config_and_vllm_config(self):
+        from vllm.config import ParallelConfig, VllmConfig
+        from omni_npu.connector.utils import ParallelDesc
+
+        pc = ParallelConfig(
+            pipeline_parallel_size=1,
+            data_parallel_size=1,
+            prefill_context_parallel_size=1,
+            tensor_parallel_size=2,
+            decode_context_parallel_size=1,
+        )
+        desc = ParallelDesc(pc, rank=1)
+        assert desc.tp == 2
+        assert desc.tp_rank == 1
+
+        vllm_config = MagicMock(spec=VllmConfig)
+        vllm_config.parallel_config = pc
+        desc2 = ParallelDesc(vllm_config)
+        assert desc2.to_list() == [1, 1, 1, 2, 1]
+
+    def test_from_runtime_groups(self):
+        from omni_npu.connector.utils import ParallelDesc
+
+        def grp(size, rank=0):
+            return MagicMock(world_size=size, rank_in_group=rank)
+
+        with patch(MODULE + ".get_pp_group", return_value=grp(2)), patch(
+            MODULE + ".get_dp_group", return_value=grp(1)
+        ), patch(MODULE + ".get_pcp_group", return_value=grp(1)), patch(
+            MODULE + ".get_tp_group", return_value=grp(4)
+        ), patch(MODULE + ".get_dcp_group", return_value=grp(1)), patch(
+            MODULE + ".get_world_group", return_value=grp(8, 3)
+        ):
+            desc = ParallelDesc(None)
+            assert desc.size == 8
+            assert desc.rank == 3
+            assert desc.tp_rank == 3
+
+        with patch(MODULE + ".get_pp_group", return_value=grp(1)), patch(
+            MODULE + ".get_dp_group", return_value=grp(1)
+        ), patch(MODULE + ".get_pcp_group", return_value=grp(1)), patch(
+            MODULE + ".get_tp_group", return_value=grp(1)
+        ), patch(MODULE + ".get_dcp_group", return_value=grp(1)), patch(
+            MODULE + ".get_world_group", return_value=grp(2, 0)
+        ):
+            with pytest.raises(ValueError, match="world_size"):
+                ParallelDesc(None)
+
+
+def _wait_until(pred, timeout=2.0, interval=0.01):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pred():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def _zmq_err(errno):
+    import zmq
+
+    err = zmq.ZMQError()
+    err.errno = errno
+    return err
+
+
+def _pump_until(server, client, replies, key, **ops):
+    def ready():
+        server.handle(**ops)
+        client.routine()
+        return key in replies
+
+    assert _wait_until(ready), f"missing reply key {key}"
+
+
+class TestSimpleServerClient:
+    def test_query_echo_and_unknown_op(self):
+        from omni_npu.connector.utils import SimpleClient, SimpleServer
+
+        server = SimpleServer("tcp://127.0.0.1:*")
+        client = SimpleClient(server.addr())
+        replies = {}
+
+        def echo(req):
+            return {"echo": req.get("v")}
+
+        client.query("echo", cb=lambda r: replies.update(ok=r), v=7)
+        _pump_until(server, client, replies, "ok", echo=echo)
+        assert replies["ok"]["echo"] == 7
+
+        client.query("missing", cb=lambda r: replies.update(err=r))
+        _pump_until(server, client, replies, "err", echo=echo)
+        assert replies["err"]["err"] == "unknown op"
+        client.close()
+        del server
+
+    def test_send_json_type_error_and_timeout(self):
+        from omni_npu.connector.utils import SimpleClient, SimpleServer
+
+        server = SimpleServer("tcp://127.0.0.1:*")
+        client = SimpleClient(server.addr())
+        with pytest.raises(TypeError, match="req must be dict"):
+            client.send_json("bad")
+        timed = []
+        client.send_json({"op": "noop"}, cb=lambda r: timed.append(r))
+        rest = client.routine(timeout=-1.0)
+        assert rest == 0
+        assert timed == [None]
+        client.close()
+        leftover = client.send_json({"op": "after-close"})
+        assert leftover == 0
+        del server
+
+    def test_bad_req_and_internal_error(self):
+        from omni_npu.connector.utils import SimpleServer
+        import zmq
+
+        server = SimpleServer("tcp://127.0.0.1:*")
+        ctx = zmq.Context()
+        sock = ctx.socket(zmq.DEALER)
+        sock.connect(server.addr())
+        sock.send_string("not-json")
+        assert _wait_until(lambda: self._pump_and_poll(server, sock))
+        assert "bad_req" in sock.recv_string()
+
+        sock.send_string('{"req_id": 1, "req": "not-dict"}')
+        assert _wait_until(lambda: self._pump_and_poll(server, sock))
+        assert "bad_req" in sock.recv_string()
+
+        sock.send_string('{"req_id": 2, "req": {"op": "boom"}}')
+
+        def boom(_req):
+            raise RuntimeError("explode")
+
+        raised = {"ok": False}
+
+        def pump_boom():
+            try:
+                server.handle(boom=boom)
+            except RuntimeError as exc:
+                if "explode" in str(exc):
+                    raised["ok"] = True
+                    return True
+                raise
+            return False
+
+        assert _wait_until(pump_boom)
+        assert raised["ok"] is True
+        sock.close(linger=0)
+        ctx.term()
+        del server
+
+    @staticmethod
+    def _pump_and_poll(server, sock):
+        server.handle()
+        return sock.poll(10) != 0
+
+    def test_todo_nonblock_returns_when_empty(self):
+        from omni_npu.connector.utils import SimpleServer
+
+        server = SimpleServer("tcp://127.0.0.1:*")
+        assert list(server.todo(loop=False)) == []
+        del server
+
+    def test_client_skips_malformed_reply_and_flush(self):
+        from omni_npu.connector.utils import SimpleClient, SimpleServer
+        import zmq
+
+        server = SimpleServer("tcp://127.0.0.1:*")
+        client = SimpleClient(server.addr())
+        with patch.object(
+            client.sock,
+            "recv_string",
+            side_effect=["not-json", _zmq_err(zmq.EAGAIN)],
+        ):
+            assert client.routine() == 0
+        client.flush(polling=0.0, timeout=0.0)
+        client.close()
+        del server
+
+    def test_todo_reraises_non_eagain(self):
+        from omni_npu.connector.utils import SimpleServer
+        import zmq
+
+        server = SimpleServer("tcp://127.0.0.1:*")
+        with patch.object(server.sock, "recv_multipart", side_effect=_zmq_err(zmq.ETERM)):
+            with pytest.raises(zmq.ZMQError):
+                list(server.todo(loop=False))
+        del server
+
+    def test_client_routine_raises_after_close_and_non_eagain(self):
+        from omni_npu.connector.utils import SimpleClient, SimpleServer
+        import zmq
+
+        server = SimpleServer("tcp://127.0.0.1:*")
+        client = SimpleClient(server.addr())
+        client.close()
+        with pytest.raises(RuntimeError, match="called after stop"):
+            client.routine()
+        client2 = SimpleClient(server.addr())
+        with patch.object(client2.sock, "recv_string", side_effect=_zmq_err(zmq.ETERM)):
+            with pytest.raises(zmq.ZMQError):
+                client2.routine()
+        client2.close()
+        del server
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

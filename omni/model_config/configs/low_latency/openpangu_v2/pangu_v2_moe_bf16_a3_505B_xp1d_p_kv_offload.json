@@ -9,7 +9,7 @@
     },
     "operator_optimization_config": {
         "moe_comm_strategy": "allgather_reducescatter",
-        "moe_tbo_threshold": 14336,
+        "moe_tbo_threshold": 16384,
         "enable_mome_sp": true,
         "use_aicpu_fa_tiling": true,
         "use_noncontiguous_kv": true,

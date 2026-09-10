@@ -313,3 +313,84 @@ def test_region_cleanup_paths():
         side_effect=RuntimeError("unreg"),
     ), patch.object(os, "close", side_effect=OSError("fd")):
         region2.cleanup()
+
+
+def test_madvise_populate_write_delegates():
+    mmap_obj = MagicMock()
+    region_mod._madvise_populate_write(mmap_obj, 8, 16)
+    mmap_obj.madvise.assert_called_once_with(region_mod._MADV_POPULATE_WRITE, 8, 16)
+
+
+def test_wait_for_file_size_succeeds_after_sleep():
+    sizes = [SimpleNamespace(st_size=1), SimpleNamespace(st_size=64)]
+    with patch.object(os, "fstat", side_effect=sizes), patch(
+        "omni_npu.v1.kv_offload.cpu.npu_shared_offload_region.time.sleep"
+    ) as slept, patch(
+        "omni_npu.v1.kv_offload.cpu.npu_shared_offload_region.time.monotonic",
+        return_value=0.0,
+    ):
+        _wait_for_file_size(7, 64, timeout=1.0)
+    slept.assert_called_once()
+
+
+def test_hugetlbfs_mounted_skips_short_lines():
+    mounts = "incomplete\nnodev /dev/hugepages hugetlbfs rw 0 0\n"
+    with patch("builtins.open", mock_open(read_data=mounts)):
+        assert _hugetlbfs_mounted("/dev/hugepages") is True
+
+
+def test_region_init_joiner_wait_oserror_closes_fd(monkeypatch):
+    page = mmap.PAGESIZE
+    monkeypatch.delenv("OMNI_KV_OFFLOAD_HUGEPAGE", raising=False)
+
+    def open_joiner(path, flags, mode=0o600):
+        if flags & os.O_EXCL:
+            raise FileExistsError
+        return 22
+
+    with patch.object(os, "open", side_effect=open_joiner), patch.object(
+        region_mod, "_wait_for_file_size", side_effect=OSError("boom")
+    ), patch.object(os, "close") as close:
+        with pytest.raises(OSError, match="boom"):
+            NPUSharedOffloadRegion("join-fail", 1, 0, page, page)
+        close.assert_called_with(22)
+
+
+def test_cleanup_unlink_failure_and_idle_fields():
+    region = NPUSharedOffloadRegion.__new__(NPUSharedOffloadRegion)
+    region.is_pinned = True
+    region._register_ptr = None
+    region.rank = 0
+    region._npu_views = None
+    region.npu_base = None
+    region._views = None
+    region._base = None
+    region.mmap_obj = None
+    region.fd = None
+    region._creator = True
+    region.mmap_path = "/tmp/vllm_offload_unlink.mmap"
+    with patch.object(os, "unlink", side_effect=OSError("busy")):
+        region.cleanup()
+    assert region._creator is False
+
+    idle = NPUSharedOffloadRegion.__new__(NPUSharedOffloadRegion)
+    idle.is_pinned = False
+    idle._register_ptr = None
+    idle.rank = None
+    idle._npu_views = []
+    idle.npu_base = object()
+    idle._views = []
+    idle._base = object()
+    idle.mmap_obj = None
+    idle.fd = None
+    idle._creator = False
+    idle.mmap_path = None
+    idle.cleanup()
+    assert idle.npu_base is None
+    assert idle._base is None
+
+
+def test_shared_offload_region_alias():
+    import omni_npu.v1.kv_offload.cpu.npu_shared_offload_region as m
+
+    assert m.SharedOffloadRegion is m.NPUSharedOffloadRegion
