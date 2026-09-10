@@ -1455,12 +1455,10 @@ class NPUPanguSparseAttention(torch.nn.Module):
             # Decode FA only (cat + SparseFA). Prefill W_UV absorb is inside
             # _apply_DSA_attention and is not on this path.
             with sk_scope(f"dsa_fa_{self.layer_idx}"):
-                attn_output = self._apply_DSA_attention(
-                    q_nope=q_nope,
-                    q_pe=q_pe,
-                    kv_cache=kv_cache,
-                    topk_indices=topk_indices,
-                    attn_metadata=attn_metadata,
+                # Opaque wrapper: the Ascend sparse-FA meta impl specializes a
+                # dynamic size, which pins the graph to one batch size.
+                attn_output = torch.ops.vllm.npu_pangu_dsa_decode(
+                    q_nope, q_pe, kv_cache[0], topk_indices, self.prefix,
                 )
         else:
             # with torch.npu.npugraph_ex.scope.limit_core_num(8,8):
@@ -3822,22 +3820,17 @@ def npu_pangu_forward(
                     mome_metadata,
                 )
         else:
-            if hidden_states.shape[0] == num_decode_tokens:
-                hidden_states = self._forward_decode(
-                    hidden_states,
-                    cos,
-                    sin,
-                    attn_metadata,
-                    mome_metadata,
-                )
-            else:
-                hidden_states[:num_decode_tokens] = self._forward_decode(
-                    hidden_states[:num_decode_tokens],
-                    cos[:num_decode_tokens],
-                    sin[:num_decode_tokens],
-                    attn_metadata,
-                    mome_metadata,
-                )
+            # Always slice by metadata. Comparing a dynamic tensor dimension
+            # with num_decode_tokens creates a Dynamo equality guard, while
+            # forwarding the full tensor also leaks TP padding into cache
+            # updates for one-token chunked-prefill tails.
+            hidden_states[:num_decode_tokens] = self._forward_decode(
+                hidden_states[:num_decode_tokens],
+                cos[:num_decode_tokens],
+                sin[:num_decode_tokens],
+                attn_metadata,
+                mome_metadata,
+            )
         if self.tp_size > 1:
             need_reduce = self.o_proj.tp_size > 1
             need_scatter = self.moe_comm_strategy != "allreduce"

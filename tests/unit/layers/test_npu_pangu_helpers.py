@@ -10,6 +10,7 @@ import torch
 
 import omni_npu.v1.layers.attention.npu_pangu as pangu_mod
 from omni_npu.attention.backends.dsa import NPUDSAMetadataBuilder
+from omni_npu.v1.layers.attention import npu_pangu_custom_ops as custom_ops_mod
 from omni_npu.v1.layers.attention.npu_pangu import (
     NPUPanguSparseAttention,
     _get_slot_mapping_2d,
@@ -700,6 +701,136 @@ def _call_npu_pangu_forward_sp(attention, hidden):
         return pangu_mod.npu_pangu_forward(
             hidden, torch.zeros(4, 2), torch.zeros(4, 2), "layer"
         )
+
+
+class TestPanguDSADecodeCustomOp(unittest.TestCase):
+    def test_real_op_forwards_live_layer_and_metadata(self):
+        """The real wrapper must resolve and call the live DSA layer."""
+        q_nope = torch.zeros(3, 2, 4)
+        q_pe = torch.zeros(3, 2, 4)
+        kv_cache = torch.zeros(2, 8)
+        topk_indices = torch.zeros(3, 1, 2, dtype=torch.int32)
+        attn_metadata = object()
+        expected = torch.ones(3, 2, 8)
+        layer = SimpleNamespace(
+            prefix="model.layers.0.self_attn",
+            _apply_DSA_attention=MagicMock(return_value=expected),
+        )
+        context = SimpleNamespace(
+            no_compile_layers={"layer": layer},
+            attn_metadata=attn_metadata,
+        )
+
+        with patch.object(custom_ops_mod, "get_forward_context", return_value=context):
+            result = custom_ops_mod.npu_pangu_dsa_decode(
+                q_nope, q_pe, kv_cache, topk_indices, "layer"
+            )
+
+        self.assertIs(result, expected)
+        layer._apply_DSA_attention.assert_called_once_with(
+            q_nope=q_nope,
+            q_pe=q_pe,
+            kv_cache=(kv_cache,),
+            topk_indices=topk_indices,
+            attn_metadata=attn_metadata,
+        )
+
+    def test_fake_op_preserves_dynamic_token_dimension(self):
+        """The fake output must remain symbolic across capture gears."""
+        layer = SimpleNamespace(num_local_heads=2, kv_lora_rank=8)
+        kv_cache = torch.zeros(2, 8)
+        topk_indices = torch.zeros(1, 1, 2, dtype=torch.int32)
+
+        with patch.object(
+            custom_ops_mod,
+            "_lookup_layer_and_attn_metadata",
+            return_value=(layer, None),
+        ):
+            for num_tokens in (4, 16):
+                q_nope = torch.zeros(num_tokens, 2, 4)
+                q_pe = torch.zeros(num_tokens, 2, 4)
+                result = custom_ops_mod.npu_pangu_dsa_decode_fake(
+                    q_nope, q_pe, kv_cache, topk_indices, "layer"
+                )
+                self.assertEqual(result.shape, (num_tokens, 2, 8))
+                self.assertEqual(result.dtype, q_nope.dtype)
+                self.assertEqual(result.device, q_nope.device)
+
+    def test_forward_decode_dispatches_dsa_through_custom_op(self):
+        """DSA decode must cross the opaque custom-op boundary."""
+        attention = _bare_swa_attention(is_dsa_layer=True, layer_idx=3)
+        q_nope = torch.zeros(4, 2, 4)
+        q_pe = torch.zeros(4, 2, 4)
+        kv_cache = (torch.zeros(2, 8), torch.zeros(2, 8))
+        topk_indices = torch.zeros(4, 1, 2, dtype=torch.int32)
+        latent = torch.ones(4, 2, 8)
+        expected = torch.ones(4, 8)
+        attention._mla_prolog = MagicMock(
+            return_value=(q_nope, q_pe, kv_cache, topk_indices)
+        )
+        attention._mla_epilog = MagicMock(return_value=expected)
+        attention.pre_epilog_callback = None
+        attn_metadata = object()
+
+        with patch.object(
+            pangu_mod,
+            "sk_scope",
+            side_effect=lambda _name: nullcontext(),
+        ), patch(
+            "torch.ops.vllm.npu_pangu_dsa_decode",
+            return_value=latent,
+        ) as decode_op:
+            result = attention._forward_decode(
+                torch.zeros(4, 8),
+                torch.zeros(4, 4),
+                torch.zeros(4, 4),
+                attn_metadata,
+                None,
+            )
+
+        self.assertIs(result, expected)
+        decode_op.assert_called_once_with(
+            q_nope, q_pe, kv_cache[0], topk_indices, attention.prefix
+        )
+        attention._mla_epilog.assert_called_once_with(latent, attn_metadata, None)
+
+    def test_decode_slices_tp_padding_by_metadata(self):
+        """Decode must exclude TP padding without a tensor-size branch."""
+        attention = _bare_swa_attention(
+            is_attn_sp_layer=False,
+            is_dsa_layer=True,
+        )
+        hidden = torch.zeros(4, 8)
+        cos = torch.zeros(4, 4)
+        sin = torch.zeros(4, 4)
+        decoded = torch.ones(2, 8)
+        attention._forward_decode = MagicMock(return_value=decoded)
+        metadata = SimpleNamespace(
+            num_actual_tokens=4,
+            num_decode_tokens=2,
+            num_decodes=2,
+            num_prefills=0,
+            prefill=None,
+            decode=SimpleNamespace(),
+        )
+        context = SimpleNamespace(
+            no_compile_layers={"layer": attention},
+            attn_metadata=metadata,
+        )
+
+        with patch.object(pangu_mod, "get_forward_context", return_value=context):
+            result = pangu_mod.npu_pangu_forward(hidden, cos, sin, "layer")
+
+        self.assertIs(result, hidden)
+        self.assertTrue(torch.equal(result[:2], decoded))
+        self.assertTrue(torch.equal(result[2:], torch.zeros(2, 8)))
+        attention._forward_decode.assert_called_once()
+        call_args = attention._forward_decode.call_args.args
+        self.assertTrue(torch.equal(call_args[0], hidden[:2]))
+        self.assertTrue(torch.equal(call_args[1], cos[:2]))
+        self.assertTrue(torch.equal(call_args[2], sin[:2]))
+        self.assertIs(call_args[3], metadata)
+        self.assertIsNone(call_args[4])
 
 
 class TestPanguSWASeqParallel(unittest.TestCase):

@@ -44,6 +44,8 @@ How to use
 3. Current op catalog (op_name -> wrapped method / kernel):
 
      npu_pangu_swa_decode            -> _apply_SWA_attention_decode
+     npu_pangu_dsa_decode            -> _apply_DSA_attention
+                                        (decode path only)
      npu_pangu_indexer_cache_update  -> Indexer._update_indexer_cache
      npu_pangu_lightning_indexer     -> Indexer._apply_lightning_indexer
      npu_pangu_kv_cache_update       -> _npu_kvrmsnorm_rope_cache
@@ -198,6 +200,60 @@ direct_register_custom_op(
     op_func=npu_pangu_swa_decode,
     mutates_args=[],
     fake_impl=npu_pangu_swa_decode_fake,
+    dispatch_key="PrivateUse1",
+)
+
+
+# ---------------------------------------------------------------------------
+# npu_pangu_dsa_decode: wraps _apply_DSA_attention (decode path only)
+# ---------------------------------------------------------------------------
+# The Ascend sparse-FA kernels reached from _apply_DSA_attention specialize a
+# dynamic size in their meta implementation (guard `Eq(s, 16)`), which pins the
+# graph to one batch size and breaks multi-gear capture. Hiding the call behind
+# an opaque custom op keeps torch.compile on the fake below, so no guard is
+# added. Decode only: the caller (_forward_decode) never has prefill metadata,
+# so the wrapped method always takes its latent `[T, N, L]` return path.
+def npu_pangu_dsa_decode(
+    q_nope: torch.Tensor,
+    q_pe: torch.Tensor,
+    kv_cache_0: torch.Tensor,
+    topk_indices: torch.Tensor,
+    layer_name: str,
+) -> torch.Tensor:
+    layer, attn_metadata = _lookup_layer_and_attn_metadata(layer_name)
+    # Only kv_cache[0] is read on the DSA paths; the tuple's second slot is
+    # never touched, so it is not part of the schema.
+    return layer._apply_DSA_attention(
+        q_nope=q_nope,
+        q_pe=q_pe,
+        kv_cache=(kv_cache_0,),
+        topk_indices=topk_indices,
+        attn_metadata=attn_metadata,
+    )
+
+
+def npu_pangu_dsa_decode_fake(
+    q_nope: torch.Tensor,
+    q_pe: torch.Tensor,
+    kv_cache_0: torch.Tensor,
+    topk_indices: torch.Tensor,
+    layer_name: str,
+) -> torch.Tensor:
+    layer, _ = _lookup_layer_and_attn_metadata(layer_name)
+    num_tokens = q_nope.size(0)
+    # Latent [T, N, L] — v_up (W_UV absorb) is deferred to _mla_epilog, same as
+    # the SWA decode wrapper above.
+    return torch.empty(
+        (num_tokens, layer.num_local_heads, layer.kv_lora_rank),
+        device=q_nope.device, dtype=q_nope.dtype,
+    )
+
+
+direct_register_custom_op(
+    op_name="npu_pangu_dsa_decode",
+    op_func=npu_pangu_dsa_decode,
+    mutates_args=[],
+    fake_impl=npu_pangu_dsa_decode_fake,
     dispatch_key="PrivateUse1",
 )
 
