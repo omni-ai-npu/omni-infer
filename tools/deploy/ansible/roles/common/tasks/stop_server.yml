@@ -39,6 +39,23 @@
   no_log: true
   when: "'P' in group_names"
 
+- name: Clean stale Ray session state on prefill hosts.
+  ansible.builtin.shell: |
+    ray stop --force 2>/dev/null || true
+    pkill -9 -f '[r]ay' 2>/dev/null || true
+    rm -rf /tmp/ray/session_* /tmp/ray/session_latest 2>/dev/null || true
+  failed_when: false
+  when: "'P' in group_names"
+
+- name: Clean stale Ray session state inside the prefill container.
+  ansible.builtin.shell: |
+    {{ docker_exec_cmd }} $DOCKER_NAME_P /bin/bash -c \
+    'ray stop --force 2>/dev/null || true; rm -rf /tmp/ray/session_* /tmp/ray/session_latest 2>/dev/null || true'
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  failed_when: false
+  when: "'P' in group_names"
+
 - name: Kill all Python processes in the container of decode.
   ansible.builtin.command: /bin/bash -c "{{ docker_exec_cmd }} $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/kill_python_processes.sh"
   environment:
