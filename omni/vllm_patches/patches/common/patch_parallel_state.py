@@ -8,6 +8,7 @@
 import os
 import torch
 import torch_npu
+from contextlib import contextmanager
 from torch.distributed import Backend
 
 from vllm import envs
@@ -70,6 +71,7 @@ class ParallelStatePatch(VLLMPatch):
     _attr_names_to_apply = [
         "initialize_model_parallel",
         "destroy_model_parallel",
+        "patch_tensor_parallel_group",
     ]
 
     @staticmethod
@@ -377,6 +379,26 @@ class ParallelStatePatch(VLLMPatch):
             if num_nodes >= 2 and num_nodes % 2 == 0:
                 initialize_round_swap_comm_group_list(backend)
                 initialize_cross_comm_group_list(backend)
+
+    # Re-provides the contextmanager removed in vLLM 0.25.1 (the module-level
+    # ``_TP``/``_TP_STATE_PATCHED`` globals it used still exist). OpenPangu
+    # VL/Omni vision and audio towers build and load weights under a
+    # (possibly data-parallel) TP group different from the language model's.
+    @staticmethod
+    @contextmanager
+    def patch_tensor_parallel_group(tp_group):
+        _require(
+            not parallel_state._TP_STATE_PATCHED,
+            "patch_tensor_parallel_group already in progress",
+        )
+        parallel_state._TP_STATE_PATCHED = True
+        old_tp_group = parallel_state.get_tp_group()
+        parallel_state._TP = tp_group
+        try:
+            yield
+        finally:
+            parallel_state._TP_STATE_PATCHED = False
+            parallel_state._TP = old_tp_group
 
 
 @register_patch("GroupCoordinatorPatch", GroupCoordinator)
