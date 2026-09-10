@@ -3,6 +3,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from omni import vllm_patches
 
 
@@ -113,3 +115,51 @@ def test_auto_import_unknown_model_dir_keeps_common(monkeypatch):
     vllm_patches.auto_import_patches()
 
     assert [name for name, _ in loaded] == ["common"]
+
+
+def test_legacy_vl_directory_is_explicit_and_deduplicated(monkeypatch):
+    loaded = _capture_loaded(monkeypatch)
+    monkeypatch.setenv(
+        "OMNI_NPU_PATCHES_DIR",
+        "pangu_v2_hybrid,pangu_v2_moe,openpangu_v1_vl,openpangu_v1_vl",
+    )
+    vllm_patches.auto_import_patches()
+    assert [name for name, _ in loaded] == [
+        "common", "pangu_v2_base", "high_throughout", "low_latency",
+        "openpangu_v1_vl",
+    ]
+    assert loaded[-1][1] == "omni_npu.vllm_patches.patches.models.openpangu_v1_vl"
+
+
+def test_removed_multimodal_selector_is_not_an_implicit_alias(monkeypatch):
+    loaded = _capture_loaded(monkeypatch)
+    monkeypatch.setenv("OMNI_VLLM_PATCHES_DIR", "multimodal")
+    vllm_patches.auto_import_patches()
+    assert [name for name, _ in loaded] == ["common"]
+
+
+def test_nonempty_new_selector_takes_precedence_over_old_selector(monkeypatch):
+    loaded = _capture_loaded(monkeypatch)
+    monkeypatch.setenv("OMNI_VLLM_PATCHES_DIR", "low_latency")
+    monkeypatch.setenv("OMNI_NPU_PATCHES_DIR", "openpangu_v1_vl")
+    vllm_patches.auto_import_patches()
+    assert [name for name, _ in loaded] == ["common", "pangu_v2_base", "low_latency"]
+
+
+def test_legacy_vl_group_contains_six_multimodal_patches():
+    models_root = Path(vllm_patches.__file__).parent / "patches/models"
+    selected = vllm_patches._find_patch_dir_exact("openpangu_v1_vl", models_root)
+    assert selected == [models_root / "openpangu_v1_vl"]
+    assert not (models_root / "multimodal").exists()
+    assert not (selected[0] / "common").exists()
+    # Match the unmodified importer's filename order and ensure no nested
+    # duplicate implementations remain after combining the two groups.
+    paths = sorted(selected[0].rglob("*.py"), key=lambda path: path.name)
+    assert [path.relative_to(selected[0]).as_posix() for path in paths] == [
+        "patch_m_rotary_embedding.py",
+        "patch_media_utils.py",
+        "patch_mm_feature_transfer_args.py",
+        "patch_multimodal_embeddings.py",
+        "patch_multimodal_prompt_updates.py",
+        "patch_video.py",
+    ]

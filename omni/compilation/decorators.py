@@ -54,10 +54,11 @@ def _wrap_call(original_call):
 
 
 def _patch_piecewise_backend():
-    """Run a precompiled entry when the graph has no symbolic shape input."""
+    """Run precompiled ranges, compiling an exact range when none matches."""
     # Intentional: this module monkey-patches vLLM internals.
     # pylint: disable=protected-access
     import vllm.compilation.piecewise_backend as _piecewise_module
+    from vllm.config.utils import Range
 
     piecewise_backend = _piecewise_module.PiecewiseBackend
     if getattr(piecewise_backend, "_omni_npu_static_range_patched", False):
@@ -71,25 +72,78 @@ def _patch_piecewise_backend():
                 return int(arg.shape[0])
         return None
 
+    def _get_runtime_shape(self, args):
+        if self.sym_shape_indices:
+            return int(args[self.sym_shape_indices[0]])
+        return _infer_runtime_shape_from_args(args)
+
+    def _get_or_create_exact_range_entry(self, runtime_shape):
+        compile_range = Range(start=runtime_shape, end=runtime_shape)
+        range_entry = self.range_entries.get(compile_range)
+        if range_entry is None:
+            range_entry = _piecewise_module.RangeEntry(
+                compile_range=compile_range
+            )
+            self.range_entries[compile_range] = range_entry
+            logger.warning(
+                "Runtime shape %s is outside configured compile ranges %s; "
+                "compiling exact fallback range %s.",
+                runtime_shape,
+                self.compile_ranges,
+                compile_range,
+            )
+        return range_entry
+
+    def _compile_exact_range_entry(self, range_entry, args):
+        if range_entry.compiled:
+            return
+        if self.graph is None:
+            raise RuntimeError(
+                "Cannot compile an exact fallback range when PiecewiseBackend "
+                "was initialized from precompiled artifacts"
+            )
+
+        # Match the legacy omni-npu single-size path: compile with the real
+        # runtime arguments. In particular, this preserves independent fixed
+        # dimensions such as the leading MRoPE dimension (3) while specializing
+        # only the runtime token dimension (for example 97).
+        self._log_compile_start(range_entry.compile_range)
+        range_entry.runnable = self.vllm_backend.compiler_manager.compile(
+            self.graph,
+            list(args),
+            self.vllm_backend.inductor_config,
+            self.compilation_config,
+            compile_range=range_entry.compile_range,
+            graph_index=self.piecewise_compile_index,
+            num_graphs=self.total_piecewise_compiles,
+            is_encoder=self.vllm_backend.is_encoder,
+        )
+        range_entry.compiled = True
+        if self.is_last_graph:
+            self.vllm_backend.compiler_manager.save_to_file()
+
     @functools.wraps(original_call)
     def _patched_call(self, *args):
-        if self.sym_shape_indices:
-            return original_call(self, *args)
+        runtime_shape = _get_runtime_shape(self, args)
+        if runtime_shape is None:
+            raise RuntimeError(
+                "Cannot determine runtime shape for PiecewiseBackend"
+            )
 
-        runtime_shape = _infer_runtime_shape_from_args(args)
-        assert runtime_shape is not None, (
-            "Cannot infer runtime shape for PiecewiseBackend without SymInt inputs"
-        )
         range_entry = self._find_range_for_shape(runtime_shape)
-        assert range_entry is not None, (
-            f"Shape {runtime_shape} is outside compile ranges "
-            f"{self.compile_ranges}"
-        )
+        if range_entry is not None:
+            # Preserve upstream dispatch for the normal symbolic-shape path.
+            if self.sym_shape_indices:
+                return original_call(self, *args)
+            return range_entry.runnable(*args)
+
+        range_entry = _get_or_create_exact_range_entry(self, runtime_shape)
+        _compile_exact_range_entry(self, range_entry, args)
         return range_entry.runnable(*args)
 
     piecewise_backend.__call__ = _patched_call
     piecewise_backend._omni_npu_static_range_patched = True
-    logger.debug("<<< PiecewiseBackend static range dispatch patched!")
+    logger.debug("<<< PiecewiseBackend exact-range fallback patched!")
 
 
 def _patched_mark_dynamic():

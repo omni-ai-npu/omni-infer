@@ -1957,6 +1957,10 @@ class TestNPUModelRunner:
             assert hidden_states is not None
             assert logits is not None
             self.runner.drafter.dummy_run.assert_called_once()
+            call = self.runner.drafter.dummy_run.call_args
+            assert call.args == (None, 10)
+            assert "attn_metadata" not in call.kwargs
+            assert "slot_mappings" not in call.kwargs
 
     def test_dummy_run_skip_eplb(self, monkeypatch):
         """Test _dummy_run with skip_eplb=True (covers line 469)."""

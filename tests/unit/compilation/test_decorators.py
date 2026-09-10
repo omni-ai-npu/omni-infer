@@ -8,6 +8,7 @@ import pytest
 
 import vllm.compilation.decorators as _dec_mododule
 from vllm.config import VllmConfig, CUDAGraphMode
+from vllm.config.utils import Range
 
 from omni_npu.compilation.decorators import (
     _bypass_prefill,
@@ -255,27 +256,145 @@ def test_patched_call_static_shape_requires_tensor_input():
 
     with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
         patch_compile_decorators()
-        with pytest.raises(AssertionError, match="Cannot infer runtime shape"):
+        with pytest.raises(RuntimeError, match="Cannot determine runtime shape"):
             _piecewise_module.PiecewiseBackend.__call__(mock_backend, None, "x")
 
 
-def test_patched_call_static_shape_rejects_uncompiled_range():
-    """Static dispatch rejects shapes outside the precompiled ranges."""
+def test_patched_call_symbolic_shape_compiles_exact_range_with_runtime_args():
+    """An unmatched symbolic shape compiles once with the real MRoPE args."""
+    import vllm.compilation.piecewise_backend as _piecewise_module
+
+    runnable = MagicMock(return_value="exact-range")
+    compile_graph = MagicMock(return_value=runnable)
+    save_to_file = MagicMock()
+    graph = object()
+    inductor_config = object()
+    compilation_config = object()
+    mock_backend = SimpleNamespace(
+        compile_ranges=[Range(start=1, end=96)],
+        sym_shape_indices=[1],
+        range_entries={},
+        _find_range_for_shape=MagicMock(return_value=None),
+        graph=graph,
+        vllm_backend=SimpleNamespace(
+            compiler_manager=SimpleNamespace(
+                compile=compile_graph,
+                save_to_file=save_to_file,
+            ),
+            inductor_config=inductor_config,
+            is_encoder=False,
+        ),
+        compilation_config=compilation_config,
+        piecewise_compile_index=2,
+        total_piecewise_compiles=4,
+        is_last_graph=True,
+        _log_compile_start=MagicMock(),
+    )
+    hidden_states = torch.randn(97, 32)
+    mrope_positions = torch.randn(3, 97)
+
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
+        patch_compile_decorators()
+        result1 = _piecewise_module.PiecewiseBackend.__call__(
+            mock_backend,
+            hidden_states,
+            97,
+            mrope_positions,
+        )
+        result2 = _piecewise_module.PiecewiseBackend.__call__(
+            mock_backend,
+            hidden_states,
+            97,
+            mrope_positions,
+        )
+
+    exact_range = Range(start=97, end=97)
+    assert exact_range in mock_backend.range_entries
+    assert result1 == "exact-range"
+    assert result2 == "exact-range"
+    assert compile_graph.call_count == 1
+    compile_args, compile_kwargs = compile_graph.call_args
+    assert compile_args[0] is graph
+    assert compile_args[1][0] is hidden_states
+    assert compile_args[1][1] == 97
+    assert compile_args[1][2] is mrope_positions
+    assert compile_args[2] is inductor_config
+    assert compile_args[3] is compilation_config
+    assert compile_kwargs == {
+        "compile_range": exact_range,
+        "graph_index": 2,
+        "num_graphs": 4,
+        "is_encoder": False,
+    }
+    mock_backend._log_compile_start.assert_called_once_with(exact_range)
+    save_to_file.assert_called_once_with()
+    assert runnable.call_count == 2
+
+
+def test_patched_call_static_shape_compiles_exact_range():
+    """An unmatched static shape also uses the exact-range fallback."""
+    import vllm.compilation.piecewise_backend as _piecewise_module
+
+    runnable = MagicMock(return_value="static-exact-range")
+    compile_graph = MagicMock(return_value=runnable)
+    mock_backend = SimpleNamespace(
+        compile_ranges=[Range(start=1, end=64)],
+        sym_shape_indices=[],
+        range_entries={},
+        _find_range_for_shape=MagicMock(return_value=None),
+        graph=object(),
+        vllm_backend=SimpleNamespace(
+            compiler_manager=SimpleNamespace(
+                compile=compile_graph,
+                save_to_file=MagicMock(),
+            ),
+            inductor_config=object(),
+            is_encoder=False,
+        ),
+        compilation_config=object(),
+        piecewise_compile_index=0,
+        total_piecewise_compiles=1,
+        is_last_graph=False,
+        _log_compile_start=MagicMock(),
+    )
+    hidden_states = torch.randn(65, 32)
+
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
+        patch_compile_decorators()
+        result = _piecewise_module.PiecewiseBackend.__call__(
+            mock_backend,
+            hidden_states,
+        )
+
+    assert Range(start=65, end=65) in mock_backend.range_entries
+    assert result == "static-exact-range"
+    assert compile_graph.call_count == 1
+    mock_backend.vllm_backend.compiler_manager.save_to_file.assert_not_called()
+
+
+def test_patched_call_exact_range_requires_original_graph():
+    """A backend restored only from artifacts cannot compile a new range."""
     import vllm.compilation.piecewise_backend as _piecewise_module
 
     mock_backend = SimpleNamespace(
-        compile_ranges=["1-64"],
-        sym_shape_indices=[],
+        compile_ranges=[Range(start=1, end=96)],
+        sym_shape_indices=[1],
+        range_entries={},
         _find_range_for_shape=MagicMock(return_value=None),
+        graph=None,
     )
 
     with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
         patch_compile_decorators()
-        test_tensor = torch.randn(16, 32)
-        with pytest.raises(AssertionError, match="outside compile ranges"):
-            _piecewise_module.PiecewiseBackend.__call__(mock_backend, test_tensor)
+        with pytest.raises(RuntimeError, match="precompiled artifacts"):
+            _piecewise_module.PiecewiseBackend.__call__(
+                mock_backend,
+                torch.randn(97, 32),
+                97,
+                torch.randn(3, 97),
+            )
 
-    mock_backend._find_range_for_shape.assert_called_once_with(16)
+    assert Range(start=97, end=97) in mock_backend.range_entries
 
 
 def test_patched_call_symbolic_shape_delegates_to_upstream():
@@ -288,8 +407,11 @@ def test_patched_call_symbolic_shape_delegates_to_upstream():
         return calls(self, *args)
 
     _piecewise_module.PiecewiseBackend.__call__ = upstream_call
+    range_entry = object()
     mock_backend = SimpleNamespace(
         sym_shape_indices=[1],
+        compile_ranges=[Range(start=1, end=96)],
+        _find_range_for_shape=MagicMock(return_value=range_entry),
     )
 
     with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
@@ -297,6 +419,7 @@ def test_patched_call_symbolic_shape_delegates_to_upstream():
         ret = _piecewise_module.PiecewiseBackend.__call__(mock_backend, "x", 64)
 
     calls.assert_called_once_with(mock_backend, "x", 64)
+    mock_backend._find_range_for_shape.assert_called_once_with(64)
     assert ret == "upstream"
 
 

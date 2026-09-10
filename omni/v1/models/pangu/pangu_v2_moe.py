@@ -2537,8 +2537,13 @@ class OpenPanguV2Model(nn.Module):
                                 
         self.swa_layer_name = self.layers[self.swa_layers[0]].self_attn.attn.layer_name \
                                 if self.swa_layers is not None else None
-        self.cos_cached = self.layers[self.start_layer].self_attn.rotary_emb.cos_cached
-        self.sin_cached = self.layers[self.start_layer].self_attn.rotary_emb.sin_cached
+        self.cos_cached = None
+        self.sin_cached = None
+        rotary_emb = self.layers[self.start_layer].self_attn.rotary_emb
+        if hasattr(rotary_emb, "cos_cached") and hasattr(rotary_emb, "sin_cached"):
+            self.cos_cached = rotary_emb.cos_cached
+            self.sin_cached = rotary_emb.sin_cached
+            
         self.attn_layer_name = self.layers[self.start_layer].self_attn.attn.layer_name
         self.need_tp_padding = model_extra_config.parall_config.ena_seq_parallel
         self.param_sink_number = config.param_sink_number
@@ -2597,10 +2602,20 @@ class OpenPanguV2Model(nn.Module):
 
         # Reshape for MHC if enabled
         if self.use_mhc:
-            hidden_states = hidden_states.view(-1, 1, self.hidden_size) \
-                                         .repeat(1, self.mhc_num_stream, 1)
+            if hidden_states.shape[-1] == self.hidden_size:
+                hidden_states = hidden_states.view(
+                    -1, 1, self.hidden_size
+                ).repeat(1, self.mhc_num_stream, 1)
+            elif hidden_states.shape[-1] == self.hidden_size * self.mhc_num_stream:
+                hidden_states = hidden_states.view(
+                    -1, self.mhc_num_stream, self.hidden_size
+                )
+            else:
+                raise ValueError(
+                    f"Unexpected hidden_states shape for MHC: {hidden_states.shape}"
+                )
 
-        if high_throughout():
+        if high_throughout() or self.cos_cached is None or self.sin_cached is None:
             cos, sin = self.layers[self.start_layer].self_attn.rotary_emb.get_cos_sin(
                 positions
             )

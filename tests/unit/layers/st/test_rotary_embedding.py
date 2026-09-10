@@ -818,3 +818,61 @@ def test_npu_mrope_prefill_rotary_dim_less_than_head_size(npu_device):
     assert out_k.shape == key.shape
     assert torch.allclose(out_q[..., layer.rotary_dim:], query_tail, atol=1e-6)
     assert torch.allclose(out_k[..., layer.rotary_dim:], key_tail, atol=1e-6)
+
+
+def test_npu_mrope_interleaved_get_cos_sin_matches_reference(npu_device, monkeypatch):
+    """The model-facing MRoPE API must preserve the 3-D position mapping."""
+    try:
+        from omni_npu.layers.rotary_embedding.mrope_interleaved_torch_npu import (
+            NPUMRotaryEmbeddingInterleaved,
+        )
+    except ImportError:
+        pytest.skip("NPUMRotaryEmbeddingInterleaved not available")
+
+    from omni_npu.vllm_patches.patches.models.openpangu_v1_vl.patch_m_rotary_embedding import (
+        MRotaryEmbeddingInterleavedPatch,
+    )
+
+    # Install the model-specific API only for this test, independent of patch selection.
+    patch_cls = MRotaryEmbeddingInterleavedPatch
+    for name in patch_cls._attr_names_to_apply:
+        monkeypatch.setattr(
+            patch_cls._target, name, patch_cls.__dict__[name], raising=False
+        )
+
+    layer = NPUMRotaryEmbeddingInterleaved(
+        head_size=16,
+        rotary_dim=16,
+        max_position_embeddings=64,
+        base=10000,
+        is_neox_style=True,
+        dtype=torch.float32,
+        mrope_section=[2, 2, 4],
+        mrope_interleaved=True,
+        rotary_mode="half",
+        num_hidden_layers_cache=1,
+    ).to(npu_device)
+    positions = torch.tensor(
+        [[0, 1, 2], [3, 4, 5], [6, 7, 8]],
+        dtype=torch.long,
+        device=npu_device,
+    )
+
+    cos, sin = layer.get_cos_sin(positions)
+
+    cos_sin = layer.cos_sin_cache[positions]
+    sections = cos_sin.split(layer.mrope_section_3d, dim=-1)
+    cos_sin = torch.cat(
+        [section[layer.mrope_dim[index]] for index, section in enumerate(sections)],
+        dim=-1,
+    )
+    expected_cos, expected_sin = cos_sin.chunk(2, dim=-1)
+    expected_cos = torch.cat((expected_cos, expected_cos), dim=-1).reshape(
+        -1, 1, 1, layer.rotary_dim
+    )
+    expected_sin = torch.cat((expected_sin, expected_sin), dim=-1).reshape(
+        -1, 1, 1, layer.rotary_dim
+    )
+
+    torch.testing.assert_close(cos, expected_cos, atol=0, rtol=0)
+    torch.testing.assert_close(sin, expected_sin, atol=0, rtol=0)

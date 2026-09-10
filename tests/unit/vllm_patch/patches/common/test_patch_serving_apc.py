@@ -209,8 +209,9 @@ class FakeResponse:
 
 
 class FakeRequest:
-    def __init__(self, kv_transfer_params=None):
+    def __init__(self, kv_transfer_params=None, prompt=None):
         self.kv_transfer_params = kv_transfer_params
+        self.prompt = prompt
 
 
 class FakeOutput:
@@ -325,6 +326,9 @@ def test_kv_transfer_params_written_only_when_channel_exists():
     assert res.kv_transfer_params["prefill_prompt_tokens"] == 1000
     assert res.kv_transfer_params["remote_engine_id"] == "x"  # untouched
 
+    apc._merge_apc_into_kv_transfer_params_if_present(res, 4, 0, 12)
+    assert res.kv_transfer_params["prefill_prompt_tokens"] == 12
+
     # Mixed: None must stay None, not become a dict.
     res = FakeResponse(kv_transfer_params=None)
     apc._merge_apc_into_kv_transfer_params_if_present(res, 800, 1000, 1000)
@@ -368,8 +372,30 @@ def test_sse_rate_never_exceeds_one_when_d_sees_a_shorter_prompt():
 
 
 def test_sse_leaves_non_usage_chunks_untouched():
-    for chunk in ('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n', "data: [DONE]\n\n", ": ping\n\n"):
+    for chunk in (
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+        "data: [DONE]\n\n", ": ping\n\n",
+        'data: {"usage": "bad"}\n\n', 'data: {"usage": invalid}\n\n',
+    ):
         assert apc._normalize_usage_chunk(chunk, 800, True) == chunk
+
+
+def test_sse_creates_missing_details():
+    for prompt_tokens, request in ((0, FakeRequest(None)), (8, None)):
+        chunk = f'data: {{"usage": {{"prompt_tokens": {prompt_tokens}}}}}\n\n'
+        out = apc._normalize_usage_chunk(chunk, 3, True, request=request)
+        details = json.loads(out[len("data: "):])["usage"]["prompt_tokens_details"]
+        assert details == {"cached_tokens": 3, "cached_rate": 0.375 if prompt_tokens else 0.0}
+
+
+def test_response_creates_missing_details_from_forwarded_counts():
+    assert apc._engine_cached_from_usage(FakeResponse()) is None
+    result = FakeResponse(usage=FakeUsage(8), kv_transfer_params={})
+    request = FakeRequest({"prefill_cached_tokens": 4})
+    apc._apply_apc_to_response(FakeServing(enable_details=True), request, result)
+    assert result.usage.prompt_tokens_details.cached_tokens == 4
+    assert result.usage.prompt_tokens_details.cached_rate == 0.5
+    assert result.kv_transfer_params == {"prefill_cached_tokens": 4, "prefill_prompt_tokens": 8}
 
 
 # --------------------------------------------------------------------------
@@ -497,6 +523,24 @@ def test_completion_create_preserves_original_and_skips_streams():
         )
     )
     assert hasattr(out, "__anext__")
+
+
+def test_completion_forwards_request_and_raw_request_without_rewriting_prompt(monkeypatch):
+    request = FakeRequest(
+        {"prefilled_token": [7], "prompt_token_ids": [11, 12]}, prompt="original text"
+    )
+    raw_request, error = object(), _ErrorResponse()
+
+    async def original(self, actual_request, actual_raw_request):
+        assert actual_request is request and actual_raw_request is raw_request
+        assert actual_request.prompt == "original text"
+        assert actual_request.kv_transfer_params == {"prefilled_token": [7], "prompt_token_ids": [11, 12]}
+        return error
+
+    monkeypatch.setattr(apc, "_orig_compl_create", original)
+    result = asyncio.run(apc.OpenAIServingCompletionAPCPatch.create_completion(
+        FakeServing(), request, raw_request))
+    assert result is error
 
 
 def test_chain_falls_back_to_vllm_when_sibling_patch_is_unavailable(monkeypatch):

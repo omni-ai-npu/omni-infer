@@ -63,7 +63,7 @@ def test_eagle_dummy_run_pads_stashed_common_metadata(monkeypatch):
         eagle_mod, "get_forward_context", lambda: SimpleNamespace(capturing=True)
     )
 
-    EagleProposerPatch.dummy_run(fake, attn_metadata=None)
+    EagleProposerPatch.dummy_run(fake, num_tokens=2, attn_metadata=None)
 
     assert torch.equal(orig_slots, torch.tensor([7, 8, 9], dtype=torch.int32))
     assert torch.equal(orig_blocks, torch.tensor([[1, 2], [3, 4]], dtype=torch.int32))
@@ -88,7 +88,7 @@ def test_eagle_dummy_run_without_metadata_skips_padding(monkeypatch):
         eagle_mod, "get_forward_context", lambda: SimpleNamespace(capturing=True)
     )
 
-    EagleProposerPatch.dummy_run(fake, attn_metadata=None)
+    EagleProposerPatch.dummy_run(fake, num_tokens=2, attn_metadata=None)
 
     fake.build_per_group_and_layer_attn_metadata.assert_not_called()
     fake.model.assert_called_once()

@@ -377,8 +377,8 @@ class TestACLGraphWrapper:
         assert result == entry.output
 
 
-    def test_call_with_aslkv_none(self, default_aclgraph_wrapper):
-        """Test __call__ method raise error when attn_metadata is None."""
+    def test_call_with_none_attn_metadata(self, default_aclgraph_wrapper):
+        """Replay rejects missing attention metadata instead of skipping updates."""
         default_aclgraph_wrapper._forward_context.attn_metadata = None
         batch_descriptor = default_aclgraph_wrapper._forward_context.batch_descriptor
         batch_descriptor.num_tokens = 3
@@ -390,10 +390,12 @@ class TestACLGraphWrapper:
         )
         default_aclgraph_wrapper.concrete_aclgraph_entries = {batch_descriptor: entry}
 
-        with pytest.raises(RuntimeError):
-            default_aclgraph_wrapper(torch.tensor([1.0]))
+        with patch.object(acl_graph_mod, "get_graph_params") as mock_get_params:
+            with pytest.raises(RuntimeError, match="attn_metadata is empty"):
+                default_aclgraph_wrapper(torch.tensor([1.0]))
 
         mock_aclgraph.replay.assert_called_once()
+        mock_get_params.assert_not_called()
 
 
     def test_call_attn_metadata_gqa_mode(self, default_aclgraph_wrapper):
@@ -541,13 +543,15 @@ class TestACLGraphWrapperUpdateMethods:
         return task_entry, op_out_fn, workspace_fn
 
     def test_update_graph_tasks_with_none_attn_metadata(self, wrapper_with_update_stream):
-        """Test _update_graph_tasks raises when attn_metadata is missing."""
+        """Missing metadata must fail before looking up captured graph tasks."""
         wrapper, forward_context, update_stream = wrapper_with_update_stream
 
         forward_context.attn_metadata = None
 
-        with pytest.raises(RuntimeError, match="attn_metadata is empty"):
-            wrapper._update_graph_tasks(update_stream, forward_context)
+        with patch.object(acl_graph_mod, "get_graph_params") as mock_get_params:
+            with pytest.raises(RuntimeError, match="attn_metadata is empty"):
+                wrapper._update_graph_tasks(update_stream, forward_context)
+        mock_get_params.assert_not_called()
 
     def test_update_graph_tasks_skips_non_attention_layers(self, wrapper_with_update_stream):
         """Test _update_graph_tasks ignores non-target layers."""
