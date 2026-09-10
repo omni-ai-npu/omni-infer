@@ -93,6 +93,7 @@
         GPU_UTIL=0.85
       args:
         - --max-model-len 524288
+        - --served-model-name {{ model | quote }}
         - --gpu-util "${GPU_UTIL}"
         - --extra-args "${EXTRA_ARGS}"
         - --hccl-buffsize "${HCCL_BUFFSIZE}"
@@ -149,6 +150,7 @@
         GPU_UTIL=0.85
       args:
         - --max-model-len 524288
+        - --served-model-name {{ model | quote }}
         - --tp 1
         - --gpu-util "${GPU_UTIL}"
         - --extra-args "${EXTRA_ARGS}"

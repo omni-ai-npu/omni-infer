@@ -143,7 +143,7 @@
         EXTRA_ARGS="${EXTRA_ARGS} --distributed-executor-backend mp"
         EXTRA_ARGS="${EXTRA_ARGS} --dtype bfloat16"
         EXTRA_ARGS="${EXTRA_ARGS} --kv-cache-dtype li_int8_ds_mla"
-        COMPILATION_CONFIG='{"mode": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[4,16], "backend":"", "compile_sizes":[4,16]}'
+        COMPILATION_CONFIG='{"mode": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[4,8,16], "backend":"", "compile_sizes":[4,8,16]}'
         EXTRA_ARGS="${EXTRA_ARGS} --compilation-config ${COMPILATION_CONFIG}"
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-parser pangu"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-auto-tool-choice --tool-call-parser pangu"

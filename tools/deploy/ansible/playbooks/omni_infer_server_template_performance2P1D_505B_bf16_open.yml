@@ -70,13 +70,13 @@
         export HCCL_OP_EXPANSION_MODE="AIV"
         export ASCEND_GLOBAL_LOG_LEVEL=3
         export TASK_QUEUE_ENABLE=2
-        export OMNI_REUSE_PREFILLED_TOKENS=1
-        export OMNI_SKIP_DECODE_TOKENIZE=1
         export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
         export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
         export OMNI_HYBRID_ATTN_GROUP_SIZE=18
         export OMNI_VLLM_PATCHES_DIR="low_latency"
         export OMNI_VLLM_PATCHES="ALL"
+        export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
+        export RAY_CGRAPH_get_timeout=7200
         EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --max-num-batched-tokens 4096"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-expert-parallel --max-num-seqs 4"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-prompt-tokens-details --enable-chunked-prefill"
@@ -92,12 +92,11 @@
         EXTRA_ARGS="${EXTRA_ARGS} --no-enable-prefix-caching"
         export OMNI_CUSTOM_MODEL_CONFIG_PATH="low_latency/openpangu_v2/pangu_v2_moe_bf16_a3_505B_xp1d_p_claw_noapc.json"
         {% endif %}
-        export TORCH_COMPILE_DISABLE=1
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-        GPU_UTIL=0.9093
+        GPU_UTIL=0.95
       args:
         - --max-model-len 524288
-        - --served-model-name {{ model | quote }}
+        - --served-model-name pangu_ultra_moe
         - '--additional-config ''{"enable_low_latency": true}'''
         - --gpu-util "${GPU_UTIL}"
         - --extra-args "${EXTRA_ARGS}"
@@ -122,8 +121,6 @@
         export HCCL_OP_RETRY_ENABLE="L0:0,L1:0,L2:0"
         export HCCL_OP_EXPANSION_MODE="AI_CPU"
         export ASCEND_GLOBAL_LOG_LEVEL=3
-        export OMNI_REUSE_PREFILLED_TOKENS=1
-        export OMNI_SKIP_DECODE_TOKENIZE=1
         export VLLM_MQ_MAX_CHUNK_BYTES_MB=100
         export VLLM_PLUGINS="omni-npu,omni_npu_patches,omni_custom_models"
         export OMNI_HYBRID_ATTN_GROUP_SIZE=18
@@ -134,10 +131,10 @@
         export TASK_QUEUE_ENABLE=1
         export LOCAL_WORLD_SIZE=16
         EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager --enable-expert-parallel"
-        EXTRA_ARGS="${EXTRA_ARGS} --max-num-seqs 3"
+        EXTRA_ARGS="${EXTRA_ARGS} --max-num-seqs 6"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-prompt-tokens-details --enable-chunked-prefill"
         EXTRA_ARGS="${EXTRA_ARGS} --distributed-executor-backend mp --dtype bfloat16"
-        COMPILATION_CONFIG='{"mode": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[4,12], "backend":"", "compile_sizes":[4,12]}'
+        COMPILATION_CONFIG='{"mode": 3, "cudagraph_mode":"FULL", "cudagraph_capture_sizes":[24], "backend":"", "compile_sizes":[24]}'
         EXTRA_ARGS="${EXTRA_ARGS} --compilation-config ${COMPILATION_CONFIG}"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-logging-iteration-details"
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-parser pangu --enable-auto-tool-choice --tool-call-parser pangu"
@@ -153,10 +150,10 @@
         {% endif %}
         export TORCH_COMPILE_DISABLE=1
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-        GPU_UTIL=0.8998
+        GPU_UTIL=0.9
       args:
         - --max-model-len 524288
-        - --served-model-name {{ model | quote }}
+        - --served-model-name pangu_ultra_moe
         - --tp 1
         - >-
           --additional-config
