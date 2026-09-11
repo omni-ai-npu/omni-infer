@@ -11,6 +11,7 @@ all:
           args:
             decode-lb-sdk: least_conn
             prefill-lb-sdk: least_conn
+            subrequest-output-buffer-size: 10M
           ascend_rt_visible_devices: 0,1,2,3,4,5,6,7
           container_name: minimax_2p1d_c0
           use_omni_proxy: true
@@ -135,7 +136,7 @@ all:
               enforce-eager: ''
               max-num-batched-tokens: 102400
               max-num-seqs: 8
-            gpu-util: '0.84'
+            gpu-util: '0.80'
             kv-transfer-config:
               engine_id: "0"
               kv_buffer_device: npu
@@ -228,7 +229,7 @@ all:
               enforce-eager: ''
               max-num-batched-tokens: 102400
               max-num-seqs: 8
-            gpu-util: '0.84'
+            gpu-util: '0.80'
             kv-transfer-config:
               engine_id: "1"
               kv_buffer_device: npu

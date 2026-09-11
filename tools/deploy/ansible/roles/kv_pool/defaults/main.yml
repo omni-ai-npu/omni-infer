@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# KV pool remains opt-in; ordinary deployments need no external checkout.
+enable_kv_pool: false
+
+# Resolve from the role so nested or external playbooks keep the same default.
+kv_pool_repo_root: "{{ (role_path ~ '/../../../../../../Pangu-FusionComm') | realpath }}"
+
+start_docker_cmd_m: '{{ resolved_docker_run_cmd }} -d --name $DOCKER_NAME_M $DOCKER_IMAGE_ID'
+
+# Defaults for run_server_prefill_profile.kv_pool, consumed by the external
+# runtime template and merged only in the KV pool preparation stage.
+kv_pool_profile_defaults:
+  global_segment_size_gb: 32
+  local_buffer_size_gb: 8
+  hugepage_enabled: true

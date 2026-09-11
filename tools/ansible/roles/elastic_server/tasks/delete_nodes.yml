@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: Validate the nodes selected for deletion.
+  block:
+    - name: Require at least one node IP to delete.
+      ansible.builtin.assert:
+        that:
+          - resolved_delete_node_profile.ips | length > 0
+        fail_msg: >-
+          Please use [-e '{"delete_node_profile":{"ips":["x.x.x.x"]}}']
+          to enter the IP addresses that need to be deleted.
+      run_once: true
+
+    - name: Validate node IP addresses.
+      ansible.builtin.assert:
+        that:
+          - item is ansible.utils.ipv4
+        fail_msg: "{{ item }} is an illegal IPv4 address."
+      loop: "{{ resolved_delete_node_profile.ips }}"
+      run_once: true
+
+    - name: Require deleted nodes to be absent from the active topology.
+      ansible.builtin.assert:
+        that:
+          - item not in active_service_ips
+        fail_msg: >-
+          Remove {{ item }} from the P/D Inventory groups before running
+          delete_node so the refreshed Proxy topology excludes it.
+      loop: "{{ resolved_delete_node_profile.ips }}"
+      run_once: true
+
+    - name: Register deleted node IPs as delegation targets.
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        ansible_host: "{{ item }}"
+        groups: need_delete_node
+        delete_docker_name_p: "{{ ansible_env.DOCKER_NAME_P }}"
+        delete_docker_name_d: "{{ ansible_env.DOCKER_NAME_D }}"
+      loop: "{{ resolved_delete_node_profile.ips }}"
+      run_once: true
+  tags:
+    - never
+    - delete_node
+  vars:
+    active_service_ips: >-
+      {{
+        (groups.get('P', []) + groups.get('D', []))
+        | map('extract', hostvars, 'ansible_host')
+        | list
+      }}
+    resolved_delete_node_profile: >-
+      {{ delete_node_profile_defaults | combine(delete_node_profile, recursive=true) }}
+
+- name: Refresh Proxy before deleting nodes.
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: run_proxy
+    apply:
+      tags: delete_node
+  tags:
+    - never
+    - delete_node
+
+- name: Stop vLLM on deleted nodes.
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - -c
+      - |
+        pids=$(pgrep vllm || true)
+        if [ -n "$pids" ]; then
+          kill -15 $pids
+        fi
+  delegate_to: "{{ item }}"
+  loop: "{{ resolved_delete_node_profile.ips }}"
+  run_once: true
+  tags:
+    - never
+    - delete_node
+  vars:
+    resolved_delete_node_profile: >-
+      {{ delete_node_profile_defaults | combine(delete_node_profile, recursive=true) }}
+
+- name: Wait for vLLM to stop.
+  ansible.builtin.pause:
+    seconds: 30
+  run_once: true
+  tags:
+    - never
+    - delete_node
+
+- name: Stop and remove containers on deleted nodes.
+  ansible.builtin.shell: |
+    container_ids=$(docker ps -aq \
+      --filter 'name={{ hostvars[item].delete_docker_name_p }}' \
+      --filter 'name={{ hostvars[item].delete_docker_name_d }}')
+    if [ -n "$container_ids" ]; then
+      docker stop $container_ids
+      docker rm $container_ids
+    fi
+  delegate_to: "{{ item }}"
+  loop: "{{ resolved_delete_node_profile.ips }}"
+  run_once: true
+  tags:
+    - never
+    - delete_node
+  vars:
+    resolved_delete_node_profile: >-
+      {{ delete_node_profile_defaults | combine(delete_node_profile, recursive=true) }}

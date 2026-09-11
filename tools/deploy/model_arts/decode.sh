@@ -96,6 +96,7 @@ export HCCL_INTRA_ROCE_ENABLE=${HCCL_INTRA_ROCE_ENABLE:-1}
 export LCCL_DETERMINISTIC=${LCCL_DETERMINISTIC:-0}
 export LCCL_PARALLEL=${LCCL_PARALLEL:-0}
 export MASTER_PORT=${MASTER_PORT:-8000}
+export OMNI_USE_DSV3=${OMNI_USE_DSV3:-1}
 export OMNI_REUSE_PREFILLED_TOKENS=${OMNI_REUSE_PREFILLED_TOKENS:-1}
 export OMNI_SKIP_DECODE_TOKENIZE=${OMNI_SKIP_DECODE_TOKENIZE:-1}
 export PYTORCH_NPU_ALLOC_CONF=${PYTORCH_NPU_ALLOC_CONF:-expandable_segments:True}
@@ -108,13 +109,14 @@ export TOKENIZER_PROC_POOL=${TOKENIZER_PROC_POOL:-0}
 export TOOLCHAIN_HOME=${TOOLCHAIN_HOME:-/usr/local/Ascend/latest/toolkit}
 export TP_SOCKET_IFNAME=${SOCKET_IFNAME:-eth0}
 export USING_LCCL_COM=${USING_LCCL_COM:-0}
-export OMNI_LLMDATADIST_ZMQ_PORT=${OMNI_LLMDATADIST_ZMQ_PORT:-5668}
+export VLLM_ENABLE_MC2=${VLLM_ENABLE_MC2:-1}
+export VLLM_LLMDATADIST_ZMQ_PORT=${VLLM_LLMDATADIST_ZMQ_PORT:-5668}
+export VLLM_USE_V1=${VLLM_USE_V1:-1}
 export VLLM_WORKER_MULTIPROC_METHOD=${VLLM_WORKER_MULTIPROC_METHOD:-fork}
 
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/Ascend/ascend-toolkit/latest/aarch64-linux/lib64
 export HCCL_OP_RETRY_ENABLE=${HCCL_OP_RETRY_ENABLE:-"L0:0, L1:0, L2:0"}
-export OMNI_VLLM_PATCHES_DIR=${OMNI_VLLM_PATCHES_DIR:-${OMNI_NPU_PATCHES_DIR:-"pangu_v2_hybrid_vl"}}
-export OMNI_VLLM_PATCHES=${OMNI_VLLM_PATCHES:-${OMNI_NPU_VLLM_PATCHES:-"ALL"}}
+export OMNI_NPU_VLLM_PATCHES=${OMNI_NPU_VLLM_PATCHES:-"ALL"}
 export VLLM_PLUGINS=${VLLM_PLUGINS:-"omni-npu,omni_npu_patches,omni_pangu_models,omni_custom_models"}
 
 export HYBRID_ATTN_GROUP_SIZE=${HYBRID_ATTN_GROUP_SIZE:-16}
@@ -133,11 +135,9 @@ export DECODE_POD_NUM=${DECODE_INSTANCE_NUM:-1}
 dtype=${dtype:-bfloat16}
 
 tp=${tp:-1}
-max_model_len=${max_model_len:-64000}
 export VLLM_LOGGING_LEVEL=${VLLM_LOGGING_LEVEL:-INFO}
 export ENABLE_OVERWRITE_REQ_IDS=${ENABLE_OVERWRITE_REQ_IDS:-0}
 
-max_num_seqs=${max_num_seqs:-4}
 hccl_port_wait_time_out=${hccl_port_wait_time_out:-200}
 
 if [ ${npu} ]; then
@@ -159,17 +159,52 @@ fi
 
 export SERVER_OFFSET=$((${pod_id}*$((num_servers))))
 
-if [ ${kv_transfer_config[@]+x} ]; then
-    IFS=';' read -ra arr <<< "$P_NODE_LIST"
-
-    new_kv_transfer_config=$(echo "$kv_transfer_config" | sed "s/\"kv_parallel_size\":[0-9]*/\"kv_parallel_size\":$((${PREFILL_POD_NUM} + 1))/")
-    kv_transfer_config=$(echo "$new_kv_transfer_config" | sed "s/\"kv_rank\":[0-9]*/\"kv_rank\":${#arr[@]}/")
-    echo "env_kv_transfer_config is ${kv_transfer_config}" >> ${LOG_PATH}/server.log 2>&1
+if [[ $kv_offload == "true" ]]; then
+    kv_transfer_config='{
+      "kv_connector":"MultiConnector",
+      "kv_role":"kv_consumer",
+      "kv_connector_extra_config":{
+        "connectors": [
+          {
+            "kv_connector": "__KV_CONNECTOR__",
+            "kv_role": "kv_consumer",
+            "kv_rank": __KV_RANK__,
+            "kv_parallel_size": __KV_PARALLEL_SIZE__,
+            "kv_buffer_device": "npu",
+            "kv_port": 5568
+          },
+          {
+            "kv_connector": "NPUOffloadingConnector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {
+              "cpu_bytes_to_use": __CPU_BYTES_TO_USE__,
+              "eviction_policy": "arc"
+            }
+          }
+        ]
+      }
+    }'
+    kv_transfer_config="${kv_transfer_config//__CPU_BYTES_TO_USE__/${cpu_bytes_to_use}}"
+    if [[ $hugepage_enabled == "true" ]]; then
+        SETUP_HUGETLBFS="/omniinfer/tools/deploy/start_server/setup_hugetlbfs.sh"
+        KV_OFFLOAD_SETUP_LOG="${LOG_PATH}/kv_offload_setup.log"
+        if ! MAP_SIZE_BYTES="${cpu_bytes_to_use}" \
+            bash "${SETUP_HUGETLBFS}" > "${KV_OFFLOAD_SETUP_LOG}" 2>&1; then
+            echo "[ERROR] KV offload HugePage setup failed; see ${KV_OFFLOAD_SETUP_LOG}" >&2
+            exit 1
+        fi
+    else
+        rm -f -- /dev/shm/vllm_offload_*.mmap
+    fi
 else
-    kv_transfer_config='{"kv_buffer_device":"npu", "kv_connector":"LLMDataDistConnector", "kv_parallel_size":1, "kv_role":"kv_consumer"}'
+    kv_transfer_config='{"kv_buffer_device":"npu","kv_connector":"__KV_CONNECTOR__","kv_parallel_size":__KV_PARALLEL_SIZE__,"kv_role":"kv_consumer","kv_rank":__KV_RANK__,"kv_port":5568}'
 fi
-export HCCL_CONNECT_TIMEOUT=${HCCL_CONNECT_TIMEOUT:-2200}
-export HCCL_BUFFSIZE=${HCCL_BUFFSIZE:-3000}
+
+IFS=';' read -ra arr <<< "$P_NODE_LIST"
+kv_transfer_config="${kv_transfer_config//__KV_RANK__/${#arr[@]}}"
+
+export HCCL_CONNECT_TIMEOUT=${HCCL_CONNECT_TIMEOUT:-1800}
+export HCCL_BUFFSIZE=${HCCL_BUFFSIZE:-1800}
 
 main() {
     if [ ! -e "/usr/local/Ascend/latest" ]; then
@@ -230,59 +265,59 @@ main() {
             --data-parallel-rpc-port ${MASTER_PORT} \
             --data-parallel-rank ${VLLM_DP_RANK} \
             --port ${able_port} \
-            --dtype ${dtype:-"bfloat16"} \
-            --served-model-name ${server_model_name} \
-            --max-model-len ${max_model_len} \
-            --enable-expert-parallel \
-            --max-num-seqs ${max_num_seqs} \
-            --max-num-batched-tokens ${max_num_batched_tokens:-2048} \
-            --no-disable-hybrid-kv-cache-manager
+            --served-model-name "${MODEL_NAME:-pangu_ultra_moe}" \
+            --enable-expert-parallel
         )
 
-    if [[ "${ENABLE_OMNI_CACHE:-1}" == "1" ]]; then
-        echo "env_ENABLE_OMNI_CACHE is ${ENABLE_OMNI_CACHE}" >> ${LOG_PATH}/server.log 2>&1
-        export ENABLE_OMNI_CACHE=1
-        export ENABLE_HOST_MAPPING="${ENABLE_HOST_MAPPING:-0}"
-        export OMNI_CACHE_MMAP_FILE="${OMNI_CACHE_DECODE_MMAP_FILE:-omni_cache}"
-        export OMNI_CACHE_MMAP_PATH="/dev/hugepages/${OMNI_CACHE_MMAP_FILE}"
-        export OMNI_CACHE_LAYER_BYTES="${OMNI_CACHE_LAYER_BYTES:-27917287424}" # 48GB
-        export MAP_SIZE_BYTES="${MAP_SIZE_BYTES:-549755813888}" # 1000GB
-        export NUM_DIE_PER_MACH="${NUM_DIE_PER_MACH:-16}"
-        export BASE_PORT="${BASE_PORT:-16077}"
-        export ZMQ_BASE_PORT="${ZMQ_BASE_PORT:-16555}"
-        export OMNI_CACHE_MLA_SWA_DEBUG="${OMNI_CACHE_MLA_SWA_DEBUG:-1}"
-        export ENABLE_OMNI_CACHE_DSA_SPLIT="${ENABLE_OMNI_CACHE_DSA_SPLIT:-0}"
-        export OMNI_CACHE_DSA_MMAP_FILE="${OMNI_CACHE_DSA_MMAP_FILE:-omni_cache_decode_dsa}"
-        export OMNI_CACHE_DSA_MMAP_PATH="/dev/hugepages/${OMNI_CACHE_DSA_MMAP_FILE}"
-        export ROLE=decode
-        export DISABLE_GATHER_SELECTION=1
-        export OMNI_CACHE_LOCAL_DP_SIZE=16
+        if [[ "${ENABLE_OMNI_CACHE:-0}" == "1" ]]; then
+          export ENABLE_OMNI_CACHE=1
+          export ENABLE_HOST_MAPPING="${ENABLE_HOST_MAPPING:-0}"
+          export OMNI_CACHE_MMAP_FILE="${OMNI_CACHE_DECODE_MMAP_FILE:-omni_cache_d}"
+          export OMNI_CACHE_MMAP_PATH="/dev/shm/${OMNI_CACHE_MMAP_FILE}"
+          export OMNI_CACHE_LAYER_BYTES="${OMNI_CACHE_LAYER_BYTES:-27917287424}" # 48GB
+          export MAP_SIZE_BYTES="${MAP_SIZE_BYTES:-549755813888}" # 1000GB
+          export NUM_DIE_PER_MACH="${NUM_DIE_PER_MACH:-16}"
+          export BASE_PORT="${BASE_PORT:-16077}"
+          export ZMQ_BASE_PORT="${ZMQ_BASE_PORT:-16555}"
+          export OMNI_CACHE_MLA_SWA_DEBUG="${OMNI_CACHE_MLA_SWA_DEBUG:-1}"
+          export ENABLE_OMNI_CACHE_DSA_SPLIT="${ENABLE_OMNI_CACHE_DSA_SPLIT:-0}"
+          export OMNI_CACHE_DSA_MMAP_FILE="${OMNI_CACHE_DSA_MMAP_FILE:-omni_cache_decode_dsa}"
+          export OMNI_CACHE_DSA_MMAP_PATH="/dev/shm/${OMNI_CACHE_DSA_MMAP_FILE}"
+          export P_NODE_LIST="${P_NODE_LIST:-${HOST_IP}}"
+          export ROLE=decode
+          export DISABLE_GATHER_SELECTION=1
+          export OMNI_CACHE_LOCAL_DP_SIZE=16
+          export VLLM_PLUGINS="omni-npu,omni_custom_models,omni_pangu_models,omni_npu_patches"
 
-        export USE_OMNI_INPUT_BATCH="${USE_OMNI_INPUT_BATCH:-0}"
+          export USE_OMNI_INPUT_BATCH="${USE_OMNI_INPUT_BATCH:-0}"
 
-        if [[ "${ENABLE_OMNI_CACHE_DSA_SPLIT}" == "1" ]]; then
+          SETUP_HUGETLBFS_SH="/workspace/omniinfer/components/omni-cache/tools/setup/setup_hugetlbfs_2MB.sh"
+          MAP_SIZE_BYTES="${MAP_SIZE_BYTES}" OMNI_FILE="${OMNI_CACHE_MMAP_FILE}" bash "${SETUP_HUGETLBFS_SH}"
+          if [[ "${ENABLE_OMNI_CACHE_DSA_SPLIT}" == "1" ]]; then
             OMNI_CACHE_DSA_MAP_SIZE_BYTES="${OMNI_CACHE_DSA_MAP_SIZE_BYTES:-$((MAP_SIZE_BYTES * 80 / 100))}"
             PRIMARY_PAGES=$(( (MAP_SIZE_BYTES + (2 * 1024 * 1024) - 1) / (2 * 1024 * 1024) ))
             DSA_PAGES=$(( (OMNI_CACHE_DSA_MAP_SIZE_BYTES + (2 * 1024 * 1024) - 1) / (2 * 1024 * 1024) ))
             DSA_TOTAL_PAGES=$(( PRIMARY_PAGES + DSA_PAGES ))
             MAP_SIZE_BYTES="${OMNI_CACHE_DSA_MAP_SIZE_BYTES}" OMNI_FILE="${OMNI_CACHE_DSA_MMAP_FILE}" \
-            bash "${SETUP_HUGETLBFS_SH}" "${DSA_TOTAL_PAGES}"
+              bash "${SETUP_HUGETLBFS_SH}" "${DSA_TOTAL_PAGES}"
+          fi
+
+          python -c "from omni_cache.connector import register_connectors; register_connectors()"
+
+          KV_CONNECTOR="OmniCacheConnector"
+          KV_PARALLEL_SIZE=$((dp + 1))
+        else
+          export ENABLE_OMNI_CACHE=0
+          export ENABLE_HOST_MAPPING=0
+          KV_CONNECTOR="${KV_CONNECTOR:-LLMDataDistConnector}"
+          KV_PARALLEL_SIZE=$((${PREFILL_POD_NUM} + 1))
         fi
-
-        python -c "from omni_cache.connector import register_connectors; register_connectors()"
-
-        KV_PARALLEL_SIZE=$((VLLM_DP_SIZE + 1))
-        new_kv_transfer_config=$(echo "$kv_transfer_config" | sed "s/\"kv_parallel_size\":[0-9]*/\"kv_parallel_size\":$((KV_PARALLEL_SIZE))/")
-        kv_transfer_config="${new_kv_transfer_config}"
-        cmd+=(--num-gpu-blocks-override "${NUM_GPU_BLOCKS_OVERRIDE}")
-    else
-        export ENABLE_OMNI_CACHE=0
-        export ENABLE_HOST_MAPPING=0
-    fi
-    cmd+=(--kv-transfer-config "${kv_transfer_config}")
-    cmd+=("${USER_EXTRA_ARGS[@]}")
-    echo "${cmd[@]}" >> ${LOG_PATH}/server_${rank}.log 2>&1 &
-    "${cmd[@]}" >> ${LOG_PATH}/server_${rank}.log 2>&1 &
+        kv_transfer_config="${kv_transfer_config//__KV_CONNECTOR__/$KV_CONNECTOR}"
+        kv_transfer_config="${kv_transfer_config//__KV_PARALLEL_SIZE__/$KV_PARALLEL_SIZE}"
+        cmd+=(--kv-transfer-config "${kv_transfer_config}")
+        cmd+=("${USER_EXTRA_ARGS[@]}")
+        echo "${cmd[@]}" >> ${LOG_PATH}/server_${rank}.log 2>&1 &
+        "${cmd[@]}" >> ${LOG_PATH}/server_${rank}.log 2>&1 &
     done
     wait
 }

@@ -75,7 +75,15 @@ class SharedHead(nn.Module):
         return self.norm(hidden_states)
 
 
-@support_torch_compile
+@support_torch_compile(
+    dynamic_arg_dims={
+        "input_ids": 0,
+        # MRoPE: (3, seq_len); language RoPE: (seq_len,).
+        "positions": -1,
+        "previous_hidden_states": 0,
+        "inputs_embeds": 0,
+    }
+)
 class OpenPanguV2MultiTokenPredictorLayer(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str) -> None:
         super().__init__()

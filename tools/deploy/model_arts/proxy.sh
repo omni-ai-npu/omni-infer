@@ -80,7 +80,7 @@ for var in "${decode_array[@]}"; do
 done
 
 cd /workspace/omniinfer/components/omni-proxy/omni_proxy/ || exit 1
-listen_port="${PROXY_NODE_PORT:-${PROXY_PORT:-}}"
+listen_port="${PROXY_NODE_PORT:-${PROXY_PORT:-7000}}"
 if [[ -z "$listen_port" ]]; then
     echo "ERROR: PROXY_NODE_PORT or PROXY_PORT is required" >&2
     exit 1
@@ -97,13 +97,6 @@ bash omni_proxy.sh \
     --prefill-endpoints "$PREFILL_API_SERVER_LIST" \
     --decode-endpoints "$decode_result" \
     --log-file "$log_dir/nginx_error.log" \
-    --log-level ${log_level_proxy:-notice} \
     --access-log-file "$log_dir/nginx_access.log" \
-    --core-num ${core_num:-4} \
-    --start-core-index ${start_core_index:-16} \
-    --omni-proxy-pd-policy ${pd_policy:-sequential} \
     --omni-proxy-model-path "$MODEL_PATH" \
-    --omni-proxy-max-batch-num-token ${max_num_batched_tokens:-10000} \
-    --omni-proxy-prefill-max-num-seqs ${max_num_seqs:-32} \
-    --omni-proxy-decode-max-num-seqs ${max_num_seqs:-6} \
     "${USER_EXTRA_ARGS[@]}"

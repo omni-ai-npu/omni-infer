@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# Keep this resolved_docker_run_cmd definition identical to
+# roles/common/tasks/run_docker.yml; update both together.
+- name: Generate the shared docker run command.
+  ansible.builtin.set_fact:
+    resolved_docker_run_cmd: >-
+      {%- set shm_size = run_docker_profile.shm_size | default(run_docker_profile_defaults.shm_size) -%}
+      {%- set envs = run_docker_profile.envs | default(run_docker_profile_defaults.envs) -%}
+      {%- set extra_mounts = run_docker_profile.extra_mounts | default(run_docker_profile_defaults.extra_mounts) -%}
+      docker run -it --shm-size={{ shm_size }}
+      {% for environment in docker_run_base_envs + envs %}-e {{ environment }}
+      {% endfor %}
+      --net=host
+      --privileged=true
+      -u root
+      -w /data
+      --device=/dev/davinci_manager
+      --device=/dev/hisi_hdc
+      --device=/dev/devmm_svm
+      --entrypoint=bash
+      {% for mount in docker_run_base_mounts %}-v {{ mount }}
+      {% endfor %}
+      {% for mount in extra_mounts %}-v {{ mount }}
+      {% endfor %}
+  when: "'P' in group_names or 'D' in group_names or 'C' in group_names"
+
+- name: Check whether the container exists.
+  ansible.builtin.shell: |
+    docker inspect --format='{{"{{.Name}}"}}' \
+    $DOCKER_NAME_P $DOCKER_NAME_D \
+    2>/dev/null | grep -v '^$'
+  register: existing_containers
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  failed_when: false
+  changed_when: false
+  when: "'P' in group_names or 'D' in group_names"
+
+- name: Show generated container name.
+  ansible.builtin.debug:
+    msg: "Generated container name: {{ existing_containers.stdout_lines }}"
+  when: "'P' in group_names or 'D' in group_names"
+
+- name: Run container for new prefill instances.
+  ansible.builtin.command: bash -c "{{ resolved_docker_run_cmd }} -d --name $DOCKER_NAME_P $DOCKER_IMAGE_ID"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  when: "'P' in group_names and existing_containers.stdout == ''"
+
+- name: Run container for new decode instances.
+  ansible.builtin.command: bash -c "{{ resolved_docker_run_cmd }} -d --name $DOCKER_NAME_D $DOCKER_IMAGE_ID"
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  when: "'D' in group_names and existing_containers.stdout == ''"
+
+- name: Create a directory to store the log.
+  ansible.builtin.file:
+    path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
+    state: directory
+  when: "('P' in group_names or 'D' in group_names) and existing_containers.stdout == ''"
+
+- name: Create a directory to store the code.
+  ansible.builtin.file:
+    path: "{{ ansible_env.CODE_PATH }}"
+    state: directory
+  when: "('P' in group_names or 'D' in group_names) and existing_containers.stdout == ''"

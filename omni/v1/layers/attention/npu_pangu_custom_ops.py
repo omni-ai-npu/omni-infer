@@ -55,8 +55,11 @@ How to use
                                         (FC2 cache scatter tail)
      npu_pangu_mome_conv             -> npu_ai_infra_fused_causal_conv1d
                                         (generic, modes 0/1)
-     npu_pangu_kv_down_mome_inplace  -> npu_ai_infra_fused_causal_conv1d
-                                        (kv-down specialization, see below)
+     npu_pangu_mome_conv_from_context
+                                     -> npu_pangu_mome_conv (runtime metadata)
+     npu_pangu_kv_down_mome_inplace_from_context
+                                     -> npu_ai_infra_fused_causal_conv1d
+                                        (whole-kv input, runtime metadata)
 
 ==============================================================================
 How to add a new op
@@ -101,7 +104,7 @@ Hard constraints (learned the hard way — please respect)
     → `npu_pangu_lightning_indexer` for the canonical pattern).
 
     Exception: the single-Tensor inplace pattern used by
-    `npu_pangu_kv_down_mome_inplace` — it declares `mutates_args=["kv"]`
+    `npu_pangu_kv_down_mome_inplace_from_context` — it declares `mutates_args=["kv"]`
     AND returns the same `kv` tensor. This collapses to schema
     `Tensor(a!) -> Tensor(a!)`, which IS accepted. It only works because:
       * exactly one Tensor argument is mutated,
@@ -127,7 +130,7 @@ Hard constraints (learned the hard way — please respect)
 
 (d) View-of-input as a mutated arg (`mutates_args=["x"]` where `x` is
     `big_tensor[:, :n]` at the call site) trips AOT's view-input-mutation
-    assertion. Work around it the way `npu_pangu_kv_down_mome_inplace`
+    assertion. Work around it the way `npu_pangu_kv_down_mome_inplace_from_context`
     does: take the WHOLE leaf tensor as input and do the slicing INSIDE
     the op body.
 """
@@ -150,6 +153,24 @@ def _lookup_layer_and_attn_metadata(layer_name: str):
     if isinstance(attn_metadata, dict):
         attn_metadata = attn_metadata.get(f"{layer.prefix}.attn")
     return layer, attn_metadata
+
+
+def _lookup_mome_metadata(layer_name: str, phase: str):
+    """Resolve metadata only inside a real op, never in its fake kernel.
+
+    Mixed batches pass separate MoME metadata to the prefill/decode calls.
+    Their MLA metadata is temporarily modified by _prepare_phase_inputs, so
+    use an explicit phase rather than infer it from that mutable object here.
+    Pure prefill/decode calls use the original top-level MoME metadata.
+    """
+    if phase not in ("prefill", "decode"):
+        raise ValueError(f"Unsupported MoME phase: {phase}")
+    context = get_forward_context()
+    layer = context.no_compile_layers[layer_name]
+    metadata = context.attn_metadata[f"{layer.prefix}.mome"]
+    if metadata.num_prefills > 0 and metadata.num_decodes > 0:
+        metadata = getattr(metadata, phase)
+    return metadata
 
 
 def _indexer_cache_tuple(
@@ -514,78 +535,104 @@ direct_register_custom_op(
 )
 
 
-# ---------------------------------------------------------------------------
-# npu_pangu_kv_down_mome_inplace: KV-down MoME with whole-kv input
-#
-# Use case: _kv_down_mome's non-Ascend950 path needs to apply MoME conv
-# inplace on kv[:, :kv_lora_rank] without an explicit cat afterwards.
-# Declaring mutates_args=["x"] on npu_pangu_mome_conv when x is a slice
-# triggers AOT's view-input-mutation assertion. This specialized wrapper
-# takes the WHOLE kv (a leaf tensor from kv_a_proj) so mutates_args=["kv"]
-# is safe — kv is not a view. Slice + inplace happen inside the opaque op.
-# ---------------------------------------------------------------------------
-def npu_pangu_kv_down_mome_inplace(
+# The metadata arguments of the low-level wrappers above have request-count
+# dimensions, not token-count dimensions. If read at a traced call site, they
+# become fixed-size FX inputs and cannot vary across capture gears (5 != 17).
+# Keep their lookup and consumption inside these ops instead. The builder's
+# existing persistent buffers and per-gear views are still used for capture;
+# replay uses the captured addresses, not another Python context lookup.
+def _mome_conv_metadata_kwargs(metadata) -> dict:
+    """Expand request metadata only inside the real custom-op implementations."""
+    return {
+        "query_start_loc": metadata.query_start_loc,
+        "cache_indices": metadata.cache_indices,
+        "num_accepted_tokens": metadata.num_accepted_tokens,
+        "num_computed_tokens": metadata.num_computed_tokens,
+        "block_idx_first_scheduled_token": metadata.block_idx_first_scheduled_token,
+        "block_idx_last_scheduled_token": metadata.block_idx_last_scheduled_token,
+        "initial_state_idx": metadata.block_idx_last_computed_token,
+        "pad_slot_id": metadata.pad_slot_id,
+        "max_query_len": metadata.max_query_len,
+        "block_size": metadata.B_size,
+    }
+
+
+def npu_pangu_mome_conv_from_context(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    conv_states: torch.Tensor,
+    layer_name: str,
+    phase: str,
+) -> torch.Tensor:
+    metadata = _lookup_mome_metadata(layer_name, phase)
+    return npu_pangu_mome_conv(
+        x, weight, conv_states,
+        **_mome_conv_metadata_kwargs(metadata),
+        mode=1,
+        inplace=False,
+    )
+
+
+def npu_pangu_mome_conv_from_context_fake(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    conv_states: torch.Tensor,
+    layer_name: str,
+    phase: str,
+) -> torch.Tensor:
+    return torch.empty_like(x)
+
+
+direct_register_custom_op(
+    op_name="npu_pangu_mome_conv_from_context",
+    op_func=npu_pangu_mome_conv_from_context,
+    # Keep the existing conv_states/view-input contract; callers consume x's
+    # result so the stateful conv cannot be removed as dead code.
+    mutates_args=[],
+    fake_impl=npu_pangu_mome_conv_from_context_fake,
+    dispatch_key="PrivateUse1",
+)
+
+
+def npu_pangu_kv_down_mome_inplace_from_context(
     kv: torch.Tensor,
     weight: torch.Tensor,
     conv_states: torch.Tensor,
-    query_start_loc: torch.Tensor,
-    cache_indices: Optional[torch.Tensor],
-    num_accepted_tokens: Optional[torch.Tensor],
-    num_computed_tokens: torch.Tensor,
-    block_idx_first_scheduled_token: Optional[torch.Tensor],
-    block_idx_last_scheduled_token: Optional[torch.Tensor],
-    initial_state_idx: Optional[torch.Tensor],
-    pad_slot_id: int,
-    max_query_len: int,
-    block_size: int,
+    layer_name: str,
+    phase: str,
     kv_lora_rank: int,
-    num_actual_tokens: int,
 ) -> torch.Tensor:
+    metadata = _lookup_mome_metadata(layer_name, phase)
+    # Pass the whole kv across the op boundary; slicing a mutated input
+    # outside the op would hit AOT view-input-mutation checks.
     torch.ops.custom.npu_ai_infra_fused_causal_conv1d(
-        kv[:num_actual_tokens, :kv_lora_rank],
+        kv[:metadata.num_actual_tokens, :kv_lora_rank],
         weight,
         conv_states,
-        query_start_loc=query_start_loc,
-        cache_indices=cache_indices,
-        num_accepted_tokens=num_accepted_tokens,
-        num_computed_tokens=num_computed_tokens,
-        block_idx_first_scheduled_token=block_idx_first_scheduled_token,
-        block_idx_last_scheduled_token=block_idx_last_scheduled_token,
-        initial_state_idx=initial_state_idx,
-        pad_slot_id=pad_slot_id,
-        max_query_len=max_query_len,
+        **_mome_conv_metadata_kwargs(metadata),
         residual_connection=1,
-        block_size=block_size,
         conv_mode=1,
         inplace=True,
     )
     return kv
 
 
-def npu_pangu_kv_down_mome_inplace_fake(
+def npu_pangu_kv_down_mome_inplace_from_context_fake(
     kv: torch.Tensor,
     weight: torch.Tensor,
     conv_states: torch.Tensor,
-    query_start_loc: torch.Tensor,
-    cache_indices: Optional[torch.Tensor],
-    num_accepted_tokens: Optional[torch.Tensor],
-    num_computed_tokens: torch.Tensor,
-    block_idx_first_scheduled_token: Optional[torch.Tensor],
-    block_idx_last_scheduled_token: Optional[torch.Tensor],
-    initial_state_idx: Optional[torch.Tensor],
-    pad_slot_id: int,
-    max_query_len: int,
-    block_size: int,
+    layer_name: str,
+    phase: str,
     kv_lora_rank: int,
-    num_actual_tokens: int,
 ) -> torch.Tensor:
     return kv
 
 
 direct_register_custom_op(
-    op_name="npu_pangu_kv_down_mome_inplace",
-    op_func=npu_pangu_kv_down_mome_inplace,
+    op_name="npu_pangu_kv_down_mome_inplace_from_context",
+    op_func=npu_pangu_kv_down_mome_inplace_from_context,
+    # Declare the whole-kv mutation and return the updated tensor.
     mutates_args=["kv"],
-    fake_impl=npu_pangu_kv_down_mome_inplace_fake,
+    fake_impl=npu_pangu_kv_down_mome_inplace_from_context_fake,
     dispatch_key="PrivateUse1",
 )

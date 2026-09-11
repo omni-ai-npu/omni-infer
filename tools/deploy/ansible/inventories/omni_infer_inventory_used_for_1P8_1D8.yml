@@ -41,15 +41,3 @@ all:
           node_rank: 0
           node_port: "{{ proxy_port + node_rank }}"
           role: "C"
-
-    M:
-      vars:
-        # mooncake master service ports; shared by the master startup command
-        # and _kv_pool_runtime.sh.j2 (P-side mooncake.json).
-        mooncake_metadata_port: 8081
-        mooncake_rpc_port: 16752
-      hosts:
-        m0:
-          ansible_host: "127.0.0.1"
-          host_ip: "127.0.0.1"
-          node_rank: 0

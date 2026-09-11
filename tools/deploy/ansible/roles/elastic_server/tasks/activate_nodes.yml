@@ -46,9 +46,6 @@
                run_server_prefill_profile.kv_offload | default({}),
                recursive=true
              ) }}
-      kv_pool: >-
-        {{ run_server_prefill_profile_defaults.kv_pool
-           | combine(run_server_prefill_profile.kv_pool | default({}), recursive=true) }}
       multi_node_backend: >-
         {{ run_server_prefill_profile.multi_node_backend
            | default(run_server_prefill_profile_defaults.multi_node_backend) }}
@@ -115,7 +112,7 @@
         | combine(run_server_decode_profile, recursive=true)
       }}
     resolved_run_server_vllm_cmd_d: |
-      {{ docker_exec_cmd }}{% for name, value in resolved_run_server_decode_profile.docker_envs.items() %} -e {{ name }}={{ value | quote }}{% endfor %} -d $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/vllm_run_for_d.sh
+      {{ docker_exec_cmd }} -e SOCKET_IFNAME={{ default_interface | quote }} -e HOST_IP={{ host_ip | quote }} -e MASTER_PORT={{ node_port | quote }} -e API_PORT={{ api_port | quote }} -e HOST={{ inventory_hostname | quote }} -e OMNI_PD_PREFILL_POD_NUM={{ OMNI_PD_PREFILL_POD_NUM | quote }} -e OMNI_PD_DECODE_POD_NUM={{ OMNI_PD_DECODE_POD_NUM | quote }}{% for name, value in resolved_run_server_decode_profile.docker_envs.items() %} -e {{ name }}={{ value | quote }}{% endfor %} -d $DOCKER_NAME_D /bin/bash -c $SCRIPTS_PATH/vllm_run_for_d.sh
   when: "'D' in group_names and existing_containers.stdout == ''"
 
 - name: Run the Omniai service for prefill instances.
@@ -133,7 +130,7 @@
         | combine(run_server_prefill_profile, recursive=true)
       }}
     resolved_run_server_vllm_cmd_p: |
-      {{ docker_exec_cmd }}{% for name, value in resolved_run_server_prefill_profile.docker_envs.items() %} -e {{ name }}={{ value | quote }}{% endfor %} -d $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
+      {{ docker_exec_cmd }} -e NNODES={{ NNODES | quote }} -e NODE_RANK={{ node_rank | quote }} -e NODE_IP_LIST={{ NODE_IP_LIST | quote }} -e SOCKET_IFNAME={{ default_interface | quote }} -e IP={{ ansible_host | quote }} -e HOST_IP={{ host_ip | quote }} -e MASTER_PORT={{ node_port | quote }} -e API_PORT={{ api_port | quote }} -e OMNI_PD_PREFILL_POD_NUM={{ OMNI_PD_PREFILL_POD_NUM | quote }} -e OMNI_PD_DECODE_POD_NUM={{ OMNI_PD_DECODE_POD_NUM | quote }}{% for name, value in resolved_run_server_prefill_profile.docker_envs.items() %} -e {{ name }}={{ value | quote }}{% endfor %} -d $DOCKER_NAME_P /bin/bash -c $SCRIPTS_PATH/vllm_run_for_p.sh
   when: "'P' in group_names and existing_containers.stdout == ''"
 
 - name: Ensure bind_cpu.sh is executable in the container

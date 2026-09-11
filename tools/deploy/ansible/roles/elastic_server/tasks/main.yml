@@ -10,12 +10,6 @@
 - ansible.builtin.import_role:
     name: common
     tasks_from: set_topology
-# Start the dedicated mooncake master (group M) BEFORE run_server so the P
-# workers find a live master when they connect. No-op on P/D/C hosts.
-- name: Start the dedicated mooncake master (group M).
-  ansible.builtin.include_tasks: "{{ kv_pool_repo_root }}/kv_pool/deploy/run_mooncake_master.yml"
-  when: enable_kv_pool | default(false) | bool
-  tags: run_mooncake_master
 - ansible.builtin.import_role:
     name: common
     tasks_from: stop_server

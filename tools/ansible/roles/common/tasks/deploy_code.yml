@@ -1,0 +1,183 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- name: Resolve the sync_code profile.
+  ansible.builtin.set_fact:
+    resolved_sync_code_profile: >-
+      {{
+        sync_code_profile_defaults
+        | combine(sync_code_profile | default({}, true), recursive=true)
+      }}
+  tags: sync_code
+
+- name: Resolve the container copy commands.
+  ansible.builtin.set_fact:
+    resolved_container_copy_profile: >-
+      {{
+        resolved_sync_code_profile.get('container_copy')
+        | default({}, true)
+      }}
+  tags: sync_code
+
+- name: Validate the host code synchronization profile.
+  ansible.builtin.assert:
+    that:
+      - resolved_sync_code_profile.host_sync.enabled is boolean
+      - resolved_sync_code_profile.host_sync.source is string
+      - resolved_sync_code_profile.host_sync.destination is string
+      - resolved_sync_code_profile.host_sync.delete is boolean
+      - resolved_sync_code_profile.host_sync.recursive is boolean
+      - resolved_sync_code_profile.host_sync.rsync_opts is sequence
+      - resolved_sync_code_profile.host_sync.rsync_opts is not string
+      - resolved_sync_code_profile.host_sync.throttle | int >= 0
+    fail_msg: The sync_code_profile.host_sync configuration is invalid.
+  tags: sync_code
+
+- name: Validate the container copy profiles.
+  ansible.builtin.assert:
+    that:
+      - >-
+        resolved_container_copy_profile.get('prefill') is none or
+        resolved_container_copy_profile.get('prefill') is string
+      - >-
+        resolved_container_copy_profile.get('decode') is none or
+        resolved_container_copy_profile.get('decode') is string
+      - >-
+        resolved_container_copy_profile.get('proxy') is none or
+        resolved_container_copy_profile.get('proxy') is string
+    fail_msg: The container copy profiles must contain only command strings.
+  tags: sync_code
+
+- name: Create the host code directory.
+  ansible.builtin.file:
+    path: "{{ ansible_env.CODE_PATH }}"
+    state: directory
+  when: resolved_sync_code_profile.host_sync.enabled | bool
+  tags: sync_code
+
+- name: Synchronize code from the executor.
+  ansible.builtin.synchronize:
+    src: "{{ resolved_sync_code_profile.host_sync.source }}"
+    dest: "{{ resolved_sync_code_profile.host_sync.destination }}"
+    delete: "{{ resolved_sync_code_profile.host_sync.delete | bool }}"
+    recursive: "{{ resolved_sync_code_profile.host_sync.recursive | bool }}"
+    rsync_opts: "{{ resolved_sync_code_profile.host_sync.rsync_opts }}"
+  throttle: "{{ resolved_sync_code_profile.host_sync.throttle | int }}"
+  when:
+    - resolved_sync_code_profile.host_sync.enabled | bool
+    - >
+      'P' in group_names or
+      'D' in group_names or
+      (
+        'C' in group_names and
+        ansible_host not in
+        (groups.get('P', []) | map('extract', hostvars, 'ansible_host') | list) and
+        ansible_host not in
+        (groups.get('D', []) | map('extract', hostvars, 'ansible_host') | list)
+      )
+  tags: sync_code
+
+- name: Copy the code into the Prefill container.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_container_copy_profile.get('prefill') }}"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  when:
+    - "'P' in group_names"
+    - resolved_container_copy_profile.get('prefill') is string
+    - resolved_container_copy_profile.get('prefill') | length > 0
+  tags: sync_code
+
+- name: Copy the code into the Decode container.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_container_copy_profile.get('decode') }}"
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  when:
+    - "'D' in group_names"
+    - resolved_container_copy_profile.get('decode') is string
+    - resolved_container_copy_profile.get('decode') | length > 0
+  tags: sync_code
+
+- name: Copy the code into the Proxy container.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_container_copy_profile.get('proxy') }}"
+  environment:
+    DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+  when:
+    - "'C' in group_names"
+    - resolved_container_copy_profile.get('proxy') is string
+    - resolved_container_copy_profile.get('proxy') | length > 0
+  tags: sync_code
+
+- name: Resolve the pip_install profile.
+  ansible.builtin.set_fact:
+    resolved_pip_install_profile: >-
+      {{ pip_install_profile | default({}, true) }}
+  tags: pip_install
+
+- name: Validate the container update profiles.
+  ansible.builtin.assert:
+    that:
+      - >-
+        resolved_pip_install_profile.get('prefill') is none or
+        resolved_pip_install_profile.get('prefill') is string
+      - >-
+        resolved_pip_install_profile.get('decode') is none or
+        resolved_pip_install_profile.get('decode') is string
+      - >-
+        resolved_pip_install_profile.get('proxy') is none or
+        resolved_pip_install_profile.get('proxy') is string
+    fail_msg: The pip install profiles must contain only command strings.
+  tags: pip_install
+
+- name: Update code in the Prefill container.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_pip_install_profile.get('prefill') }}"
+  environment:
+    DOCKER_NAME_P: "{{ ACTUAL_DOCKER_NAME_P }}"
+  when:
+    - "'P' in group_names"
+    - resolved_pip_install_profile.get('prefill') is string
+    - resolved_pip_install_profile.get('prefill') | length > 0
+  tags: pip_install
+
+- name: Update code in the Decode container.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_pip_install_profile.get('decode') }}"
+  environment:
+    DOCKER_NAME_D: "{{ ACTUAL_DOCKER_NAME_D }}"
+  when:
+    - "'D' in group_names"
+    - resolved_pip_install_profile.get('decode') is string
+    - resolved_pip_install_profile.get('decode') | length > 0
+  tags: pip_install
+
+- name: Update code in the Proxy container.
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -c
+      - "{{ resolved_pip_install_profile.get('proxy') }}"
+  environment:
+    DOCKER_NAME_C: "{{ ACTUAL_DOCKER_NAME_C }}"
+  when:
+    - "'C' in group_names"
+    - resolved_pip_install_profile.get('proxy') is string
+    - resolved_pip_install_profile.get('proxy') | length > 0
+  tags: pip_install
