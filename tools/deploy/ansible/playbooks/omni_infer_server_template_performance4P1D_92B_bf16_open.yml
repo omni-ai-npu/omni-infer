@@ -89,7 +89,7 @@
         EXTRA_ARGS="${EXTRA_ARGS} --lopt-chunk-size 4096"
         REASONING_CONFIG='{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}'
         EXTRA_ARGS="${EXTRA_ARGS} --reasoning-config ${REASONING_CONFIG}"
-        GPU_UTIL=0.95
+        GPU_UTIL=0.9
       args:
         - --max-model-len 524288
         - --served-model-name {{ model | quote }}
