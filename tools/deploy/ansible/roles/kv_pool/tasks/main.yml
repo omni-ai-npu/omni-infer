@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# Follow the common deployment sequence, adding only KV pool stages.
+- ansible.builtin.import_tasks: run_docker.yml
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: deploy_code
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: set_topology
+- ansible.builtin.import_tasks: run_mooncake_master.yml
+  tags: run_mooncake_master
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: stop_server
+  tags: stop_server
+- ansible.builtin.import_tasks: run_server.yml
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: bind_cpus
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: run_proxy
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: fetch_logs

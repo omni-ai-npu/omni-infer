@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+# Prepare the external P-side module, then reuse the complete P/D stage.
+- name: Prepare the enabled KV pool Prefill runtime.
+  when:
+    - enable_kv_pool | bool
+    - "'P' in group_names"
+  tags: run_server
+  block:
+    # The external runtime previously received this fact from common/run_server.
+    - name: Detect the KV pool communication interface.
+      ansible.builtin.shell: ip -4 route list 0/0 | awk '{print $5}' | head -1
+      register: kv_pool_interface_result
+      changed_when: false
+
+    - name: Register the KV pool communication interface.
+      ansible.builtin.set_fact:
+        default_interface: "{{ kv_pool_interface_result.stdout }}"
+      when: kv_pool_interface_result.stdout != ""
+
+    - name: Resolve the KV pool Prefill profile.
+      ansible.builtin.set_fact:
+        resolved_run_server_prefill_profile: >-
+          {{ run_server_prefill_profile_defaults
+             | combine({'kv_pool': kv_pool_profile_defaults}, recursive=true)
+             | combine(run_server_prefill_profile, recursive=true) }}
+
+    - name: Validate the KV pool Prefill profile.
+      ansible.builtin.assert:
+        that:
+          - resolved_run_server_prefill_profile.kv_pool is mapping
+        fail_msg: The Prefill KV pool profile must be a mapping.
+
+    - name: Install the KV pool module before starting Prefill.
+      ansible.builtin.include_tasks: "{{ kv_pool_repo_root }}/kv_pool/deploy/install_kv_pool.yml"
+
+    - name: Render the KV pool runtime fragment.
+      ansible.builtin.template:
+        src: "{{ kv_pool_repo_root }}/kv_pool/deploy/_kv_pool_runtime.sh.j2"
+        dest: "$SCRIPTS_PATH/kv_pool_runtime.sh"
+        mode: '0750'
+
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: run_server
