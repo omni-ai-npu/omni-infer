@@ -46,9 +46,6 @@
                run_server_prefill_profile.kv_offload | default({}),
                recursive=true
              ) }}
-      kv_pool: >-
-        {{ run_server_prefill_profile_defaults.kv_pool
-           | combine(run_server_prefill_profile.kv_pool | default({}), recursive=true) }}
       multi_node_backend: >-
         {{ run_server_prefill_profile.multi_node_backend
            | default(run_server_prefill_profile_defaults.multi_node_backend) }}

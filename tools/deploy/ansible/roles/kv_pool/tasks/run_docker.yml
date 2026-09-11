@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+---
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: run_docker
+
+- name: Generate the mooncake master container name.
+  ansible.builtin.set_fact:
+    ACTUAL_DOCKER_NAME_M: "{{ ansible_env.DOCKER_NAME_M }}_{{ inventory_hostname }}"
+  when:
+    - enable_kv_pool | bool
+    - "'M' in group_names"
+  tags: always
+
+- name: Generate the mooncake master docker run command.
+  ansible.builtin.set_fact:
+    resolved_docker_run_cmd: >-
+      {%- set shm_size = run_docker_profile.shm_size | default(run_docker_profile_defaults.shm_size) -%}
+      {%- set envs = run_docker_profile.envs | default(run_docker_profile_defaults.envs) -%}
+      {%- set extra_mounts = run_docker_profile.extra_mounts | default(run_docker_profile_defaults.extra_mounts) -%}
+      docker run -it --shm-size={{ shm_size }}
+      {% for environment in docker_run_base_envs + envs %}-e {{ environment }}
+      {% endfor %}
+      --net=host
+      --privileged=true
+      -u root
+      -w /data
+      --device=/dev/davinci_manager
+      --device=/dev/hisi_hdc
+      --device=/dev/devmm_svm
+      --entrypoint=bash
+      {% for mount in docker_run_base_mounts %}-v {{ mount }}
+      {% endfor %}
+      {% for mount in extra_mounts %}-v {{ mount }}
+      {% endfor %}
+  when:
+    - enable_kv_pool | bool
+    - "'M' in group_names"
+  tags: run_docker
+
+# Preserve the M container across P/D/C redeploys so pool metadata survives.
+- name: Check whether the mooncake master container exists.
+  ansible.builtin.shell: |
+    docker inspect --format='{{"{{.Name}}"}}' \
+    $DOCKER_NAME_M \
+    2>/dev/null | grep -v '^$'
+  register: existing_master_containers
+  environment:
+    DOCKER_NAME_M: "{{ ACTUAL_DOCKER_NAME_M }}"
+  failed_when: false
+  changed_when: false
+  when: "'M' in group_names and (enable_kv_pool | bool)"
+  tags:
+    - run_docker
+    - clean_up
+
+- name: Show generated mooncake master container name.
+  ansible.builtin.debug:
+    msg: "Generated container name: {{ existing_master_containers.stdout_lines }}"
+  when: "'M' in group_names and (enable_kv_pool | bool)"
+  tags:
+    - run_docker
+    - clean_up
+
+# Only explicit cleanup removes the persistent master container.
+- name: Clean up the mooncake master container.
+  block:
+    - name: Stop the mooncake master container.
+      ansible.builtin.command:
+        argv:
+          - docker
+          - stop
+          - "{{ ACTUAL_DOCKER_NAME_M }}"
+
+    - name: Delete the mooncake master container.
+      ansible.builtin.command:
+        argv:
+          - docker
+          - rm
+          - -f
+          - "{{ ACTUAL_DOCKER_NAME_M }}"
+  when:
+    - "'M' in group_names"
+    - enable_kv_pool | bool
+    - existing_master_containers.stdout != ''
+  tags:
+    - never
+    - clean_up
+
+- name: Run container for mooncake master (only when absent, so manual deps persist).
+  ansible.builtin.command: bash -c "{{ start_docker_cmd_m }}"
+  environment:
+    DOCKER_NAME_M: "{{ ACTUAL_DOCKER_NAME_M }}"
+  when: >-
+    'M' in group_names and (enable_kv_pool | bool)
+    and existing_master_containers.stdout == ''
+  tags: run_docker
+
+- name: Create the mooncake master log directory.
+  ansible.builtin.file:
+    path: "{{ ansible_env.LOG_PATH }}/{{ inventory_hostname }}"
+    state: directory
+  when:
+    - enable_kv_pool | bool
+    - "'M' in group_names"
+  tags: run_docker
