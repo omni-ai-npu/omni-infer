@@ -1512,20 +1512,31 @@ class NPUPanguSparseAttention(torch.nn.Module):
                     inplace,
                 )
 
-            x = torch.ops.vllm.npu_pangu_mome_conv(
+            if inplace:
+                # Legacy prefill callers mutate a view and discard the result.
+                # Keep that path; decode inplace uses the whole-kv wrapper.
+                return torch.ops.vllm.npu_pangu_mome_conv(
+                    x, layer.weight, kv_cache[kv_index],
+                    mome_metadata.query_start_loc,
+                    cache_indices=mome_metadata.cache_indices,
+                    num_accepted_tokens=mome_metadata.num_accepted_tokens,
+                    num_computed_tokens=mome_metadata.num_computed_tokens,
+                    block_idx_first_scheduled_token=mome_metadata.block_idx_first_scheduled_token,
+                    block_idx_last_scheduled_token=mome_metadata.block_idx_last_scheduled_token,
+                    initial_state_idx=mome_metadata.block_idx_last_computed_token,
+                    pad_slot_id=mome_metadata.pad_slot_id,
+                    max_query_len=mome_metadata.max_query_len,
+                    block_size=mome_metadata.B_size,
+                    mode=1,
+                    inplace=True,
+                )
+
+            # Read per-request tensors inside the opaque op. Passing them here
+            # lifts their first-gear shapes into the outer FX graph.
+            x = torch.ops.vllm.npu_pangu_mome_conv_from_context(
                 x, layer.weight, kv_cache[kv_index],
-                mome_metadata.query_start_loc,
-                cache_indices=mome_metadata.cache_indices,
-                num_accepted_tokens=mome_metadata.num_accepted_tokens,
-                num_computed_tokens=mome_metadata.num_computed_tokens,
-                block_idx_first_scheduled_token=mome_metadata.block_idx_first_scheduled_token,
-                block_idx_last_scheduled_token=mome_metadata.block_idx_last_scheduled_token,
-                initial_state_idx=mome_metadata.block_idx_last_computed_token,
-                pad_slot_id=mome_metadata.pad_slot_id,
-                max_query_len=mome_metadata.max_query_len,
-                block_size=mome_metadata.B_size,
-                mode=1,
-                inplace=inplace,
+                self.layer_name,
+                phase="prefill" if attn_metadata.prefill is not None else "decode",
             )
         else:
             # A5: the new fused mome kernel resolves prefill / decode / mixed
@@ -2996,22 +3007,13 @@ class NPUPanguSparseAttention(torch.nn.Module):
         if self.use_mome:
             if self.use_mome_inplace_update:
                 conv_states = self.mome_attn.kv_cache[1]
-                kv = torch.ops.vllm.npu_pangu_kv_down_mome_inplace(
+                kv = torch.ops.vllm.npu_pangu_kv_down_mome_inplace_from_context(
                     kv,
                     self.compresskv_conv.weight,
                     conv_states,
-                    mome_metadata.query_start_loc,
-                    mome_metadata.cache_indices,
-                    mome_metadata.num_accepted_tokens,
-                    mome_metadata.num_computed_tokens,
-                    mome_metadata.block_idx_first_scheduled_token,
-                    mome_metadata.block_idx_last_scheduled_token,
-                    mome_metadata.block_idx_last_computed_token,
-                    mome_metadata.pad_slot_id,
-                    mome_metadata.max_query_len,
-                    mome_metadata.B_size,
+                    self.layer_name,
+                    "prefill" if attn_metadata.prefill is not None else "decode",
                     self.kv_lora_rank,
-                    attn_metadata.num_actual_tokens,
                 )
             else:
                 k_nope, k_pe = torch.split(
