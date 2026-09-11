@@ -83,7 +83,7 @@
         export ASCEND_TRANSFER_TIMEOUT=180000
         export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
         EXTRA_ARGS="--no-disable-hybrid-kv-cache-manager"
-        EXTRA_ARGS="${EXTRA_ARGS} --max-num-batched-tokens 16384"
+        EXTRA_ARGS="${EXTRA_ARGS} --max-num-batched-tokens 65536"
         EXTRA_ARGS="${EXTRA_ARGS} --enable-expert-parallel --max-num-seqs 12"
         EXTRA_ARGS="${EXTRA_ARGS} --mamba-block-size 128 --enable-prefix-caching --enable-chunked-prefill"
         EXTRA_ARGS="${EXTRA_ARGS} --dtype bfloat16 --enforce-eager"
