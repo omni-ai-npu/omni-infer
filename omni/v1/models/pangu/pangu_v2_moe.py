@@ -2472,7 +2472,19 @@ def _maybe_gather_and_unpadding(
     return hidden_states
 
 
-@support_torch_compile
+# Token count lives on the last dim of `positions`. vLLM's default
+# mark_dynamic(..., 0) is wrong for VL MRoPE: that tensor is [3, T], so dim0
+# is the static rotary axes (3), not T. Marking it dynamic makes ACLGraph
+# capture assert size 3==T. Language RoPE is 1D [T]; -1 and 0 are the same
+# axis, so this does not change language compile. Do not also mark dim0.
+@support_torch_compile(
+    dynamic_arg_dims={
+        "input_ids": 0,
+        "positions": -1,
+        "intermediate_tensors": 0,
+        "inputs_embeds": 0,
+    }
+)
 class OpenPanguV2Model(nn.Module):
     fall_back_to_pt_during_load = False
 
