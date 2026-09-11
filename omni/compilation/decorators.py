@@ -66,6 +66,29 @@ def _patch_piecewise_backend():
 
     original_call = piecewise_backend.__call__
 
+    def _has_2d_stride_mismatch(args):
+        # A packed 2D tensor of shape (rows, cols) has stride (cols, 1).
+        # First compile bakes that stride. If the real tensor is a slice of a
+        # wider buffer, shape is still (rows, cols) but stride[0] != cols.
+        for arg in args:
+            if not isinstance(arg, torch.Tensor) or arg.ndim != 2:
+                continue
+            try:
+                cols = int(arg.size(1))
+                row_stride = int(arg.stride(0))
+                if int(arg.stride(-1)) == 1 and row_stride != cols:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+    def _should_recompile_with_runtime_args(self, range_entry, args):
+        if getattr(self, "graph", None) is None:
+            return False
+        if getattr(range_entry, "_omni_compiled_from_runtime_args", False):
+            return False
+        return _has_2d_stride_mismatch(args)
+
     def _infer_runtime_shape_from_args(args):
         for arg in args:
             if isinstance(arg, torch.Tensor) and arg.ndim > 0:
@@ -119,6 +142,7 @@ def _patch_piecewise_backend():
             is_encoder=self.vllm_backend.is_encoder,
         )
         range_entry.compiled = True
+        range_entry._omni_compiled_from_runtime_args = True
         if self.is_last_graph:
             self.vllm_backend.compiler_manager.save_to_file()
 
@@ -129,10 +153,11 @@ def _patch_piecewise_backend():
             raise RuntimeError(
                 "Cannot determine runtime shape for PiecewiseBackend"
             )
-
         range_entry = self._find_range_for_shape(runtime_shape)
         if range_entry is not None:
-            # Preserve upstream dispatch for the normal symbolic-shape path.
+            if _should_recompile_with_runtime_args(self, range_entry, args):
+                range_entry.compiled = False
+                _compile_exact_range_entry(self, range_entry, args)
             if self.sym_shape_indices:
                 return original_call(self, *args)
             return range_entry.runnable(*args)

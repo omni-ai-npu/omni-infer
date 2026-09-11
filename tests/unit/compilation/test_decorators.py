@@ -260,21 +260,31 @@ def test_patched_call_static_shape_requires_tensor_input():
             _piecewise_module.PiecewiseBackend.__call__(mock_backend, None, "x")
 
 
-def test_patched_call_symbolic_shape_compiles_exact_range_with_runtime_args():
-    """An unmatched symbolic shape compiles once with the real MRoPE args."""
-    import vllm.compilation.piecewise_backend as _piecewise_module
-
-    runnable = MagicMock(return_value="exact-range")
-    compile_graph = MagicMock(return_value=runnable)
-    save_to_file = MagicMock()
-    graph = object()
-    inductor_config = object()
-    compilation_config = object()
-    mock_backend = SimpleNamespace(
-        compile_ranges=[Range(start=1, end=96)],
-        sym_shape_indices=[1],
-        range_entries={},
-        _find_range_for_shape=MagicMock(return_value=None),
+def _compile_backend(
+    compile_graph,
+    *,
+    compile_ranges,
+    range_entry=None,
+    graph=object(),
+    sym_shape_indices=None,
+    range_entries=None,
+    inductor_config=None,
+    compilation_config=None,
+    piecewise_compile_index=0,
+    total_piecewise_compiles=1,
+    is_last_graph=False,
+    save_to_file=None,
+):
+    if inductor_config is None:
+        inductor_config = object()
+    if compilation_config is None:
+        compilation_config = object()
+    if save_to_file is None:
+        save_to_file = MagicMock()
+    backend = SimpleNamespace(
+        compile_ranges=compile_ranges,
+        sym_shape_indices=[] if sym_shape_indices is None else sym_shape_indices,
+        _find_range_for_shape=MagicMock(return_value=range_entry),
         graph=graph,
         vllm_backend=SimpleNamespace(
             compiler_manager=SimpleNamespace(
@@ -285,10 +295,56 @@ def test_patched_call_symbolic_shape_compiles_exact_range_with_runtime_args():
             is_encoder=False,
         ),
         compilation_config=compilation_config,
+        piecewise_compile_index=piecewise_compile_index,
+        total_piecewise_compiles=total_piecewise_compiles,
+        is_last_graph=is_last_graph,
+        _log_compile_start=MagicMock(),
+    )
+    if range_entries is not None:
+        backend.range_entries = range_entries
+    return backend
+
+
+def _matching_range_backend(range_entry, compile_graph, graph=object()):
+    return _compile_backend(
+        compile_graph,
+        compile_ranges=[Range(start=4, end=4)],
+        range_entry=range_entry,
+        graph=graph,
+    )
+
+
+def _compiled_range_entry(tokens, runnable, **extra):
+    return SimpleNamespace(
+        compiled=True,
+        compile_range=Range(start=tokens, end=tokens),
+        runnable=runnable,
+        **extra,
+    )
+
+
+def test_patched_call_symbolic_shape_compiles_exact_range_with_runtime_args():
+    """An unmatched symbolic shape compiles once with the real MRoPE args."""
+    import vllm.compilation.piecewise_backend as _piecewise_module
+
+    runnable = MagicMock(return_value="exact-range")
+    compile_graph = MagicMock(return_value=runnable)
+    save_to_file = MagicMock()
+    graph = object()
+    inductor_config = object()
+    compilation_config = object()
+    mock_backend = _compile_backend(
+        compile_graph,
+        compile_ranges=[Range(start=1, end=96)],
+        graph=graph,
+        sym_shape_indices=[1],
+        range_entries={},
+        inductor_config=inductor_config,
+        compilation_config=compilation_config,
         piecewise_compile_index=2,
         total_piecewise_compiles=4,
         is_last_graph=True,
-        _log_compile_start=MagicMock(),
+        save_to_file=save_to_file,
     )
     hidden_states = torch.randn(97, 32)
     mrope_positions = torch.randn(3, 97)
@@ -337,25 +393,10 @@ def test_patched_call_static_shape_compiles_exact_range():
 
     runnable = MagicMock(return_value="static-exact-range")
     compile_graph = MagicMock(return_value=runnable)
-    mock_backend = SimpleNamespace(
+    mock_backend = _compile_backend(
+        compile_graph,
         compile_ranges=[Range(start=1, end=64)],
-        sym_shape_indices=[],
         range_entries={},
-        _find_range_for_shape=MagicMock(return_value=None),
-        graph=object(),
-        vllm_backend=SimpleNamespace(
-            compiler_manager=SimpleNamespace(
-                compile=compile_graph,
-                save_to_file=MagicMock(),
-            ),
-            inductor_config=object(),
-            is_encoder=False,
-        ),
-        compilation_config=object(),
-        piecewise_compile_index=0,
-        total_piecewise_compiles=1,
-        is_last_graph=False,
-        _log_compile_start=MagicMock(),
     )
     hidden_states = torch.randn(65, 32)
 
@@ -395,6 +436,114 @@ def test_patched_call_exact_range_requires_original_graph():
             )
 
     assert Range(start=97, end=97) in mock_backend.range_entries
+
+
+def _slice_of_wider_2d(rows, cols, extra=1):
+    """Shape (rows, cols) whose row stride is cols+extra, not cols."""
+    return torch.zeros(rows, cols + extra, dtype=torch.int64)[:, :cols]
+
+
+def test_patched_call_recompiles_once_when_2d_stride_mismatches_shape():
+    """A [3, T] slice of a (3, T+1) buffer recompiles the matching size once."""
+    import vllm.compilation.piecewise_backend as _piecewise_module
+
+    tokens = 4
+    hidden_states = torch.randn(tokens, 8)
+    positions = _slice_of_wider_2d(3, tokens)
+    assert positions.shape == (3, tokens)
+    assert positions.stride() == (tokens + 1, 1)
+
+    recompiled = MagicMock(return_value="recompiled")
+    compile_graph = MagicMock(return_value=recompiled)
+    stale = MagicMock(return_value="stale-compile-all-ranges")
+    range_entry = _compiled_range_entry(tokens, stale)
+    mock_backend = _matching_range_backend(range_entry, compile_graph)
+
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
+        patch_compile_decorators()
+        result1 = _piecewise_module.PiecewiseBackend.__call__(
+            mock_backend, hidden_states, positions
+        )
+        result2 = _piecewise_module.PiecewiseBackend.__call__(
+            mock_backend, hidden_states, positions
+        )
+
+    assert result1 == "recompiled"
+    assert result2 == "recompiled"
+    assert compile_graph.call_count == 1
+    compile_args, _ = compile_graph.call_args
+    assert compile_args[1][0] is hidden_states
+    assert compile_args[1][1] is positions
+    assert range_entry._omni_compiled_from_runtime_args is True
+    stale.assert_not_called()
+    assert recompiled.call_count == 2
+    mock_backend._find_range_for_shape.assert_called_with(tokens)
+
+
+def test_patched_call_does_not_recompile_packed_2d_or_1d_or_3d():
+    """Packed [3, T], 1D language positions, and 3D KV keep the first kernel."""
+    import vllm.compilation.piecewise_backend as _piecewise_module
+
+    tokens = 4
+    hidden_states = torch.randn(tokens, 8)
+    compile_graph = MagicMock()
+    stale = MagicMock(return_value="stale")
+    range_entry = _compiled_range_entry(tokens, stale)
+    mock_backend = _matching_range_backend(range_entry, compile_graph)
+
+    packed_2d = torch.zeros(3, tokens, dtype=torch.int64)
+    language_1d = torch.zeros(tokens, dtype=torch.int64)
+    kv_3d = torch.zeros(8, 3, 16, dtype=torch.int64)[:5]
+
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
+        patch_compile_decorators()
+        assert packed_2d.is_contiguous()
+        assert packed_2d.stride() == (tokens, 1)
+        r1 = _piecewise_module.PiecewiseBackend.__call__(
+            mock_backend, hidden_states, packed_2d
+        )
+        r2 = _piecewise_module.PiecewiseBackend.__call__(
+            mock_backend, hidden_states, language_1d
+        )
+        r3 = _piecewise_module.PiecewiseBackend.__call__(
+            mock_backend, hidden_states, kv_3d
+        )
+
+    assert (r1, r2, r3) == ("stale", "stale", "stale")
+    compile_graph.assert_not_called()
+    assert stale.call_count == 3
+
+
+def test_patched_call_skips_stride_recompile_without_graph_or_after_runtime_compile():
+    """No original FX graph, or already compiled from runtime args: do not compile again."""
+    import vllm.compilation.piecewise_backend as _piecewise_module
+
+    tokens = 4
+    hidden_states = torch.randn(tokens, 8)
+    positions = _slice_of_wider_2d(3, tokens)
+    compile_graph = MagicMock()
+    stale = MagicMock(return_value="cached")
+    range_entry = _compiled_range_entry(
+        tokens, stale, _omni_compiled_from_runtime_args=True
+    )
+
+    with patch("omni_npu.compilation.decorators._patched_mark_dynamic"):
+        patch_compile_decorators()
+        already = _matching_range_backend(range_entry, compile_graph)
+        assert _piecewise_module.PiecewiseBackend.__call__(
+            already, hidden_states, positions
+        ) == "cached"
+
+        no_graph_entry = _compiled_range_entry(tokens, stale)
+        no_graph = _matching_range_backend(
+            no_graph_entry, compile_graph, graph=None
+        )
+        assert _piecewise_module.PiecewiseBackend.__call__(
+            no_graph, hidden_states, positions
+        ) == "cached"
+
+    compile_graph.assert_not_called()
+    assert stale.call_count == 2
 
 
 def test_patched_call_symbolic_shape_delegates_to_upstream():
