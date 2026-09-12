@@ -1,10 +1,5 @@
-# -*- coding: utf-8 -*-
 """
-ModelArts v2 在线服务创建客户端（AK/SK/SecurityToken 签名鉴权，纯标准库）。
-
-职责(与 JSON 转换解耦):
-    只负责把【已规范化的请求体 JSON】(convert_body.py 的产物) POST 到
-    POST https://modelarts.{region}.myhuaweicloud.com/v2/{project_id}/services
+ModelArts v2 在线服务创建客户端
 
 流程:
     1. 先用 convert_body.py 把服务快照 JSON 转换成正确请求体
@@ -83,10 +78,12 @@ def make_auth(method: str, path: str, body: bytes, extra_headers=None):
         for k, v in extra_headers.items():
             hdrs[k.lower()] = v
 
+    signed_hdr_items = sorted(
+        (name, value) for name, value in hdrs.items() if value is not None)
     canonical_headers = "".join(
-        "%s:%s\n" % (name, " ".join(hdrs[name].split()))
-        for name in sorted(hdrs) if hdrs[name] is not None)
-    signed_headers = ";".join(name for name in sorted(hdrs) if hdrs[name] is not None)
+        "%s:%s\n" % (name, " ".join(value.split()))
+        for name, value in signed_hdr_items)
+    signed_headers = ";".join(name for name, _ in signed_hdr_items)
 
     canonical_request = "\n".join([
         method.upper(), canonical_uri, "", canonical_headers,

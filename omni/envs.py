@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     OMNI_HYBRID_ALIGNED_DECODE_THRESHOLD: int
     OMNI_DP_ROUND_ROBIN: bool
     OMNI_PD_BENCH_ALIGNED_DECODE_THRESHOLD: int
+    OMNI_DISABLE_KV_OFFLOAD_MMAP_PREWRITE: bool
 
 
 def _as_bool(raw: str) -> bool:
@@ -571,6 +572,9 @@ env_variables: Dict[str, Callable[[], Any]] = {
     # Consumers: patch_input_ids_piggyback.py:100,159,175-243.
     "OMNI_VALIDATE_PIGGYBACK_INPUT_IDS":
     lambda: get_env_with_fallback("OMNI_VALIDATE_PIGGYBACK_INPUT_IDS", None, False, _as_bool),
+
+    "OMNI_DISABLE_KV_OFFLOAD_MMAP_PREWRITE":
+    lambda: get_env_with_fallback("OMNI_DISABLE_KV_OFFLOAD_MMAP_PREWRITE", None, False, _as_bool),
 
     # =========================================================================
     # Benchmark gates (not for production serving)
