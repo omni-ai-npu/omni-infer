@@ -8,6 +8,7 @@ import queue
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import numpy as np
@@ -261,6 +262,25 @@ class NpuSingleDirectionOffloadingHandler:
         if end_event is None:
             end_event = self._new_timing_event()
         return start_event, end_event
+
+    @contextmanager
+    def _activate_transfer_stream(self, stream):
+        """Bind copies to *stream* without ``torch.npu.stream()``.
+
+        torch_npu ``StreamContext`` calls ``_get_device_index(None, True)``,
+        which can fall through to ``torch.cuda.current_device()`` and raise
+        ``Cannot re-initialize CUDA in forked subprocess`` in mp workers.
+        """
+        torch.npu.set_device(self._device_index)
+        try:
+            prev_stream = torch.npu.current_stream(self._device_index)
+        except TypeError:
+            prev_stream = torch.npu.current_stream()
+        torch.npu.set_stream(stream)
+        try:
+            yield
+        finally:
+            torch.npu.set_stream(prev_stream)
 
     @staticmethod
     def _transfer_time_s(transfer: Transfer) -> float:
@@ -668,7 +688,7 @@ class NpuSingleDirectionOffloadingHandler:
             )
 
         start_mono = time.monotonic()
-        with torch.npu.stream(stream):
+        with self._activate_transfer_stream(stream):
             start_event.record(stream)
             if num_ops:
                 if swap_fn is not None:
