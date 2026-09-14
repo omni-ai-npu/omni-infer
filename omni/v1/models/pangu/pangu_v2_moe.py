@@ -155,6 +155,7 @@ direct_register_custom_op(
 # collide with None (sync) or torch.npu.Event (already launched).
 _DEFERRED_SINKHORN = object()
 try:
+    # Imported for side effect: registers the torch.ops.custom operators.
     import omni_custom_ops
 except ImportError as e:
     logger.warning(f"Failed to import omni_custom_ops: {e}")
@@ -882,8 +883,8 @@ class OpenPanguV2MOE(nn.Module):
         output:
             data parallel across all ep devices
 
-        Note: NPU fusion operators have a batch size limit of 512. For larger batches,
-        we split the input into smaller chunks.
+        Note: batches larger than moe_dispatch_combine_max_batch_size are split
+        into smaller chunks.
         """
         
         if isinstance(hidden_states, dict):
@@ -947,7 +948,6 @@ class OpenPanguV2MOE(nn.Module):
         # 2 - w8a8 quantization
         quant_mode = 2 if self._is_quant else 0
 
-        # NPU fusion operators have batch size limit of 512
         num_tokens = hidden_states.shape[0]
         x_active_mask = self._get_mc2_mask(topk_ids)
 
@@ -2953,8 +2953,8 @@ class OpenPanguV2ForCausalLM(
                 continue
 
             remapped_name = _normalize_weight_name(remapped_name)
-            if remapped_name not in params_dict: 
-                print(f"Skip loading {remapped_name}.")
+            if remapped_name not in params_dict:
+                logger.warning(f"Skip loading {remapped_name}.")
                 continue
 
             param = params_dict[remapped_name]
