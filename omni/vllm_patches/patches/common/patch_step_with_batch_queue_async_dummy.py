@@ -116,7 +116,9 @@ class StepWithBatchQueueAsyncDummyDPEnginePatch(VLLMPatch):
             return None, False
 
         dummy_future = None
-        if not model_executed:
+        # After a wave ends, drain queued outputs without starting collectives.
+        # For new local work, let the outer loop decide after output updates.
+        if not model_executed and self.engines_running:
             with self.log_iteration_details(None):
                 dummy_future = _start_dummy_batch_async(self)
             _yield_after_dummy_submit(self, dummy_future)
