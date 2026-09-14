@@ -26,6 +26,7 @@ patches/
 | `patch_attention.py` | NPU attention backend 注册 |
 | `patch_backends_utils.py` | CommonAttentionMetadata 扩展 |
 | `patch_serving_apc.py` | PD 分离下把 APC 命中率上报改对：D 侧原生恒报 100%，改为转发 P 的真实命中；并补 `cached_rate` 字段 |
+| `patch_split_reasoning_content.py` | MTP 下 `</think>` 边界一条 SSE 可能同时带 reasoning 和 content，小艺 Claw 等客户端会解析错位。从 omni-npu 迁入，接在 APC 之后把混合 chunk 拆成两条事件；reasoning 侧 `completion_tokens` 扣掉 `</think>` 之后的 token，避免两条 usage 相同导致评测失败。`n>1` 不拆。开 `OMNI_TRACE_OUTPUT_DIRECTORY` 时由 `patch_trace.py` 再包一层 |
 | `patch_health.py` | 卡死检测（OMNI-WATCHDOG）：引擎有在途请求却超 `OMNI_HEALTH_HANG_SEC`不推进时，`/health` 与 `/ping` 转 503，不杀进程、恢复后自动回 200。心跳由 `omni_npu_metrics` 插件（实现在 `omni/diagnostics/watchdog/`）驱动，**该插件名必须列进 `VLLM_PLUGINS`，否则不生效** |
 | `patch_dump.py` | OMNI-DUMP 退出取证的三个挂载点（`AsyncLLM.__init__` / `EngineCoreProc.run_busy_loop` + `DPEngineCoreProc.run_busy_loop` / `NPUWorker.init_device`）。实现在 `omni/diagnostics/dump/`；0.25.1 接口零改动，engine 挂载点从 `EngineCore.__init__` 挪走是修一个与版本无关的缺陷（spawn 下静默失效，见 commit message）；`OMNI_DUMP_ENABLE` 未设置时默认开启 |
 | `patch_kv_output_aggregator.py` | 拆分 `KVOutputAggregator` send/recv 计数策略 |
