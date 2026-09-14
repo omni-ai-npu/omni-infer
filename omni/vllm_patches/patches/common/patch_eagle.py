@@ -279,13 +279,11 @@ class EagleProposerPatch(VLLMPatch):
                 if not is_graph_capturing else min(self.num_speculative_tokens, self.n_predict)
         ):
             if self.n_predict == 1 and fwd_idx == 1 and cudagraph_mode == CUDAGraphMode.NONE:
-                num_tokens_dp_padded, num_tokens_across_dp = self._pad_batch_across_dp(
-                    num_tokens_unpadded=num_tokens,
-                    num_tokens_padded=num_tokens,
+                _, num_input_tokens, num_tokens_across_dp = (
+                    self._determine_batch_execution_and_padding(
+                        num_tokens, use_cudagraphs=False
+                    )
                 )
-                num_input_tokens = num_tokens_dp_padded
-                if num_tokens_across_dp is not None:
-                    num_tokens_across_dp[self.dp_rank] = num_input_tokens
 
             # Adapt: pass attn_metadata and batch_descriptor to set_forward_context, change cudagraph_runtime_mode
             with set_forward_context(
@@ -889,9 +887,16 @@ class EagleProposerPatch(VLLMPatch):
             input_batch_size = num_input_tokens
             batch_size_across_dp = num_tokens_across_dp
         else:
-            cudagraph_runtime_mode, input_batch_size, batch_size_across_dp = (
-                self._determine_batch_execution_and_padding(batch_size)
-            )
+            if cudagraph_runtime_mode == CUDAGraphMode.NONE:
+                batch_descriptor = None
+                cudagraph_runtime_mode, input_batch_size, batch_size_across_dp = (
+                    self._determine_batch_execution_and_padding(
+                        batch_size, use_cudagraphs=False
+                    )
+                )
+            else:
+                input_batch_size = num_input_tokens
+                batch_size_across_dp = num_tokens_across_dp
 
             common_attn_metadata.num_actual_tokens = input_batch_size
             common_attn_metadata.max_query_len = 1
@@ -900,6 +905,7 @@ class EagleProposerPatch(VLLMPatch):
             common_attn_metadata.query_start_loc_cpu[: batch_size + 1] = torch.from_numpy(
                 self.token_arange_np[: batch_size + 1]).clone()
             common_attn_metadata.query_start_loc_cpu[batch_size:] = common_attn_metadata.query_start_loc_cpu[batch_size]
+            common_attn_metadata._num_computed_tokens_cache = None
 
             # In padded drafter batch, we need to adjust the sequence lengths
             # to remove the "padding" (i.e. rejected tokens).
@@ -911,6 +917,7 @@ class EagleProposerPatch(VLLMPatch):
                 # Invalidate the CPU-side shadows to avoid H<>D sync.
                 common_attn_metadata._seq_lens_cpu = None
                 common_attn_metadata._num_computed_tokens_cpu = None
+                common_attn_metadata._num_computed_tokens_cache = None
 
         for token_index in range(self.num_speculative_tokens - 1):
             spec_step_idx = None
@@ -982,6 +989,7 @@ class EagleProposerPatch(VLLMPatch):
                     common_attn_metadata._seq_lens_cpu[:batch_size] += 1
                 if common_attn_metadata._num_computed_tokens_cpu is not None:
                     common_attn_metadata._num_computed_tokens_cpu[:batch_size] += 1
+                common_attn_metadata._num_computed_tokens_cache = None
 
                 # Compute slot mapping and rebuild attention metadata for all
                 # draft groups (each with its own block table and block size).
