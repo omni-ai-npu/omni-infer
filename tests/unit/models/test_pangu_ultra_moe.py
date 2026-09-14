@@ -1172,7 +1172,7 @@ class TestOpenPanguMoERouterGatingInFp32(unittest.TestCase):
     @patch.object(ultra_mod, "get_tp_group", return_value=SimpleNamespace(rank_in_group=0))
     @patch.object(ultra_mod, "get_tensor_model_parallel_world_size", return_value=1)
     def test_gate_no_params_dtype_when_router_gating_in_fp32_false(self, *_):
-        """When router_gating_in_fp32=False, gate should be constructed without params_dtype."""
+        """When router_gating_in_fp32=False, gate should keep the default params_dtype."""
         cfg = self._make_config()
         parallel_cfg = self._make_parallel_config()
 
@@ -1183,10 +1183,10 @@ class TestOpenPanguMoERouterGatingInFp32(unittest.TestCase):
         ):
             ultra_mod.OpenPanguMoE(cfg, parallel_cfg, quant_config=None, prefix="moe")
 
-        # ReplicatedLinear should NOT be called with params_dtype
+        # params_dtype=None is what ReplicatedLinear defaults to
         gate_call_kwargs = ultra_mod.ReplicatedLinear.call_args.kwargs
-        assert "params_dtype" not in gate_call_kwargs, (
-            f"Expected no params_dtype in kwargs, but got params_dtype={gate_call_kwargs.get('params_dtype')}"
+        assert gate_call_kwargs.get("params_dtype") is None, (
+            f"Expected default params_dtype, but got {gate_call_kwargs.get('params_dtype')}"
         )
 
 

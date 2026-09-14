@@ -252,11 +252,9 @@ class OpenPanguMTP(nn.Module, SupportsPP):
 
     def set_shared_weight(self, target_model: nn.Module) -> None:
         if hasattr(target_model, "embed_tokens"):
-            del self.model.embed_tokens
             self.model.embed_tokens = target_model.embed_tokens
         if hasattr(target_model, "lm_head"):
             for layer in self.model.layers.values():
-                del layer.shared_head.head
                 layer.shared_head.head = target_model.lm_head
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
