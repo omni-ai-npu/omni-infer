@@ -259,11 +259,15 @@ async def _iter_traced_stream(original, serving, args, kwargs, request_id):
 
 if trace_enabled:
     from omni_npu.vllm_patches.patches.common.patch_serving_apc import (
-        OpenAIServingChatStreamAPCPatch,
         OpenAIServingCompletionStreamAPCPatch,
     )
+    from omni_npu.vllm_patches.patches.common.patch_split_reasoning_content import (
+        OpenAIServingChatStreamSplitPatch,
+    )
     _ORIGINAL_CHAT_COMPLETION_STREAM_GENERATOR = (
-        OpenAIServingChatStreamAPCPatch.chat_completion_stream_generator
+        OpenAIServingChatStreamSplitPatch.__dict__[
+            "chat_completion_stream_generator"
+        ]
     )
     _ORIGINAL_COMPLETION_STREAM_GENERATOR = (
         OpenAIServingCompletionStreamAPCPatch.completion_stream_generator
@@ -271,7 +275,8 @@ if trace_enabled:
 
     @register_patch("ExpertIdServingChatStream", OpenAIServingChat)
     class OpenAIServingChatTokenLoggerPatch(VLLMPatch):
-        # Relay patch: wrap APC stream patch instead of the original vLLM stream.
+        """Relay: wrap split so mixed-SSE rewriting still runs under trace."""
+
         _attr_names_to_apply = ['chat_completion_stream_generator']
 
         async def chat_completion_stream_generator(
@@ -286,7 +291,8 @@ if trace_enabled:
 
     @register_patch("ExpertIdServingCompletionStream", OpenAIServingCompletion)
     class OpenAIServingCompletionTokenLoggerPatch(VLLMPatch):
-        # Relay patch: wrap APC stream patch instead of the original vLLM stream.
+        """Relay: wrap APC stream patch instead of the original vLLM stream."""
+
         _attr_names_to_apply = ['completion_stream_generator']
 
         async def completion_stream_generator(
