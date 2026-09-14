@@ -150,8 +150,6 @@ class NPUCPUOffloadingSpec(CPUOffloadingSpec):
             block_size_factor=self.block_size_factor,
             num_cpu_blocks=self.num_blocks,
             mmap_region=mmap_region,
-            tp_rank=get_tensor_model_parallel_rank(),
-            tp_size=self.vllm_config.parallel_config.tensor_parallel_size,
             rotate_store_writers=self.replicated_layout,
         )
 

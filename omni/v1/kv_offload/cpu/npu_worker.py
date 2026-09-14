@@ -26,6 +26,8 @@ from vllm.v1.kv_offload.base import (
     OffloadingWorker,
     TransferResult,
 )
+from vllm.distributed.parallel_state import get_node_count, get_world_group
+
 from omni_npu.v1.kv_offload.cpu.npu_shared_offload_region import (
     NPUSharedOffloadRegion,
 )
@@ -166,9 +168,7 @@ class NpuSingleDirectionOffloadingHandler:
         kv_cache_groups_data_refs: list[list[CanonicalKVCacheRef]],
         npu_to_cpu: bool,
         mmap_region: NPUSharedOffloadRegion | None = None,
-        rotate_store_writers: bool = False,
-        tp_rank: int = 0,
-        tp_size: int = 1,
+        rotate_store_writers: bool = False
     ):
         if not npu_tensors or len(npu_tensors) != len(cpu_tensors):
             raise ValueError(
@@ -213,9 +213,9 @@ class NpuSingleDirectionOffloadingHandler:
         self.dst_block_size_factor = block_size_factor if npu_to_cpu else 1
         self._mmap_region = mmap_region
         self._rotate_store_writers = rotate_store_writers
-        self._tp_rank = tp_rank
-        self._tp_size = max(tp_size, 1)
-
+        self._local_world_rank = get_world_group().local_rank
+        self._local_world_size = get_world_group().world_size // get_node_count()
+ 
         self._transfer_events: dict[int, torch.npu.Event] = {}
         self._transfers: deque[Transfer] = deque()
         self._transfers_by_id: dict[int, Transfer] = {}
@@ -296,11 +296,6 @@ class NpuSingleDirectionOffloadingHandler:
             return max(0.0, time.monotonic() - transfer.start_mono)
         return 0.0
 
-    def _owns_store_block(self, dst_block: int) -> bool:
-        """Replicated store rotation: each rank writes CPU blocks it owns."""
-        if not (self.npu_to_cpu and self._rotate_store_writers and self._tp_size > 1):
-            return True
-        return int(dst_block) % self._tp_size == self._tp_rank
 
     def _group_block_indices(
         self,
@@ -327,8 +322,8 @@ class NpuSingleDirectionOffloadingHandler:
         dst_blocks = np.asarray(group_dst, dtype=np.int64)[
             dst_subs // self.dst_block_size_factor
         ]
-        if self.npu_to_cpu and self._rotate_store_writers and self._tp_size > 1:
-            mask = np.mod(dst_blocks, self._tp_size) == self._tp_rank
+        if self.npu_to_cpu and self._rotate_store_writers and self._local_world_size > 1:
+            mask = np.mod(dst_blocks, self._local_world_size) == self._local_world_rank
             src_subs = src_subs[mask]
             dst_subs = dst_subs[mask]
             src_blocks = src_blocks[mask]
@@ -792,23 +787,22 @@ class NPUCPUOffloadingWorker(OffloadingWorker):
         block_size_factor: int,
         num_cpu_blocks: int,
         mmap_region: NPUSharedOffloadRegion | None = None,
-        tp_rank: int = 0,
-        tp_size: int = 1,
         rotate_store_writers: bool = False,
     ):
         pin_memory = PIN_MEMORY
-        self._tp_rank = tp_rank
-        self._tp_size = max(tp_size, 1)
+        self._local_world_rank = get_world_group().local_rank
+        self._local_world_size = get_world_group().world_size // get_node_count()
         self._rotate_store_writers = rotate_store_writers
         logger.info(
             "Allocating %d CPU tensors "
-            "(mmap=%s, pin_memory=%s, rotate_store=%s, tp_rank=%d/%d)...",
+            "(mmap=%s, pin_memory=%s, rotate_store=%s, "
+            "local_world_rank=%d/%d)...",
             len(kv_caches.tensors),
             mmap_region is not None,
             pin_memory,
             rotate_store_writers,
-            tp_rank,
-            self._tp_size,
+            self._local_world_rank,
+            self._local_world_size,
         )
         # Shared mmap is the CPU KV pool. MemcpyBatchAsync host attr is HOST.
         # PINNED (no MAPPED) makes that path async DMA without a device alias.
@@ -861,8 +855,6 @@ class NPUCPUOffloadingWorker(OffloadingWorker):
             npu_to_cpu=True,
             mmap_region=mmap_region,
             rotate_store_writers=rotate_store_writers,
-            tp_rank=tp_rank,
-            tp_size=self._tp_size,
         )
         self._load_handler = NpuSingleDirectionOffloadingHandler(
             npu_tensors=npu_tensors,

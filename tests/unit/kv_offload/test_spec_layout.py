@@ -184,7 +184,7 @@ def test_create_mmap_region_rank_selection():
         assert region_cls.call_args.kwargs["rank"] == 3
 
 
-def test_create_worker_wires_rotation_and_rank():
+def test_create_worker_wires_rotation():
     spec = NPUCPUOffloadingSpec.__new__(NPUCPUOffloadingSpec)
     spec.replicated_layout = True
     spec.block_size_factor = 2
@@ -198,14 +198,12 @@ def test_create_worker_wires_rotation_and_rank():
     with patch.object(spec, "_create_mmap_region", return_value=mmap_region), patch(
         "omni_npu.v1.kv_offload.cpu.spec.NPUCPUOffloadingWorker",
         return_value=worker,
-    ) as worker_cls, patch(
-        "omni_npu.v1.kv_offload.cpu.spec.get_tensor_model_parallel_rank",
-        return_value=1,
-    ):
+    ) as worker_cls:
         out = spec.create_worker(MagicMock())
         assert out is worker
         assert worker_cls.call_args.kwargs["rotate_store_writers"] is True
-        assert worker_cls.call_args.kwargs["tp_rank"] == 1
+        assert "tp_rank" not in worker_cls.call_args.kwargs
+        assert "tp_size" not in worker_cls.call_args.kwargs
         assert worker_cls.call_args.kwargs["mmap_region"] is mmap_region
 
 

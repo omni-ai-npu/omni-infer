@@ -29,19 +29,43 @@ def test_block_slice_full_and_partial():
     assert torch.equal(_block_slice(t, 1, 1, 2), t[1, 1:3])
 
 
-def test_owns_store_block_rotation():
+def test_group_block_indices_store_rotation_uses_local_world():
     handler = NpuSingleDirectionOffloadingHandler.__new__(
         NpuSingleDirectionOffloadingHandler
     )
     handler.npu_to_cpu = True
     handler._rotate_store_writers = True
-    handler._tp_size = 4
-    handler._tp_rank = 1
-    assert handler._owns_store_block(1) is True
-    assert handler._owns_store_block(2) is False
+    handler.src_block_size_factor = 1
+    handler.dst_block_size_factor = 1
+    # Gate uses local_world_size>1; mask is local world rank, not TP.
+    handler._local_world_size = 4
+    handler._local_world_rank = 1
+
+    src = np.asarray([10, 11, 12, 13], dtype=np.int64)
+    dst = np.asarray([0, 1, 2, 3], dtype=np.int64)
+    _, _, src_blocks, dst_blocks = handler._group_block_indices(src, dst, 4, 0, 0)
+    np.testing.assert_array_equal(src_blocks, [11])
+    np.testing.assert_array_equal(dst_blocks, [1])
 
     handler._rotate_store_writers = False
-    assert handler._owns_store_block(2) is True
+    _, _, _, dst_blocks = handler._group_block_indices(src, dst, 4, 0, 0)
+    np.testing.assert_array_equal(dst_blocks, [0, 1, 2, 3])
+
+    handler._rotate_store_writers = True
+    handler._local_world_size = 1
+    _, _, _, dst_blocks = handler._group_block_indices(src, dst, 4, 0, 0)
+    np.testing.assert_array_equal(dst_blocks, [0, 1, 2, 3])
+
+
+def _skip_rotated_store_block(handler, dst_block: int) -> bool:
+    """True when store rotation assigns this CPU block to another rank."""
+    if not handler.npu_to_cpu or not handler._rotate_store_writers:
+        return False
+    if handler._local_world_size <= 1:
+        return False
+    return int(dst_block) % int(handler._local_world_size) != int(
+        handler._local_world_rank
+    )
 
 
 def _ref_plan_group_copies(
@@ -60,7 +84,7 @@ def _ref_plan_group_copies(
             dst_sub = dst_skip + i
             src_block = int(group_src[src_sub // handler.src_block_size_factor])
             dst_block = int(group_dst[dst_sub // handler.dst_block_size_factor])
-            if not handler._owns_store_block(dst_block):
+            if _skip_rotated_store_block(handler, dst_block):
                 continue
             src_page = (src_sub % handler.src_block_size_factor) * page
             dst_page = (dst_sub % handler.dst_block_size_factor) * page
@@ -143,8 +167,8 @@ def test_plan_group_copies_multi_ref_and_rotation():
     _assert_plan_matches(handler, [0, 1], [2, 3], 2, refs, 0, 0)
 
     handler._rotate_store_writers = True
-    handler._tp_size = 2
-    handler._tp_rank = 0
+    handler._local_world_size = 2
+    handler._local_world_rank = 0
     _assert_plan_matches(handler, [0, 1], [2, 3], 2, refs, 0, 0)
 
     empty = _fill_group_plan(
@@ -187,6 +211,43 @@ def test_plan_transfer_descriptors_two_groups():
     np.testing.assert_array_equal(src_np, np.concatenate([g0[0], g1[0]]))
     np.testing.assert_array_equal(dst_np, np.concatenate([g0[1], g1[1]]))
     np.testing.assert_array_equal(sz_np, np.concatenate([g0[2], g1[2]]))
+
+
+def _patch_local_world(monkeypatch, *, local_rank=0, world_size=1, node_count=1):
+    monkeypatch.setattr(
+        worker_mod,
+        "get_world_group",
+        lambda: SimpleNamespace(local_rank=local_rank, world_size=world_size),
+    )
+    monkeypatch.setattr(worker_mod, "get_node_count", lambda: node_count)
+
+
+def test_handler_init_reads_local_world_from_world_group(monkeypatch):
+    _patch_local_world(monkeypatch, local_rank=3, world_size=16, node_count=2)
+    npu = SimpleNamespace(
+        dtype=torch.int8,
+        ndim=2,
+        device=SimpleNamespace(type="npu", index=0),
+        shape=(4, 8),
+    )
+    cpu = SimpleNamespace(
+        dtype=torch.int8,
+        ndim=2,
+        device=SimpleNamespace(type="cpu"),
+        shape=(4, 8),
+    )
+    with patch.object(torch.npu, "Stream", return_value=MagicMock()), patch.object(
+        worker_mod, "_get_swap_blocks_batch", return_value=None
+    ):
+        handler = NpuSingleDirectionOffloadingHandler(
+            npu_tensors=[npu],
+            cpu_tensors=[cpu],
+            block_size_factor=1,
+            kv_cache_groups_data_refs=[],
+            npu_to_cpu=True,
+        )
+    assert handler._local_world_rank == 3
+    assert handler._local_world_size == 8
 
 
 def test_handler_init_rejects_cpu_npu_mismatch():
@@ -319,7 +380,14 @@ def test_pin_memory_region_paths():
         pin_memory_region(region)
 
 
-def _make_handler(*, npu_to_cpu=True, factor=1, rotate=False, tp_size=1, tp_rank=0):
+def _make_handler(
+    *,
+    npu_to_cpu=True,
+    factor=1,
+    rotate=False,
+    local_world_size=1,
+    local_world_rank=0,
+):
     npu = torch.zeros((4, 8), dtype=torch.int8, device="cpu")
     cpu = torch.zeros((4, 8 * factor), dtype=torch.int8, device="cpu")
     # Bypass device checks by constructing via __new__ after validating shapes.
@@ -336,8 +404,9 @@ def _make_handler(*, npu_to_cpu=True, factor=1, rotate=False, tp_size=1, tp_rank
     handler.dst_block_size_factor = factor if npu_to_cpu else 1
     handler._mmap_region = MagicMock()
     handler._rotate_store_writers = rotate
-    handler._tp_rank = tp_rank
-    handler._tp_size = tp_size
+    handler._local_world_rank = local_world_rank
+    handler._local_world_size = local_world_size
+    handler._device_index = 0
     handler._transfer_events = {}
     handler._transfers = deque()
     handler._transfers_by_id = {}
@@ -485,8 +554,13 @@ def test_recycle_transfer_reports_size_and_time_for_prometheus():
 
 
 def test_handler_transfer_batch_path_and_rotation_skip():
+    # local_world size 2 / rank 1 keeps odd dst blocks.
     handler, npu, cpu = _make_handler(
-        npu_to_cpu=True, factor=1, rotate=True, tp_size=2, tp_rank=0
+        npu_to_cpu=True,
+        factor=1,
+        rotate=True,
+        local_world_size=2,
+        local_world_rank=1,
     )
     swap_fn = MagicMock()
     handler._swap_blocks_batch = swap_fn
@@ -497,21 +571,21 @@ def test_handler_transfer_batch_path_and_rotation_skip():
 
     ConcreteGPU, ConcreteCPU = _concrete_specs()
     src = ConcreteGPU.__new__(ConcreteGPU)
-    src.block_ids = np.asarray([0, 1], dtype=np.int64)
-    src.group_sizes = [2]
+    src.block_ids = np.asarray([0, 1, 2, 3], dtype=np.int64)
+    src.group_sizes = [4]
     src.block_indices = [0]
     dst = ConcreteCPU.__new__(ConcreteCPU)
-    dst.block_ids = np.asarray([0, 1], dtype=np.int64)
+    dst.block_ids = np.asarray([0, 1, 2, 3], dtype=np.int64)
 
     with patch.object(torch.npu, "set_device"), patch.object(
         torch.npu, "set_stream"
     ), patch.object(torch.npu, "current_stream", return_value=MagicMock()):
         assert handler.transfer_async(1, src, dst) is True
-    # rank0 owns even dst blocks → both 0 and? 0 yes, 1 no → one op or two
     assert swap_fn.called
     batched = swap_fn.call_args[0]
-    assert int(batched[2].numel()) == 1
+    assert int(batched[2].numel()) == 2
     assert int(batched[2][0]) == 8
+    assert int(batched[2][1]) == 8
 
 
 def test_transfer_async_avoids_torch_npu_stream_context():
@@ -571,7 +645,8 @@ def test_handler_transfer_rejects_bad_specs():
         handler.transfer_async(1, src, dst)
 
 
-def test_worker_init_submit_finished_wait_shutdown():
+def test_worker_init_submit_finished_wait_shutdown(monkeypatch):
+    _patch_local_world(monkeypatch, local_rank=3, world_size=16, node_count=2)
     kv_tensor = MagicMock()
     kv_tensor.page_size_bytes = 8
     kv_tensor.tensor = torch.zeros(16, dtype=torch.int8, device="cpu")
@@ -603,10 +678,10 @@ def test_worker_init_submit_finished_wait_shutdown():
             block_size_factor=1,
             num_cpu_blocks=2,
             mmap_region=mmap_region,
-            tp_rank=0,
-            tp_size=2,
             rotate_store_writers=True,
         )
+    assert worker._local_world_rank == 3
+    assert worker._local_world_size == 8
 
     fake_handler.submit.return_value = True
     ConcreteGPU, _ = _concrete_specs()
@@ -620,7 +695,8 @@ def test_worker_init_submit_finished_wait_shutdown():
     assert fake_handler.shutdown.call_count == 2
 
 
-def test_worker_init_without_mmap_allocates_cpu():
+def test_worker_init_without_mmap_allocates_cpu(monkeypatch):
+    _patch_local_world(monkeypatch, local_rank=1, world_size=8, node_count=2)
     kv_tensor = MagicMock()
     kv_tensor.page_size_bytes = 4
     kv_tensor.tensor = torch.zeros(8, dtype=torch.int8, device="cpu")
@@ -635,13 +711,15 @@ def test_worker_init_without_mmap_allocates_cpu():
     ), patch(
         "omni_npu.v1.kv_offload.cpu.npu_worker.PIN_MEMORY", False
     ):
-        NPUCPUOffloadingWorker(
+        worker = NPUCPUOffloadingWorker(
             kv_caches=kv_caches,
             block_size_factor=1,
             num_cpu_blocks=2,
             mmap_region=None,
         )
     assert handler_cls.call_count == 2
+    assert worker._local_world_rank == 1
+    assert worker._local_world_size == 4
 
 
 def test_new_timing_event_falls_back_without_enable_timing():
