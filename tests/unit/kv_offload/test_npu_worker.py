@@ -345,6 +345,7 @@ def _make_handler(*, npu_to_cpu=True, factor=1, rotate=False, tp_size=1, tp_rank
     handler._event_pool = []
     handler._swap_blocks_batch = None
     handler._batch_direction = 1 if npu_to_cpu else 0
+    handler._device_index = 0
     handler._init_async_submit_state()
     return handler, npu, cpu
 
@@ -393,13 +394,11 @@ def test_handler_transfer_get_finished_wait_shutdown():
     end_ev = MagicMock()
     end_ev.query.return_value = True
     end_ev.elapsed_time.return_value = 5.0  # milliseconds
-    stream_ctx = MagicMock()
-    stream_ctx.__enter__ = MagicMock(return_value=None)
-    stream_ctx.__exit__ = MagicMock(return_value=False)
-
     with patch.object(torch.npu, "Event", return_value=end_ev), patch.object(
-        torch.npu, "stream", return_value=stream_ctx
-    ), patch.object(torch.npu, "current_stream", return_value=MagicMock()):
+        torch.npu, "set_device"
+    ), patch.object(torch.npu, "set_stream"), patch.object(
+        torch.npu, "current_stream", return_value=MagicMock()
+    ):
         assert handler.transfer_async(7, src, dst) is True
 
     assert 7 in handler._transfers_by_id
@@ -504,18 +503,51 @@ def test_handler_transfer_batch_path_and_rotation_skip():
     dst = ConcreteCPU.__new__(ConcreteCPU)
     dst.block_ids = np.asarray([0, 1], dtype=np.int64)
 
-    stream_ctx = MagicMock()
-    stream_ctx.__enter__ = MagicMock(return_value=None)
-    stream_ctx.__exit__ = MagicMock(return_value=False)
-    with patch.object(torch.npu, "stream", return_value=stream_ctx), patch.object(
-        torch.npu, "current_stream", return_value=MagicMock()
-    ):
+    with patch.object(torch.npu, "set_device"), patch.object(
+        torch.npu, "set_stream"
+    ), patch.object(torch.npu, "current_stream", return_value=MagicMock()):
         assert handler.transfer_async(1, src, dst) is True
     # rank0 owns even dst blocks → both 0 and? 0 yes, 1 no → one op or two
     assert swap_fn.called
     batched = swap_fn.call_args[0]
     assert int(batched[2].numel()) == 1
     assert int(batched[2][0]) == 8
+
+
+def test_transfer_async_avoids_torch_npu_stream_context():
+    """Fork workers blow up if StreamContext queries device via torch.cuda."""
+    handler, _, _ = _make_handler(npu_to_cpu=True, factor=1)
+    handler._device_index = 7
+    ConcreteGPU, ConcreteCPU = _concrete_specs()
+    src = ConcreteGPU.__new__(ConcreteGPU)
+    src.block_ids = np.asarray([0], dtype=np.int64)
+    src.group_sizes = [1]
+    src.block_indices = [0]
+    dst = ConcreteCPU.__new__(ConcreteCPU)
+    dst.block_ids = np.asarray([0], dtype=np.int64)
+
+    prev_stream = MagicMock(name="prev")
+    wait_stream = MagicMock(name="compute")
+    end_ev = MagicMock()
+    end_ev.query.return_value = True
+
+    def _forbid_stream_ctx(*_args, **_kwargs):
+        raise AssertionError("torch.npu.stream() must not be used")
+
+    with patch.object(torch.npu, "Event", return_value=end_ev), patch.object(
+        torch.npu, "stream", side_effect=_forbid_stream_ctx
+    ), patch.object(torch.npu, "set_device") as set_device, patch.object(
+        torch.npu, "set_stream"
+    ) as set_stream, patch.object(
+        torch.npu, "current_stream", return_value=prev_stream
+    ):
+        assert handler.transfer_async(3, src, dst, wait_stream=wait_stream) is True
+
+    set_device.assert_called_with(7)
+    handler._stream.wait_stream.assert_called_once_with(wait_stream)
+    assert set_stream.call_count == 2
+    assert set_stream.call_args_list[0].args[0] is handler._stream
+    assert set_stream.call_args_list[1].args[0] is prev_stream
 
 
 def test_handler_transfer_rejects_bad_specs():

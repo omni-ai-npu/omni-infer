@@ -929,10 +929,11 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 quant_config=self.quant_config,
                 reduce_results=False,
                 prefix=f"{self.layer_name}.o_proj",
-                disable_tp=True if (
+                # FlashComm2 all-to-all's to token slices, so o_proj runs unsharded.
+                disable_tp=(
                     replicate_attention_weights
                     or (self.enable_flashcomm2 and not self.is_dsa_layer)
-                ) else False,
+                ),
             )
 
     def _apply_o_proj(self, attn_output: torch.Tensor) -> torch.Tensor:
@@ -1218,13 +1219,13 @@ class NPUPanguSparseAttention(torch.nn.Module):
             if cache_dtype_str in ["fp8_ds_mla", "hif8_ds_mla"]:
                 # Quant case: 512 fp8 + 64 bf16 + 4 fp32 + 128 int8 + 1 fp32
                 # See DeepseekV3 quantized DSA format
-                dsa_page_size = self.block_size_c8 * (656 + 128 + 4)
+                dsa_page_size = self.block_size_c8 * (512 * 1 + 64 * 2 + 4 * 4 + 128 * 1 + 1 * 4)
             elif cache_dtype_str == "int8_ds_mla":
                 # Quant case: 512 int8 + 64 bf16 + 4 fp32 + 128 int8 + 1 bf16
-                dsa_page_size = self.block_size_c8 * (656 + 128 + 2)
+                dsa_page_size = self.block_size_c8 * (512 * 1 + 64 * 2 + 4 * 4 + 128 * 1 + 1 * 2)
             elif cache_dtype_str == "li_int8_ds_mla":
                 # Li-Quant-Only case: 576 bf16 + 128 int8 + 1 bf16
-                dsa_page_size = block_size * (576 * 2 + 128 + 2)
+                dsa_page_size = block_size * (576 * 2 + 128 * 1 + 1 * 2)
             else:
                 # Non-quant case: standard attention format
                 dsa_page_size = block_size * (mla_head_size + index_head_dim) * dtype_size

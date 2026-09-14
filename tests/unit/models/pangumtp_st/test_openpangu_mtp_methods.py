@@ -189,6 +189,36 @@ class TestSetSharedWeight:
         assert m.model.layers["2"].shared_head.head is old_head  # unchanged
 
 
+def test_rebinds_registered_submodule_on_a_real_module_holder():
+    """The SimpleNamespace cases above never touch nn.Module._modules."""
+    m, _ = _make_minimal_mtp()
+    model = nn.Module()
+    model.embed_tokens = nn.Embedding(256, 64)
+    model.norm = nn.LayerNorm(64)
+    layer = nn.Module()
+    layer.shared_head = nn.Module()
+    layer.shared_head.head = nn.Linear(64, 256)
+    model.layers = {"2": layer}
+    m.model = model
+    stale_embed = model.embed_tokens
+    stale_head = layer.shared_head.head
+    order_before = [name for name, _ in model.named_parameters()]
+    target = SimpleNamespace(
+        embed_tokens=nn.Embedding(256, 64), lm_head=nn.Linear(64, 256)
+    )
+
+    m.set_shared_weight(target)
+
+    assert dict(model.named_children())["embed_tokens"] is target.embed_tokens
+    assert dict(layer.shared_head.named_children())["head"] is target.lm_head
+    assert stale_embed not in list(model.modules())
+    assert stale_head not in list(layer.shared_head.modules())
+    params = dict(model.named_parameters())
+    assert params["embed_tokens.weight"] is target.embed_tokens.weight
+    # Plain assignment keeps registration order; del + reassign would not.
+    assert [name for name, _ in model.named_parameters()] == order_before
+
+
 # ==============================================================================
 # load_weights — follows test_deepseek_mtp.py pattern
 # ==============================================================================

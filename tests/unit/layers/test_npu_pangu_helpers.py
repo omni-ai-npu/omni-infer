@@ -450,6 +450,34 @@ class TestPanguFAMetadataIsolation(unittest.TestCase):
         )
         self.assertEqual(page, 16 * (8 + 4) * 2)
 
+    def test_page_size_dsa_covers_every_cache_dtype(self):
+        """Pin the per-page byte layout of each DSA cache format."""
+        attention = NPUPanguSparseAttention.__new__(NPUPanguSparseAttention)
+        attention.kv_lora_rank = 8
+        attention.qk_rope_head_dim = 4
+        attention.use_mome = False
+        attention.block_size_c8 = 8
+        cache_config = SimpleNamespace(block_size=16)
+        config = SimpleNamespace(index_topk=2048, index_head_dim=8)
+
+        cases = {
+            # 788 bytes per token: 512 fp8, 64 bf16, 4 fp32, 128 int8, 1 fp32
+            "fp8_ds_mla": 8 * 788,
+            "hif8_ds_mla": 8 * 788,
+            # 786 bytes per token: 512 int8, 64 bf16, 4 fp32, 128 int8, 1 bf16
+            "int8_ds_mla": 8 * 786,
+            # 1282 bytes per token: 576 bf16, 128 int8, 1 bf16
+            "li_int8_ds_mla": 16 * 1282,
+            # Non-quant: (kv_lora_rank + qk_rope_head_dim + index_head_dim) bf16
+            "auto": 16 * (8 + 4 + 8) * 2,
+        }
+        # Bound by name: the helper is private to the attention class.
+        calculate = getattr(attention, "_calculate_page_size_padded")
+        for cache_dtype_str, expected in cases.items():
+            with self.subTest(cache_dtype=cache_dtype_str):
+                page = calculate(cache_config, cache_dtype_str, config)
+                self.assertEqual(page, expected)
+
 
 class TestOpenPanguV2DecoderAndMoE(unittest.TestCase):
     def test_decoder_init_sets_default_rope_theta(self):
@@ -587,6 +615,98 @@ class TestOpenPanguV2DecoderAndMoE(unittest.TestCase):
         # The gating stub returned expert 9 everywhere; the override wins.
         self.assertTrue(torch.equal(ids, torch.tensor([[0], [1], [0], [1]], dtype=torch.int32)))
         self.assertEqual(tuple(out.shape), (4, 3))
+
+
+class TestOpenPanguV2LoadWeightsSkip(unittest.TestCase):
+    def test_unknown_weight_is_reported_through_the_logger(self):
+        """A checkpoint key with no matching param must warn, not print."""
+        model = model_mod.OpenPanguV2ForCausalLM.__new__(
+            model_mod.OpenPanguV2ForCausalLM
+        )
+        model.model = SimpleNamespace()
+        model.config = SimpleNamespace(n_routed_experts=2, tie_word_embeddings=False)
+        model.num_redundant_experts = 0
+        model.named_parameters = lambda: []
+
+        with (
+            patch.object(
+                model_mod, "fused_moe_make_expert_params_mapping", return_value=[]
+            ),
+            patch.object(
+                model_mod, "get_spec_layer_idx_from_weight_name", return_value=None
+            ),
+            patch.object(model_mod, "is_pp_missing_parameter", return_value=False),
+            patch.object(
+                model_mod, "maybe_remap_kv_scale_name", side_effect=lambda name, _: name
+            ),
+            patch.object(model_mod, "high_throughout", return_value=False),
+            patch.object(model_mod, "logger") as mock_logger,
+        ):
+            loaded = model.load_weights(
+                [("model.layers.0.nowhere.weight", torch.zeros(1))]
+            )
+
+        self.assertEqual(loaded, set())
+        mock_logger.warning.assert_called_once_with(
+            "Skip loading model.layers.0.nowhere.weight."
+        )
+
+
+class TestOpenPanguV2MtpSharedWeight(unittest.TestCase):
+    """set_shared_weight rebinds real submodules, so _modules is the thing to check."""
+
+    @staticmethod
+    def _bare_mtp():
+        mtp = mtp_mod.OpenPanguV2MTP.__new__(mtp_mod.OpenPanguV2MTP)
+        torch.nn.Module.__init__(mtp)
+        model = torch.nn.Module()
+        model.embed_tokens = torch.nn.Embedding(4, 2)
+        model.norm = torch.nn.LayerNorm(2)
+        layer = torch.nn.Module()
+        layer.shared_head = torch.nn.Module()
+        layer.shared_head.head = torch.nn.Linear(2, 4)
+        model.layers = {0: layer}
+        mtp.model = model
+        return mtp
+
+    def test_embed_tokens_is_rebound_without_leaving_a_stale_module(self):
+        mtp = self._bare_mtp()
+        stale = mtp.model.embed_tokens
+        order_before = [name for name, _ in mtp.model.named_parameters()]
+        target = SimpleNamespace(embed_tokens=torch.nn.Embedding(4, 2))
+
+        mtp.set_shared_weight(target)
+
+        self.assertIs(mtp.model.embed_tokens, target.embed_tokens)
+        children = dict(mtp.model.named_children())
+        self.assertIs(children["embed_tokens"], target.embed_tokens)
+        self.assertNotIn(stale, list(mtp.model.modules()))
+        shared = dict(mtp.model.named_parameters())["embed_tokens.weight"]
+        self.assertIs(shared, target.embed_tokens.weight)
+        # Plain assignment keeps registration order; del + reassign would not.
+        self.assertEqual([name for name, _ in mtp.model.named_parameters()], order_before)
+
+    def test_lm_head_is_rebound_on_every_layer(self):
+        mtp = self._bare_mtp()
+        head = mtp.model.layers[0].shared_head
+        stale = head.head
+        target = SimpleNamespace(lm_head=torch.nn.Linear(2, 4))
+
+        mtp.set_shared_weight(target)
+
+        self.assertIs(head.head, target.lm_head)
+        self.assertIs(dict(head.named_children())["head"], target.lm_head)
+        self.assertNotIn(stale, list(head.modules()))
+
+    def test_target_without_shared_attrs_leaves_the_model_untouched(self):
+        mtp = self._bare_mtp()
+        embed = mtp.model.embed_tokens
+        head = mtp.model.layers[0].shared_head.head
+
+        mtp.set_shared_weight(SimpleNamespace())
+
+        self.assertIs(mtp.model.embed_tokens, embed)
+        self.assertIs(mtp.model.layers[0].shared_head.head, head)
 
 
 def _bare_swa_attention(**attrs):

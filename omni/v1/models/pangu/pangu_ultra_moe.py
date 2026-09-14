@@ -102,23 +102,14 @@ class OpenPanguMoE(nn.Module):
         self.gate_in_fp32 = bool(
             model_extra_config.operator_opt_config.router_gating_in_fp32
         )
-        if self.gate_in_fp32:
-            self.gate = ReplicatedLinear(
+        self.gate = ReplicatedLinear(
             config.hidden_size,
             config.n_routed_experts,
             bias=False,
             quant_config=None,
             prefix=f"{prefix}.gate",
-            params_dtype=torch.float32
+            params_dtype=torch.float32 if self.gate_in_fp32 else None,
         )
-        else:
-            self.gate = ReplicatedLinear(
-                config.hidden_size,
-                config.n_routed_experts,
-                bias=False,
-                quant_config=None,
-                prefix=f"{prefix}.gate",
-            )
         if (
             hasattr(config, "router_enable_expert_bias")
             and config.router_enable_expert_bias
@@ -280,6 +271,7 @@ class OpenPanguDecoderLayer(nn.Module):
 
         _normalize_rope_parameters(config, max_position_embeddings=max_position_embeddings)
 
+        # No dsa_layers field means every layer is DSA.
         is_dsa = (getattr(config, "index_topk", 0) or 0) > 0 and (
             not hasattr(config, "dsa_layers") or layer_idx in config.dsa_layers
         )
@@ -345,7 +337,7 @@ class OpenPanguDecoderLayer(nn.Module):
             )
         block_post_layernorm_hidden_size = config.hidden_size
 
-        self.is_mtp_layer = layer_idx >= getattr(config, "num_hidden_layers", float('inf'))
+        self.is_mtp_layer = layer_idx >= self.num_hidden_layers
         self.use_mhc = getattr(config, "use_mhc", False) and not self.is_mtp_layer
         if self.use_mhc:
             self.attn_mhc_module = NPUmHCRL(
