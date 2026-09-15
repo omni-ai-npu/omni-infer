@@ -95,7 +95,7 @@
         - --max-model-len 524288
         - --served-model-name {{ model | quote }}
         - '--additional-config ''{"enable_low_latency": true}'''
-        - --gpu-util 0.8
+        - --gpu-util 0.85
         - --extra-args "${EXTRA_ARGS}"
         - --hccl-buffsize "${HCCL_BUFFSIZE}"
         - --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}"
@@ -161,7 +161,7 @@
           "npugraph_ex_config":{"enable": true,
           "super_kernel_optimize": false,
           "static_kernel_compile": true}}'
-        - --gpu-util 0.85
+        - --gpu-util 0.82
         - --extra-args "${EXTRA_ARGS}"
         - --hccl-buffsize "${HCCL_BUFFSIZE}"
         - --hccl-op-expansion-mode "${HCCL_OP_EXPANSION_MODE}"
