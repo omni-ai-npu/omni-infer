@@ -544,5 +544,130 @@ class TestRunnerHooks(unittest.TestCase):
         self.assertFalse(stale.exists())
 
 
+# --------------------------------------------------------------------------
+# 6. the step0 accepted count the drafter authors for itself
+# --------------------------------------------------------------------------
+
+
+def make_draft_builder(*, num_spec=2, kernel_width=5):
+    """Builder for ``build_for_drafting``, on a PD-disagg decode node.
+
+    ``kernel_width`` is what ``__init__`` reads off
+    ``hf_config.router_sliding_window`` (3 when unset) and ``fake_num_spec``
+    collapses to ``max(num_spec, 1)`` there.  Both are hand-set here, so keep
+    ``kernel_width != fake_num_spec + 1`` or the two branches of the synthesis
+    below are indistinguishable.
+    """
+    b = make_builder(num_spec=num_spec, is_decode_node=True)
+    b.kernel_width = kernel_width
+    return b
+
+
+class TestStep0NumAcceptedTokensSynthesis(unittest.TestCase):
+    """``build_for_drafting`` derives the count when nobody hands it one.
+
+    Step0 of the drafter has no sampling result to read an accepted count off:
+    the first step0 starts from the clean prefill tail, while a later step0
+    rebuilds its verification window from the prefix tail the previous MTP
+    iteration left behind.  The relative offset the fused Pangu conv needs is
+    different in the two cases, which is exactly the fake_num_spec+1 vs
+    kernel_width split -- and hard-coding either one is what cost acceptance
+    rate on MTP single-head multi-step.
+    """
+
+    def setUp(self):
+        self.builder = make_draft_builder()
+        self.captured = {}
+
+        def spy(**kwargs):
+            self.captured.update(kwargs)
+            return "metadata"
+
+        self.builder.build = spy
+
+    def _call(self, *, draft_index=0, **overrides):
+        """Run one draft step over computed 8 / 12 / 5 against prompt 8."""
+        cm = FakeCommonAttentionMetadata(seq_lens=[9, 13, 6], query_lens=[1, 1, 1])
+        kwargs = dict(
+            draft_index=draft_index,
+            num_prompt_tokens=torch.tensor([8, 8, 8], dtype=torch.int32),
+        )
+        kwargs.update(overrides)
+        self.builder.build_for_drafting(cm, **kwargs)
+        return self.captured["num_accepted_tokens"]
+
+    def test_step0_derives_one_count_per_previous_schedule(self):
+        # computed is seq_lens - query_lens, i.e. 8 / 12 / 5 against prompt 8:
+        #   == -> clean prefill tail -> K = fake_num_spec + 1 = 3
+        #   >  -> window rebuilt from the prefix tail -> kernel_width = 5
+        #   <  -> left alone here; build() re-arms it for a decode node
+        self.assertEqual(self._call().tolist(), [3, 5, 3])
+
+    def test_derived_count_is_a_fresh_tensor(self):
+        """``build()`` masks the count in place, so it must not alias anything.
+
+        A view of a runner-owned buffer (or of ``num_prompt_tokens``) would be
+        rewritten by the next step's ``masked_fill_``.
+        """
+        first = self._call()
+        second = self._call()
+        self.assertIsNot(first, second)
+        self.assertNotEqual(first.data_ptr(), second.data_ptr())
+
+    def test_later_draft_indices_get_no_synthesized_count(self):
+        """Only step0 synthesizes; later indices fall back to build()'s default."""
+        self.assertIsNone(self._call(draft_index=1))
+
+    def test_explicit_count_is_passed_through_untouched(self):
+        explicit = torch.tensor([7, 7, 7], dtype=torch.int32)
+        self.assertIs(
+            self._call(num_accepted_tokens=explicit),
+            explicit,
+        )
+
+    def test_no_prompt_lengths_means_no_synthesis(self):
+        """Graph capture passes none, and must stay on ``build``'s own default."""
+        self.assertIsNone(self._call(num_prompt_tokens=None))
+
+    def test_forwards_prefix_len_and_fast_build(self):
+        prompt = torch.tensor([8, 8, 8], dtype=torch.int32)
+        self._call(num_prompt_tokens=prompt)
+        self.assertEqual(self.captured["common_prefix_len"], 0)
+        self.assertIs(self.captured["fast_build"], True)
+        self.assertIs(self.captured["num_prompt_tokens"], prompt)
+
+
+class TestStep0EndToEnd(unittest.TestCase):
+    """The count that finally reaches the block-index arithmetic.
+
+    ``build()`` runs two more in-place passes over a non-None count, so the
+    value handed to ``_compute_prefix_caching_block_indices`` is not the one
+    ``build_for_drafting`` computed.  The class above pins that intermediate;
+    this one pins the composition.
+    """
+
+    def test_derived_count_survives_build(self):
+        builder = make_draft_builder()  # fake_num_spec 2, kernel_width 5
+        seen = {}
+
+        def spy(cm, block_size, num_accepted_tokens, num_prompt_tokens=None):
+            seen["num_accepted_tokens"] = num_accepted_tokens
+            zeros = torch.zeros(cm.num_reqs, dtype=torch.int32)
+            return zeros, zeros.clone(), zeros.clone()
+
+        builder._compute_prefix_caching_block_indices = spy
+        cm = FakeCommonAttentionMetadata(seq_lens=[9, 13, 6], query_lens=[1, 1, 1])
+
+        builder.build_for_drafting(
+            cm, draft_index=0, num_prompt_tokens=torch.tensor([8, 8, 8], dtype=torch.int32)
+        )
+
+        # computed 8 / 12 / 5 against prompt 8:
+        #   == -> K = fake_num_spec + 1 = 3
+        #   >  -> kernel_width = 5
+        #   <  -> build()'s decode-node pass re-arms it to fake_num_spec = 2
+        self.assertEqual(seen["num_accepted_tokens"].tolist(), [3, 5, 2])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -636,6 +636,25 @@ class NPUMomeAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         num_accepted_tokens: torch.Tensor | None = None,
         num_prompt_tokens: torch.Tensor | None = None,
     ) -> NPUMomeAttentionMetadata:
+        # For step0, the fused Pangu conv reads the previous MTP state using
+        # a relative offset.  The first step0 starts from the clean prefill
+        # tail; a later step0 rebuilds its 8-token verification window from
+        # the prefix tail left in the previous MTP iteration.  With K=3 this
+        # is state[0:2], encoded as num_accepted_tokens=K=3.
+        if (
+            draft_index == 0
+            and num_accepted_tokens is None
+            and num_prompt_tokens is not None
+        ):
+            num_computed_tokens = common_attn_metadata.compute_num_computed_tokens()
+            num_accepted_tokens = torch.full_like(
+                num_computed_tokens,
+                self.fake_num_spec + 1,
+            )
+            num_accepted_tokens.masked_fill_(
+                num_computed_tokens > num_prompt_tokens,
+                self.kernel_width,
+            )
         return self.build(
             common_prefix_len=0,
             common_attn_metadata=common_attn_metadata,

@@ -134,10 +134,6 @@ class OpenPanguV2MultiTokenPredictorLayer(nn.Module):
         hidden_states, _ = self.eh_proj(
             torch.cat([inputs_embeds, previous_hidden_states], dim=-1)
         )
-        
-        ### Add padding for sequence parallel (TP > 1 with non-naive backend)
-        if self.need_tp_padding:
-            original_num_tokens = hidden_states.shape[0]
 
         cos, sin = self.mtp_block.self_attn.rotary_emb.get_cos_sin(positions)
         hidden_states, residual, _, _, sk_event = self.mtp_block.mhc_head(hidden_states)
@@ -145,10 +141,6 @@ class OpenPanguV2MultiTokenPredictorLayer(nn.Module):
             hidden_states, residual, None, None, cos, sin, sk_event,
         )
 
-        # Unpad hidden_states: after all layers, gather and remove any padding that was added
-        # for sequence parallelism to restore the original number of tokens
-        if self.need_tp_padding:
-            hidden_states = _maybe_gather_and_unpadding(hidden_states, original_num_tokens)
         return hidden_states
 
 
