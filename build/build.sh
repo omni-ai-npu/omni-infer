@@ -12,13 +12,6 @@ ALL_MODULES=()
 SKIP_PULL=0
 SKIP_INSTALL=0
 
-# 定义各模块所用的git仓库及分支
-declare -A GIT_PATH_OF_MODULE
-GIT_PATH_OF_MODULE["omni-npu"]="-b release_1.1.0.post1 https://gitee.com/omniai/omni-npu.git"
-GIT_PATH_OF_MODULE["omni-proxy"]="-b release_1.1.0.post1 https://gitee.com/omniai/omni-proxy.git"
-GIT_PATH_OF_MODULE["omni-models"]="-b release_1.1.0.post1 https://gitee.com/omniai/omni-models.git"
-GIT_PATH_OF_MODULE["omni-cache"]="-b release_1.1.0.post1 https://gitee.com/omniai/omni-cache.git"
-
 declare -A COMMIT_OF_MODULE
 
 log_info() {
@@ -82,28 +75,27 @@ init_submodules() {
         fi
         local url=$(git config -f .gitmodules --get "submodule.components/$mod.url" 2>/dev/null)
         local path=$(git config -f .gitmodules --get "submodule.components/$mod.path" 2>/dev/null)
-        local branch=$(git config -f .gitmodules --get "submodule.components/$mod.branch" 2>/dev/null)
-        log_info "添加 components/$mod, url:$url, path:$path, branch:$branch"
-        git submodule add --force -b $branch $url $path
-    done
-    log_info "初始化子模块..."
-    git submodule init
-    
-    log_info "更新子模块..."
-    git submodule update --recursive --remote
-    
-    if [ $? -ne 0 ]; then
-        log_warn "子模块更新失败，尝试仅同步当前提交..."
-        git submodule update --recursive
-    fi
-
-    for mod in "${MODULES_TO_BUILD[@]}"; do
-        cd $base_dir
+        local tag=$(git config -f .gitmodules --get "submodule.components/$mod.tag" 2>/dev/null)
+        if [[ -z "$tag" ]]; then
+            log_error "子模块${mod}未配置tag"
+            exit 1
+        fi
+        log_info "添加 components/$mod, url:$url, path:$path, tag:$tag"
+        git submodule add --force "$url" "$path"
+        if ! git -C "$path" fetch origin "refs/tags/$tag:refs/tags/$tag"; then
+            log_error "子模块${mod}获取tag ${tag}失败"
+            exit 1
+        fi
+        if ! git -C "$path" checkout --detach "refs/tags/$tag"; then
+            log_error "子模块${mod}检出tag ${tag}失败"
+            exit 1
+        fi
         if [[ -v COMMIT_OF_MODULE["$mod"] ]]; then
             log_info "子模块${mod}更新到commitid ${COMMIT_OF_MODULE["$mod"]}"
-            cd components/$mod
-            git checkout "${COMMIT_OF_MODULE["$mod"]}"
+            git -C "$path" checkout "${COMMIT_OF_MODULE["$mod"]}"
         fi
+        log_info "递归初始化子模块${mod}的依赖..."
+        git -C "$path" submodule update --init --recursive
     done
 }
 

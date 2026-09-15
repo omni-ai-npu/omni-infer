@@ -1,16 +1,16 @@
 [submodule "components/omni-npu"]
 	path = components/omni-npu
 	url = https://gitee.com/omniai/omni-npu.git
-	branch = release_1.1.0.post1
+	tag = openPangu2.0-Infer-v1.2.0.B010
 [submodule "components/omni-proxy"]
 	path = components/omni-proxy
 	url = https://gitee.com/omniai/omni-proxy.git
-	branch = release_1.1.0.post1
+	tag = openPangu2.0-Infer-v1.2.0.B010
 [submodule "components/omni-cache"]
 	path = components/omni-cache
 	url = https://gitee.com/omniai/omni-cache.git
-	branch = release_1.1.0.post1
+	tag = openPangu2.0-Infer-v1.2.0.B010
 [submodule "components/omni-models"]
 	path = components/omni-models
 	url = https://gitee.com/omniai/omni-models.git
-	branch = release_1.1.0.post1
+	tag = openPangu2.0-Infer-v1.2.0.B010
