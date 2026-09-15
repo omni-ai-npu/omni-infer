@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the high_throughout hybrid APC per-group coordinator patch.
+"""Tests for the pangu_v2_base hybrid APC per-group coordinator patch.
 
 The ``find_longest_cache_hit`` FA-cap patch was removed; the scheduler still
 uses ``find_longest_cache_hit_per_group``, which repeats the common hybrid hit
@@ -10,7 +10,7 @@ length for every KV-cache group.
 
 import pytest
 
-from omni_npu.vllm_patches.patches.models.high_throughout import (
+from omni_npu.vllm_patches.patches.models.pangu_v2_base import (
     patch_hybrid_kv_cache_coordinator as hybrid_mod,
 )
 
