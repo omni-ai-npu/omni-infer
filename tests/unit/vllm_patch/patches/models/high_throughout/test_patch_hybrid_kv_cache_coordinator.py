@@ -10,7 +10,7 @@ length for every KV-cache group.
 
 import pytest
 
-from omni_npu.vllm_patches.patches.models.high_throughout import (
+from omni_npu.vllm_patches.patches.models.pangu_v2_base import (
     patch_hybrid_kv_cache_coordinator as hybrid_mod,
 )
 
