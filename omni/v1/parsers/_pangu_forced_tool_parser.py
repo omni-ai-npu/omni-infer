@@ -24,9 +24,17 @@ from vllm.entrypoints.openai.engine.protocol import (
     FunctionDefinition,
 )
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
+from vllm.logger import init_logger
 from vllm.tool_parsers import streaming as tool_streaming
 
+from omni_npu.v1.parsers._pangu_parser_engine_config import (
+    _should_log_partial_failure,
+    format_partial_failure,
+)
+
 _REQUIRED_CALLS_ADAPTER = TypeAdapter(list[FunctionDefinition])
+
+logger = init_logger(__name__)
 
 
 def _mark_field_unset(model: Any, name: str) -> None:
@@ -151,14 +159,22 @@ class PanguForcedToolParser:
             )
             return _sanitize_tool_delta(result)
 
-        result, state.function_name_returned = (
-            tool_streaming.extract_required_tool_call_streaming(
-                previous_text=previous_text,
-                current_text=current_text,
-                delta_text=delta_text,
-                function_name_returned=state.function_name_returned,
-                tool_call_idx=None,
-                tool_call_id_type="random",
+        try:
+            result, state.function_name_returned = (
+                tool_streaming.extract_required_tool_call_streaming(
+                    previous_text=previous_text,
+                    current_text=current_text,
+                    delta_text=delta_text,
+                    function_name_returned=state.function_name_returned,
+                    tool_call_idx=None,
+                    tool_call_id_type="random",
+                )
             )
-        )
+        except Exception:
+            if _should_log_partial_failure(current_text):
+                logger.warning(
+                    "Pangu forced tool streaming parse failed %s",
+                    format_partial_failure(current_text),
+                )
+            return None
         return _sanitize_tool_delta(result)
