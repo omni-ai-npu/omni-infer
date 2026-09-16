@@ -1,0 +1,76 @@
+diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
+index a7697bd..785c531 100644
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -11,6 +11,9 @@ from vllm.v1.kv_cache_interface import (FullAttentionSpec, KVCacheSpec,
+                                         SlidingWindowSpec)
+ from vllm.v1.request import Request
+ from vllm.config import SpeculativeConfig
++from vllm.logger import init_logger
++
++logger = init_logger(__name__)
+ 
+ 
+ class SingleTypeKVCacheManager(ABC):
+@@ -245,6 +248,20 @@ class FullAttentionManager(SingleTypeKVCacheManager):
+         computed_blocks: list[KVCacheBlock] = []
+         max_num_blocks = max_length // self.block_size
+         for i in range(max_num_blocks):
++            # [fix] A preempted (recompute-mode) P/D request can be rescheduled
++            # with a stale hash chain: all_token_ids already includes generated
++            # tokens, but req_to_block_hashes was not extended far enough
++            # (e.g. cache_blocks skipped via delay_cache_blocks on the KV-pull
++            # path). Indexing without a guard raised IndexError and killed
++            # EngineCore. Clamp to the available hashes instead of crashing;
++            # the missing tail simply counts as a cache miss.
++            if i >= len(block_hashes):
++                logger.warning(
++                    "find_longest_cache_hit: block_hashes shorter than max "
++                    "(len=%d, max_num_blocks=%d) - stale hash chain on a "
++                    "rescheduled request; clamping", len(block_hashes),
++                    max_num_blocks)
++                break
+             block_hash = block_hashes[i]
+             # block_hashes is a chain of block hashes. If a block hash is not
+             # in the cached_block_hash_to_id, the following block hashes are
+@@ -307,6 +324,14 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
+         match_found = False
+         # Search from right to left and early stop when a match is found.
+         for i in range(max_num_blocks - 1, -1, -1):
++            # [fix] same stale-hash-chain guard as FullAttentionManager.
++            if i >= len(block_hashes):
++                logger.warning(
++                    "find_longest_cache_hit(sliding): block_hashes shorter "
++                    "than max (len=%d, max_num_blocks=%d) - stale hash chain "
++                    "on a rescheduled request; clamping", len(block_hashes),
++                    max_num_blocks)
++                continue
+             if cached_block := self.block_pool.get_cached_block(
+                     block_hashes[i]):
+                 computed_blocks[i] = cached_block
+diff --git a/vllm/v1/core/kv_cache_manager.py b/vllm/v1/core/kv_cache_manager.py
+index d0d3037..cb385ff 100644
+--- a/vllm/v1/core/kv_cache_manager.py
++++ b/vllm/v1/core/kv_cache_manager.py
+@@ -159,6 +159,21 @@ class KVCacheManager:
+         # could slightly improve performance in the future.
+         max_cache_hit_length = request.num_tokens - 1
+ 
++        # The hash chain must cover all full blocks of all_token_ids for
++        # find_longest_cache_hit to index safely. A recompute-preempted P/D
++        # request can be rescheduled with a stale (shorter) chain when
++        # cache_blocks was skipped via delay_cache_blocks on the KV-pull path.
++        # find_longest_cache_hit clamps in that case; log it here to pin down
++        # which path skipped the hash extension.
++        if len(block_hashes) < max_cache_hit_length // self.block_size:
++            logger.warning(
++                "get_computed_blocks: req=%s hash chain lags tokens "
++                "(len(block_hashes)=%d, needs %d blocks, num_tokens=%d, "
++                "num_computed_tokens=%d, status=%s)",
++                request.request_id, len(block_hashes),
++                max_cache_hit_length // self.block_size, request.num_tokens,
++                request.num_computed_tokens, request.status)
++
+         computed_blocks = self.single_type_manager.find_longest_cache_hit(
+             block_hashes, max_cache_hit_length)
+         # NOTE(woosuk): Since incomplete blocks are not eligible for

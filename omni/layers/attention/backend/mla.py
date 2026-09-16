@@ -152,13 +152,32 @@ class AscendMLABackend(AttentionBackend):
             dst_kv_cache: List[torch.Tensor],
             src_to_dst: torch.Tensor,
     ) -> None:
-        src_key_cache, src_value_cache = src_kv_cache[0], src_kv_cache[1]
-        dst_key_cache, dst_value_cache = dst_kv_cache[0], dst_kv_cache[1]
+        # With DSA enabled, init_kv_cache_each_layer returns up to 4 tensors
+        # per layer: (nope, pe, indexer_k_nope[, indexer_k_nope_scale]).
+        # Previously only [0]/[1] were copied, so the lightning-indexer cache
+        # was never swapped: after a preempt -> swap_out -> swap_in round trip
+        # the indexer was lost on the CPU pool and polluted by foreign data on
+        # the GPU pool, making topk select wrong KV -> garbled output.
+        # Swap every src/dst tensor pair. src/dst pools legitimately have
+        # different block counts (gpu vs cpu swap space), so validate indices
+        # in-bounds per pool instead of comparing shapes.
+        if len(src_kv_cache) != len(dst_kv_cache):
+            raise ValueError(
+                f"swap_blocks: src has {len(src_kv_cache)} tensors but dst has "
+                f"{len(dst_kv_cache)}; per-layer cache layouts must match")
         src_indices = src_to_dst[:, 0]
         dst_indices = src_to_dst[:, 1]
 
-        dst_key_cache[dst_indices] = src_key_cache[src_indices].to(dst_key_cache.device)
-        dst_value_cache[dst_indices] = src_value_cache[src_indices].to(dst_key_cache.device)
+        for src_cache, dst_cache in zip(src_kv_cache, dst_kv_cache):
+            if int(src_indices.max()) >= src_cache.shape[0] or src_indices.min() < 0:
+                raise IndexError(
+                    "swap_blocks: src block id out of range [0, %d)"
+                    % src_cache.shape[0])
+            if int(dst_indices.max()) >= dst_cache.shape[0] or dst_indices.min() < 0:
+                raise IndexError(
+                    "swap_blocks: dst block id out of range [0, %d)"
+                    % dst_cache.shape[0])
+            dst_cache[dst_indices] = src_cache[src_indices].to(dst_cache.device)
 
 @dataclass
 class AscendMLAPrefillMetadata:
