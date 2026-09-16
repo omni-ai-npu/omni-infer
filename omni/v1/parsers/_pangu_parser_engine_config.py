@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from dataclasses import dataclass
 
 from partial_json_parser.core.options import Allow
+from vllm.logger import init_logger
 from vllm.parser.engine.events import EventType
 from vllm.parser.engine.parser_engine import ParserEngine
 from vllm.parser.engine.parser_engine_config import (
@@ -17,6 +19,38 @@ from vllm.parser.engine.parser_engine_config import (
     Transition,
 )
 from vllm.tool_parsers.utils import partial_json_loads
+
+logger = init_logger(__name__)
+
+# The malformed accumulated text is unrepairable, so this failure repeats on
+# every later chunk of the same tool call.  Log at warning level (the request
+# still degrades cleanly, but this is actionable), printing the first failure
+# -- the point where the JSON first broke -- and then only when the accumulated
+# text doubles, which keeps the runaway trajectory visible without flooding the
+# log.  ``maxlen`` bounds memory at 8 snapshots regardless of request volume.
+_LOGGED_PARTIAL_FAILURES: deque[str] = deque(maxlen=8)
+
+
+def _should_log_partial_failure(text: str) -> bool:
+    """Return True when this failure deserves a log line (see dedup above)."""
+    for seen in _LOGGED_PARTIAL_FAILURES:
+        # The accumulated text only ever grows, so a prefix match means the same
+        # tool call as ``seen``; below twice its length we stay quiet.
+        if text.startswith(seen) and len(text) < 2 * len(seen):
+            return False
+    _LOGGED_PARTIAL_FAILURES.append(text)
+    return True
+
+
+def format_partial_failure(text: str, limit: int = 200) -> str:
+    """Excerpt for the malformed-arguments warning.
+
+    Short payloads are dumped whole: slicing both ends would print the same
+    characters twice, and the whole text is no longer than a split excerpt.
+    """
+    if len(text) <= 2 * limit:
+        return f"(len={len(text)}) {text!r}"
+    return f"(len={len(text)}) head={text[:limit]!r} tail={text[-limit:]!r}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +94,12 @@ def pangu_tool_arg_converter(raw_args: str, partial: bool) -> str:
             return ""
         try:
             parsed, _ = partial_json_loads(text, Allow.ALL)
-        except (ValueError, TypeError):
+        except Exception:
+            if _should_log_partial_failure(text):
+                logger.warning(
+                    "Pangu partial JSON parse failed %s",
+                    format_partial_failure(text),
+                )
             return ""
 
     if not isinstance(parsed, dict):
