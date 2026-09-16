@@ -516,6 +516,8 @@ class DeepseekMLA(nn.Module):
             self.kv_scale = torch.nn.Parameter(torch.empty(1, dtype=torch.float32), requires_grad=False)
 
         if model_extra_config.operator_opt_config.enable_dsa:
+            self.skip_topk_offset_idx = -1
+            self.max_skip_per_freq = 0
             self.base_skip_topk = self._get_base_skip_topk(config)
             self.skip_topk = self.base_skip_topk
             self.indexer = None if self.base_skip_topk else Indexer(
@@ -592,6 +594,16 @@ class DeepseekMLA(nn.Module):
 
         index_topk_freq = getattr(config, "index_topk_freq", 1)
         index_skip_topk_offset = getattr(config, "index_skip_topk_offset", 2)
+
+        # OmniCache: For Prefetch KV_Cache 
+        if self.layer_idx >= index_skip_topk_offset - 1:
+            default_value = self.skip_topk_offset_idx
+            self.skip_topk_offset_idx = (self.layer_idx - index_skip_topk_offset + 1) % index_topk_freq
+            self.max_skip_per_freq = max(index_topk_freq - 1 , 0)
+            is_last_layer = self.layer_idx == num_hidden_layers - 1
+            if  self.cur_vllm_config.speculative_config  and is_last_layer:
+                self.skip_topk_offset_idx = default_value
+
         return max(self.layer_idx - index_skip_topk_offset + 1, 0) % index_topk_freq != 0
 
     def set_iteration_skip_topk(self, skip: bool) -> None:
@@ -1381,66 +1393,14 @@ class DeepseekMLA(nn.Module):
                     model_extra_config.operator_opt_config.use_omni_cache and
                     attn_metadata and attn_metadata.omni_cache):
                 
-                selection_k_rope = attn_metadata.omni_cache.selection_k_rope[self.layer_idx]
-                selection_kv_cache_npu = attn_metadata.omni_cache.selection_kv_cache[self.layer_idx]
-                selection_kv_block_table_npu = attn_metadata.omni_cache.selection_kv_block_table
-                selection_kv_block_status_npu = attn_metadata.omni_cache.selection_kv_block_status_list[self.layer_idx]
-                selection_topk_indices_npu = topk_indices + 0
+                kv_dsa, key_rope_dsa, topk_indices_dsa, block_table_dsa = attn_metadata.omni_cache.process_avsg(topk_indices + 0,
+                                                       k_nope,
+                                                       attn_metadata.decode.block_table,
+                                                       attn_metadata.decode.seq_lens.to(torch.int32),
+                                                       attn_metadata.omni_cache.cu_q_len,
+                                                       self.layer_idx,
+                                                       self.skip_topk_offset_idx)
 
-                full_kv_cache_npu = k_nope.squeeze(-2)
-                full_k_rope_npu = k_rope.squeeze(-2)
-                # fake TND --> TND
-                full_kv_block_table_npu = torch.index_select(attn_metadata.decode.block_table, dim=0, index=attn_metadata.omni_cache.mtp_idx)
-                full_kv_actual_seq_npu = torch.index_select(attn_metadata.decode.seq_lens, dim=0, index=attn_metadata.omni_cache.mtp_idx).to(torch.int32)
-                full_q_actual_seq_npu = attn_metadata.omni_cache.cu_q_len
-
-                selection_kwargs = {
-                    "selection_k_rope": selection_k_rope,
-                    "selection_kv_cache": selection_kv_cache_npu,
-                    "selection_kv_block_table": selection_kv_block_table_npu,
-                    "selection_kv_block_status": selection_kv_block_status_npu,
-                    "selection_topk_indices": selection_topk_indices_npu,
-                    "full_k_rope": full_k_rope_npu,
-                    "full_kv_cache": full_kv_cache_npu,
-                    "full_kv_block_table": full_kv_block_table_npu,
-                    "full_kv_actual_seq": full_kv_actual_seq_npu,
-                    "full_q_actual_seq": full_q_actual_seq_npu,
-                    "selection_topk_block_size": 1
-                }
-                
-                reusedNum = torch_npu.npu_gather_selection_kv_cache(**selection_kwargs)
-                oc = attn_metadata.omni_cache
-                topk_num = selection_topk_indices_npu.shape[-1]
-                q_seq_diff = torch.cat([
-                    full_q_actual_seq_npu[0:1],
-                    full_q_actual_seq_npu[1:] - full_q_actual_seq_npu[:-1],
-                ])
-                total_blocks = (
-                    torch.clamp(full_kv_actual_seq_npu, max=topk_num)
-                    * q_seq_diff
-                )
-                reuse_rate = (
-                    reusedNum.to(torch.float32).sum()
-                    / total_blocks.to(torch.float32).sum().clamp_min(1.0)
-                )
-                oc.reuse_rate[self.layer_idx] = (
-                    oc.reuse_rate[self.layer_idx] * oc.record_smooth_alpha
-                    + reuse_rate * (1 - oc.record_smooth_alpha)
-                )
-                # if self.layer_idx ==10:
-                #     tng.ops.npu_print("hello, reusedNum:", reusedNum)
-                # # #     tng.ops.npu_print("hello, topk_indices:", topk_indices)
-                # # #     tng.ops.npu_print("hello, selection_topk_indices_npu:", selection_topk_indices_npu)
-                #     tng.ops.npu_print("hello, full_kv_actual_seq_npu:", full_kv_actual_seq_npu)
-                #     tng.ops.npu_print("hello, full_q_actual_seq_npu:", full_q_actual_seq_npu)
-                #     tng.ops.npu_print("hello, full_kv_block_table_npu:", full_kv_block_table_npu)
-                #     tng.ops.npu_print("hello, selection_kv_block_table_npu:", selection_kv_block_table_npu)
-                key_rope_dsa = selection_k_rope.unsqueeze(-2)
-                kv_dsa = selection_kv_cache_npu.unsqueeze(-2)
-                topk_indices_dsa = selection_topk_indices_npu
-
-                # TND --> fake-TND
-                block_table_dsa = selection_kv_block_table_npu.repeat_interleave(attn_metadata.omni_cache.num_tokens_per_reqs_decode, dim=0)
                 kv_actual_seqlen_dsa = attn_metadata.decode.seq_lens.to(torch.int32)
 
             else:
@@ -1515,6 +1475,20 @@ class DeepseekMLA(nn.Module):
             output, _ = self.o_proj.forward(attn_output, bsz, q_len, self.num_local_heads, self.v_head_dim)
         else:
             output, _ = self.o_proj.forward(attn_output)
+
+        if (not int(os.getenv("DISABLE_GATHER_SELECTION", "0")) and
+            int(os.getenv("ENABLE_HOST_MAPPING", "0")) and
+            model_extra_config.operator_opt_config.use_omni_cache and
+            attn_metadata and attn_metadata.omni_cache):
+            attn_metadata.omni_cache.prefetch_avsg(topk_indices + 0,
+                                                    output,
+                                                    attn_metadata.decode.block_table,
+                                                    attn_metadata.decode.seq_lens.to(torch.int32),
+                                                    self.actual_seq_lengths[bsz].to(torch.int32),
+                                                    self.layer_idx,
+                                                    self.skip_topk_offset_idx,
+                                                    self.max_skip_per_freq)
+        
         return output
 
     def _forward_prefill_a2(

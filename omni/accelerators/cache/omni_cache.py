@@ -7,6 +7,7 @@ import threading
 import numpy as np
 import torch
 import torch_npu
+import torchair as tng
 from vllm.distributed.parallel_state import get_tp_group, get_dp_group, get_world_group
 from vllm.distributed import tensor_model_parallel_all_gather
 from vllm.config import VllmConfig
@@ -17,6 +18,7 @@ from vllm.v1.utils import bind_kv_cache
 from omni.adaptors.vllm.worker.npu_model_runner import NPUModelRunner
 from vllm.model_executor.models.utils import extract_layer_index
 from omni.layers.attention.backend.attention import AscendAttentionState
+from omni.layers.utils import ConditionalTNGScope
 from omni.models.config_loader.loader import model_extra_config
 import ctypes
 from ctypes import pythonapi, py_object
@@ -1037,6 +1039,14 @@ class DecodeOmniCache(BaseOmniCache):
                 raise ValueError(
                     f"bsz_seq ({bsz_seq}) != batch_size * seq_len ({batch_size} * {seq_len} = {batch_size * seq_len})"
                 )
+            # self.reused_nums = [
+            #     torch.zeros(
+            #         [batch_size],
+            #         dtype=torch.int32,
+            #         device=self.device,
+            #     ).contiguous()
+            #     for _ in range(self.num_layers)
+            # ]
             self.selection_k_rope = [
                 torch.zeros(
                     [self.s_max_block_num * batch_size * headnum, s_block_size, k_rope_sz],
@@ -1197,6 +1207,95 @@ class DecodeOmniCache(BaseOmniCache):
     def synchronize_d2h(self, key_states: torch.Tensor, value_states: torch.Tensor, slot_mapping: torch.Tensor, layer_idx: int, kv_event: torch.npu.Event) -> None:
         raise NotImplementedError
 
+    def process_avsg(self, topk_id, wait_tensor, block_table, kv_lens, cu_q_lens, layer_idx, skip_topk_offset_idx):
+        # if skip_topk_offset_idx > 0:
+        #     # Wait For Prefetch
+        #     tng.scope.npu_wait_tensor(wait_tensor, self.reused_nums[layer_idx])
+        
+        _topk_id = topk_id + 0
+
+        if(skip_topk_offset_idx <= 0):
+            self._process_avsg_match(_topk_id, block_table, kv_lens, cu_q_lens, layer_idx)
+
+        kv_dsa, key_rope_dsa = self._process_avsg_copy(wait_tensor, cu_q_lens, layer_idx)
+
+        return kv_dsa, key_rope_dsa, self.topk_indices_dsa, self.block_table_dsa 
+
+    def prefetch_avsg(self, topk_id, wait_tensor, block_table, kv_lens, cu_q_lens, layer_idx, skip_topk_offset_idx, max_skip_per_freq):
+        return
+        if 0 <= skip_topk_offset_idx < max_skip_per_freq:
+            with ConditionalTNGScope(multi_stream=True,stream_id=f"113"):
+                _kv_lens = kv_lens - 1
+                _topk_id = topk_id + 0
+                _, _, _, _, reused_nums = self._process_avsg(_topk_id, wait_tensor, block_table, _kv_lens, cu_q_lens, layer_idx + 1)
+                self.reused_nums[layer_idx + 1]  *= 0 
+                self.reused_nums[layer_idx + 1]  += reused_nums
+
+    def _process_avsg_copy(self, wait_tensor, cu_q_lens, layer_idx):
+        selection_k_rope = self.selection_k_rope[layer_idx]
+        selection_kv_cache_npu = self.selection_kv_cache[layer_idx]
+        full_kv_cache_npu = self.kv_caches[layer_idx][0].squeeze(-2)
+        full_k_rope_npu = self.kv_caches[layer_idx][1].squeeze(-2)
+        tng.scope.npu_wait_tensor(full_kv_cache_npu, wait_tensor)
+
+        torch_npu.npu_avsg_copy(
+            selection_k_rope, selection_kv_cache_npu, full_k_rope_npu,
+            full_kv_cache_npu, cu_q_lens, self.stage_two_copy_mapping,
+            self.stage_two_copy_count)
+        
+        key_rope_dsa = selection_k_rope.unsqueeze(-2)
+        kv_dsa = selection_kv_cache_npu.unsqueeze(-2)
+
+        return kv_dsa, key_rope_dsa
+
+    def _process_avsg_match(self, topk_id, block_table, kv_lens, cu_q_lens, layer_idx):
+
+        selection_kv_block_table_npu = self.selection_kv_block_table
+        selection_kv_block_status_npu = self.selection_kv_block_status_list[layer_idx]
+
+        # fake TND --> TND
+        full_kv_block_table_npu = torch.index_select(block_table, dim=0, index=self.mtp_idx)
+        full_kv_actual_seq_npu = torch.index_select(kv_lens, dim=0, index=self.mtp_idx).to(torch.int32)
+        full_q_actual_seq_npu = cu_q_lens
+
+        selection_kwargs = {
+            "selection_kv_block_table": selection_kv_block_table_npu,
+            "selection_kv_block_status": selection_kv_block_status_npu,
+            "selection_topk_indices": topk_id,
+            "full_kv_block_table": full_kv_block_table_npu,
+            "full_kv_actual_seq": full_kv_actual_seq_npu,
+            "full_q_actual_seq": full_q_actual_seq_npu,
+            "selection_topk_block_size": 1
+        }
+
+        reused_num, stage_two_copy_mapping, stage_two_copy_count= torch_npu.npu_gather_selection_kv_cache(**selection_kwargs)
+
+    
+        topk_num = topk_id.shape[-1]
+        q_seq_diff = torch.cat([
+            full_q_actual_seq_npu[0:1],
+            full_q_actual_seq_npu[1:] - full_q_actual_seq_npu[:-1],
+        ])
+        total_blocks = (
+            torch.clamp(full_kv_actual_seq_npu, max=topk_num)
+            * q_seq_diff
+        )
+        reuse_rate = (
+            reused_num.to(torch.float32).sum()
+            / total_blocks.to(torch.float32).sum().clamp_min(1.0)
+        )
+        self.reuse_rate[layer_idx] = (
+            self.reuse_rate[layer_idx] * self.record_smooth_alpha
+            + reuse_rate * (1 - self.record_smooth_alpha)
+        )
+
+
+        # TND --> fake-TND
+        self.topk_indices_dsa = topk_id
+        self.block_table_dsa = selection_kv_block_table_npu.repeat_interleave(self.num_tokens_per_reqs_decode, dim=0)
+        self.stage_two_copy_mapping = stage_two_copy_mapping
+        self.stage_two_copy_count = stage_two_copy_count
+
     @property
     def selection_state_size(self) -> int:
         return self.GATHER_SELECTION_POOL_SIZE * 2
@@ -1261,6 +1360,7 @@ def create_omni_cache(
                 rest = runner.kv_caches[i]
                 t0, t1 = omni_cache.host_swap_tensor[i][0], omni_cache.host_swap_tensor[i][1]
                 runner.kv_caches[i] = (t0, t1, *rest)
+            omni_cache.kv_caches = runner.kv_caches
     return omni_cache
 
 
