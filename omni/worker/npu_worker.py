@@ -96,12 +96,7 @@ class NPUWorker(Worker):
     def init_device(self):
         if self.device_config.device.type == "npu" and current_platform.device_type == "npu":
             parallel_config = self.parallel_config
-            if (
-                parallel_config.distributed_executor_backend
-                not in ("ray", "external_launcher")
-                and parallel_config.data_parallel_backend != "ray"
-                and parallel_config.nnodes_within_dp == 1
-            ):
+            if _needs_dp_local_rank_offset(parallel_config):
                 # Use local DP rank if available, otherwise use global DP rank.
                 dp_local_rank = self.parallel_config.data_parallel_rank_local
                 if dp_local_rank is None:
@@ -596,6 +591,21 @@ class NPUWorker(Worker):
             # capture_model() normally consumes the flag on entry; clear any
             # residual if it failed before consume or was bypassed.
             consume_aclgraph_recapture()
+
+
+def _needs_dp_local_rank_offset(parallel_config) -> bool:
+    """Whether this worker must offset local_rank by its DP rank itself."""
+    if parallel_config.distributed_executor_backend in ("ray", "external_launcher"):
+        return False
+    if parallel_config.data_parallel_backend == "ray":
+        return False
+    if parallel_config.nnodes_within_dp != 1:
+        return False
+    if parallel_config.assigned_physical_gpu_ids is not None:
+        # vLLM 0.25 already shards devices per DP engine on non-CUDA platforms,
+        # so local_rank is shard-local and must not be offset by the DP rank.
+        return False
+    return True
 
 
 def _patch_npu_triton_capabilities() -> None:

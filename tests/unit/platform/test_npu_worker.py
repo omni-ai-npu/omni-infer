@@ -8,6 +8,7 @@ import torch
 from omni_npu.profiler.wrapper import _to_bool
 from omni_npu.worker.npu_worker import (
     NPUWorker,
+    _needs_dp_local_rank_offset,
     _patch_npu_triton_capabilities,
 )
 from vllm.utils.mem_utils import MemorySnapshot
@@ -190,6 +191,96 @@ def test_init_device_patches_triton_capabilities_after_setting_device(monkeypatc
         ("patch_triton_capabilities", None),
         ("check_dtype", "float16"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("assigned_physical_gpu_ids", "expected_logical_id"),
+    [
+        # No per-DP device sharding: offset local_rank by the local DP rank.
+        (None, 1),
+        # vLLM 0.25 sharded devices per DP engine: local_rank is shard-local.
+        ([4], 0),
+    ],
+)
+def test_init_device_dp_offset_respects_assigned_devices(
+    monkeypatch, assigned_physical_gpu_ids, expected_logical_id
+):
+    class DtypeCheckReached(Exception):
+        pass
+
+    resolved = []
+
+    def logical_to_visible(local_rank):
+        resolved.append(local_rank)
+        return 1
+
+    def check_dtype(dtype):
+        raise DtypeCheckReached
+
+    parallel_config = SimpleNamespace(
+        distributed_executor_backend="mp",
+        data_parallel_backend="mp",
+        nnodes_within_dp=1,
+        assigned_physical_gpu_ids=assigned_physical_gpu_ids,
+        data_parallel_rank_local=1,
+        data_parallel_index=1,
+        pipeline_parallel_size=1,
+        tensor_parallel_size=1,
+    )
+    worker = SimpleNamespace(
+        device_config=SimpleNamespace(device=SimpleNamespace(type="npu")),
+        parallel_config=parallel_config,
+        local_rank=0,
+        model_config=SimpleNamespace(dtype="float16"),
+    )
+    platform = SimpleNamespace(
+        device_type="npu",
+        logical_device_id_to_visible_device_id=logical_to_visible,
+        check_if_supports_dtype=check_dtype,
+    )
+    monkeypatch.setattr("omni_npu.worker.npu_worker.current_platform", platform)
+    monkeypatch.setattr("omni_npu.worker.npu_worker.torch.device", lambda spec: spec)
+    monkeypatch.setattr("omni_npu.worker.npu_worker.torch.npu.set_device", lambda device: None)
+    monkeypatch.setattr(
+        "omni_npu.worker.npu_worker._patch_npu_triton_capabilities",
+        lambda: None,
+    )
+
+    init_device = getattr(NPUWorker.init_device, "__wrapped__", NPUWorker.init_device)
+    with pytest.raises(DtypeCheckReached):
+        init_device(worker)
+
+    assert resolved == [expected_logical_id]
+    assert worker.local_rank == expected_logical_id
+    assert worker.device == "npu:1"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        # Nothing else assigns devices, so the worker offsets local_rank itself.
+        ({}, True),
+        # Ray / external_launcher place workers on their own devices already.
+        ({"distributed_executor_backend": "ray"}, False),
+        ({"distributed_executor_backend": "external_launcher"}, False),
+        ({"data_parallel_backend": "ray"}, False),
+        # Multi-node DP: the DP rank does not map onto local devices.
+        ({"nnodes_within_dp": 2}, False),
+        # vLLM 0.25 sharded devices per DP engine: local_rank is shard-local.
+        ({"assigned_physical_gpu_ids": [4]}, False),
+    ],
+)
+def test_needs_dp_local_rank_offset(overrides, expected):
+    fields = {
+        "distributed_executor_backend": "mp",
+        "data_parallel_backend": "mp",
+        "nnodes_within_dp": 1,
+        "assigned_physical_gpu_ids": None,
+    }
+    fields.update(overrides)
+    parallel_config = SimpleNamespace(**fields)
+
+    assert _needs_dp_local_rank_offset(parallel_config) is expected
 
 
 class TestNpuWorker:
