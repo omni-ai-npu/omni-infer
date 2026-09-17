@@ -1,4 +1,5 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
@@ -27,6 +28,40 @@ def graph_output_is_tuple(graph: fx.GraphModule) -> bool:
         and return_value.op == "call_function"
         and return_value.target is tuple
     )
+
+
+@contextlib.contextmanager
+def _tracing_context_matching_inputs(example_inputs: list[Any]):
+    """Align the ambient TracingContext with the fake mode carried by the inputs.
+
+    For a single-size compile range, vLLM's piecewise backend builds the example
+    inputs under a freshly created FakeTensorMode (create_concrete_args), while
+    Dynamo's TracingContext still holds the mode it traced the graph with. Any
+    detect_fake_mode() call inside the npugraph_ex backend then returns the traced
+    mode, which the example inputs were never allocated under, and the mismatch
+    surfaces as a failure deeper in the backend. vLLM solves the same problem on
+    the Inductor path by making standalone_compile reuse the mode attached to the
+    inputs; do the equivalent here by swapping in a TracingContext built on that
+    mode for the duration of the backend call.
+    """
+    from torch._guards import TracingContext, tracing
+    from torch._subclasses.fake_tensor import FakeTensor
+
+    input_fake_mode = None
+    for x in example_inputs:
+        if isinstance(x, FakeTensor):
+            input_fake_mode = x.fake_mode
+            break
+
+    current = TracingContext.try_get()
+    if input_fake_mode is None or (
+        current is not None and current.fake_mode is input_fake_mode
+    ):
+        yield
+        return
+
+    with tracing(TracingContext(input_fake_mode)):
+        yield
 
 
 class NpuGraphExAdaptor(CompilerInterface):
@@ -120,5 +155,6 @@ class NpuGraphExAdaptor(CompilerInterface):
         logger.debug(f"pattern_fusion_pass: {config.pattern_fusion_pass}")
         logger.debug(f"frozen_parameter: {config.frozen_parameter}")
         npugraph_ex_compile = npugraph_ex.get_npu_backend(compiler_config=config)
-        compile_graph = npugraph_ex_compile(graph, example_inputs)
+        with _tracing_context_matching_inputs(example_inputs):
+            compile_graph = npugraph_ex_compile(graph, example_inputs)
         return compile_graph, None

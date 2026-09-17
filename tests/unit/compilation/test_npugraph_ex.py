@@ -8,7 +8,10 @@ import torch.fx as fx
 import pytest
 from unittest.mock import patch, MagicMock, ANY
 
-from omni_npu.compilation.npugraph_ex import NpuGraphExAdaptor
+from omni_npu.compilation.npugraph_ex import (
+    NpuGraphExAdaptor,
+    _tracing_context_matching_inputs,
+)
 
 
 @pytest.fixture
@@ -179,5 +182,69 @@ class TestNpuGraphExAdaptor:
                 assert mock_config_obj.post_grad_custom_post_pass == custom_post_pass
                 assert mock_config_obj.post_grad_custom_pre_pass == custom_pre_pass
                 assert result[0] is not None
+class TestTracingContextMatchingInputs:
+    """vLLM's piecewise backend hands us concrete-size example inputs built under a
+    fresh FakeTensorMode while Dynamo's TracingContext still holds the mode it traced
+    with; detect_fake_mode() then hands out the traced mode instead of the one the
+    inputs belong to. _tracing_context_matching_inputs reconciles the two for the
+    duration of the backend call."""
+
+    @staticmethod
+    def _fake_mode():
+        from torch._subclasses.fake_tensor import FakeTensorMode
+        from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+        return FakeTensorMode(shape_env=ShapeEnv())
+
+    def test_real_tensor_inputs_leave_context_untouched(self):
+        from torch._guards import TracingContext, tracing
+
+        outer = TracingContext(self._fake_mode())
+        with tracing(outer):
+            with _tracing_context_matching_inputs([torch.tensor([1, 2, 3])]):
+                assert TracingContext.try_get() is outer
+
+    def test_mismatched_mode_is_reconciled(self):
+        from torch._guards import TracingContext, detect_fake_mode, tracing
+
+        traced_mode = self._fake_mode()
+        input_mode = self._fake_mode()
+        with input_mode:
+            fake_input = torch.empty(4)
+
+        outer = TracingContext(traced_mode)
+        with tracing(outer):
+            # Without the helper the ambient context wins and the backend sees a
+            # mode the inputs were never allocated under.
+            assert detect_fake_mode([fake_input]) is traced_mode
+
+            with _tracing_context_matching_inputs([fake_input]):
+                assert detect_fake_mode([fake_input]) is input_mode
+
+            assert TracingContext.try_get() is outer
+
+    def test_already_matching_mode_keeps_existing_context(self):
+        from torch._guards import TracingContext, tracing
+
+        mode = self._fake_mode()
+        with mode:
+            fake_input = torch.empty(4)
+
+        outer = TracingContext(mode)
+        with tracing(outer):
+            with _tracing_context_matching_inputs([fake_input]):
+                assert TracingContext.try_get() is outer
+
+    def test_no_ambient_context(self):
+        from torch._guards import TracingContext
+
+        mode = self._fake_mode()
+        with mode:
+            fake_input = torch.empty(4)
+
+        with _tracing_context_matching_inputs([fake_input]):
+            assert TracingContext.try_get().fake_mode is mode
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
