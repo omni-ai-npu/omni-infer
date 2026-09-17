@@ -42,6 +42,7 @@ def _make_quant_moe(gmm_fr_token_threshold):
     setattr(moe, "_is_quant", True)
     setattr(moe, "_is_w4a8", False)
     moe.side_stream = None
+    moe.enable_eplb = False
     moe.use_moe_force_load_balance = False
     moe.routed_scaling_factor = 1.0
     moe.e_score_correction_bias = None
@@ -229,3 +230,34 @@ def test_forward_allgather_accepts_dict_input(monkeypatch):
     # Downstream still uses the bf16 tensor.
     assert calls.get("dynamic_quant") is hidden_bf16
     assert moe.shared_calls == [hidden_bf16]
+
+
+def test_forward_allgather_agrs_eplb_maps_and_records_physical_experts(monkeypatch):
+    """AGRS+EPLB maps logical IDs before AG and records routed load."""
+    calls = {}
+    moe = _make_quant_moe(gmm_fr_token_threshold=TOKENS)
+    moe.enable_eplb = True
+    mapped_ids = torch.ones(TOKENS, TOP_K, dtype=torch.int32)
+    planner = SimpleNamespace(
+        plan=MagicMock(return_value=(None, mapped_ids, None)),
+        record_activation=MagicMock(),
+    )
+    moe.experts.planner = planner
+    moe.experts.moe_layer_idx = 3
+    moe.experts.expert_mapping = torch.arange(EXPERTS)
+    _patch_quant_ops(monkeypatch, calls)
+
+    hidden = torch.ones(TOKENS, HIDDEN, dtype=torch.bfloat16)
+    _forward_allgather(moe, hidden, use_allreduce=False)
+
+    plan_kwargs = planner.plan.call_args.kwargs
+    assert plan_kwargs["layer_idx_moe"] == 3
+    assert plan_kwargs["tokens"] is hidden
+    assert plan_kwargs["top_k"] == TOP_K
+    assert plan_kwargs["expert_mapping"] is moe.experts.expert_mapping
+    assert calls["init_routing"][1] is mapped_ids
+    planner.record_activation.assert_called_once()
+    record_args = planner.record_activation.call_args
+    assert record_args.args[0] == 3
+    assert record_args.args[1].dtype == torch.int64
+    assert record_args.kwargs == {"support_multi_stream": False}

@@ -6,6 +6,7 @@ import queue
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -1152,3 +1153,39 @@ def test_scheme_conv_sp_stages_metadata_with_non_blocking_copy():
     assert prefix.dtype == torch.int32
     assert cumlens.dtype == torch.int32
     assert reorg_idx.dtype == torch.int32
+
+
+@pytest.mark.parametrize("multi_stream", [False, True])
+def test_conv_sp_allgather_stream_is_configurable(multi_stream):
+    """The config selects synchronous or side-stream cache-state AllGather."""
+    utils = importlib.import_module(MODULE)
+    x = torch.ones(2, 3)
+    w = torch.ones(2, 3)
+    cache = torch.zeros(2, 2, 3)
+    init_idx = torch.tensor([0, 1])
+    save_idx = torch.tensor([0])
+    group = SimpleNamespace(
+        device_group=object(),
+        all_gather=MagicMock(side_effect=lambda value, dim=0: value),
+    )
+    metadata = (
+        (torch.empty(0, dtype=torch.long), [0], [0]),
+        (torch.tensor([0]), torch.tensor([0, 2]), torch.arange(4)),
+        (2, 2, 2, 2, group),
+        None,
+    )
+
+    with (
+        _mock_conv_sp_ops(),
+        patch.object(torch.distributed, "all_to_all_single"),
+        patch.object(
+            utils.model_extra_config.operator_opt_config,
+            "mome_sp_allgather_multi_stream",
+            multi_stream,
+        ),
+        patch.object(utils, "named_stream", wraps=utils.named_stream) as named_stream,
+    ):
+        utils.conv_sp(x, w, cache, init_idx, save_idx, metadata)
+
+    group.all_gather.assert_called_once()
+    assert named_stream.call_count == int(multi_stream)

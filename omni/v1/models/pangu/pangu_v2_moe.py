@@ -526,6 +526,19 @@ class OpenPanguV2MOE(nn.Module):
                 topk_ids = self.aux_load_balance_tensor.repeat(force_k + 1, 1) \
                             .view(-1, self.experts.top_k)[:topk_ids.shape[0]]
 
+            # AGRS routes with global physical expert IDs. Convert the logical
+            # IDs selected by the gate before all-gathering them so redundant
+            # expert replicas installed by EPLB can receive tokens.
+            elif self.enable_eplb and not use_allreduce:
+                _, topk_ids, _ = self.experts.planner.plan(
+                    layer_idx_moe=self.experts.moe_layer_idx,
+                    tokens=hidden_states,
+                    token_expert_ids=topk_ids,
+                    token_expert_scores=topk_weights,
+                    top_k=self.experts.top_k,
+                    expert_mapping=self.experts.expert_mapping,
+                )
+
 
             if self._is_quant:
                 hidden_states_int8, pertoken_scale = torch_npu.npu_dynamic_quant(hidden_states)
@@ -565,6 +578,12 @@ class OpenPanguV2MOE(nn.Module):
                     active_expert_range=expert_range,
                     row_idx_type=1 if ENABLE_GMM_FR else 0,
                 )
+                if self.enable_eplb and not use_allreduce:
+                    self.experts.planner.record_activation(
+                        self.experts.moe_layer_idx,
+                        expert_tokens.to(torch.int64),
+                        support_multi_stream=False,
+                    )
                 if self._is_w4a8:
                     # GMM1: int8 x int4 -> bf16 (int4 dequant and zero point inlined)
                     asym = self._is_w4a8_weight_asymmetric
@@ -781,6 +800,13 @@ class OpenPanguV2MOE(nn.Module):
                         quant_mode=-1,
                         active_expert_range=expert_range,
                         row_idx_type=0,
+                    )
+
+                if self.enable_eplb and not use_allreduce:
+                    self.experts.planner.record_activation(
+                        self.experts.moe_layer_idx,
+                        expert_tokens.to(torch.int64),
+                        support_multi_stream=False,
                     )
 
                 gate_up_proj_output = torch_npu.npu_grouped_matmul(

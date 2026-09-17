@@ -45,6 +45,7 @@ def _build_sparse_attention(
     rope_interleave=None,
     rope_interleaved=None,
     enable_attn_sp=False,
+    enable_flashcomm2=False,
     tp_size=1,
 ):
     if swa_layers is None:
@@ -107,6 +108,11 @@ def _build_sparse_attention(
             pangu_mod.model_extra_config.parall_config,
             "ena_swa_attn_seq_parallel",
             enable_attn_sp,
+        ),
+        patch.object(
+            pangu_mod.model_extra_config.parall_config,
+            "enable_flashcomm2",
+            enable_flashcomm2,
         ),
         patch.object(torch, "zeros", side_effect=cpu_zeros),
     ]
@@ -2144,6 +2150,7 @@ def _bare_swa_attention(**attrs):
         is_attn_sp_layer=True,
         is_dsa_layer=False,
         enable_flashcomm2=False,
+        is_flashcomm2_layer=False,
         tp_size=1,
         moe_comm_strategy="agrs",
         prefix="model.layers.0.self_attn",
@@ -2386,6 +2393,25 @@ class TestPanguSWASeqParallel(unittest.TestCase):
         self.assertTrue(sp_attn.is_attn_sp_layer)
         self.assertEqual(sp_attn.num_local_heads, sp_attn.num_heads)
         self.assertTrue(sp_attn.disable_o_conv_tp)
+
+    def test_constructor_routes_swa_sp_and_flashcomm2_to_disjoint_layers(self):
+        """SWA-SP owns SWA/MTP while FlashComm2 owns only global MLA."""
+        swa = _build_sparse_attention(
+            layer_idx=0, enable_attn_sp=True, enable_flashcomm2=True
+        )
+        global_mla = _build_sparse_attention(
+            layer_idx=2, enable_attn_sp=True, enable_flashcomm2=True
+        )
+        mtp = _build_sparse_attention(
+            layer_idx=4, enable_attn_sp=True, enable_flashcomm2=True
+        )
+
+        self.assertTrue(swa.is_attn_sp_layer)
+        self.assertFalse(swa.is_flashcomm2_layer)
+        self.assertFalse(global_mla.is_attn_sp_layer)
+        self.assertTrue(global_mla.is_flashcomm2_layer)
+        self.assertTrue(mtp.is_attn_sp_layer)
+        self.assertFalse(mtp.is_flashcomm2_layer)
 
     def test_npu_pangu_forward_dispatches_prefill_sp(self):
         """Pure prefill on an SP layer must call _forward_prefill_sp."""

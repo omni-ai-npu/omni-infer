@@ -725,12 +725,14 @@ class NPUPanguSparseAttention(torch.nn.Module):
         self.sliding_window_list = sliding_window_list if sliding_window_list else []
         self.aligned_window_size = max(self.sliding_window_list)
         self.skip_topk = False
-        if self.layer_idx in self.swa_layers:
+        self.is_swa_layer = self.layer_idx in self.swa_layers
+        self.is_mtp_layer = self.layer_idx >= config.num_hidden_layers
+        if self.is_swa_layer:
             # SWA layer
             pos_in_swa = self.swa_layers.index(self.layer_idx)
             self.sliding_window = self.sliding_window_list[pos_in_swa]
             self.is_dsa_layer = False
-        elif self.layer_idx >= config.num_hidden_layers:
+        elif self.is_mtp_layer:
             # MTP layer
             self.sliding_window = self.sliding_window_list[-1]
             self.is_dsa_layer = False
@@ -783,7 +785,11 @@ class NPUPanguSparseAttention(torch.nn.Module):
         self.ena_dsa_cp = model_extra_config.parall_config.ena_context_parallel
         self.is_cp_layer = self.is_dsa_layer and self.ena_dsa_cp
         self.ena_swa_attn_seq_parallel = model_extra_config.parall_config.ena_swa_attn_seq_parallel
-        self.is_attn_sp_layer = self.ena_swa_attn_seq_parallel and not self.is_dsa_layer
+        # MTP layers use the SWA window as well. Full/global MLA layers must
+        # retain their regular TP layout and must not enter the SWA-SP path.
+        self.is_attn_sp_layer = self.ena_swa_attn_seq_parallel and (
+            self.is_swa_layer or self.is_mtp_layer
+        )
         self.num_local_heads = (
             num_heads
             if self.is_cp_layer or self.is_attn_sp_layer
@@ -819,6 +825,14 @@ class NPUPanguSparseAttention(torch.nn.Module):
             self._fia_aic_core_num = stream_limit["cube_core_num"]
             self._fia_aiv_core_num = stream_limit["vector_core_num"]
         self.enable_flashcomm2 = model_extra_config.parall_config.enable_flashcomm2
+        # SWA-SP and FlashComm2 are alternative prefill paths. When SWA-SP is
+        # enabled, reserve FlashComm2 for full/global MLA layers. If SWA-SP is
+        # disabled, preserve the existing FlashComm2 behavior for SWA/MTP.
+        self.is_flashcomm2_layer = (
+            self.enable_flashcomm2
+            and not self.is_dsa_layer
+            and not self.is_attn_sp_layer
+        )
         self.sharded_o_proj = (
             model_extra_config.parall_config.sharded_o_proj
             and self.is_pd_disagg
@@ -1022,7 +1036,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
                 # FlashComm2 all-to-all's to token slices, so o_proj runs unsharded.
                 disable_tp=(
                     replicate_attention_weights
-                    or (self.enable_flashcomm2 and not self.is_dsa_layer)
+                    or self.is_flashcomm2_layer
                 ),
             )
 
@@ -1804,7 +1818,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
             dtype=hidden_states.dtype,
         )
 
-        if self.enable_flashcomm2 and not self.is_dsa_layer:
+        if self.is_flashcomm2_layer:
             # FlashComm2.0 dummy: simulate all_to_all + full o_proj
             x = attn_output.view(self.tp_size, -1, attn_output.shape[-1])
             output = torch.zeros_like(x)
@@ -1816,7 +1830,7 @@ class NPUPanguSparseAttention(torch.nn.Module):
         hidden_states = self._apply_o_proj(attn_output)
 
         if self.tp_size > 1:
-            if self.enable_flashcomm2 and not self.is_dsa_layer:
+            if self.is_flashcomm2_layer:
                 pass  # all_to_all + full o_proj already complete
             elif self.moe_comm_strategy == "allreduce":
                 hidden_states = get_tp_group().all_reduce(hidden_states)
@@ -4841,7 +4855,7 @@ def npu_pangu_forward(
         # Need to make sure there are at least 8 tokens (or else no tokens) on each rank
         # so that there are enough tokens to communicate
         enable_attn_sp = self.is_attn_sp_layer and not has_decode
-        enable_flashcomm2 = self.enable_flashcomm2 and not self.is_dsa_layer and not has_decode
+        enable_flashcomm2 = self.is_flashcomm2_layer and not has_decode
 
         # Only skip the global all_gather when the CP/SP/FC2 path will actually run
         # (pure prefill, no decode). Mixed batch and decode paths still need it.
