@@ -5,8 +5,6 @@ USER_EXTRA_ARGS=("$@")
 
 rm -rf ~/.cache/huggingface/modules/transformers_modules.tokenization_sophon_fast
 
-cp -f /mnt/bucket-910c-6055/zhangqiang/npu_shared_offload_region.py /workspace/omniinfer/omni/v1/kv_offload/cpu
-
 export API_PORT=${BASE_API_PORT:-9000}
 export HCCL_OP_EXPANSION_MODE=${HCCL_OP_EXPANSION_MODE:-AIV}
 export ASCEND_GLOBAL_LOG_LEVEL=${ASCEND_GLOBAL_LOG_LEVEL:-3}
@@ -130,7 +128,7 @@ npu=${npu:-16}
 export NUM_DIE_PER_MACH=${npu}
 export PREFILL_POD_NUM=${PREFILL_INSTANCE_NUM:-1}
 export DECODE_POD_NUM=${DECODE_INSTANCE_NUM:-1}
-long_prefill_token_threshold=${long_prefill_token_threshold:-1024}
+long_prefill_token_threshold=${long_prefill_token_threshold:-0}
 if [[ -n "${KV_EVENTS_CONFIG}" ]]; then
     export KV_EVENTS_CONFIG
 fi
