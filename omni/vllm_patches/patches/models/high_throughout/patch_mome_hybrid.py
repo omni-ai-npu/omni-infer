@@ -219,6 +219,7 @@ class NPUMoMEPatch(VLLMPatch):
             hidden_states: torch.Tensor,
             state_indice: int,
             is_prefill: bool = False,
+            inplace: bool = False,
             **kwargs,
         ) -> torch.Tensor:
             """
@@ -271,6 +272,7 @@ class NPUMoMEPatch(VLLMPatch):
                 cache=conv_state,
                 mome_metadata=mome_metadata,
                 is_prefill=is_prefill,
+                inplace=inplace,
             )
 
         @attn_decorator(type='mome')
@@ -281,6 +283,7 @@ class NPUMoMEPatch(VLLMPatch):
             cache: torch.Tensor,
             is_prefill: bool,
             mome_metadata: Optional[NPUMomeAttentionMetadata] = None,
+            inplace: bool = False,
         ) -> torch.Tensor:
             """
             Apply MOME convolution using ColumnParallelMOMERL with KV cache update.
@@ -291,6 +294,9 @@ class NPUMoMEPatch(VLLMPatch):
             Returns:
                 Output tensor with same shape as input.
                 The cache tensor is updated in-place as a side effect.
+                With ``inplace=True`` the kernel writes into ``x`` instead;
+                MomeAttentionMixin._maybe_mome_kv relies on that and drops
+                the return value.
             """
 
             metadata = mome_metadata.prefill if is_prefill else mome_metadata.decode
@@ -301,7 +307,7 @@ class NPUMoMEPatch(VLLMPatch):
                 x=x,
                 conv_states=cache,
                 mome_metadata=metadata,
-                inplace=False,
+                inplace=inplace,
             )
 
             return x
