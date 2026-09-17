@@ -158,6 +158,12 @@ def apply_patches():
 
     manager.apply_patches()
 
+    # Model-specific classes depend on symbols provided by the patches above.
+    patch_dirs = _get_patch_dir_names(_get_manual_patches_dir_env())
+    if "openpangu_v1_vl" in {name.lower() for name in patch_dirs}:
+        from omni_npu.layers.mhc.mhc import NPUmHCModule
+        logger.info("Registered NPU mHC implementation: %s", NPUmHCModule.__name__)
+
     # Run dynamic trace wrapping after normal patches are applied, so namelist
     # targets wrap the final patched methods instead of earlier implementations.
     from omni_npu.vllm_patches.patches.common.patch_trace import ProfilerDynamicPatch

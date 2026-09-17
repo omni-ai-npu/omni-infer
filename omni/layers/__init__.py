@@ -3,7 +3,6 @@
 from vllm.logger import init_logger
 logger = init_logger(__name__)
 
-from omni_npu import envs
 from omni_npu.layers.attention.mm_encoder_attention import NPUMMEncoderAttention
 from omni_npu.layers.quantization.compressed_tensors.compressed_tensors import NPUCompressedTensorsConfig
 from omni_npu.layers.quantization.hifloat8 import Hifloat8Config
@@ -24,18 +23,3 @@ from omni_npu.layers.rotary_embedding.llama3_rope import NPULlama3RotaryEmbeddin
 from omni_npu.layers.rotary_embedding.deepseek_scaling_rope import NPUDeepseekScalingRotaryEmbedding
 from omni_npu.layers.rotary_embedding.mrope import NPUMRotaryEmbedding
 from omni_npu.layers.rotary_embedding.yarn_scaling_rope import NPUYaRNScalingRotaryEmbedding
-patches_dir = envs.OMNI_VLLM_PATCHES_DIR
-if any(
-    d.strip() in ["pangu_sink_swa_mla"]
-    for d in patches_dir.split(",")
-):
-    try:
-        from omni_npu.layers.mhc.mhc import NPUmHCModule
-    except ImportError:
-        NPUmHCModule = None
-    try:
-        from omni_npu.layers.mome.mome import NPUAggregateConv
-    except ImportError:
-        NPUAggregateConv = None
-else:
-    pass
