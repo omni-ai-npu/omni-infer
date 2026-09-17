@@ -22,6 +22,7 @@ from vllm.model_executor.parameter import ChannelQuantScaleParameter, ModelWeigh
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
 from omni_npu.layers.fused_moe.config import hifloat8_moe_quant_config
+from omni_npu.layers.quantization.moe_apply import shared_expert_mlp
 from omni_npu.layers.fused_moe.fused_moe_method_base import NPUFusedMoEMethodBase
 from omni_npu.layers.fused_moe.layer import NPUFusedMoE
 from omni_npu.layers.fused_moe.shared_expert import activate_shared_expert_on_side_stream
@@ -407,7 +408,7 @@ class Hifloat8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
             ),
             requires_grad=False
         )
-        layer.ensure_moe_quant_config_init()
+        layer._ensure_moe_quant_config_init()
 
     def apply(
         self,
@@ -432,6 +433,7 @@ class Hifloat8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
         logical_to_physical_map: Optional[torch.Tensor] = None,
         logical_replica_count: Optional[torch.Tensor] = None,
     ):
+        shared_experts = shared_expert_mlp(layer)
         orig_num_tokens = hidden_states.shape[0]
         strategy, strategy_impl = self.select_communication_strategy(orig_num_tokens)
 
@@ -491,31 +493,31 @@ class Hifloat8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
         elif multi_stream:
             # default with_finalize: launch shared experts on the side stream so
             # they overlap apply_unpermute_finalize below.
-            if layer.shared_experts is not None:
+            if shared_experts is not None:
                 cur_stream = torch.npu.current_stream()
                 self.shared_experts_stream.wait_stream(cur_stream)
                 with torch.npu.stream(self.shared_experts_stream):
-                    if layer.shared_experts.gate_up_proj.tp_size > 1:
-                        shared_output = layer.shared_experts(hidden_states)
+                    if shared_experts.gate_up_proj.tp_size > 1:
+                        shared_output = shared_experts(hidden_states)
                     else:
-                        shared_output = layer.shared_experts(x_slice)
+                        shared_output = shared_experts(x_slice)
         else:
             # Multi-stream disabled — run shared experts synchronously on the
             # main stream. Schedule is ignored.
-            if layer.shared_experts is not None:
-                if layer.shared_experts.gate_up_proj.tp_size > 1:
-                    shared_output = layer.shared_experts(hidden_states)
+            if shared_experts is not None:
+                if shared_experts.gate_up_proj.tp_size > 1:
+                    shared_output = shared_experts(hidden_states)
                 else:
-                    shared_output = layer.shared_experts(x_slice)
+                    shared_output = shared_experts(x_slice)
 
         routed_output = self.apply_unpermute_finalize(
             strategy_impl, layer, output, topk_ids, topk_weights, prepare_permute_result,
         )
 
         if multi_stream and schedule == "with_finalize":
-            if layer.shared_experts is not None:
+            if shared_experts is not None:
                 cur_stream.wait_stream(self.shared_experts_stream)
-                if layer.shared_experts.gate_up_proj.tp_size > 1:
+                if shared_experts.gate_up_proj.tp_size > 1:
                     shared_output = tensor_model_parallel_all_reduce(shared_output)
 
         if is_need_slice:
@@ -532,6 +534,8 @@ class Hifloat8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
         activation: str = "silu",
         use_grouped_matmul_finalize_routing: bool = False,
     ) -> torch.Tensor:
+        experts = layer.routed_experts
+        shared_experts = shared_expert_mlp(layer)
         hidden_states = prepare_permute_result.hidden_states_sorted_by_experts
         expert_tokens = prepare_permute_result.expert_tokens
         avg_tokens_per_expert = prepare_permute_result.avg_tokens_per_expert or [0]
@@ -552,9 +556,9 @@ class Hifloat8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
             )
 
         gate_up_proj = torch_npu.npu_grouped_matmul(
-            [hidden_states], [layer.w13_weight],
+            [hidden_states], [experts.w13_weight],
             bias=None,
-            scale=[layer.w13_weight_scale],
+            scale=[experts.w13_weight_scale],
             per_token_scale=[pertoken_scale] if pertoken_scale is not None else None,
             group_list=expert_tokens,
             split_item=3, output_dtype=torch.bfloat16, group_type=0,
@@ -568,7 +572,7 @@ class Hifloat8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
 
             self.shared_experts_stream.wait_stream(torch.npu.current_stream())
             with torch.npu.stream(self.shared_experts_stream):
-                shared_expert_results = layer.shared_experts.down_proj({'x_hif8': shared_expert_act})
+                shared_expert_results = shared_experts.down_proj({'x_hif8': shared_expert_act})
 
         intermediate_hidden_states = torch_npu.npu_swiglu(gate_up_proj)
         intermediate_hidden_states = torch_npu.npu_dtype_cast(intermediate_hidden_states, torch_npu.hifloat8)
@@ -585,8 +589,8 @@ class Hifloat8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
         )
 
         hidden_states_experts = torch_npu.npu_grouped_matmul(
-            [intermediate_hidden_states], [layer.w2_weight],
-            scale=[layer.w2_weight_scale],
+            [intermediate_hidden_states], [experts.w2_weight],
+            scale=[experts.w2_weight_scale],
             per_token_scale=[pertoken_scale] if pertoken_scale is not None else None,
             bias=None,
             group_list=expert_tokens,

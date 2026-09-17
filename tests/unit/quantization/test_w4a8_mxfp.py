@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
+from tests.unit.moe_layer_stub import as_moe_runner, moe_layer
 
 
 _E8M0_SENTINEL = object()
@@ -686,7 +687,7 @@ class TestW4A8MXFPMoE:
     ):
         module, mock_npu = w4_module
         layer = _create_moe_weights(moe_method)
-        layer.ensure_moe_quant_config_init = MagicMock()
+        layer._ensure_moe_quant_config_init = MagicMock()
         checkpoint_w13_scale = (
             torch.arange(
                 layer.w13_weight_scale.numel(),
@@ -739,7 +740,7 @@ class TestW4A8MXFPMoE:
             == expected_w2_scale.stride()
         )
         assert not layer.w13_weight_scale.is_contiguous()
-        layer.ensure_moe_quant_config_init.assert_called_once()
+        layer._ensure_moe_quant_config_init.assert_called_once()
         assert getattr(
             layer.w13_weight,
             module._W4A8_MXFP_PACKED_ATTR,
@@ -748,7 +749,7 @@ class TestW4A8MXFPMoE:
 
         moe_method.process_weights_after_loading(layer)
         assert mock_npu.npu_format_cast.call_count == 2
-        layer.ensure_moe_quant_config_init.assert_called_once()
+        layer._ensure_moe_quant_config_init.assert_called_once()
 
     def test_expert_bias_is_rejected(self, moe_method_factory):
         layer_wrapper = _MockMoELayer(has_bias=True)
@@ -772,8 +773,8 @@ class TestW4A8MXFPMoE:
     ):
         _, mock_npu = w4_module
         layer = _create_moe_weights(moe_method)
-        layer.moe_parallel_config = SimpleNamespace(use_ep=use_ep)
-        layer.ensure_moe_quant_config_init = MagicMock()
+        as_moe_runner(layer, use_ep=use_ep)
+        layer._ensure_moe_quant_config_init = MagicMock()
         moe_method.process_weights_after_loading(layer)
         prepare_result = SimpleNamespace(
             hidden_states_sorted_by_experts=torch.zeros(

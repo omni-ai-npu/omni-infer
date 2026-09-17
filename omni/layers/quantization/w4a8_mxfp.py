@@ -699,7 +699,7 @@ class W4A8MXFPMoEMethod(Mxfp8MoEMethod):
         packed_attrs = {_W4A8_MXFP_PACKED_ATTR: True}
         set_weight_attrs(layer.w13_weight, packed_attrs)
         set_weight_attrs(layer.w2_weight, packed_attrs)
-        layer.ensure_moe_quant_config_init()
+        layer._ensure_moe_quant_config_init()
 
     def apply_experts(
         self,

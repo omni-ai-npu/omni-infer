@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
+from tests.unit.moe_layer_stub import as_moe_runner, moe_layer
 
 
 # --------------------------------------------------------------------------- #
@@ -765,7 +766,7 @@ class TestMxfp8MoEMethod:
             intermediate_size_per_partition=64,
             params_dtype=torch.bfloat16,
         )
-        layer.ensure_moe_quant_config_init = MagicMock()
+        layer._ensure_moe_quant_config_init = MagicMock()
         moe_method.process_weights_after_loading(layer)
         # (E, N13, K) -> (E, K, N13)
         assert layer.w13_weight.shape == (4, 128, 128)
@@ -773,7 +774,7 @@ class TestMxfp8MoEMethod:
         assert layer.w13_weight_scale.shape == (4, 128 // 64, 128, 2)
         # w2: (E, K, I) -> (E, I, K)
         assert layer.w2_weight.shape == (4, 64, 128)
-        layer.ensure_moe_quant_config_init.assert_called_once()
+        layer._ensure_moe_quant_config_init.assert_called_once()
 
 
 # --------------------------------------------------------------------------- #
@@ -1018,7 +1019,7 @@ class TestMxfp8Reload:
                 params_dtype=torch.bfloat16,
                 weight_loader=expert_loader,
             )
-            layer.ensure_moe_quant_config_init = MagicMock()
+            layer._ensure_moe_quant_config_init = MagicMock()
             return layer
 
         def checkpoint(offset):
@@ -1099,9 +1100,9 @@ class TestMxfp8MoEMethodApplyExperts:
             intermediate_size_per_partition=64,
             params_dtype=torch.bfloat16,
         )
-        layer.ensure_moe_quant_config_init = MagicMock()
+        layer._ensure_moe_quant_config_init = MagicMock()
         moe_method.process_weights_after_loading(layer)
-        return layer
+        return as_moe_runner(layer)
 
     def _prepare_permute_result(self, dynamic_scale):
         return SimpleNamespace(
@@ -1130,6 +1131,28 @@ class TestMxfp8MoEMethodApplyExperts:
         mock_torch_npu.npu_swiglu_mx_quant.assert_called_once()
         _, kwargs = mock_torch_npu.npu_swiglu_mx_quant.call_args
         assert kwargs["scale_alg"] == 1
+
+    def test_apply_experts_reads_weights_from_routed_experts(
+        self, mock_torch_npu, moe_method
+    ):
+        """vLLM 0.25 hands apply_experts the MoERunner, not the experts.
+
+        The runner itself has no expert weights, so reading them anywhere but
+        ``layer.routed_experts`` raises AttributeError at the first forward.
+        """
+        experts = self._build_layer(moe_method)
+        runner = moe_layer(routed_experts=experts, gate=None)
+        assert not hasattr(runner, "w13_weight")
+
+        scale = torch.zeros(8, 128 // 32, dtype=torch.uint8)
+        result = moe_method.apply_experts(runner, self._prepare_permute_result(scale))
+
+        assert result.shape == (8, 128)
+        first, second = mock_torch_npu.npu_grouped_matmul.call_args_list
+        assert first.args[1][0] is experts.w13_weight
+        assert first.kwargs["scale"][0] is experts.w13_weight_scale
+        assert second.args[1][0] is experts.w2_weight
+        assert second.kwargs["scale"][0] is experts.w2_weight_scale
 
     def test_apply_experts_dynamic_scale_none_triggers_quant(
         self, mock_torch_npu, moe_method
@@ -1252,11 +1275,10 @@ class TestMxfp8MoEMethodApplyExpertsCV:
             intermediate_size_per_partition=64,
             params_dtype=torch.bfloat16,
         )
-        layer.ensure_moe_quant_config_init = MagicMock()
+        layer._ensure_moe_quant_config_init = MagicMock()
         moe_method.process_weights_after_loading(layer)
-        layer.shared_experts = shared_experts
         layer._shared_experts = SimpleNamespace(_layer=shared_experts)
-        return layer
+        return as_moe_runner(layer)
 
     def test_apply_experts_cv_returns_routed_and_shared_tuple(
         self, mock_torch_npu, moe_method, mxfp8_module, monkeypatch
@@ -1384,7 +1406,7 @@ class TestMxfp8MoEMethodApply:
 
         shared_experts = MagicMock()
         shared_experts.gate_up_proj = SimpleNamespace(tp_size=1)
-        layer = SimpleNamespace(
+        layer = moe_layer(
             gate=lambda x: (torch.zeros(x.shape[0], 4), None),
             shared_experts=shared_experts,
         )
@@ -1430,7 +1452,7 @@ class TestMxfp8MoEMethodApply:
             mxfp8_module, "tensor_model_parallel_all_reduce", fake_all_reduce
         )
 
-        layer = SimpleNamespace(
+        layer = moe_layer(
             gate=lambda x: (torch.zeros(x.shape[0], 4), None),
             shared_experts=shared_experts,
         )
@@ -1467,7 +1489,7 @@ class TestMxfp8MoEMethodApply:
             return_value=torch.full((2, 128), 3.0, dtype=torch.bfloat16)
         )
         shared_experts.gate_up_proj = SimpleNamespace(tp_size=1)
-        layer = SimpleNamespace(
+        layer = moe_layer(
             gate=lambda x: (torch.zeros(x.shape[0], 4), None),
             shared_experts=shared_experts,
         )
@@ -1500,7 +1522,7 @@ class TestMxfp8MoEMethodApply:
             return_value=torch.full((2, 128), 2.0, dtype=torch.bfloat16)
         )
         shared_experts.gate_up_proj = SimpleNamespace(tp_size=1)
-        layer = SimpleNamespace(
+        layer = moe_layer(
             gate=lambda x: (torch.zeros(x.shape[0], 4), None),
             shared_experts=shared_experts,
         )
@@ -1516,6 +1538,94 @@ class TestMxfp8MoEMethodApply:
         shared_experts.assert_called_once()
         assert moe_method.shared_experts_stream.wait_stream_calls == []
         assert isinstance(out, tuple)
+
+    def test_apply_calls_shared_mlp_not_the_runner_wrapper(
+        self, mock_torch_npu, moe_method, mxfp8_module, monkeypatch
+    ):
+        """``layer.shared_experts`` is vLLM 0.25's SharedExperts wrapper.
+
+        It has no ``gate_up_proj``; the shared-expert MLP that apply() must
+        call is ``layer._shared_experts._layer``.
+        """
+        _patch_npu_streams(monkeypatch)
+        _set_schedule(
+            mxfp8_module, monkeypatch,
+            multi_stream=False, schedule="with_finalize",
+        )
+        moe_method = _build_apply_method(mxfp8_module, moe_method, monkeypatch)
+        moe_method.apply_experts = MagicMock(
+            return_value=torch.zeros(2, 128, dtype=torch.bfloat16)
+        )
+
+        shared_mlp = MagicMock(
+            return_value=torch.full((2, 128), 2.0, dtype=torch.bfloat16)
+        )
+        shared_mlp.gate_up_proj = SimpleNamespace(tp_size=1)
+        wrapper = MagicMock(spec=["__call__"])
+        layer = moe_layer(
+            gate=lambda x: (torch.zeros(x.shape[0], 4), None),
+            shared_experts=wrapper,
+            _shared_experts=SimpleNamespace(_layer=shared_mlp),
+        )
+
+        out = moe_method.apply(
+            layer=layer,
+            hidden_states=torch.ones(2, 128, dtype=torch.bfloat16),
+            router_logits=None,
+            top_k=1,
+            renormalize=False,
+        )
+
+        shared_mlp.assert_called_once()
+        wrapper.assert_not_called()
+        assert isinstance(out, tuple)
+
+    @pytest.mark.parametrize("with_shared", [True, False])
+    def test_apply_a5_tp_path_reads_use_ep_from_moe_config(
+        self, mock_torch_npu, moe_method, mxfp8_module, monkeypatch, with_shared
+    ):
+        # use_ep lives on layer.moe_config.moe_parallel_config under vLLM 0.25;
+        # reading it from the runner itself would always fall back to EP.
+        _patch_npu_streams(monkeypatch)
+        _set_schedule(
+            mxfp8_module, monkeypatch,
+            multi_stream=False, schedule="with_finalize",
+        )
+        moe_method = _build_apply_method(mxfp8_module, moe_method, monkeypatch)
+        moe_method.on_ascend950 = True
+        routed = torch.full((2, 128), 1.0, dtype=torch.bfloat16)
+        fused_tp = MagicMock(return_value=routed)
+        monkeypatch.setattr(mxfp8_module, "fused_experts_tp", fused_tp)
+
+        shared_mlp = MagicMock(
+            return_value=torch.full((2, 128), 2.0, dtype=torch.bfloat16)
+        )
+        layer = as_moe_runner(
+            SimpleNamespace(
+                gate=lambda x: (torch.zeros(x.shape[0], 4), None),
+                shared_experts=shared_mlp if with_shared else None,
+            ),
+            use_ep=False,
+        )
+        hidden = torch.ones(2, 128, dtype=torch.bfloat16)
+
+        out = moe_method.apply(
+            layer=layer,
+            hidden_states=hidden,
+            router_logits=None,
+            top_k=1,
+            renormalize=False,
+        )
+
+        fused_tp.assert_called_once()
+        moe_method.apply_prepare_permute.assert_not_called()
+        if with_shared:
+            shared_mlp.assert_called_once()
+            shared_out, total = out
+            assert torch.equal(shared_out, shared_mlp.return_value)
+            assert torch.equal(total, routed + shared_mlp.return_value)
+        else:
+            assert out is routed
 
     def test_apply_non_multistream_with_finalize_tp_gt1_all_reduces_shared(
         self, mock_torch_npu, moe_method, mxfp8_module, monkeypatch
@@ -1539,7 +1649,7 @@ class TestMxfp8MoEMethodApply:
         )
         shared_experts = MagicMock(return_value=shared)
         shared_experts.gate_up_proj = SimpleNamespace(tp_size=2)
-        layer = SimpleNamespace(
+        layer = moe_layer(
             gate=lambda x: (torch.zeros(x.shape[0], 4), None),
             shared_experts=shared_experts,
         )
@@ -1576,7 +1686,7 @@ class TestMxfp8MoEMethodApply:
         shared = torch.full((2, 128), 3.0, dtype=torch.bfloat16)
         shared_experts = MagicMock(return_value=shared)
         shared_experts.gate_up_proj = SimpleNamespace(tp_size=1)
-        layer = SimpleNamespace(
+        layer = moe_layer(
             gate=lambda x: (torch.zeros(x.shape[0], 4), None),
             shared_experts=shared_experts,
         )
@@ -1611,7 +1721,7 @@ class TestMxfp8MoEMethodApply:
         shared = torch.full((2, 128), 3.0, dtype=torch.bfloat16)
         shared_experts = MagicMock(return_value=shared)
         shared_experts.gate_up_proj = SimpleNamespace(tp_size=1)
-        layer = SimpleNamespace(
+        layer = moe_layer(
             gate=lambda x: (torch.zeros(x.shape[0], 4), None),
             shared_experts=shared_experts,
         )
@@ -1652,7 +1762,7 @@ class TestMxfp8MoEMethodApply:
         )
         shared_experts = MagicMock(return_value=shared)
         shared_experts.gate_up_proj = SimpleNamespace(tp_size=2)
-        layer = SimpleNamespace(
+        layer = moe_layer(
             gate=lambda x: (torch.zeros(x.shape[0], 4), None),
             shared_experts=shared_experts,
         )
@@ -1693,7 +1803,7 @@ class TestMxfp8MoEMethodApply:
             return_value=torch.full((2, 128), 2.0, dtype=torch.bfloat16)
         )
         shared_experts.gate_up_proj = SimpleNamespace(tp_size=1)
-        layer = SimpleNamespace(
+        layer = moe_layer(
             gate=lambda x: (torch.zeros(x.shape[0], 4), None),
             shared_experts=shared_experts,
         )

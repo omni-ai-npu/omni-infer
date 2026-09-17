@@ -18,6 +18,17 @@ class ApplyExpertsState(NamedTuple):
     pertoken_scale: object
 
 
+def shared_expert_mlp(layer):
+    """The shared-expert MLP under vLLM 0.25's MoERunner, or None.
+
+    ``layer.shared_experts`` is now a property returning the ``SharedExperts``
+    wrapper, which has neither ``gate_up_proj`` nor ``down_proj``; the MLP the
+    NPU quant paths call into lives at ``layer._shared_experts._layer``.
+    """
+    shared = getattr(layer, "_shared_experts", None)
+    return None if shared is None else shared._layer
+
+
 def unpack_apply_experts_state(layer, prepare_permute_result):
     shared = layer._shared_experts
     return ApplyExpertsState(

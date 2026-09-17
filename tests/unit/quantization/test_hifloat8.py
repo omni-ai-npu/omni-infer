@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import torch
+from tests.unit.moe_layer_stub import as_moe_runner, moe_layer
 
 
 pytestmark = pytest.mark.unit
@@ -456,7 +457,7 @@ def test_linear_create_weights(hifloat8_module, monkeypatch, method_class):
 
 def test_hifloat8_mlp_pipeline(hifloat8_module, mock_torch_npu):
     method = hifloat8_module.Hifloat8MlpMethod(object())
-    layer = SimpleNamespace(
+    layer = moe_layer(
         gate_up_proj=MagicMock(return_value=(torch.ones(2, 4), None)),
         act_fn=MagicMock(return_value=torch.ones(2, 2)),
         down_proj=MagicMock(return_value=(torch.ones(2, 3), None)),
@@ -507,7 +508,7 @@ def test_moe_apply_experts_flattens_scale_and_uses_swiglu_cast(
     hifloat8_module, mock_torch_npu
 ):
     method = hifloat8_module.Hifloat8MoEMethod.__new__(hifloat8_module.Hifloat8MoEMethod)
-    layer = SimpleNamespace(
+    layer = moe_layer(
         w13_weight=torch.zeros(2, 4, 8, dtype=torch.uint8),
         w13_weight_scale=torch.ones(2, 8, dtype=torch.float32),
         w2_weight=torch.zeros(2, 4, 4, dtype=torch.uint8),
@@ -540,10 +541,43 @@ def test_moe_apply_experts_flattens_scale_and_uses_swiglu_cast(
     assert cast_args[1] is mock_torch_npu.hifloat8
 
 
+def test_moe_apply_experts_reads_weights_from_routed_experts(
+    hifloat8_module, mock_torch_npu
+):
+    """vLLM 0.25 hands apply_experts the MoERunner; weights live on routed_experts."""
+    method = hifloat8_module.Hifloat8MoEMethod.__new__(hifloat8_module.Hifloat8MoEMethod)
+    experts = SimpleNamespace(
+        w13_weight=torch.zeros(2, 4, 8, dtype=torch.uint8),
+        w13_weight_scale=torch.ones(2, 8, dtype=torch.float32),
+        w2_weight=torch.zeros(2, 4, 4, dtype=torch.uint8),
+        w2_weight_scale=torch.ones(2, 4, dtype=torch.float32),
+    )
+    runner = moe_layer(routed_experts=experts)
+    assert not hasattr(runner, "w13_weight")
+    prepare_result = SimpleNamespace(
+        hidden_states_sorted_by_experts=torch.zeros(4, 4, dtype=torch.int8),
+        expert_tokens=torch.tensor([2, 2], dtype=torch.int32),
+        avg_tokens_per_expert=[2],
+        dynamic_scale=None,
+    )
+    mock_torch_npu.npu_grouped_matmul.side_effect = [
+        [torch.zeros(4, 8, dtype=torch.bfloat16)],
+        [torch.zeros(4, 4, dtype=torch.bfloat16)],
+    ]
+
+    method.apply_experts(runner, prepare_result)
+
+    first, second = mock_torch_npu.npu_grouped_matmul.call_args_list
+    assert first.args[1][0] is experts.w13_weight
+    assert first.kwargs["scale"][0] is experts.w13_weight_scale
+    assert second.args[1][0] is experts.w2_weight
+    assert second.kwargs["scale"][0] is experts.w2_weight_scale
+
+
 def test_linear_apply_with_dict_input_skips_dtype_cast(
     hifloat8_module, mock_torch_npu
 ):
-    layer = SimpleNamespace(
+    layer = moe_layer(
         weight=torch.zeros(3, 2, dtype=torch.uint8),
         weight_scale=torch.ones(2, dtype=torch.float32),
         orig_dtype=torch.bfloat16,
@@ -562,7 +596,7 @@ def test_linear_apply_with_dict_input_skips_dtype_cast(
 def test_linear_apply_with_tensor_input_casts_to_hifloat8(
     hifloat8_module, mock_torch_npu
 ):
-    layer = SimpleNamespace(
+    layer = moe_layer(
         weight=torch.zeros(3, 2, dtype=torch.uint8),
         weight_scale=torch.ones(2, dtype=torch.float32),
         orig_dtype=torch.bfloat16,
@@ -585,7 +619,7 @@ def test_moe_process_weights_calls_npu_trans_quant_param_for_both_scales(
     hifloat8_module, mock_torch_npu
 ):
     method = hifloat8_module.Hifloat8MoEMethod.__new__(hifloat8_module.Hifloat8MoEMethod)
-    layer = SimpleNamespace(
+    layer = moe_layer(
         w13_weight=torch.nn.Parameter(
             torch.zeros(2, 8, 4, dtype=torch.uint8), requires_grad=False
         ),
@@ -598,7 +632,7 @@ def test_moe_process_weights_calls_npu_trans_quant_param_for_both_scales(
         w2_weight_scale=torch.nn.Parameter(
             torch.ones(2, 4, 1, dtype=torch.float32), requires_grad=False
         ),
-        ensure_moe_quant_config_init=MagicMock(),
+        _ensure_moe_quant_config_init=MagicMock(),
     )
 
     method.process_weights_after_loading(layer)
@@ -609,7 +643,7 @@ def test_moe_process_weights_calls_npu_trans_quant_param_for_both_scales(
     # squeeze(-1).float() => shape (2, 8) and (2, 4) of float32 (here +1 from mock)
     assert layer.w13_weight_scale.shape == (2, 8)
     assert layer.w2_weight_scale.shape == (2, 4)
-    layer.ensure_moe_quant_config_init.assert_called_once()
+    layer._ensure_moe_quant_config_init.assert_called_once()
 
 
 def test_moe_apply_experts_with_routed_experts_cv_returns_tuple(
@@ -630,7 +664,7 @@ def test_moe_apply_experts_with_routed_experts_cv_returns_tuple(
         act_fn=MagicMock(side_effect=lambda x: x),
         down_proj=MagicMock(return_value=torch.full((2, 4), 9.0, dtype=torch.bfloat16)),
     )
-    layer = SimpleNamespace(
+    layer = moe_layer(
         w13_weight=torch.zeros(2, 4, 8, dtype=torch.uint8),
         w13_weight_scale=torch.ones(2, 8, dtype=torch.float32),
         w2_weight=torch.zeros(2, 4, 4, dtype=torch.uint8),
@@ -687,7 +721,7 @@ def test_moe_apply_experts_with_routed_experts_cv_grouped_finalize_routing(
         act_fn=MagicMock(side_effect=lambda x: x),
         down_proj=MagicMock(return_value=torch.zeros(2, 4, dtype=torch.bfloat16)),
     )
-    layer = SimpleNamespace(
+    layer = moe_layer(
         w13_weight=torch.zeros(2, 4, 8, dtype=torch.uint8),
         w13_weight_scale=torch.ones(2, 8, dtype=torch.float32),
         w2_weight=torch.zeros(2, 4, 4, dtype=torch.uint8),
@@ -731,7 +765,7 @@ def test_moe_init_records_shared_experts_stream_via_named_stream(
 
     monkeypatch.setattr(hifloat8_module, "named_stream", fake_named_stream)
 
-    layer = SimpleNamespace(
+    layer = moe_layer(
         moe_config=SimpleNamespace(num_experts=8),
         layer_name="layer_0",
     )
@@ -785,7 +819,7 @@ def test_moe_apply_with_routed_experts_cv_unpacks_tuple(
     shared = torch.full((2, 4), 7.0, dtype=torch.bfloat16)
     method.apply_experts = MagicMock(return_value=(routed, shared))
 
-    layer = SimpleNamespace(
+    layer = moe_layer(
         gate=lambda x: (torch.zeros(x.shape[0], 4), None),
         shared_experts=SimpleNamespace(
             gate_up_proj=SimpleNamespace(tp_size=1),
@@ -836,7 +870,7 @@ def test_moe_apply_default_with_finalize_runs_shared_experts_locally(
         hifloat8_module, "tensor_model_parallel_all_reduce", fake_all_reduce
     )
 
-    layer = SimpleNamespace(
+    layer = moe_layer(
         gate=lambda x: (torch.zeros(x.shape[0], 4), None),
         shared_experts=shared_experts,
     )
@@ -875,7 +909,7 @@ def test_moe_apply_default_with_finalize_shared_tp1_uses_x_slice(
     shared_experts = MagicMock(return_value=torch.full((2, 4), 3.0, dtype=torch.bfloat16))
     shared_experts.gate_up_proj = SimpleNamespace(tp_size=1)
 
-    layer = SimpleNamespace(
+    layer = moe_layer(
         gate=lambda x: (torch.zeros(x.shape[0], 4), None),
         shared_experts=shared_experts,
     )
@@ -894,6 +928,50 @@ def test_moe_apply_default_with_finalize_shared_tp1_uses_x_slice(
     assert torch.equal(shared_experts.call_args.args[0], hidden)
 
 
+@pytest.mark.parametrize("tp_size", [1, 2])
+def test_moe_apply_without_multi_stream_runs_shared_mlp_on_main_stream(
+    hifloat8_module, mock_torch_npu, monkeypatch, tp_size
+):
+    """Multi-stream off: the shared MLP from _shared_experts._layer runs inline."""
+    _patch_npu_streams(monkeypatch)
+    monkeypatch.setattr(
+        hifloat8_module.model_extra_config.operator_opt_config,
+        "shared_expert_multi_stream",
+        False,
+    )
+    monkeypatch.setattr(
+        hifloat8_module, "tensor_model_parallel_all_reduce", lambda t: t
+    )
+
+    method = _build_apply_method(hifloat8_module, monkeypatch)
+    method.apply_experts = MagicMock(return_value=torch.zeros(2, 4, dtype=torch.bfloat16))
+
+    shared_mlp = MagicMock(return_value=torch.full((2, 4), 3.0, dtype=torch.bfloat16))
+    shared_mlp.gate_up_proj = SimpleNamespace(tp_size=tp_size)
+    wrapper = MagicMock(spec=["__call__"])
+    layer = moe_layer(
+        gate=lambda x: (torch.zeros(x.shape[0], 4), None),
+        shared_experts=wrapper,
+        _shared_experts=SimpleNamespace(_layer=shared_mlp),
+    )
+    hidden = torch.ones(2, 4, dtype=torch.bfloat16)
+
+    out = method.apply(
+        layer=layer,
+        hidden_states=hidden,
+        router_logits=None,
+        top_k=1,
+        renormalize=False,
+    )
+
+    shared_mlp.assert_called_once()
+    wrapper.assert_not_called()
+    # hidden_states and x_slice coincide here (no slicing), so both branches see it.
+    assert torch.equal(shared_mlp.call_args.args[0], hidden)
+    assert isinstance(out, tuple)
+    assert torch.equal(out[0], shared_mlp.return_value)
+
+
 def test_moe_apply_experts_default_with_finalize_no_shared_path(
     hifloat8_module, mock_torch_npu, monkeypatch
 ):
@@ -908,7 +986,7 @@ def test_moe_apply_experts_default_with_finalize_no_shared_path(
     method = hifloat8_module.Hifloat8MoEMethod.__new__(hifloat8_module.Hifloat8MoEMethod)
     method.shared_experts_stream = _DummyStream()
 
-    layer = SimpleNamespace(
+    layer = moe_layer(
         w13_weight=torch.zeros(2, 4, 8, dtype=torch.uint8),
         w13_weight_scale=torch.ones(2, 8, dtype=torch.float32),
         w2_weight=torch.zeros(2, 4, 4, dtype=torch.uint8),
@@ -950,7 +1028,7 @@ def test_linear_apply_runs_registered_cube_side_task(
         flag["called"] = True
 
     task = hifloat8_module.CubeSideTask(fn=side_fn)
-    layer = SimpleNamespace(
+    layer = moe_layer(
         prefix="layers.0.self_attn.o_proj",
         weight=torch.zeros(3, 2, dtype=torch.uint8),
         weight_scale=torch.ones(2, dtype=torch.float32),
@@ -980,7 +1058,7 @@ def test_linear_apply_skips_cube_side_task_when_prefix_not_registered(
 
     task = hifloat8_module.CubeSideTask(fn=side_fn)
     _set_cube_side_tasks(hifloat8_module, {"some.other.layer": task})
-    layer = SimpleNamespace(
+    layer = moe_layer(
         prefix="layers.0.self_attn.o_proj",
         weight=torch.zeros(3, 2, dtype=torch.uint8),
         weight_scale=torch.ones(2, dtype=torch.float32),
@@ -1001,7 +1079,7 @@ def test_linear_apply_no_op_when_no_cube_side_tasks_dict(
     _patch_npu_streams(monkeypatch)
     fwctx = sys.modules["vllm.forward_context"]._fwctx
     fwctx.additional_kwargs = {}
-    layer = SimpleNamespace(
+    layer = moe_layer(
         prefix="layers.0.self_attn.o_proj",
         weight=torch.zeros(3, 2, dtype=torch.uint8),
         weight_scale=torch.ones(2, dtype=torch.float32),
@@ -1024,7 +1102,7 @@ def test_apply_experts_runs_registered_cube_side_task(
         flag["called"] = True
 
     task = hifloat8_module.CubeSideTask(fn=side_fn)
-    layer = SimpleNamespace(
+    layer = moe_layer(
         layer_name="layers.0.mlp.experts",
         w13_weight=torch.zeros(2, 4, 8, dtype=torch.uint8),
         w13_weight_scale=torch.ones(2, 8, dtype=torch.float32),
@@ -1062,7 +1140,7 @@ def test_apply_experts_skips_cube_side_task_in_grouped_matmul_finalize_routing(
         flag["called"] = True
 
     task = hifloat8_module.CubeSideTask(fn=side_fn)
-    layer = SimpleNamespace(
+    layer = moe_layer(
         layer_name="layers.0.mlp.experts",
         w13_weight=torch.zeros(2, 4, 8, dtype=torch.uint8),
         w13_weight_scale=torch.ones(2, 8, dtype=torch.float32),
@@ -1111,7 +1189,7 @@ def test_flashcomm_apply_runs_registered_cube_side_task(
         flag["called"] = True
 
     task = hifloat8_module.CubeSideTask(fn=side_fn)
-    layer = SimpleNamespace(
+    layer = moe_layer(
         prefix="layers.0.self_attn.o_proj",
         weight=torch.zeros(3, 2, dtype=torch.uint8),
         weight_scale=torch.ones(2, dtype=torch.float32),

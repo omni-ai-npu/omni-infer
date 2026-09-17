@@ -23,6 +23,7 @@ from vllm.model_executor.layers.quantization.base_config import QuantizationConf
 from vllm.model_executor.parameter import ModelWeightParameter
 from vllm.model_executor.utils import set_weight_attrs
 from omni_npu.layers.fused_moe.config import FusedMoEQuantConfig, FusedMoEQuantDesc, _quant_flags_to_group_shape
+from omni_npu.layers.quantization.moe_apply import shared_expert_mlp
 from omni_npu.layers.fused_moe.fused_moe_method_base import NPUFusedMoEMethodBase
 from omni_npu.layers.fused_moe.layer import NPUFusedMoE
 from omni_npu.layers.fused_moe.shared_expert import activate_shared_expert_on_side_stream
@@ -140,7 +141,9 @@ def apply_mxfp_experts(
     reshape_swiglu_scale=False,
 ):
     """Run the shared MXFP expert pipeline with a format-specific GEMM."""
-    moe_parallel_config = getattr(layer, "moe_parallel_config", None)
+    experts = layer.routed_experts
+    shared_experts = shared_expert_mlp(layer)
+    moe_parallel_config = layer.moe_config.moe_parallel_config
     group_list_type = int(getattr(moe_parallel_config, "use_ep", True))
     hidden_states, expert_tokens, pertoken_scale = _prepare_mxfp_expert_inputs(
         prepare_permute_result,
@@ -155,8 +158,8 @@ def apply_mxfp_experts(
 
     gate_up_proj = grouped_matmul(
         hidden_states,
-        layer.w13_weight,
-        layer.w13_weight_scale,
+        experts.w13_weight,
+        experts.w13_weight_scale,
         pertoken_scale,
         expert_tokens,
         group_list_type,
@@ -167,7 +170,7 @@ def apply_mxfp_experts(
         torch.npu.current_stream().wait_stream(method.shared_experts_stream)
         method.shared_experts_stream.wait_stream(torch.npu.current_stream())
         with torch.npu.stream(method.shared_experts_stream):
-            shared_results = layer.shared_experts.down_proj(
+            shared_results = shared_experts.down_proj(
                 {"x_mxfp8": shared_act, "pertoken_scale": shared_scale}
             )
 
@@ -192,8 +195,8 @@ def apply_mxfp_experts(
     intermediate = torch.ops.vllm.cube_side_run(layer_key, intermediate)
     routed_results = grouped_matmul(
         intermediate,
-        layer.w2_weight,
-        layer.w2_weight_scale,
+        experts.w2_weight,
+        experts.w2_weight_scale,
         pertoken_scale,
         expert_tokens,
         group_list_type,
@@ -768,7 +771,7 @@ class Mxfp8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
         scale_attrs = {"is_mxfp8_scale_packed": True}
         set_weight_attrs(layer.w13_weight_scale, scale_attrs)
         set_weight_attrs(layer.w2_weight_scale, scale_attrs)
-        layer.ensure_moe_quant_config_init()
+        layer._ensure_moe_quant_config_init()
 
     def apply(
         self,
@@ -793,6 +796,7 @@ class Mxfp8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
         logical_to_physical_map: Optional[torch.Tensor] = None,
         logical_replica_count: Optional[torch.Tensor] = None,
     ):
+        shared_experts = shared_expert_mlp(layer)
         orig_num_tokens = hidden_states.shape[0]
         strategy, strategy_impl = self.select_communication_strategy(orig_num_tokens)
 
@@ -840,7 +844,7 @@ class Mxfp8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
             e_score_correction_bias=e_score_correction_bias,
         )
 
-        moe_parallel_config = getattr(layer, "moe_parallel_config", None)
+        moe_parallel_config = layer.moe_config.moe_parallel_config
         use_ep = getattr(moe_parallel_config, "use_ep", True)
         if not use_ep:
             if self.on_ascend950:
@@ -852,8 +856,8 @@ class Mxfp8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
                     topk_ids=topk_ids,
                     topk_weights=topk_weights,
                 )
-                if layer.shared_experts is not None:
-                    shared_output = layer.shared_experts(x_slice)
+                if shared_experts is not None:
+                    shared_output = shared_experts(x_slice)
                     return shared_output, routed_output + shared_output
                 return routed_output
             return fused_experts_tp(
@@ -882,22 +886,22 @@ class Mxfp8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
         elif multi_stream:
             # default with_finalize: launch shared experts on the side stream so
             # they overlap apply_unpermute_finalize below.
-            if layer.shared_experts is not None:
+            if shared_experts is not None:
                 cur_stream = torch.npu.current_stream()
                 self.shared_experts_stream.wait_stream(cur_stream)
                 with torch.npu.stream(self.shared_experts_stream):
-                    if layer.shared_experts.gate_up_proj.tp_size > 1:
-                        shared_output = layer.shared_experts(hidden_states)
+                    if shared_experts.gate_up_proj.tp_size > 1:
+                        shared_output = shared_experts(hidden_states)
                     else:
-                        shared_output = layer.shared_experts(x_slice)
+                        shared_output = shared_experts(x_slice)
         else:
             # Multi-stream disabled — run shared experts synchronously on the
             # main stream. Schedule is ignored.
-            if layer.shared_experts is not None:
-                if layer.shared_experts.gate_up_proj.tp_size > 1:
-                    shared_output = layer.shared_experts(hidden_states)
+            if shared_experts is not None:
+                if shared_experts.gate_up_proj.tp_size > 1:
+                    shared_output = shared_experts(hidden_states)
                 else:
-                    shared_output = layer.shared_experts(x_slice)
+                    shared_output = shared_experts(x_slice)
 
         if enable_prefetch:
             self.shared_experts_stream.wait_stream(cur_stream)
@@ -918,15 +922,15 @@ class Mxfp8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
 
         use_custom_model_add = "omni_custom_models" in os.environ.get("VLLM_PLUGINS", "")
         if multi_stream and schedule == "with_finalize":
-            if layer.shared_experts is not None:
+            if shared_experts is not None:
                 cur_stream.wait_stream(self.shared_experts_stream)
-                if layer.shared_experts.gate_up_proj.tp_size > 1:
+                if shared_experts.gate_up_proj.tp_size > 1:
                     shared_output = tensor_model_parallel_all_reduce(shared_output)
                 elif use_custom_model_add:
                     routed_output = routed_output + shared_output
         elif schedule == "with_finalize":
-            if layer.shared_experts is not None:
-                if layer.shared_experts.gate_up_proj.tp_size > 1:
+            if shared_experts is not None:
+                if shared_experts.gate_up_proj.tp_size > 1:
                     shared_output = tensor_model_parallel_all_reduce(shared_output)
                 elif use_custom_model_add:
                     routed_output = routed_output + shared_output
@@ -934,7 +938,7 @@ class Mxfp8MoEMethod(FusedMoEMethodBase, NPUFusedMoEMethodBase):
         if is_need_slice:
             routed_output = tensor_model_parallel_all_gather(routed_output, dim=0)[:orig_num_tokens]
 
-        if shared_output is not None and layer.shared_experts.gate_up_proj.tp_size > 1 and use_custom_model_add: 
+        if shared_output is not None and shared_experts.gate_up_proj.tp_size > 1 and use_custom_model_add:
             return shared_output, routed_output + shared_output
         if shared_output is not None:
             return shared_output, routed_output
