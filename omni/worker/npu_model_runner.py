@@ -867,8 +867,10 @@ class NPUModelRunner(GPUModelRunner):
         intermediate_tensors: IntermediateTensors | None,
         sync_self: bool,
     ) -> IntermediateTensors:
-        assert sync_self == False
-        assert self.intermediate_tensors is not None
+        if sync_self:
+            raise RuntimeError("dummy run must not synchronize the runner state")
+        if self.intermediate_tensors is None:
+            raise RuntimeError("intermediate tensors must be initialized before dummy run")
 
         tp = self.vllm_config.parallel_config.tensor_parallel_size
         is_rs = model_extra_config.parall_config.ena_seq_parallel
@@ -934,10 +936,10 @@ class NPUModelRunner(GPUModelRunner):
             # mm encoder dummy run may need to add in the future.
             return torch.tensor([]), torch.tensor([])
 
-        assert (
-            cudagraph_runtime_mode is None
-            or cudagraph_runtime_mode.valid_runtime_modes()
-        )
+        if (cudagraph_runtime_mode is not None
+                and not cudagraph_runtime_mode.valid_runtime_modes()):
+            raise ValueError(
+                "cudagraph_runtime_mode must be None or a valid runtime mode")
 
         # If cudagraph_mode.decode_mode() == FULL and
         # cudagraph_mode.separate_routine(). This means that we are using
@@ -957,10 +959,15 @@ class NPUModelRunner(GPUModelRunner):
         # Set num_scheduled_tokens based on num_tokens and max_num_seqs
         # for dummy run with LoRA so that the num_reqs collectively
         # has num_tokens in total.
-        assert num_tokens <= self.max_num_tokens
+        if num_tokens > self.max_num_tokens:
+            raise ValueError(
+                "num_tokens must not exceed max_num_tokens: "
+                f"{num_tokens} > {self.max_num_tokens}")
         max_num_reqs = self.scheduler_config.max_num_seqs
         if create_mixed_batch:
-            assert not uniform_decode
+            if uniform_decode:
+                raise ValueError(
+                    "create_mixed_batch and uniform_decode cannot both be true")
             # Create mixed batch:
             # first half decode tokens, second half one prefill
             num_decode_tokens = min(max_num_reqs - 1, num_tokens // 2)
@@ -972,7 +979,9 @@ class NPUModelRunner(GPUModelRunner):
             # Note: Overriding max_query_len to be the prefill tokens
             max_query_len = num_prefill_tokens
         elif uniform_decode:
-            assert not create_mixed_batch
+            if create_mixed_batch:
+                raise ValueError(
+                    "uniform_decode cannot be used with create_mixed_batch")
             num_reqs = min(max_num_reqs, cdiv(num_tokens, max_query_len))
             num_scheduled_tokens_list = [max_query_len] * num_reqs
             if num_tokens % max_query_len != 0:
@@ -985,8 +994,14 @@ class NPUModelRunner(GPUModelRunner):
                 num_scheduled_tokens_list[i] += 1
             max_query_len = num_scheduled_tokens_list[0]
 
-        assert sum(num_scheduled_tokens_list) == num_tokens
-        assert len(num_scheduled_tokens_list) == num_reqs
+        if sum(num_scheduled_tokens_list) != num_tokens:
+            raise RuntimeError(
+                "scheduled token count must equal num_tokens: "
+                f"{sum(num_scheduled_tokens_list)} != {num_tokens}")
+        if len(num_scheduled_tokens_list) != num_reqs:
+            raise RuntimeError(
+                "scheduled token list length must equal num_reqs: "
+                f"{len(num_scheduled_tokens_list)} != {num_reqs}")
         num_scheduled_tokens = np.array(num_scheduled_tokens_list, dtype=np.int32)
         num_tokens_unpadded = int(num_scheduled_tokens.sum())
 
@@ -1025,10 +1040,11 @@ class NPUModelRunner(GPUModelRunner):
         if cudagraph_runtime_mode is None:
             cudagraph_runtime_mode = _cudagraph_mode
         else:
-            assert cudagraph_runtime_mode == _cudagraph_mode, (
-                f"Cudagraph runtime mode mismatch in dummy_run. "
-                f"Expected {_cudagraph_mode}, but got {cudagraph_runtime_mode}."
-            )
+            if cudagraph_runtime_mode != _cudagraph_mode:
+                raise RuntimeError(
+                    "Cudagraph runtime mode mismatch in dummy_run. "
+                    f"Expected {_cudagraph_mode}, but got "
+                    f"{cudagraph_runtime_mode}.")
 
         num_tokens_padded = batch_desc.num_tokens
         num_reqs_padded = (
@@ -1125,7 +1141,10 @@ class NPUModelRunner(GPUModelRunner):
             num_active_loras,
         ):
             # Make sure padding doesn't exceed max_num_tokens
-            assert num_tokens_padded <= self.max_num_tokens
+            if num_tokens_padded > self.max_num_tokens:
+                raise RuntimeError(
+                    "padded token count must not exceed max_num_tokens: "
+                    f"{num_tokens_padded} > {self.max_num_tokens}")
             model_kwargs = self._init_model_kwargs()
             if self.supports_mm_inputs and not self.model_config.is_encoder_decoder:
                 input_ids, inputs_embeds = self._prepare_mm_inputs(num_tokens_padded)
@@ -1211,7 +1230,10 @@ class NPUModelRunner(GPUModelRunner):
                 hidden_states, num_scheduled_tokens, is_profile)
 
             if self.speculative_config and get_pp_group().is_last_rank and self.speculative_config.use_eagle():
-                assert isinstance(self.drafter, EagleProposer)
+                if not isinstance(self.drafter, EagleProposer):
+                    raise RuntimeError(
+                        "Eagle speculative decoding requires an EagleProposer "
+                        "drafter")
                 # Adapt start: enable mtp acl graph mode
                 use_cudagraphs = (
                     (
