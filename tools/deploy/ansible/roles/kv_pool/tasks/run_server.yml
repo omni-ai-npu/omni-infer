@@ -34,8 +34,54 @@
 
     - name: Install the KV pool module before starting Prefill.
       ansible.builtin.include_tasks: "{{ kv_pool_repo_root }}/kv_pool/deploy/install_kv_pool.yml"
+      vars:
+        kv_pool_install_container: "{{ ACTUAL_DOCKER_NAME_P }}"
 
     - name: Render the KV pool runtime fragment.
+      ansible.builtin.template:
+        src: "{{ kv_pool_repo_root }}/kv_pool/deploy/_kv_pool_runtime.sh.j2"
+        dest: "$SCRIPTS_PATH/kv_pool_runtime.sh"
+        mode: '0750'
+
+- name: Prepare the enabled KV pool Decode runtime.
+  # Decode mirrors the Prefill preparation and joins the pool capacity-only:
+  # contributes its segment, performs no lookup and no saves (upstream
+  # vLLM PR #50498 semantics rendered by the same role-aware fragment).
+  when:
+    - enable_kv_pool | bool
+    - "'D' in group_names"
+  tags: run_server
+  block:
+    - name: Detect the KV pool communication interface on Decode.
+      ansible.builtin.shell: ip -4 route list 0/0 | awk '{print $5}' | head -1
+      register: kv_pool_interface_result_d
+      changed_when: false
+
+    - name: Register the KV pool communication interface on Decode.
+      ansible.builtin.set_fact:
+        default_interface: "{{ kv_pool_interface_result_d.stdout }}"
+      when: kv_pool_interface_result_d.stdout != ""
+
+    - name: Resolve the KV pool Decode profile.
+      ansible.builtin.set_fact:
+        resolved_run_server_decode_profile: >-
+          {{ run_server_decode_profile_defaults
+             | combine({'kv_pool': kv_pool_profile_defaults}, recursive=true)
+             | combine(run_server_decode_profile, recursive=true) }}
+
+    - name: Validate the KV pool Decode profile.
+      ansible.builtin.assert:
+        that:
+          - resolved_run_server_decode_profile.kv_pool is mapping
+        fail_msg: The Decode KV pool profile must be a mapping.
+
+    - name: Install the KV pool module into the Decode container.
+      ansible.builtin.include_tasks:
+        file: "{{ kv_pool_repo_root }}/kv_pool/deploy/install_kv_pool.yml"
+      vars:
+        kv_pool_install_container: "{{ ACTUAL_DOCKER_NAME_D }}"
+
+    - name: Render the KV pool runtime fragment for Decode.
       ansible.builtin.template:
         src: "{{ kv_pool_repo_root }}/kv_pool/deploy/_kv_pool_runtime.sh.j2"
         dest: "$SCRIPTS_PATH/kv_pool_runtime.sh"

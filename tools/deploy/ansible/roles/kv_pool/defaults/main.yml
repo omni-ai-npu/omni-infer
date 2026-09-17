@@ -11,6 +11,8 @@ start_docker_cmd_m: '{{ resolved_docker_run_cmd }} -d --name $DOCKER_NAME_M $DOC
 
 # Defaults for run_server_prefill_profile.kv_pool, consumed by the external
 # runtime template and merged only in the KV pool preparation stage.
+# Decode hosts resolve the same defaults into their decode profile before
+# rendering the role-aware runtime fragment (capacity-only join).
 kv_pool_profile_defaults:
   global_segment_size_gb: 32
   local_buffer_size_gb: 8
