@@ -126,7 +126,7 @@ class LoptParallelTokenizer:
             )
         except RuntimeError:
             logger.warning("Fall back to standard tokenizer on match failure")
-            return self.tokenizer(text, return_tensors="np", add_special_tokens=add_special_tokens)
+            return self.tokenizer(text, add_special_tokens=add_special_tokens)
 
         merged = BatchEncoding({})
 

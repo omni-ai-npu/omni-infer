@@ -12,19 +12,29 @@ import torch
 import torch.nn as nn
 import pytest
 
-if importlib.util.find_spec("omni_models") is None:
+# Broken editable installs may leave a bare `omni_models` namespace; find_spec on
+# nested modules then raises ModuleNotFoundError instead of returning None.
+try:
+    if importlib.util.find_spec("omni_models.models.pangu.openpangu") is None:
+        raise ModuleNotFoundError("omni_models.models.pangu.openpangu")
+except ModuleNotFoundError:
     pytest.skip(
         "optional omni_models package is not installed",
         allow_module_level=True,
     )
 
-from omni_npu.vllm_patches.patches.models.pangu_v2_base.patch_mla import mlaPatch
+try:
+    from omni_npu.vllm_patches.patches.models.pangu_v2_base.patch_mla import mlaPatch
+    from omni_npu.vllm_patches.patches.models.pangu_sink_swa_mla.patch_static_sink_attention import StaticSinkAttentionPatch
+    from omni_npu.vllm_patches.patches.models.pangu_sink_swa_mla.patch_mome import MoMEPatch
+except ModuleNotFoundError as exc:
+    pytest.skip(
+        f"optional omni_npu patch module is not available: {exc}",
+        allow_module_level=True,
+    )
+
 mlaPatch.apply()
-
-from omni_npu.vllm_patches.patches.models.pangu_sink_swa_mla.patch_static_sink_attention import StaticSinkAttentionPatch
 StaticSinkAttentionPatch.apply()
-
-from omni_npu.vllm_patches.patches.models.pangu_sink_swa_mla.patch_mome import MoMEPatch
 MoMEPatch.apply()
 
 import omni_models.models.pangu.openpangu as openpangu_mod
