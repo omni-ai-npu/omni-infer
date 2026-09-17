@@ -46,7 +46,13 @@
           -mindepth 1 -maxdepth 1 ! -name components
           -exec rm -rf -- '{}' + &&
           docker cp '{{ ansible_env.CODE_PATH }}/omniinfer/.'
-          "${DOCKER_NAME_P}:{{ container_workspace }}/omniinfer/"
+          "${DOCKER_NAME_P}:{{ container_workspace }}/omniinfer/" &&
+          if [ -d '{{ ansible_env.CODE_PATH }}/Pangu-FusionComm' ]; then
+          docker exec "$DOCKER_NAME_P" rm -rf
+          '{{ container_workspace }}/omniinfer/components/Pangu-FusionComm' &&
+          docker cp '{{ ansible_env.CODE_PATH }}/Pangu-FusionComm'
+          "${DOCKER_NAME_P}:{{ container_workspace }}/omniinfer/components/";
+          fi
         decode: >-
           docker exec "$DOCKER_NAME_D" mkdir -p
           '{{ container_workspace }}/omniinfer/components' &&
@@ -55,7 +61,13 @@
           -mindepth 1 -maxdepth 1 ! -name components
           -exec rm -rf -- '{}' + &&
           docker cp '{{ ansible_env.CODE_PATH }}/omniinfer/.'
-          "${DOCKER_NAME_D}:{{ container_workspace }}/omniinfer/"
+          "${DOCKER_NAME_D}:{{ container_workspace }}/omniinfer/" &&
+          if [ -d '{{ ansible_env.CODE_PATH }}/Pangu-FusionComm' ]; then
+          docker exec "$DOCKER_NAME_D" rm -rf
+          '{{ container_workspace }}/omniinfer/components/Pangu-FusionComm' &&
+          docker cp '{{ ansible_env.CODE_PATH }}/Pangu-FusionComm'
+          "${DOCKER_NAME_D}:{{ container_workspace }}/omniinfer/components/";
+          fi
 
     run_server_prefill_profile:
       # 由 enable_kv_pool=true 控制（M 组部署 + install_kv_pool +

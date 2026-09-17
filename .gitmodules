@@ -10,3 +10,7 @@
 	path = components/omni-cache
 	url = https://gitee.com/omniai/omni-cache.git
 	branch = master
+[submodule "components/Pangu-FusionComm"]
+	path = components/Pangu-FusionComm
+	url = https://gitee.com/omniai/Pangu-FusionComm.git
+	branch = develop
