@@ -405,6 +405,18 @@ class NPUModelRunner(GPUModelRunner):
                         stride=(hidden_size, 2 * hidden_size, *kv_cache.stride()[2:]),
                     )
 
+    def get_kv_cache_spec(self):
+        kv_cache_spec = super().get_kv_cache_spec()
+        if getattr(self.vllm_config.model_config.hf_config, "cla_explicit_mapping", None):
+            # Pangu CLA aliases derive from MLAAttention, not vLLM Attention.
+            attn_layers = get_layers_from_vllm_config(self.vllm_config, AttentionLayerBase)
+            for layer_name, attn_module in attn_layers.items():
+                target = getattr(attn_module, "kv_sharing_target_layer_name", None)
+                if target is not None:
+                    self.shared_kv_cache_layers[layer_name] = target
+                    kv_cache_spec.pop(layer_name, None)
+        return kv_cache_spec
+
     # Note: used for model runner override.
     def _sync_device(self) -> None:
         torch.npu.synchronize()

@@ -673,6 +673,24 @@ class TestCPReorg:
     def test_cp_roundtrip_smoke(self):
         self._run_cp_roundtrip_case([0, 16], [0])
 
+    def test_sp_to_cp_clears_reused_padding(self):
+        cumlens = [0, 3, 20]
+        golden = SeqGolden(cumlens=cumlens, ranks=4)
+        dist = TaskDist(ranks=4)
+        results = {}
+
+        def task():
+            manager = _init_cp_manager(cumlens, [0, 0], _PAGE_SIZE, _TABLE_SIZE)
+            rank = dist.thread_local.rank
+            manager.sp_to_cp(golden.sp(rank))
+            manager._buffers["sp_to_cp"].fill_(float("nan"))
+            results[rank] = manager.sp_to_cp(golden.sp(rank)).clone()
+
+        with _utils_env():
+            dist.run(task)
+        for rank in range(4):
+            torch.testing.assert_close(results[rank], golden.cp(rank))
+
     def test_cp_single_exact(self):
         self._run_cp_case([0, 16], [0])
 

@@ -18,6 +18,7 @@ class PanguV2MoeModelArchConfigConvertorPatch(VLLMPatch):
     def is_deepseek_mla(self) -> bool:
         if getattr(self.hf_text_config, "model_type", None) in (
             "openpangu_v2",
+            "openpangu_v3",
             "openpangu_v2_vl_moe",
             "openpangu_v2_omni_moe",
         ):

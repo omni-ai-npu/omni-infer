@@ -1581,29 +1581,40 @@ class TestNPUModelRunner:
 
         assert kv_caches["attn_layer"].stride() != original_stride
 
-    def test_get_kv_cache_spec_fallback(self, monkeypatch):
-        """Test get_kv_cache_spec fallback branch (covers line 130).
-
-        Verifies that when use_mla is False, the method falls back to
-        calling super().get_kv_cache_spec().
-        """
+    @pytest.mark.parametrize("cla_mapping", [None, [[7, 3]]])
+    def test_get_kv_cache_spec_fallback_handles_cla_aliases(self, monkeypatch, cla_mapping):
+        """Remove cache aliases only when CLA sharing is configured."""
         # Set use_mla to False, should call super().get_kv_cache_spec()
         self.runner.vllm_config.model_config.use_mla = False
+        self.runner.vllm_config.model_config.hf_config = SimpleNamespace(cla_explicit_mapping=cla_mapping)
 
         super_called = {"called": False}
 
         def mock_super_get_kv_cache_spec():
             super_called["called"] = True
-            return {"layer_0": MagicMock()}
+            return {"layer_0": MagicMock(), "layer_alias": MagicMock()}
 
         monkeypatch.setattr(
             GPUModelRunner,
             "get_kv_cache_spec",
             lambda self: mock_super_get_kv_cache_spec(),
         )
+        monkeypatch.setattr(
+            "omni_npu.worker.npu_model_runner.get_layers_from_vllm_config",
+            lambda *_: {
+                "layer_0": SimpleNamespace(kv_sharing_target_layer_name=None),
+                "layer_alias": SimpleNamespace(kv_sharing_target_layer_name="layer_0"),
+            },
+        )
 
         result = self.runner.get_kv_cache_spec()
         assert super_called["called"] is True
+        if cla_mapping:
+            assert set(result) == {"layer_0"}
+            assert self.runner.shared_kv_cache_layers["layer_alias"] == "layer_0"
+        else:
+            assert set(result) == {"layer_0", "layer_alias"}
+            assert "layer_alias" not in self.runner.shared_kv_cache_layers
 
     def test_get_model_with_acl_graph_wrapper(self, monkeypatch):
         """Test get_model with ACLGraphWrapper branch (covers line 187).

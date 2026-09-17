@@ -308,8 +308,10 @@ class NPUDSAMetadataBuilder(MLACommonMetadataBuilder[NPUDSAMetadata]):
                     table_size=prefill.block_table.size(1),
                 )
                 if mome_kernel_width == 0:
+                    # Match the prefill-only cache input; exclude decode tokens and batch padding.
+                    prefill_slot_mapping = metadata.slot_mapping[metadata.num_decode_tokens:metadata.num_actual_tokens]
                     prefill.cache_fn = paged_cache(
-                        metadata.slot_mapping,
+                        prefill_slot_mapping,
                         prefill.query_start_loc,  # [B + 1]
                     )
 

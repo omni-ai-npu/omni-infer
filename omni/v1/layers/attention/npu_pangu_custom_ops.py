@@ -50,6 +50,8 @@ How to use
      npu_pangu_lightning_indexer     -> Indexer._apply_lightning_indexer
      npu_pangu_kv_cache_update       -> _npu_kvrmsnorm_rope_cache
                                         (DSA / absorb paths only)
+     npu_pangu_cla_swa_kv_cache_update
+                                     -> _prepare_cla_swa_kv
      npu_pangu_mome_fc2_scatter_and_return
                                      -> npu_ai_infra_scatter_block_update_
                                         (FC2 cache scatter tail)
@@ -146,6 +148,15 @@ from vllm.utils.torch_utils import direct_register_custom_op
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _lookup_cla_swa_layer_and_attn_metadata(layer_name: str):
+    forward_context = get_forward_context()
+    layer = forward_context.no_compile_layers[layer_name]
+    attn_metadata = forward_context.attn_metadata
+    if isinstance(attn_metadata, dict):
+        attn_metadata = attn_metadata.get(layer.cla_swa_attn_name)
+    return layer, attn_metadata
+
+
 def _lookup_layer_and_attn_metadata(layer_name: str):
     forward_context = get_forward_context()
     layer = forward_context.no_compile_layers[layer_name]
@@ -408,6 +419,48 @@ direct_register_custom_op(
     op_func=npu_pangu_kv_cache_update,
     mutates_args=[],
     fake_impl=npu_pangu_kv_cache_update_fake,
+    dispatch_key="PrivateUse1",
+)
+
+
+# ---------------------------------------------------------------------------
+# npu_pangu_cla_swa_kv_cache_update: wraps _prepare_cla_swa_kv.
+# Return the updated cache tensors to preserve the dependency between the
+# hidden in-place scatter and the following CLA local-SWA attention call.
+# ---------------------------------------------------------------------------
+def npu_pangu_cla_swa_kv_cache_update(
+    kv: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    kv_cache_0: torch.Tensor,
+    kv_cache_1: torch.Tensor,
+    layer_name: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    layer, attn_metadata = _lookup_cla_swa_layer_and_attn_metadata(layer_name)
+    k_nope, k_pe = layer._prepare_cla_swa_kv(kv, cos, sin, (kv_cache_0, kv_cache_1), attn_metadata)
+    return k_nope, k_pe, kv_cache_0, kv_cache_1
+
+
+def npu_pangu_cla_swa_kv_cache_update_fake(
+    kv: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    kv_cache_0: torch.Tensor,
+    kv_cache_1: torch.Tensor,
+    layer_name: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    layer, _ = _lookup_cla_swa_layer_and_attn_metadata(layer_name)
+    num_tokens = kv.size(0)
+    k_nope = torch.empty((num_tokens, layer.kv_lora_rank), device=kv.device, dtype=kv.dtype)
+    k_pe = torch.empty((num_tokens, layer.qk_rope_head_dim), device=kv.device, dtype=kv.dtype)
+    return k_nope, k_pe, torch.empty_like(kv_cache_0), torch.empty_like(kv_cache_1)
+
+
+direct_register_custom_op(
+    op_name="npu_pangu_cla_swa_kv_cache_update",
+    op_func=npu_pangu_cla_swa_kv_cache_update,
+    mutates_args=[],
+    fake_impl=npu_pangu_cla_swa_kv_cache_update_fake,
     dispatch_key="PrivateUse1",
 )
 

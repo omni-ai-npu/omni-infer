@@ -195,6 +195,7 @@ class ModelOperatorOptConfig:
     use_rope_fusion_op: bool = False # 是否使用npu_apply_rotary_pos_emb融合算子，默认不开启，CANN>=9.0.0可开启
     use_mhc_fusion_op: bool = False # 是否使用mhc大融合算子，默认不开启
     use_mome_inplace_update: bool = False
+    use_gpt_oss_sink_rescale: bool = False
     moe_comm_strategy: MoECommStrategyType = "dispatch_combine" # MoE通信策略，默认为dispatch_combine
     moe_tbo_threshold: int = -1 # MoE: two batch overlap batch threshold, -1 for disable
     moe_dispatch_combine_max_batch_size: int = 128

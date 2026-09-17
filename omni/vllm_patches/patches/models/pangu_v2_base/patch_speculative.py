@@ -81,9 +81,10 @@ class PanguV2MoeSpeculativeConfigPatch(VLLMPatch):
             )
             return hf_config
 
-        # patch start: for openpangu_v2 OpenPanguV2ForCausalLM MTP
-        if (hf_config.model_type == "openpangu_v2"
-                and "OpenPanguV2ForCausalLM" in archs) or is_pangu_v2_moe_vl:
+        # patch start: for OpenPangu V2/V3 MTP
+        is_pangu_v2 = hf_config.model_type == "openpangu_v2" and "OpenPanguV2ForCausalLM" in archs
+        is_pangu_v3 = hf_config.model_type == "openpangu_v3" and "OpenPanguV3ForCausalLM" in archs
+        if is_pangu_v2 or is_pangu_v3 or is_pangu_v2_moe_vl:
             hf_config.model_type = "mtp"
 
         if hf_config.model_type == "mtp":

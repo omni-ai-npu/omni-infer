@@ -461,6 +461,7 @@ class TestNPUDSAMetadataBuilder(unittest.TestCase):
                 self.prefill = _Prefill()
                 self.decode = None
                 self.num_actual_tokens = 4
+                self.num_decode_tokens = 0
                 self.num_reqs = 1
                 self.num_prefills = 1
                 self.num_decodes = 0
@@ -505,6 +506,58 @@ class TestNPUDSAMetadataBuilder(unittest.TestCase):
         # mome_kernel_width is no longer passed to init_cp; a width of 0
         # (router_sliding_window unset) is what installs the paged cache_fn.
         self.assertIsNotNone(out.prefill.cache_fn)
+
+    def test_build_prefill_paged_cache_excludes_padding(self):
+        for num_decode_tokens in (0, 2):
+            with self.subTest(num_decode_tokens=num_decode_tokens):
+                self._check_prefill_cache_slots(num_decode_tokens)
+
+    def _check_prefill_cache_slots(self, num_decode_tokens):
+        b = self._new_builder_minimal()
+        b.vllm_config.model_config = MagicMock()
+        b.vllm_config.model_config.hf_config = SimpleNamespace(router_sliding_window=0)
+
+        prefill = SimpleNamespace(
+            query_start_loc=torch.tensor([0, 3, 7], dtype=torch.int32),
+            chunked_context=None,
+            query_cumlens=None,
+            seq_lens=None,
+            block_table=torch.zeros(2, 2, dtype=torch.int32),
+        )
+        slot_mapping = torch.arange(num_decode_tokens + 9, dtype=torch.int64)
+        class Metadata(SimpleNamespace):
+            pass
+
+        metadata = Metadata(
+            prefill=prefill,
+            decode=None,
+            num_actual_tokens=num_decode_tokens + 7,
+            num_decode_tokens=num_decode_tokens,
+            num_reqs=2,
+            num_prefills=2,
+            num_decodes=0,
+            slot_mapping=slot_mapping,
+            slot_mapping_cache=None,
+        )
+        common_metadata = SimpleNamespace(seq_lens=torch.tensor([3, 4], dtype=torch.int64),
+                                          query_start_loc_cpu=prefill.query_start_loc)
+        cache_fn = object()
+        sp_manager = MagicMock()
+        sp_manager.init_cp.return_value = object()
+        extra_config = SimpleNamespace(parall_config=SimpleNamespace(ena_seq_parallel=True, ena_context_parallel=True))
+
+        with (
+            patch.object(mla_mod.MLACommonMetadataBuilder, "build", return_value=metadata),
+            patch.object(mla_mod, "model_extra_config", extra_config),
+            patch.object(mla_mod, "SPManager", sp_manager),
+            patch.object(mla_mod, "paged_cache", return_value=cache_fn) as mock_paged_cache,
+        ):
+            output = b.build(0, common_metadata, False)
+
+        self.assertIs(output.prefill.cache_fn, cache_fn)
+        expected_slots = slot_mapping[num_decode_tokens:num_decode_tokens + 7]
+        torch.testing.assert_close(mock_paged_cache.call_args.args[0], expected_slots)
+        torch.testing.assert_close(mock_paged_cache.call_args.args[1], prefill.query_start_loc)
 
     def test_build_decode_sets_mc2_mask_without_aligning_slot_mapping(self):
         b = self._new_builder_minimal()

@@ -196,6 +196,27 @@ class TestConfigLoaderUnit(unittest.TestCase):
         operator = ModelOperatorOptConfig()
         self.assertEqual(operator.moe_dispatch_combine_max_batch_size, 128)
 
+    def test_gpt_oss_sink_rescale_default_and_override(self):
+        from omni_npu.model_config.config_loader.loader import ModelOperatorOptConfig
+
+        self.assertFalse(ModelOperatorOptConfig().use_gpt_oss_sink_rescale)
+        self.assertTrue(ModelOperatorOptConfig(use_gpt_oss_sink_rescale=True).use_gpt_oss_sink_rescale)
+
+    def test_v3_config_files_load_without_mome(self):
+        from omni_npu.model_config.config_loader import loader
+
+        config_dir = os.path.join(loader.default_config_path, "low_latency", "openpangu_v3")
+        for role, strategy in (("p", "allgather_reducescatter"), ("d", "dispatch_combine")):
+            with self.subTest(role=role):
+                filename = f"pangu_v3_moe_bf16_a3_xxB_xp1d_{role}_open.json"
+                data = loader._loader_configs_data(os.path.join(config_dir, filename))
+                parallel = loader.ModelParallelConfig(**data["model_parallel_config"])
+                operator = loader.ModelOperatorOptConfig(**data["operator_optimization_config"])
+                self.assertEqual(operator.moe_comm_strategy, strategy)
+                self.assertTrue(operator.use_gpt_oss_sink_rescale)
+                self.assertEqual(parallel.ena_context_parallel, role == "p")
+                self.assertFalse(operator.enable_mome_sp)
+
     def test_model_operator_opt_config_lmhead_fp32_from_config(self):
         """Test _init_model_extra_config loads lmhead_fp32 from operator config"""
         from omni_npu.model_config.config_loader.loader import (

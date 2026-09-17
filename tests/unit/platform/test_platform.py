@@ -404,7 +404,8 @@ class TestNPUPlatform:
         vllm_cfg.cache_config.mamba_page_size_padded = mamba_page_size_padded
         return vllm_cfg
 
-    def test_align_hybrid_block_size_skips_when_not_dsa(self, monkeypatch):
+    @pytest.mark.parametrize("index_topk", [0, None])
+    def test_align_hybrid_block_size_skips_when_not_dsa(self, monkeypatch, index_topk):
         monkeypatch.setattr(
             "vllm.platforms.interface.Platform._align_hybrid_block_size",
             classmethod(lambda cls, cfg, backend: None),
@@ -413,7 +414,7 @@ class TestNPUPlatform:
         NPUPlatform._align_hybrid_block_size(vllm_cfg, object)
         assert vllm_cfg.cache_config.mamba_page_size_padded == 100
 
-        vllm_cfg = self._make_hybrid_align_config(index_topk=0)
+        vllm_cfg = self._make_hybrid_align_config(index_topk=index_topk)
         NPUPlatform._align_hybrid_block_size(vllm_cfg, object)
         assert vllm_cfg.cache_config.mamba_page_size_padded == 100
 

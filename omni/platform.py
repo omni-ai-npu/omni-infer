@@ -211,7 +211,7 @@ class NPUPlatform(Platform):
         cache_config = vllm_config.cache_config
         model_config = vllm_config.model_config
         hf_config = model_config.hf_config
-        index_topk = getattr(hf_config, "index_topk", 0)
+        index_topk = getattr(hf_config, "index_topk", 0) or 0
         if not (model_config.use_mla and index_topk > 0):
             return
         # The base returns without setting a padding when the model has no

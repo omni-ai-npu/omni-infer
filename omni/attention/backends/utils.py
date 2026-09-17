@@ -602,6 +602,9 @@ class SPManager:
         tmp = self._get_buffer("sp_to_cp", tmp_shape, dtype=sp.dtype, device=sp.device)
         for it in sends:
             it.slice_dst(tmp).copy_(it.slice_src(sp))
+            # Communication sends it.len rows, but only it.raw rows were copied; clear stale padding.
+            if it.len > it.raw:
+                tmp[it.dst + it.raw:it.dst + it.len].zero_()
         cp = sp.new_empty(cp_len, *sp.shape[1:])
         # split could be all 0, for send-only or recv-only case
         torch.distributed.all_to_all_single(cp, tmp, cp_split, sp_split, group=self.sp_comm)

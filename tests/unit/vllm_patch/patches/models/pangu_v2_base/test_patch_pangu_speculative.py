@@ -40,6 +40,7 @@ class HFConfig:
             "mtp",
             "OpenPanguV2MTPModel",
         ),
+        ("openpangu_v3", ["OpenPanguV3ForCausalLM"], "openpangu_v3", "mtp", "OpenPanguV2MTPModel"),
         ("openpangu_v2_vl_moe", [], "", "openpangu_mtp", "OpenPanguMTPModel"),
         (
             "openpangu_v2_omni_moe",
@@ -247,3 +248,11 @@ def test_propose_early_exit_returns_int64_draft_ids():
     assert "draft_token_ids.int()" not in early_exit
     assert "draft_token_ids = draft_token_ids.int()" in rest
 
+
+@pytest.mark.parametrize("kv_lora_rank,expected", [(512, True), (None, False)])
+def test_v3_mla_detection(kv_lora_rank, expected):
+    from omni_npu.vllm_patches.patches.models.pangu_v2_base.patch_model_arch_config_convertor import (
+        PanguV2MoeModelArchConfigConvertorPatch,
+    )
+    config = SimpleNamespace(hf_text_config=SimpleNamespace(model_type="openpangu_v3", kv_lora_rank=kv_lora_rank))
+    assert PanguV2MoeModelArchConfigConvertorPatch.is_deepseek_mla(config) is expected
