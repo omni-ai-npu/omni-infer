@@ -113,7 +113,7 @@
       runner: pd_run.sh
       workdir: "{{ container_workspace }}/omniinfer/tools/deploy/start_server"
       kv_offload:
-        enable: true
+        enable: false
         hugepage_enabled: true
         cpu_bytes_to_use: 53687091200  # 50 GiB per Decode server
       prepare_commands: |-
