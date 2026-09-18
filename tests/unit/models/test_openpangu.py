@@ -208,7 +208,7 @@ class _FakeExpertsMoE:
 
 
 class TestOpenPanguMoEInit(unittest.TestCase):
-    @patch.object(openpangu_mod, "SharedFusedMoE", MagicMock())
+    @patch.object(openpangu_mod, "FusedMoE", MagicMock())
     @patch.object(openpangu_mod, "OpenPanguMLP", MagicMock())
     @patch.object(openpangu_mod, "ReplicatedLinear", _FakeLinearOut)
     @patch.object(
@@ -239,7 +239,7 @@ class TestOpenPanguMoEInit(unittest.TestCase):
         self.assertIsNotNone(m.experts)
         self.assertIsNotNone(m.shared_experts)
 
-    @patch.object(openpangu_mod, "SharedFusedMoE", MagicMock())
+    @patch.object(openpangu_mod, "FusedMoE", MagicMock())
     @patch.object(openpangu_mod, "OpenPanguMLP", MagicMock())
     @patch.object(openpangu_mod, "ReplicatedLinear", _FakeLinearOut)
     @patch.object(

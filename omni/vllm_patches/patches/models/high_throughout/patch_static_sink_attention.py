@@ -394,8 +394,9 @@ class StaticSinkAttentionClassPatch(VLLMPatch):
         if attn_backend is not None:
             underlying_attn_backend = attn_backend
         else:
+            # The 4th arg (block_size) would bind to use_mla and select NPUMLA (no sink_len).
             underlying_attn_backend = get_attn_backend(
-                head_size, dtype, kv_cache_dtype, block_size
+                head_size, dtype, kv_cache_dtype
             )
         attn_backend = static_sink_attention.create_static_sink_attention_backend(
             underlying_attn_backend,  # type: ignore[arg-type]
