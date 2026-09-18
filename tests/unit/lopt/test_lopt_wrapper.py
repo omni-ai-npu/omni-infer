@@ -403,3 +403,38 @@ class TestLoptParallelTokenizerWithMock:
         boundary_text = "a" * 20  # Exactly chunk_size * 2
         tok(boundary_text)
         tok._parallel_encode.assert_called_once()
+
+    def test_parallel_encode_fallback_returns_1d_ids(self, monkeypatch):
+        """Match failure must fall back to HF list ids, not numpy (1, N)."""
+        import importlib
+        import numpy as np
+        import omni_npu.lopt.lopt_wrapper as lw
+        from transformers import BatchEncoding
+
+        mock_cpp = MagicMock()
+        monkeypatch.setitem(sys.modules, "Cpp_match_merge", mock_cpp)
+        importlib.reload(lw)
+
+        fallback = BatchEncoding({"input_ids": [11, 22, 33]})
+        mock_tokenizer = MagicMock(return_value=fallback)
+        with patch(
+            "transformers.AutoTokenizer.from_pretrained",
+            return_value=mock_tokenizer,
+        ), patch("multiprocessing.Pool"):
+            tok = lw.LoptParallelTokenizer(
+                model_path="/fake/model", chunk_size=10
+            )
+
+        shard = {
+            "input_ids": np.array([[1, 2, 3]]),
+            "offset_mapping": np.array([[[0, 1], [0, 2], [0, 3]]]),
+        }
+        tok.pool.map = MagicMock(return_value=[shard, shard])
+        tok._cpp_match_wrapper = MagicMock(
+            side_effect=RuntimeError("C++ match returned error")
+        )
+
+        result = tok._parallel_encode("a" * 30, add_special_tokens=False)
+        mock_tokenizer.assert_called_with("a" * 30, add_special_tokens=False)
+        assert "return_tensors" not in mock_tokenizer.call_args.kwargs
+        assert result.input_ids == [11, 22, 33]

@@ -137,8 +137,8 @@ def rewrite_coverage_paths(
     return changed
 
 
-SUMMARY_TOTAL_RE = re.compile(r"^Total:\s+(\d+)\s+lines", re.IGNORECASE)
-SUMMARY_MISSING_RE = re.compile(r"^Missing:\s+(\d+)\s+lines", re.IGNORECASE)
+SUMMARY_TOTAL_RE = re.compile(r"^Total:\s+(\d+)\s+line[s]?", re.IGNORECASE)
+SUMMARY_MISSING_RE = re.compile(r"^Missing:\s+(\d+)\s+line[s]?", re.IGNORECASE)
 SUMMARY_COVER_RE = re.compile(r"^Coverage:\s+(\d+)%", re.IGNORECASE)
 NO_LINES_RE = re.compile(r"^No lines with coverage information in this diff\.", re.IGNORECASE)
 

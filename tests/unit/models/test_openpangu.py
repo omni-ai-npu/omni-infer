@@ -18,13 +18,18 @@ if importlib.util.find_spec("omni_models") is None:
         allow_module_level=True,
     )
 
-from omni_npu.vllm_patches.patches.models.pangu_v2_base.patch_mla import mlaPatch
+try:
+    from omni_npu.vllm_patches.patches.models.pangu_v2_base.patch_mla import mlaPatch
+    from omni_npu.vllm_patches.patches.models.pangu_sink_swa_mla.patch_static_sink_attention import StaticSinkAttentionPatch
+    from omni_npu.vllm_patches.patches.models.pangu_sink_swa_mla.patch_mome import MoMEPatch
+except ModuleNotFoundError as exc:
+    pytest.skip(
+        f"optional omni_npu patch module is not available: {exc}",
+        allow_module_level=True,
+    )
+
 mlaPatch.apply()
-
-from omni_npu.vllm_patches.patches.models.pangu_sink_swa_mla.patch_static_sink_attention import StaticSinkAttentionPatch
 StaticSinkAttentionPatch.apply()
-
-from omni_npu.vllm_patches.patches.models.pangu_sink_swa_mla.patch_mome import MoMEPatch
 MoMEPatch.apply()
 
 import omni_models.models.pangu.openpangu as openpangu_mod
