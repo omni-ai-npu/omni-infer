@@ -330,6 +330,7 @@ def test_mixed_forward_restores_shared_metadata(case, monkeypatch):
     a = case.attention
     a.prefix, a.cla_swa_attn_name = "global", "local"
     a.is_cp_layer = a.is_attn_sp_layer = a.enable_flashcomm2 = False
+    a.is_flashcomm2_layer = False
     a.tp_size = 1
     a.moe_comm_strategy = "allreduce"
 

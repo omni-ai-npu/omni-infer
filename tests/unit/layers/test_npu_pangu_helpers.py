@@ -423,6 +423,7 @@ class TestPanguIndexShare(unittest.TestCase):
             is_cp_layer=True,
             is_attn_sp_layer=False,
             enable_flashcomm2=False,
+            is_flashcomm2_layer=False,
             is_dsa_layer=True,
             tp_size=2,
             moe_comm_strategy="allgather_reducescatter",
@@ -1020,6 +1021,7 @@ class TestPanguCLA(unittest.TestCase):
         attention.split_q_up_in_multistream = False
         attention.sharded_o_proj = False
         attention.enable_flashcomm2 = True
+        attention.is_flashcomm2_layer = True
         attention.is_dsa_layer = False
         attention.skip_topk = True
         attention.index_head_dim = 32
@@ -1125,6 +1127,7 @@ class TestPanguCLA(unittest.TestCase):
                     is_cp_layer=False,
                     is_attn_sp_layer=False,
                     enable_flashcomm2=True,
+                    is_flashcomm2_layer=True,
                     is_dsa_layer=False,
                     use_mome=use_mome,
                     tp_size=1,
